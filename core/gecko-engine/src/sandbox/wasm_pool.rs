@@ -62,9 +62,13 @@ impl SandboxPool {
                 extension_callback,
             ),
             ScriptEngine::QuickJs => match self.wasm_executor() {
-                Ok(wasm) => {
-                    wasm.evaluate(code, handle_id, host_imports, timeout_ms, extension_callback)
-                }
+                Ok(wasm) => wasm.evaluate(
+                    code,
+                    handle_id,
+                    host_imports,
+                    timeout_ms,
+                    extension_callback,
+                ),
                 Err(e) => ExecutionResult {
                     output: serde_json::Value::Null,
                     duration_ms: 0,
@@ -82,4 +86,3 @@ impl Default for SandboxPool {
         Self::new()
     }
 }
-

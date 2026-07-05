@@ -70,7 +70,11 @@ impl WasmExecutor {
         // Compile the embedded WebAssembly module once
         let module = Module::from_binary(&engine, QUICKJS_WASM)?;
 
-        Ok(Self { engine, module, shutdown })
+        Ok(Self {
+            engine,
+            module,
+            shutdown,
+        })
     }
 }
 

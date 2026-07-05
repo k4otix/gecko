@@ -1,6 +1,6 @@
 use boa_engine::{
-    js_string, object::ObjectInitializer, property::Attribute, Context, JsValue, NativeFunction,
-    Source,
+    Context, JsValue, NativeFunction, Source, js_string, object::ObjectInitializer,
+    property::Attribute,
 };
 use std::io::{self, Read};
 

@@ -37,8 +37,6 @@ pub enum TlsMode {
     Enabled { ca_cert: Option<PathBuf> },
 }
 
-
-
 /// Configuration for TypeDB connections.
 #[derive(Debug, Clone)]
 pub struct DbConfig {
