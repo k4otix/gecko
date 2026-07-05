@@ -16,7 +16,7 @@ jobs:
 
     services:
       typedb:
-        image: vaticle/typedb:latest
+        image: typedb/typedb:latest
         ports:
           - 1729:1729
 
