@@ -245,12 +245,24 @@ impl ScriptExecutor for WasmExecutor {
                     })
                 });
 
+                // Extract success and error fields if present in the JSON payload
+                let mut success = true;
+                let mut error = None;
+                if let Some(obj) = output_json.as_object() {
+                    if let Some(succ) = obj.get("success").and_then(serde_json::Value::as_bool) {
+                        success = succ;
+                    }
+                    if let Some(err) = obj.get("error").and_then(serde_json::Value::as_str) {
+                        error = Some(err.to_string());
+                    }
+                }
+
                 ExecutionResult {
                     output: output_json,
-                    duration_ms: start_time.elapsed().as_millis() as u64,
+                    duration_ms: u64::try_from(start_time.elapsed().as_millis()).unwrap_or(0),
                     engine: ScriptEngine::QuickJs,
-                    success: true, // We consider it successful if Wasm executed fully
-                    error: None,
+                    success,
+                    error,
                 }
             }
             Err(e) => ExecutionResult {

@@ -12,12 +12,16 @@ use std::process;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use tracing::{error, info};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
+use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
+use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
+use gecko_engine::sandbox::wasm_executor::WasmExecutor;
 use gecko_engine::syncer::bundle::sync_bundle;
 
 use cyber_gecko::CyberGecko;
@@ -357,11 +361,6 @@ async fn cmd_run(
 
     let (resolved_id, code_block, engine_type) = matches.pop().unwrap();
     println!("Resolved to: {resolved_id}");
-
-    use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
-    use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
-    use gecko_engine::sandbox::wasm_executor::WasmExecutor;
-    use uuid::Uuid;
 
     println!(
         "Extensions loaded: {:?}",
