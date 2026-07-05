@@ -1,0 +1,19 @@
+# Build artifacts
+/target/
+**/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cargo lock is committed for binaries, ignored for libraries
+# Since this workspace contains a binary (gecko-bin), we commit Cargo.lock
+
+# Environment
+.env

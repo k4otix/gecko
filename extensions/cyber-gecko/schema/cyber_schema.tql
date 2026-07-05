@@ -1,0 +1,25 @@
+define
+
+  # Cyber-specific attributes
+  attribute ioc-value value string;
+  attribute confidence-score value double;
+  attribute hostname value string;
+  attribute severity value string;
+  attribute status value string;
+
+  # Cyber entity types (inherit from core okf-concept)
+  entity cyber-entity sub okf-concept;
+
+  entity indicator sub cyber-entity,
+    owns ioc-value @card(0..1),
+    owns confidence-score @card(0..1);
+
+  entity asset sub cyber-entity,
+    owns hostname @card(0..1);
+
+  entity threat-actor sub cyber-entity;
+
+  # Cyber relation types (inherit from core okf-link)
+  relation attributed-to sub okf-link;
+
+  relation targets sub okf-link;

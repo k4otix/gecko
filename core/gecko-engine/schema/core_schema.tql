@@ -1,0 +1,80 @@
+define
+
+  # ── Attribute types ──────────────────────────────────────────
+  attribute concept-id value string;       # path-based, e.g. "tables/orders"
+  attribute bundle-path value string;      # filesystem path to bundle root
+  attribute bundle-name value string;      # name of the bundle
+  attribute concept-type value string;     # OKF 'type' field (free-form)
+  attribute title value string;
+  attribute description value string;
+  attribute resource-uri value string;     # OKF 'resource' field
+  attribute tag value string;              # multi-valued per concept
+  attribute timestamp value datetime;
+  attribute body value string;             # full markdown body
+  attribute code-block value string;       # extracted fenced code blocks
+  attribute metadata-json value string;    # JSON blob for extension frontmatter keys
+  attribute link-text value string;        # display text of a markdown link
+  attribute target-url value string;       # citation target (absolute URL)
+  attribute synced-at value datetime;      # last sync timestamp
+  attribute file-hash value string;        # content hash for change detection
+
+  # ── Abstract base types (design §4.1) ───────────────────────
+  # Extensions inherit from these via `sub` to add domain-specific types.
+  entity okf-concept @abstract,
+    owns concept-id @key,
+    owns title @card(0..1),
+    owns timestamp @card(0..1);
+
+  relation okf-link @abstract,
+    relates source,
+    relates target;
+
+  # ── Relation types ───────────────────────────────────────────
+  relation containment,
+    relates container,
+    relates member;
+
+  relation hierarchy,
+    relates parent,
+    relates child;
+
+  relation concept-link sub okf-link,
+    owns link-text @card(0..1);
+
+  relation citation,
+    relates citing-concept,
+    relates cited-resource,
+    owns link-text @card(0..1);
+
+  # ── Concrete operational types ──────────────────────────────
+  entity bundle,
+    owns bundle-path @key,
+    owns bundle-name @card(0..1),
+    owns title @card(0..1),
+    owns description @card(0..1),
+    owns synced-at @card(0..1),
+    plays containment:container;
+
+  attribute engine value string;           # execution engine for code-blocks
+
+  entity concept sub okf-concept,
+    owns concept-type @card(0..1),
+    owns description @card(0..1),
+    owns resource-uri @card(0..1),
+    owns tag @card(0..),
+    owns body @card(0..1),
+    owns code-block @card(0..),
+    owns engine @card(0..1),
+    owns metadata-json @card(0..1),
+    owns synced-at @card(0..1),
+    owns file-hash @card(0..1),
+    plays containment:member,
+    plays hierarchy:parent,
+    plays hierarchy:child,
+    plays okf-link:source,
+    plays okf-link:target,
+    plays citation:citing-concept;
+
+  entity external-resource,
+    owns target-url @key,
+    plays citation:cited-resource;

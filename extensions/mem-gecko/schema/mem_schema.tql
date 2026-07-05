@@ -1,0 +1,22 @@
+define
+
+  # Memory-specific attributes
+  attribute execution-id value string;
+  attribute verdict-result value string;
+  attribute condition value string;
+
+  # Cognitive entity types (inherit from core okf-concept)
+  entity cognitive-node sub okf-concept;
+
+  entity execution-episode sub cognitive-node,
+    owns execution-id @card(0..1),
+    owns verdict-result @card(0..1);
+
+  entity learned-constraint sub cognitive-node,
+    owns condition @card(0..1);
+
+  # Memory relation types (inherit from core okf-link)
+  # Polymorphically links to any okf-concept subtype
+  relation contextualizes sub okf-link,
+    relates episode as source,
+    relates target-entity as target;

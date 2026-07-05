@@ -1,0 +1,11 @@
+[package]
+name = "cyber-gecko"
+description = "GECKO cyber threat intelligence extension: threat ontology, IOC normalization, and incident response"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gecko-engine = { path = "../../core/gecko-engine" }
+serde_json.workspace = true

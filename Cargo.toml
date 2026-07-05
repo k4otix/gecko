@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "core/gecko-engine", "core/js-sandbox",
+    "extensions/cyber-gecko",
+    "extensions/mem-gecko",
+    "gecko-bin",
+]
+default-members = [
+    "core/gecko-engine",
+    "extensions/cyber-gecko",
+    "extensions/mem-gecko",
+    "gecko-bin",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/eddie/gecko"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# TypeDB
+typedb-driver = "3.11.5"
+
+# Wasm sandbox (Phase 2 — compiled but gated behind feature)
+# wasmtime = "30"
+
+# Scripting engines
+rhai = "1"
+
+# Markdown / text processing
+pulldown-cmark = "0.12"
+regex = "1"
+
+# Hashing
+sha2 = "0.10"
+
+# Identity
+uuid = { version = "1", features = ["v4"] }
+
+# Dates
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async trait
+async-trait = "0.1"
+
+[profile.dev]
+debug = 0
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 3
