@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::Result;
 use uuid::Uuid;
 use wasmtime::{Config, Engine, Linker, Module, Store};
@@ -27,6 +30,8 @@ fn read_string<T>(
 pub struct WasmExecutor {
     engine: Engine,
     module: Module,
+    /// Signals the epoch ticker thread to shut down when dropped.
+    shutdown: Arc<AtomicBool>,
 }
 
 struct ExecutorCtx {
@@ -50,10 +55,13 @@ impl WasmExecutor {
 
         let engine = Engine::new(&config)?;
 
-        // Spawn a background thread to tick the epoch every 10ms
+        // Spawn a background thread to tick the epoch every 10ms.
+        // The thread exits when the shutdown flag is set (via Drop).
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let ticker_shutdown = Arc::clone(&shutdown);
         let ticker_engine = engine.clone();
         std::thread::spawn(move || {
-            loop {
+            while !ticker_shutdown.load(Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 ticker_engine.increment_epoch();
             }
@@ -62,7 +70,13 @@ impl WasmExecutor {
         // Compile the embedded WebAssembly module once
         let module = Module::from_binary(&engine, QUICKJS_WASM)?;
 
-        Ok(Self { engine, module })
+        Ok(Self { engine, module, shutdown })
+    }
+}
+
+impl Drop for WasmExecutor {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
     }
 }
 
@@ -106,7 +120,7 @@ impl ScriptExecutor for WasmExecutor {
                 duration_ms: start_time.elapsed().as_millis() as u64,
                 engine: ScriptEngine::QuickJs,
                 success: false,
-                error: Some(format!("Failed to link WASI: {}", e)),
+                error: Some(format!("Failed to link WASI: {e}")),
             };
         }
 
@@ -132,16 +146,16 @@ impl ScriptExecutor for WasmExecutor {
                 // Read strings from memory
                 let ext_name = match read_string(&memory, &caller, ext_name_ptr, ext_name_len) {
                     Ok(s) => s,
-                    Err(_) => return -2,
+                    Err(()) => return -2,
                 };
                 let func_name = match read_string(&memory, &caller, func_name_ptr, func_name_len) {
                     Ok(s) => s,
-                    Err(_) => return -3,
+                    Err(()) => return -3,
                 };
                 let args_json_str =
                     match read_string(&memory, &caller, args_json_ptr, args_json_len) {
                         Ok(s) => s,
-                        Err(_) => return -4,
+                        Err(()) => return -4,
                     };
                 let args_json: serde_json::Value =
                     serde_json::from_str(&args_json_str).unwrap_or(serde_json::Value::Null);
@@ -201,7 +215,7 @@ impl ScriptExecutor for WasmExecutor {
                                 duration_ms: start_time.elapsed().as_millis() as u64,
                                 engine: ScriptEngine::QuickJs,
                                 success: false,
-                                error: Some(format!("JS Execution trap: {}", e)),
+                                error: Some(format!("JS Execution trap: {e}")),
                             };
                         }
                     }
@@ -211,7 +225,7 @@ impl ScriptExecutor for WasmExecutor {
                             duration_ms: start_time.elapsed().as_millis() as u64,
                             engine: ScriptEngine::QuickJs,
                             success: false,
-                            error: Some(format!("Failed to find _start: {}", e)),
+                            error: Some(format!("Failed to find _start: {e}")),
                         };
                     }
                 }
@@ -240,7 +254,7 @@ impl ScriptExecutor for WasmExecutor {
                 duration_ms: start_time.elapsed().as_millis() as u64,
                 engine: ScriptEngine::QuickJs,
                 success: false,
-                error: Some(format!("Failed to instantiate Wasm module: {}", e)),
+                error: Some(format!("Failed to instantiate Wasm module: {e}")),
             },
         }
     }

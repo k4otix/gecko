@@ -108,17 +108,17 @@ impl ScriptExecutor for RhaiExecutor {
 fn dynamic_to_json(value: &rhai::Dynamic) -> serde_json::Value {
     if value.is_unit() {
         serde_json::Value::Null
-    } else if let Some(b) = value.as_bool().ok() {
+    } else if let Ok(b) = value.as_bool() {
         serde_json::Value::Bool(b)
-    } else if let Some(i) = value.as_int().ok() {
+    } else if let Ok(i) = value.as_int() {
         serde_json::json!(i)
-    } else if let Some(f) = value.as_float().ok() {
+    } else if let Ok(f) = value.as_float() {
         serde_json::json!(f)
-    } else if let Some(s) = value.clone().into_string().ok() {
+    } else if let Ok(s) = value.clone().into_string() {
         serde_json::Value::String(s)
     } else {
         // Fallback: use debug representation
-        serde_json::Value::String(format!("{:?}", value))
+        serde_json::Value::String(format!("{value:?}"))
     }
 }
 
@@ -185,5 +185,50 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_rhai_bool_result() {
+        let executor = RhaiExecutor::new();
+        let result = executor.evaluate(
+            "true && false",
+            Uuid::new_v4(),
+            &HostImports::default(),
+            None,
+            None,
+        );
+
+        assert!(result.success);
+        assert_eq!(result.output, serde_json::json!(false));
+    }
+
+    #[test]
+    fn test_rhai_float_result() {
+        let executor = RhaiExecutor::new();
+        let result = executor.evaluate(
+            "3.14 * 2.0",
+            Uuid::new_v4(),
+            &HostImports::default(),
+            None,
+            None,
+        );
+
+        assert!(result.success);
+        assert_eq!(result.output, serde_json::json!(6.28));
+    }
+
+    #[test]
+    fn test_rhai_unit_result() {
+        let executor = RhaiExecutor::new();
+        let result = executor.evaluate(
+            "let x = 42;",
+            Uuid::new_v4(),
+            &HostImports::default(),
+            None,
+            None,
+        );
+
+        assert!(result.success);
+        assert_eq!(result.output, serde_json::Value::Null);
     }
 }

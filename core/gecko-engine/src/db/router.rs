@@ -28,19 +28,16 @@ pub enum DbError {
 }
 
 /// TLS mode for TypeDB connections.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum TlsMode {
     /// TypeDB Core (local dev/test) — no TLS.
+    #[default]
     Disabled,
-    /// TypeDB Cloud — TLS enabled, optional CA certificate.
+    /// TypeDB Cloud — requires TLS, optionally with a custom CA certificate.
     Enabled { ca_cert: Option<PathBuf> },
 }
 
-impl Default for TlsMode {
-    fn default() -> Self {
-        Self::Disabled
-    }
-}
+
 
 /// Configuration for TypeDB connections.
 #[derive(Debug, Clone)]

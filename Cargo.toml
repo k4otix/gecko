@@ -17,7 +17,7 @@ default-members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/eddie/gecko"
+repository = "https://github.com/k4otix/gecko"
 
 [workspace.dependencies]
 # Async runtime

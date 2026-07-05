@@ -57,7 +57,7 @@ pub fn file_to_concept_id(file_path: &Path, bundle_root: &Path, bundle_name: &st
     let without_ext = relative.with_extension("");
     let path_str = without_ext.to_string_lossy().replace('\\', "/");
 
-    format!("{}:{}", bundle_name, path_str)
+    format!("{bundle_name}:{path_str}")
 }
 
 /// Returns true if the file matches reserved names (index.md, log.md).
@@ -274,7 +274,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
                     child_id: concept.concept_id.clone(),
                 });
             } else {
-                let prefixed_parent = format!("{}:{}", bundle_name, parent_str);
+                let prefixed_parent = format!("{bundle_name}:{parent_str}");
                 hierarchy.push(HierarchyEdge {
                     parent_id: prefixed_parent,
                     child_id: concept.concept_id.clone(),
@@ -287,9 +287,9 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
                     if gp_str.is_empty() || gp_str == "." {
                         break;
                     }
-                    let gp_prefixed = format!("{}:{}", bundle_name, gp_str);
+                    let gp_prefixed = format!("{bundle_name}:{gp_str}");
                     let child_str = current.to_string_lossy().replace('\\', "/");
-                    let child_prefixed = format!("{}:{}", bundle_name, child_str);
+                    let child_prefixed = format!("{bundle_name}:{child_str}");
 
                     hierarchy.push(HierarchyEdge {
                         parent_id: gp_prefixed,
@@ -377,7 +377,7 @@ fn extract_timestamp(
     let val = map.remove(key)?;
     match val {
         serde_yaml::Value::String(s) => {
-            let normalized = s.replace("Z", "+00:00");
+            let normalized = s.replace('Z', "+00:00");
             DateTime::parse_from_rfc3339(&normalized)
                 .ok()
                 .map(|dt| dt.with_timezone(&Utc))
@@ -681,5 +681,24 @@ Playbook body.
         let (yaml, body) = split_frontmatter(content);
         assert!(yaml.is_none());
         assert_eq!(body, content);
+    }
+
+    #[test]
+    fn test_split_frontmatter_malformed() {
+        let content = "---\ntype: Test\ntitle: Hello\n\nNo closing dashes.\n";
+        let (yaml, body) = split_frontmatter(content);
+        assert!(yaml.is_none());
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn test_parse_concept_empty_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("no_type.md");
+        let content = "---\ntitle: No Type\n---\nBody";
+        std::fs::write(&file_path, content).unwrap();
+
+        let result = parse_concept(&file_path, dir.path(), "test_bundle");
+        assert!(matches!(result, Err(ParseError::MissingType { path: _ })));
     }
 }

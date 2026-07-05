@@ -60,9 +60,7 @@ pub async fn sync_bundle(
         // Check if concept already exists by examining the query answer
         let mut concept_exists = false;
         if let typedb_driver::answer::QueryAnswer::ConceptDocumentStream(_, mut stream) = answer {
-            if stream.next().await.is_some() {
-                concept_exists = true;
-            }
+            concept_exists = stream.next().await.is_some();
         }
 
         if concept_exists {
@@ -186,17 +184,16 @@ pub async fn sync_bundle(
                 .as_object()
                 .and_then(|m| m.get("id"))
                 .and_then(|v| v.as_str())
+                && !active_ids.contains(id)
             {
-                if !active_ids.contains(id) {
-                    debug!(concept_id = %id, "Deleting orphaned concept");
-                    let delete_query = format!(
-                        "match $c isa concept, has concept-id \"{}\"; delete $c;",
-                        escape_tql(id)
-                    );
-                    tx.query(&delete_query)
-                        .await
-                        .map_err(|e| DbError::Query(e.to_string()))?;
-                }
+                debug!(concept_id = %id, "Deleting orphaned concept");
+                let delete_query = format!(
+                    "match $c isa concept, has concept-id \"{}\"; delete $c;",
+                    escape_tql(id)
+                );
+                tx.query(&delete_query)
+                    .await
+                    .map_err(|e| DbError::Query(e.to_string()))?;
             }
         }
     }
@@ -270,7 +267,7 @@ async fn insert_concept(
 
     if let Some(ts) = &concept.timestamp {
         let ts_str = ts.format("%Y-%m-%dT%H:%M:%S").to_string();
-        parts.push(format!("has timestamp {}", ts_str));
+        parts.push(format!("has timestamp {ts_str}"));
     }
 
     let query = parts.join(",\n") + ";";

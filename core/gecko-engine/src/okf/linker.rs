@@ -98,7 +98,7 @@ pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
     let combined = if source_dir.is_empty() || path_part.starts_with('/') {
         path_part.trim_start_matches('/').to_string()
     } else {
-        format!("{}/{}", source_dir, path_part)
+        format!("{source_dir}/{path_part}")
     };
 
     // Normalize by resolving `.` and `..` components
@@ -194,5 +194,29 @@ And [Config](config.md#section)."#;
         let body = "No code blocks here.";
         let blocks = extract_code_blocks(body);
         assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_relative_path_already_namespaced() {
+        assert_eq!(
+            resolve_relative_path("other_bundle:some/concept.md", "datasets/users"),
+            "other_bundle:some/concept"
+        );
+    }
+
+    #[test]
+    fn test_resolve_relative_path_with_source_namespace() {
+        assert_eq!(
+            resolve_relative_path("../tables/orders.md#schema", "my_bundle:datasets/users"),
+            "my_bundle:tables/orders"
+        );
+    }
+
+    #[test]
+    fn test_extract_links_namespaced_source() {
+        let body = r#"See [Orders](../tables/orders.md) for details."#;
+        let (links, _) = extract_links(body, "bundle:datasets/users");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_id, "bundle:tables/orders");
     }
 }

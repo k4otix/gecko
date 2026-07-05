@@ -42,9 +42,9 @@ pub trait GeckoExtension: Send + Sync {
     /// Execute a host import function provided by this extension.
     fn call_import(
         &self,
-        _name: &str,
+        name: &str,
         _args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        Err(format!("Import '{}' not implemented", _name))
+        Err(format!("Import '{name}' not implemented"))
     }
 }

@@ -1,4 +1,7 @@
-use boa_engine::{Context, Source};
+use boa_engine::{
+    js_string, object::ObjectInitializer, property::Attribute, Context, JsValue, NativeFunction,
+    Source,
+};
 use std::io::{self, Read};
 
 #[link(wasm_import_module = "env")]
@@ -15,11 +18,12 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     // Read the JavaScript code from standard input
     let mut code = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut code) {
-        print_json_result(false, format!("Failed to read stdin: {}", e));
+        print_json_result(false, format!("Failed to read stdin: {e}"));
         return;
     }
 
@@ -32,9 +36,6 @@ fn main() {
     let mut context = Context::default();
 
     // Register a simple console.log polyfill
-    use boa_engine::{
-        JsValue, NativeFunction, js_string, object::ObjectInitializer, property::Attribute,
-    };
     let console_log = NativeFunction::from_fn_ptr(|_this, args, context| {
         let mut msg = String::new();
         for arg in args {
@@ -46,7 +47,7 @@ fn main() {
             }
         }
         // Print to stderr so we don't corrupt JSON output on stdout
-        eprintln!("{}", msg);
+        eprintln!("{msg}");
         Ok(JsValue::undefined())
     });
 
@@ -61,13 +62,13 @@ fn main() {
     // Register gecko.callExtension
     let call_extension = NativeFunction::from_fn_ptr(|_this, args, context| {
         let ext_name = args
-            .get(0)
-            .and_then(|v| v.as_string())
+            .first()
+            .and_then(boa_engine::JsValue::as_string)
             .map(|s| s.to_std_string_escaped())
             .unwrap_or_default();
         let func_name = args
             .get(1)
-            .and_then(|v| v.as_string())
+            .and_then(boa_engine::JsValue::as_string)
             .map(|s| s.to_std_string_escaped())
             .unwrap_or_default();
         let args_obj = args.get(2).unwrap_or(&JsValue::undefined()).clone();
@@ -98,7 +99,7 @@ fn main() {
             let err_len = (-result_len) as usize;
             let err_str = String::from_utf8_lossy(&out_buf[..err_len]).into_owned();
             Err(boa_engine::JsNativeError::error()
-                .with_message(format!("Host call failed: {}", err_str))
+                .with_message(format!("Host call failed: {err_str}"))
                 .into())
         } else {
             let res_str = std::str::from_utf8(&out_buf[..result_len as usize]).unwrap_or("{}");
@@ -106,7 +107,7 @@ fn main() {
             // Parse JSON back into JsValue using Boa's JSON parser
             // Since Boa doesn't have a direct JSON.parse native helper that takes a string easily,
             // we can evaluate it wrapped in parentheses.
-            let eval_str = format!("({})", res_str);
+            let eval_str = format!("({res_str})");
             let eval_src = Source::from_bytes(eval_str.as_bytes());
             match context.eval(eval_src) {
                 Ok(val) => Ok(val),
@@ -137,16 +138,16 @@ fn main() {
                     // Print JSON directly, gecko engine parses this as the output object
                     // but we should wrap it so it matches ExecutionResult format if needed,
                     // or just return the raw evaluation
-                    println!("{}", result_str);
+                    println!("{result_str}");
                 }
                 Err(e) => {
-                    print_json_result(false, format!("Failed to stringify result: {}", e));
+                    print_json_result(false, format!("Failed to stringify result: {e}"));
                 }
             }
         }
         Err(e) => {
             let err_str = e.to_string();
-            print_json_result(false, format!("JS Execution Error: {}", err_str));
+            print_json_result(false, format!("JS Execution Error: {err_str}"));
         }
     }
 }
@@ -156,5 +157,5 @@ fn print_json_result(success: bool, message: String) {
         "success": success,
         "error": message,
     });
-    println!("{}", result);
+    println!("{result}");
 }

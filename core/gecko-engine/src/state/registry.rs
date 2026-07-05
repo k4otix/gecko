@@ -54,7 +54,7 @@ impl StateRegistry {
     ///
     /// When the guard is dropped (task completion, panic, or rollback),
     /// the associated ledger is automatically removed from the registry.
-    pub async fn allocate(&self) -> StateHandleGuard {
+    pub fn allocate(&self) -> StateHandleGuard {
         let id = Uuid::new_v4();
         let mut map = self.ledgers.write().unwrap();
         map.insert(id, InvestigationLedger::new());
@@ -66,12 +66,12 @@ impl StateRegistry {
     }
 
     /// Returns the number of active handles.
-    pub async fn active_count(&self) -> usize {
+    pub fn active_count(&self) -> usize {
         self.ledgers.read().unwrap().len()
     }
 
     /// Reads a ledger by handle ID (for host-side introspection).
-    pub async fn read_ledger(&self, id: &Uuid) -> Option<InvestigationLedger> {
+    pub fn read_ledger(&self, id: &Uuid) -> Option<InvestigationLedger> {
         self.ledgers.read().unwrap().get(id).cloned()
     }
 }
@@ -98,7 +98,7 @@ pub struct StateHandleGuard {
 
 impl StateHandleGuard {
     /// Appends an entry to this handle's ledger.
-    pub async fn append(&self, entry: serde_json::Value) {
+    pub fn append(&self, entry: serde_json::Value) {
         let mut map = self.registry.write().unwrap();
         if let Some(ledger) = map.get_mut(&self.id) {
             ledger.entries.push(entry);
@@ -106,7 +106,7 @@ impl StateHandleGuard {
     }
 
     /// Reads all entries from this handle's ledger.
-    pub async fn read_entries(&self) -> Vec<serde_json::Value> {
+    pub fn read_entries(&self) -> Vec<serde_json::Value> {
         let map = self.registry.read().unwrap();
         map.get(&self.id)
             .map(|l| l.entries.clone())
@@ -125,55 +125,51 @@ impl Drop for StateHandleGuard {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_allocate_and_drop() {
+    #[test]
+    fn test_allocate_and_drop() {
         let registry = StateRegistry::new();
-        assert_eq!(registry.active_count().await, 0);
+        assert_eq!(registry.active_count(), 0);
 
-        let handle = registry.allocate().await;
+        let handle = registry.allocate();
         let handle_id = handle.id;
-        assert_eq!(registry.active_count().await, 1);
-        assert!(registry.read_ledger(&handle_id).await.is_some());
+        assert_eq!(registry.active_count(), 1);
+        assert!(registry.read_ledger(&handle_id).is_some());
 
-        // Drop the handle — should auto-clean
+        // Drop the handle -- should auto-clean
         drop(handle);
-        assert_eq!(registry.active_count().await, 0);
-        assert!(registry.read_ledger(&handle_id).await.is_none());
+        assert_eq!(registry.active_count(), 0);
+        assert!(registry.read_ledger(&handle_id).is_none());
     }
 
-    #[tokio::test]
-    async fn test_append_and_read() {
+    #[test]
+    fn test_append_and_read() {
         let registry = StateRegistry::new();
-        let handle = registry.allocate().await;
+        let handle = registry.allocate();
 
-        handle
-            .append(serde_json::json!({"alert": "suspicious_login"}))
-            .await;
-        handle
-            .append(serde_json::json!({"action": "isolate_host"}))
-            .await;
+        handle.append(serde_json::json!({"alert": "suspicious_login"}));
+        handle.append(serde_json::json!({"action": "isolate_host"}));
 
-        let entries = handle.read_entries().await;
+        let entries = handle.read_entries();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["alert"], "suspicious_login");
         assert_eq!(entries[1]["action"], "isolate_host");
     }
 
-    #[tokio::test]
-    async fn test_multiple_concurrent_handles() {
+    #[test]
+    fn test_multiple_concurrent_handles() {
         let registry = StateRegistry::new();
 
-        let h1 = registry.allocate().await;
-        let h2 = registry.allocate().await;
-        let h3 = registry.allocate().await;
+        let h1 = registry.allocate();
+        let h2 = registry.allocate();
+        let h3 = registry.allocate();
 
-        assert_eq!(registry.active_count().await, 3);
+        assert_eq!(registry.active_count(), 3);
 
         drop(h2);
-        assert_eq!(registry.active_count().await, 2);
+        assert_eq!(registry.active_count(), 2);
 
         drop(h1);
         drop(h3);
-        assert_eq!(registry.active_count().await, 0);
+        assert_eq!(registry.active_count(), 0);
     }
 }

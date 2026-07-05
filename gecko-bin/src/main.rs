@@ -223,7 +223,7 @@ async fn cmd_query(config: DbConfig, query_str: &str) -> Result<()> {
         while let Some(Ok(row)) = stream.next().await {
             for col in row.get_column_names() {
                 if let Ok(Some(concept)) = row.get(col) {
-                    println!("${}: {}", col, concept);
+                    println!("${col}: {concept}");
                 }
             }
             println!("---");
@@ -234,7 +234,7 @@ async fn cmd_query(config: DbConfig, query_str: &str) -> Result<()> {
             println!("{}", doc.into_json());
         }
     } else {
-        println!("{:?}", answer);
+        println!("{answer:?}");
     }
 
     Ok(())
@@ -274,7 +274,7 @@ async fn cmd_run(
     extensions: &[Box<dyn GeckoExtension>],
     concept_id: &str,
 ) -> Result<()> {
-    println!("Executing playbook: {}", concept_id);
+    println!("Executing playbook: {concept_id}");
 
     let mut db = TypeDbRouter::new(config);
     let tx = db
@@ -311,7 +311,7 @@ async fn cmd_run(
     let answer = tx
         .query(&query)
         .await
-        .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Query failed: {e}"))?;
 
     let mut matches = Vec::new();
 
@@ -345,7 +345,7 @@ async fn cmd_run(
     }
 
     if matches.is_empty() {
-        anyhow::bail!("Playbook '{}' not found or has no code blocks.", concept_id);
+        anyhow::bail!("Playbook '{concept_id}' not found or has no code blocks.");
     } else if matches.len() > 1 {
         let found_ids: Vec<String> = matches.into_iter().map(|(id, _, _)| id).collect();
         anyhow::bail!(
@@ -356,7 +356,7 @@ async fn cmd_run(
     }
 
     let (resolved_id, code_block, engine_type) = matches.pop().unwrap();
-    println!("Resolved to: {}", resolved_id);
+    println!("Resolved to: {resolved_id}");
 
     use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
     use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
@@ -404,7 +404,7 @@ async fn cmd_run(
                     return ext.call_import(func_name, &args);
                 }
             }
-            Err(format!("Extension '{}' not found", ext_name))
+            Err(format!("Extension '{ext_name}' not found"))
         });
 
     let result = tokio::task::block_in_place(|| {
@@ -424,7 +424,7 @@ async fn cmd_run(
     } else {
         println!("Execution failed!");
         if let Some(err) = result.error {
-            println!("Error: {}", err);
+            println!("Error: {err}");
         }
     }
 

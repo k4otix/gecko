@@ -30,7 +30,7 @@ impl Default for MemGecko {
 }
 
 impl GeckoExtension for MemGecko {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mem-gecko"
     }
 
@@ -75,7 +75,7 @@ impl GeckoExtension for MemGecko {
                     ]
                 }))
             }
-            _ => Err(format!("Unknown import: {}", name)),
+            _ => Err(format!("Unknown import: {name}")),
         }
     }
 }

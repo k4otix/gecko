@@ -29,7 +29,7 @@ impl Default for CyberGecko {
 }
 
 impl GeckoExtension for CyberGecko {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "cyber-gecko"
     }
 
@@ -78,7 +78,7 @@ impl GeckoExtension for CyberGecko {
                     ]
                 }))
             }
-            _ => Err(format!("Unknown import: {}", name)),
+            _ => Err(format!("Unknown import: {name}")),
         }
     }
 }

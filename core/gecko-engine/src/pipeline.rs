@@ -72,8 +72,8 @@ pub async fn execute_playbook(
         .as_ref()
         .ok_or_else(|| PipelineError::NoEngine(concept.concept_id.clone()))?;
 
-    // Step 2: Handle allocation
-    let handle = state_registry.allocate().await;
+    // 1. Context initialization
+    let handle = state_registry.allocate();
     let handle_id = handle.id;
     info!(handle = %handle_id, "Pipeline: state handle allocated");
 
