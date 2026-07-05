@@ -83,7 +83,8 @@ pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
 
     let mut hasher = Sha256::new();
     hasher.update(&content);
-    Ok(format!("{:x}", hasher.finalize()))
+    let result = hasher.finalize();
+    Ok(result.iter().map(|b| format!("{:02x}", b)).collect::<String>())
 }
 
 /// Splits raw file content into YAML frontmatter and markdown body.
@@ -128,7 +129,8 @@ pub fn parse_concept(
     let file_hash = {
         let mut hasher = Sha256::new();
         hasher.update(raw_content.as_bytes());
-        format!("{:x}", hasher.finalize())
+        let result = hasher.finalize();
+        result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
     };
 
     let (yaml_str, body) = split_frontmatter(&raw_content);

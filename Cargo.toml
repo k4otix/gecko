@@ -38,11 +38,11 @@ typedb-driver = "3.11.5"
 rhai = "1"
 
 # Markdown / text processing
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 regex = "1"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Identity
 uuid = { version = "1", features = ["v4"] }
