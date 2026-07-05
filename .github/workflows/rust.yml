@@ -21,21 +21,30 @@ jobs:
           - 1729:1729
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
     
     - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: stable
         components: rustfmt, clippy
         
+    - name: Install nextest, cargo-audit, and cargo-outdated
+      uses: taiki-e/install-action@5031b2628468b1a8d054d5b272f3d6ee14d9b6fc # v2.40.1
+      with:
+        tool: nextest,cargo-audit,cargo-outdated
+        
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@23bce9514717eddd5e15bf149928c53640b82d92 # v2.7.3
       
     - name: Check Formatting
       run: cargo fmt --all -- --check
+      
+    - name: Run Cargo Audit
+      run: cargo audit
       
     - name: Build
       run: cargo build --verbose
       
     - name: Run Tests
-      run: cargo test --workspace --verbose
+      run: cargo nextest run --workspace

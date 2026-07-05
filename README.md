@@ -1,5 +1,6 @@
 # GECKO: Graph Execution of Contextual Knowledge Objects
 
+[![Build Status](https://github.com/k4otix/gecko/actions/workflows/rust.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/rust.yml)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 [![TypeDB](https://img.shields.io/badge/TypeDB-3.0-blue.svg)](https://typedb.com/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasmtime-654FF0.svg)](https://wasmtime.dev/)

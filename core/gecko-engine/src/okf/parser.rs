@@ -1,6 +1,6 @@
 //! OKF concept and bundle parsing.
 //!
-//! Port of Tyke's `parser.py`. Reads markdown files with YAML frontmatter,
+//! Reads markdown files with YAML frontmatter, extracts code blocks and links, and resolves relative paths into normalized concept IDs.
 //! extracts typed metadata, and assembles bundles from directory trees.
 
 use std::collections::{HashMap, HashSet};
@@ -36,7 +36,7 @@ pub enum ParseError {
 
 /// Derives a concept ID from a file path relative to the bundle root.
 ///
-/// Port of Tyke's `file_to_concept_id()`.
+/// Generates a normalized concept ID based on the file path relative to the bundle root.
 ///
 /// # Example
 /// ```
@@ -62,7 +62,7 @@ pub fn file_to_concept_id(file_path: &Path, bundle_root: &Path, bundle_name: &st
 
 /// Returns true if the file matches reserved names (index.md, log.md).
 ///
-/// Port of Tyke's `is_reserved_file()`.
+/// Checks if a file path belongs to a reserved directory or is a dotfile/configuration file.
 pub fn is_reserved_file(file_path: &Path) -> bool {
     if let Some(name) = file_path.file_name() {
         let name_lower = name.to_string_lossy().to_lowercase();
@@ -74,7 +74,7 @@ pub fn is_reserved_file(file_path: &Path) -> bool {
 
 /// Computes SHA-256 hash of a file's raw content.
 ///
-/// Port of Tyke's `compute_file_hash()`.
+/// Computes a SHA256 hash of the raw file content.
 pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
     let content = std::fs::read(file_path).map_err(|e| ParseError::Io {
         path: file_path.display().to_string(),
@@ -84,7 +84,10 @@ pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
     let mut hasher = Sha256::new();
     hasher.update(&content);
     let result = hasher.finalize();
-    Ok(result.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+    Ok(result
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>())
 }
 
 /// Splits raw file content into YAML frontmatter and markdown body.
@@ -115,7 +118,7 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 
 /// Parses an individual OKF concept document.
 ///
-/// Port of Tyke's `parse_concept()`.
+/// Parses a markdown file into an `OkfConcept` by extracting frontmatter and links.
 pub fn parse_concept(
     file_path: &Path,
     bundle_root: &Path,
@@ -130,7 +133,10 @@ pub fn parse_concept(
         let mut hasher = Sha256::new();
         hasher.update(raw_content.as_bytes());
         let result = hasher.finalize();
-        result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        result
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     };
 
     let (yaml_str, body) = split_frontmatter(&raw_content);
@@ -227,7 +233,7 @@ pub fn parse_concept(
 
 /// Parses a full directory tree as an OKF Bundle.
 ///
-/// Port of Tyke's `parse_bundle()`.
+/// Recursively parses a directory bundle to find all OKF concepts.
 pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
     let bundle_root = bundle_root_path
         .canonicalize()

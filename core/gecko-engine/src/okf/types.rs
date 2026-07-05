@@ -1,6 +1,6 @@
 //! Core OKF data structures.
 //!
-//! Direct port of Tyke's `models.py`, extended with GECKO-specific
+//! Core data models representing Open Knowledge Format (OKF) concepts, bundles, and relations.
 //! frontmatter fields (consumes, produces, engine, scopes, timeout_ms).
 
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub enum ScriptEngine {
 
 /// A single parsed OKF concept document.
 ///
-/// Port of Tyke's `ParsedConcept`, extended with GECKO execution metadata.
+/// Represents a parsed OKF document with its metadata and extracted content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OkfConcept {
     /// Path-based concept identifier (e.g. "tables/orders").
@@ -68,7 +68,7 @@ pub struct OkfConcept {
 
 /// A relative markdown link from one concept to another.
 ///
-/// Port of Tyke's `ParsedLink`.
+/// Represents an internal markdown link between two concepts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OkfLink {
     pub source_id: String,
@@ -78,7 +78,7 @@ pub struct OkfLink {
 
 /// An external markdown citation link.
 ///
-/// Port of Tyke's `ParsedCitation`.
+/// Represents an external reference or citation found in a concept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OkfCitation {
     pub source_id: String,
@@ -88,7 +88,7 @@ pub struct OkfCitation {
 
 /// Parent-child directory hierarchy edge.
 ///
-/// Port of Tyke's `HierarchyEdge`.
+/// Represents a hierarchical directory structure relationship.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HierarchyEdge {
     /// Empty string if parent is the root.
@@ -98,7 +98,7 @@ pub struct HierarchyEdge {
 
 /// Parsed content of a complete OKF bundle.
 ///
-/// Port of Tyke's `BundleManifest`.
+/// Represents a collection of OKF concepts, typically parsed from a directory.
 #[derive(Debug, Clone)]
 pub struct OkfBundle {
     pub bundle_path: String,

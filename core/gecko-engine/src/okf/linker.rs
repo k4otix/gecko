@@ -1,6 +1,6 @@
 //! Link and code block extraction from markdown bodies.
 //!
-//! Port of Tyke's `linker.py`.
+//! Link extraction and path resolution.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -17,7 +17,7 @@ static CODE_BLOCK_RE: LazyLock<Regex> =
 
 /// Extracts internal concept links and external citations from a markdown body.
 ///
-/// Port of Tyke's `extract_links()`.
+/// Extracts all markdown links (ignoring image links) and attempts to resolve them.
 pub fn extract_links(body: &str, source_concept_id: &str) -> (Vec<OkfLink>, Vec<OkfCitation>) {
     let mut links = Vec::new();
     let mut citations = Vec::new();
@@ -49,7 +49,7 @@ pub fn extract_links(body: &str, source_concept_id: &str) -> (Vec<OkfLink>, Vec<
 
 /// Extracts code block content from fenced code blocks in markdown.
 ///
-/// Port of Tyke's `extract_code_blocks()`.
+/// Extracts GECKO-specific executable code blocks (e.g. `rhai`, `javascript`).
 pub fn extract_code_blocks(body: &str) -> Vec<String> {
     CODE_BLOCK_RE
         .captures_iter(body)
@@ -59,7 +59,7 @@ pub fn extract_code_blocks(body: &str) -> Vec<String> {
 
 /// Resolves a relative link path to a normalized concept ID.
 ///
-/// Port of Tyke's `resolve_relative_path()`.
+/// Resolves a potentially relative path against a source document's namespace.
 ///
 /// # Example
 /// ```

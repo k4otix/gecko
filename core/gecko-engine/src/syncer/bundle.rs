@@ -1,6 +1,6 @@
 //! Bundle syncer: maps parsed OKF bundles to TypeDB entities and relations.
 //!
-//! Port of Tyke's `syncer.py` (`BundleSyncer`).
+//! Coordinates syncing OKF concepts and bundles to TypeDB.
 
 use futures_util::StreamExt;
 use tracing::{debug, info};
@@ -20,14 +20,14 @@ pub struct SyncResult {
 
 /// Escapes strings for safe embedding in TypeQL queries.
 ///
-/// Port of Tyke's `escape_tql()`.
+/// Escapes string literals to avoid query injection in TypeQL.
 pub fn escape_tql(val: &str) -> String {
     val.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Syncs an OKF bundle into TypeDB.
 ///
-/// Port of Tyke's `BundleSyncer.sync()`.
+/// Persists the bundle, its concepts, and their edges into TypeDB within a single transaction.
 pub async fn sync_bundle(
     db: &mut TypeDbRouter,
     manifest: &OkfBundle,
@@ -216,7 +216,7 @@ pub async fn sync_bundle(
 
 /// Inserts a single concept entity with all its attributes.
 ///
-/// Port of Tyke's `BundleSyncer._insert_concept()`.
+/// Helper to construct and execute the TypeQL `insert` query for a single concept.
 async fn insert_concept(
     tx: &typedb_driver::Transaction,
     concept: &OkfConcept,

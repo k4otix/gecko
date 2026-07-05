@@ -1,6 +1,6 @@
 //! Async TypeDB connection and transaction management.
 //!
-//! Port of Tyke's `db.py` (`TypeDBManager`), extended with dual Core/Cloud
+//! Core TypeDB router and connection manager for dual Core/Cloud
 //! targeting via `TlsMode`.
 
 use std::path::PathBuf;
@@ -66,7 +66,7 @@ impl Default for DbConfig {
 
 /// TypeDB connection and transaction router.
 ///
-/// Port of Tyke's `TypeDBManager`. Manages driver lifecycle,
+/// Manages TypeDB driver lifecycle,
 /// database creation, schema application, and transaction scoping.
 pub struct TypeDbRouter {
     config: DbConfig,
