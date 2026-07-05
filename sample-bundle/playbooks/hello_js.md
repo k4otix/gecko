@@ -20,16 +20,15 @@ const answer = 40 + 2;
 console.log(`Hello from ${framework} running in ${engine}!`);
 console.log(`The meaning of life, the universe, and everything is: ${answer}`);
 
-// Test host extension bindings
-const isolationResult = gecko.callExtension("cyber-gecko", "mde_isolate", {
-    machine_id: "desktop-x86-01"
-});
-console.log(`Isolation result: ${JSON.stringify(isolationResult)}`);
+// Perform some basic JS calculations
+const data = [1, 2, 3, 4, 5];
+const sum = data.reduce((a, b) => a + b, 0);
+console.log(`The sum of array [1,2,3,4,5] is ${sum}`);
 
 // The final evaluated expression
 ({
     status: "success",
     result: answer,
-    isolation: isolationResult
+    sum: sum
 });
 ```
