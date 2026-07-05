@@ -97,3 +97,11 @@ Security and isolation are foundational to GECKO's execution model. The `gecko-e
 ## Contributing
 
 Contributions to the core engine or new domain extensions are welcome. When developing new extensions, ensure they adhere strictly to the `GeckoExtension` trait and do not introduce breaking changes to the core TypeQL schema hierarchy.
+
+### Code Quality and Toolchain
+
+We use a strict toolchain to maintain code quality. Please ensure you run the following checks before submitting a Pull Request:
+*   **Formatting**: We enforce a 100-character line limit. Run `cargo fmt --all`.
+*   **Linting**: Run `cargo clippy --workspace -- -W clippy::pedantic` and fix any warnings.
+*   **Testing**: We use `cargo-nextest`. Run tests with `cargo nextest run --workspace`.
+*   **Security**: Check for vulnerabilities by running `cargo audit`.
