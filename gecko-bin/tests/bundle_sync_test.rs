@@ -56,10 +56,8 @@ async fn test_bundle_sync() {
         .await
         .expect("Failed to apply core schema");
 
-    let extensions: Vec<Box<dyn GeckoExtension>> = vec![
-        Box::new(CyberGecko::new()),
-        Box::new(MemGecko::new()),
-    ];
+    let extensions: Vec<Box<dyn GeckoExtension>> =
+        vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
 
     for ext in extensions {
         let schema = ext.schema();
@@ -75,13 +73,18 @@ async fn test_bundle_sync() {
 
     let bundle = parse_bundle(temp_dir.path()).expect("Failed to parse bundle");
 
-    let result = sync_bundle(&mut db, &bundle).await.expect("Failed to sync bundle");
+    let result = sync_bundle(&mut db, &bundle)
+        .await
+        .expect("Failed to sync bundle");
     assert_eq!(result.concepts_inserted, 1);
     assert_eq!(result.citations_created, 1);
-    
+
     // Verify in db
     let tx = db.begin_read().await.expect("Failed to begin read");
-    let answer = tx.query(r#"match $c isa concept, has title "Test Concept";"#).await.expect("query failed");
+    let answer = tx
+        .query(r#"match $c isa concept, has title "Test Concept";"#)
+        .await
+        .expect("query failed");
     let rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
     assert_eq!(rows.len(), 1, "Concept not found in database");
 }

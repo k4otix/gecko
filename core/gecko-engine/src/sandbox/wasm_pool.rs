@@ -39,7 +39,13 @@ impl SandboxPool {
         extension_callback: Option<crate::sandbox::engine::ExtensionCallback>,
     ) -> ExecutionResult {
         match engine {
-            ScriptEngine::Rhai => self.rhai.evaluate(code, handle_id, host_imports, timeout_ms, extension_callback),
+            ScriptEngine::Rhai => self.rhai.evaluate(
+                code,
+                handle_id,
+                host_imports,
+                timeout_ms,
+                extension_callback,
+            ),
             ScriptEngine::QuickJs => {
                 // Phase 1: QuickJS not yet implemented
                 ExecutionResult {

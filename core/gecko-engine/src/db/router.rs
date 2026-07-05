@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tracing::info;
 use typedb_driver::{
-    Addresses, Credentials, DriverOptions, DriverTlsConfig, TransactionType, TypeDBDriver, Transaction,
+    Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
+    TypeDBDriver,
 };
 
 #[derive(Debug, Error)]

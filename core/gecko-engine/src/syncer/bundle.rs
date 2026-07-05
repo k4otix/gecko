@@ -2,8 +2,8 @@
 //!
 //! Port of Tyke's `syncer.py` (`BundleSyncer`).
 
-use tracing::{debug, info};
 use futures_util::StreamExt;
+use tracing::{debug, info};
 
 use crate::db::router::{DbError, TypeDbRouter};
 use crate::okf::types::{OkfBundle, OkfConcept};
@@ -28,7 +28,10 @@ pub fn escape_tql(val: &str) -> String {
 /// Syncs an OKF bundle into TypeDB.
 ///
 /// Port of Tyke's `BundleSyncer.sync()`.
-pub async fn sync_bundle(db: &mut TypeDbRouter, manifest: &OkfBundle) -> Result<SyncResult, DbError> {
+pub async fn sync_bundle(
+    db: &mut TypeDbRouter,
+    manifest: &OkfBundle,
+) -> Result<SyncResult, DbError> {
     let tx = db.begin_write().await?;
     let mut result = SyncResult::default();
 
@@ -159,27 +162,40 @@ pub async fn sync_bundle(db: &mut TypeDbRouter, manifest: &OkfBundle) -> Result<
     }
 
     // 7. Graph Garbage Collection (Prune orphaned concepts)
-    let active_ids: std::collections::HashSet<String> = manifest.concepts.iter().map(|c| c.concept_id.clone()).collect();
-    
+    let active_ids: std::collections::HashSet<String> = manifest
+        .concepts
+        .iter()
+        .map(|c| c.concept_id.clone())
+        .collect();
+
     let gc_query = format!(
         "match\n  $b isa bundle, has bundle-path \"{}\";\n  $c isa concept, has concept-id $id;\n  $cont isa containment, links (container: $b, member: $c);\nfetch {{\"id\": $id}};",
         escape_tql(&manifest.bundle_path)
     );
-    
-    let gc_answer = tx.query(&gc_query).await.map_err(|e| DbError::Query(e.to_string()))?;
+
+    let gc_answer = tx
+        .query(&gc_query)
+        .await
+        .map_err(|e| DbError::Query(e.to_string()))?;
     if gc_answer.is_document_stream() {
         let mut stream = gc_answer.into_documents();
         while let Some(Ok(doc)) = stream.next().await {
             let json_str = doc.into_json().to_string();
             let json: serde_json::Value = serde_json::from_str(&json_str).unwrap_or_default();
-            if let Some(id) = json.as_object().and_then(|m| m.get("id")).and_then(|v| v.as_str()) {
+            if let Some(id) = json
+                .as_object()
+                .and_then(|m| m.get("id"))
+                .and_then(|v| v.as_str())
+            {
                 if !active_ids.contains(id) {
                     debug!(concept_id = %id, "Deleting orphaned concept");
                     let delete_query = format!(
                         "match $c isa concept, has concept-id \"{}\"; delete $c;",
                         escape_tql(id)
                     );
-                    tx.query(&delete_query).await.map_err(|e| DbError::Query(e.to_string()))?;
+                    tx.query(&delete_query)
+                        .await
+                        .map_err(|e| DbError::Query(e.to_string()))?;
                 }
             }
         }
@@ -213,7 +229,10 @@ async fn insert_concept(
             r#"insert $c isa concept, has concept-id "{}""#,
             escape_tql(&concept.concept_id)
         ),
-        format!(r#"has concept-type "{}""#, escape_tql(&concept.concept_type)),
+        format!(
+            r#"has concept-type "{}""#,
+            escape_tql(&concept.concept_type)
+        ),
         format!(r#"has body "{}""#, escape_tql(&concept.body)),
         format!(r#"has file-hash "{}""#, escape_tql(&concept.file_hash)),
     ];

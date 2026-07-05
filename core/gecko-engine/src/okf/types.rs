@@ -50,7 +50,6 @@ pub struct OkfConcept {
     pub source_path: String,
 
     // -- GECKO-specific extension fields (design §3.1) --
-
     /// Data types this concept consumes (from frontmatter `consumes`).
     pub consumes: Vec<String>,
 

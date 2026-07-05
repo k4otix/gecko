@@ -50,10 +50,17 @@ impl GeckoExtension for CyberGecko {
         ]
     }
 
-    fn call_import(&self, name: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    fn call_import(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         match name {
             "mde_isolate" => {
-                let machine_id = args.get("machine_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let machine_id = args
+                    .get("machine_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 // Mock isolation
                 Ok(serde_json::json!({
                     "status": "success",

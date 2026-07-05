@@ -55,10 +55,8 @@ pub fn file_to_concept_id(file_path: &Path, bundle_root: &Path, bundle_name: &st
 
     // Strip the .md extension and convert to forward-slash posix path
     let without_ext = relative.with_extension("");
-    let path_str = without_ext
-        .to_string_lossy()
-        .replace('\\', "/");
-        
+    let path_str = without_ext.to_string_lossy().replace('\\', "/");
+
     format!("{}:{}", bundle_name, path_str)
 }
 
@@ -117,7 +115,11 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 /// Parses an individual OKF concept document.
 ///
 /// Port of Tyke's `parse_concept()`.
-pub fn parse_concept(file_path: &Path, bundle_root: &Path, bundle_name: &str) -> Result<OkfConcept, ParseError> {
+pub fn parse_concept(
+    file_path: &Path,
+    bundle_root: &Path,
+    bundle_name: &str,
+) -> Result<OkfConcept, ParseError> {
     let raw_content = std::fs::read_to_string(file_path).map_err(|e| ParseError::Io {
         path: file_path.display().to_string(),
         source: e,
@@ -170,15 +172,14 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path, bundle_name: &str) ->
     // GECKO-specific extension fields
     let consumes = extract_string_list(&mut metadata, "consumes");
     let produces = extract_string_list(&mut metadata, "produces");
-    let engine = extract_string(&mut metadata, "engine").and_then(|s| match s.to_lowercase().as_str() {
-        "rhai" => Some(ScriptEngine::Rhai),
-        "quickjs" => Some(ScriptEngine::QuickJs),
-        _ => None,
-    });
+    let engine =
+        extract_string(&mut metadata, "engine").and_then(|s| match s.to_lowercase().as_str() {
+            "rhai" => Some(ScriptEngine::Rhai),
+            "quickjs" => Some(ScriptEngine::QuickJs),
+            _ => None,
+        });
     let scopes = extract_string_list(&mut metadata, "scopes");
-    let timeout_ms = metadata
-        .remove("timeout-ms")
-        .and_then(|v| v.as_u64());
+    let timeout_ms = metadata.remove("timeout-ms").and_then(|v| v.as_u64());
 
     // Remaining keys become extra_metadata
     let extra_metadata: HashMap<String, String> = metadata
@@ -255,8 +256,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
         let concept = parse_concept(file_path, &bundle_root, &bundle_name)?;
 
         // Extract links and citations
-        let (concept_links, concept_citations) =
-            extract_links(&concept.body, &concept.concept_id);
+        let (concept_links, concept_citations) = extract_links(&concept.body, &concept.concept_id);
         links.extend(concept_links);
         citations.extend(concept_citations);
 
@@ -290,7 +290,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
                     let gp_prefixed = format!("{}:{}", bundle_name, gp_str);
                     let child_str = current.to_string_lossy().replace('\\', "/");
                     let child_prefixed = format!("{}:{}", bundle_name, child_str);
-                    
+
                     hierarchy.push(HierarchyEdge {
                         parent_id: gp_prefixed,
                         child_id: child_prefixed,
@@ -516,8 +516,12 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
-        let concept =
-            parse_concept(&dir.path().join("datasets/users.md"), dir.path(), "test-bundle").unwrap();
+        let concept = parse_concept(
+            &dir.path().join("datasets/users.md"),
+            dir.path(),
+            "test-bundle",
+        )
+        .unwrap();
 
         assert_eq!(concept.concept_id, "test-bundle:datasets/users");
         assert_eq!(concept.concept_type, "Dataset");
@@ -526,12 +530,18 @@ def calculate_monthly_revenue():
             concept.description.as_deref(),
             Some("Contains user registration data")
         );
-        assert_eq!(concept.resource_uri.as_deref(), Some("db://myproject.users"));
+        assert_eq!(
+            concept.resource_uri.as_deref(),
+            Some("db://myproject.users")
+        );
         assert_eq!(concept.tags, vec!["users", "demographics"]);
         assert!(concept.timestamp.is_some());
         assert!(concept.body.contains("users dataset tracks"));
         assert_eq!(
-            concept.extra_metadata.get("custom_field").map(|s| s.as_str()),
+            concept
+                .extra_metadata
+                .get("custom_field")
+                .map(|s| s.as_str()),
             Some("some-extension-value")
         );
     }
@@ -541,7 +551,8 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_minimal_bundle(dir.path());
 
-        let concept = parse_concept(&dir.path().join("simple.md"), dir.path(), "test-bundle").unwrap();
+        let concept =
+            parse_concept(&dir.path().join("simple.md"), dir.path(), "test-bundle").unwrap();
 
         assert_eq!(concept.concept_type, "Note");
         assert!(concept.title.is_none());
@@ -556,7 +567,10 @@ def calculate_monthly_revenue():
 
         let result = parse_concept(&dir.path().join("no-type.md"), dir.path(), "test-bundle");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ParseError::MissingType { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::MissingType { .. }
+        ));
     }
 
     #[test]
@@ -564,8 +578,12 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
-        let concept =
-            parse_concept(&dir.path().join("metrics/revenue.md"), dir.path(), "test-bundle").unwrap();
+        let concept = parse_concept(
+            &dir.path().join("metrics/revenue.md"),
+            dir.path(),
+            "test-bundle",
+        )
+        .unwrap();
 
         assert_eq!(concept.code_blocks.len(), 1);
         assert!(concept.code_blocks[0].contains("calculate_monthly_revenue"));
@@ -591,7 +609,8 @@ Playbook body.
         )
         .unwrap();
 
-        let concept = parse_concept(&dir.path().join("playbook.md"), dir.path(), "test-bundle").unwrap();
+        let concept =
+            parse_concept(&dir.path().join("playbook.md"), dir.path(), "test-bundle").unwrap();
 
         assert_eq!(concept.engine, Some(ScriptEngine::Rhai));
         assert_eq!(concept.consumes, vec!["alert", "asset"]);
@@ -609,7 +628,11 @@ Playbook body.
 
         assert_eq!(bundle.concepts.len(), 3); // index.md skipped
         let bundle_name = bundle.bundle_name;
-        let ids: HashSet<_> = bundle.concepts.iter().map(|c| c.concept_id.as_str()).collect();
+        let ids: HashSet<_> = bundle
+            .concepts
+            .iter()
+            .map(|c| c.concept_id.as_str())
+            .collect();
         assert!(ids.contains(&format!("{}:datasets/users", bundle_name) as &str));
         assert!(ids.contains(&format!("{}:tables/orders", bundle_name) as &str));
         assert!(ids.contains(&format!("{}:metrics/revenue", bundle_name) as &str));

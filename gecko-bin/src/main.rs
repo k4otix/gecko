@@ -124,10 +124,8 @@ async fn run(cli: Cli) -> Result<()> {
     };
 
     // Assemble extensions (design §2: The Assembler Pattern)
-    let extensions: Vec<Box<dyn GeckoExtension>> = vec![
-        Box::new(CyberGecko::new()),
-        Box::new(MemGecko::new()),
-    ];
+    let extensions: Vec<Box<dyn GeckoExtension>> =
+        vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
 
     match cli.command {
         Commands::Init { schema } => cmd_init(config, &extensions, schema).await,
@@ -174,7 +172,10 @@ async fn cmd_init(
             .map_err(|e| anyhow::anyhow!("Extension {} init failed: {}", ext.name(), e))?;
     }
 
-    println!("✓ Schema initialized (core + {} extensions)", extensions.len());
+    println!(
+        "✓ Schema initialized (core + {} extensions)",
+        extensions.len()
+    );
     Ok(())
 }
 
@@ -182,13 +183,17 @@ async fn cmd_init(
 async fn cmd_sync(config: DbConfig, bundle_path: PathBuf) -> Result<()> {
     println!("Parsing bundle at {}...", bundle_path.display());
 
-    let manifest =
-        parse_bundle(&bundle_path).with_context(|| "Failed to parse OKF bundle")?;
+    let manifest = parse_bundle(&bundle_path).with_context(|| "Failed to parse OKF bundle")?;
 
-    println!("Found {} concepts. Syncing to TypeDB...", manifest.concepts.len());
+    println!(
+        "Found {} concepts. Syncing to TypeDB...",
+        manifest.concepts.len()
+    );
 
     let mut db = TypeDbRouter::new(config);
-    let result = sync_bundle(&mut db, &manifest).await.context("Failed to sync bundle")?;
+    let result = sync_bundle(&mut db, &manifest)
+        .await
+        .context("Failed to sync bundle")?;
 
     println!("✓ Sync complete!");
     println!("  Concepts inserted: {}", result.concepts_inserted);
@@ -203,8 +208,11 @@ async fn cmd_sync(config: DbConfig, bundle_path: PathBuf) -> Result<()> {
 /// Run an ad-hoc TypeQL query.
 async fn cmd_query(config: DbConfig, query_str: &str) -> Result<()> {
     let mut db = TypeDbRouter::new(config);
-    let tx = db.begin_read().await.context("Failed to begin read transaction")?;
-    
+    let tx = db
+        .begin_read()
+        .await
+        .context("Failed to begin read transaction")?;
+
     let answer = tx
         .query(query_str)
         .await
@@ -228,14 +236,17 @@ async fn cmd_query(config: DbConfig, query_str: &str) -> Result<()> {
     } else {
         println!("{:?}", answer);
     }
-    
+
     Ok(())
 }
 
 /// Show synced bundles and concept counts.
 async fn cmd_status(config: DbConfig) -> Result<()> {
     let mut db = TypeDbRouter::new(config);
-    let tx = db.begin_read().await.context("Failed to begin read transaction")?;
+    let tx = db
+        .begin_read()
+        .await
+        .context("Failed to begin read transaction")?;
 
     let answer = tx
         .query(r#"match $b isa bundle, has bundle_path $path; fetch {"path": $path};"#)
@@ -250,7 +261,7 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
             println!("{}", doc.into_json());
         }
     }
-    
+
     if !found {
         println!("No bundles synced yet.");
     }
@@ -264,68 +275,111 @@ async fn cmd_run(
     concept_id: &str,
 ) -> Result<()> {
     println!("Executing playbook: {}", concept_id);
-    
+
     let mut db = TypeDbRouter::new(config);
-    let tx = db.begin_read().await.context("Failed to begin read transaction")?;
-    
+    let tx = db
+        .begin_read()
+        .await
+        .context("Failed to begin read transaction")?;
+
     let query = if concept_id.contains(':') {
-        format!(r#"
+        format!(
+            r#"
             match 
                 $c isa concept, 
                     has concept-id "{}",
                     has concept-id $id,
                     has code-block $cb;
             fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
-        "#, gecko_engine::syncer::bundle::escape_tql(concept_id))
+        "#,
+            gecko_engine::syncer::bundle::escape_tql(concept_id)
+        )
     } else {
-        format!(r#"
+        format!(
+            r#"
             match 
                 $c isa concept, 
                     has concept-id $id,
                     has code-block $cb;
                 $id like ".*:{}";
             fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
-        "#, gecko_engine::syncer::bundle::escape_tql(concept_id))
+        "#,
+            gecko_engine::syncer::bundle::escape_tql(concept_id)
+        )
     };
-    
-    let answer = tx.query(&query).await.map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
-    
+
+    let answer = tx
+        .query(&query)
+        .await
+        .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
+
     let mut matches = Vec::new();
-    
+
     if answer.is_document_stream() {
         let mut stream = answer.into_documents();
         while let Some(Ok(doc)) = stream.next().await {
             let json_str = doc.into_json().to_string();
             let json: serde_json::Value = serde_json::from_str(&json_str).unwrap_or_default();
-            
-            let id = json.as_object().and_then(|m| m.get("id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let code = json.as_object().and_then(|m| m.get("code")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let engine = json.as_object().and_then(|m| m.get("engine")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            
+
+            let id = json
+                .as_object()
+                .and_then(|m| m.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let code = json
+                .as_object()
+                .and_then(|m| m.get("code"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let engine = json
+                .as_object()
+                .and_then(|m| m.get("engine"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
             matches.push((id, code, engine));
         }
     }
-    
+
     if matches.is_empty() {
         anyhow::bail!("Playbook '{}' not found or has no code blocks.", concept_id);
     } else if matches.len() > 1 {
         let found_ids: Vec<String> = matches.into_iter().map(|(id, _, _)| id).collect();
-        anyhow::bail!("Ambiguous playbook ID '{}'. Please specify the namespace. Found:\n  - {}", concept_id, found_ids.join("\n  - "));
+        anyhow::bail!(
+            "Ambiguous playbook ID '{}'. Please specify the namespace. Found:\n  - {}",
+            concept_id,
+            found_ids.join("\n  - ")
+        );
     }
-    
+
     let (resolved_id, code_block, engine_type) = matches.pop().unwrap();
     println!("Resolved to: {}", resolved_id);
-    
+
+    use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
     use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
     use gecko_engine::sandbox::wasm_executor::WasmExecutor;
-    use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
     use uuid::Uuid;
-    
-    println!("Extensions loaded: {:?}", extensions.iter().map(|e| e.name()).collect::<Vec<_>>());
-    println!("Running script using engine: {}...", if engine_type.is_empty() { "rhai" } else { &engine_type });
-    
+
+    println!(
+        "Extensions loaded: {:?}",
+        extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
+    );
+    println!(
+        "Running script using engine: {}...",
+        if engine_type.is_empty() {
+            "rhai"
+        } else {
+            &engine_type
+        }
+    );
+
     let executor: Box<dyn ScriptExecutor> = match engine_type.as_str() {
-        "quickjs" | "wasm" => Box::new(WasmExecutor::new().context("Failed to initialize Wasm engine")?),
+        "quickjs" | "wasm" => {
+            Box::new(WasmExecutor::new().context("Failed to initialize Wasm engine")?)
+        }
         _ => Box::new(RhaiExecutor::new()),
     };
 
@@ -334,21 +388,24 @@ async fn cmd_run(
         .map(|e| -> Result<Box<dyn GeckoExtension>> {
             // Re-instantiate the extension based on name, because we can't easily clone Box<dyn GeckoExtension>
             match e.name() {
-                "cyber-gecko" => Ok(Box::new(cyber_gecko::CyberGecko::new()) as Box<dyn GeckoExtension>),
+                "cyber-gecko" => {
+                    Ok(Box::new(cyber_gecko::CyberGecko::new()) as Box<dyn GeckoExtension>)
+                }
                 "mem-gecko" => Ok(Box::new(mem_gecko::MemGecko::new()) as Box<dyn GeckoExtension>),
                 _ => anyhow::bail!("Unknown extension: {}", e.name()),
             }
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback = std::sync::Arc::new(move |ext_name, func_name, args| {
-        for ext in &cb_extensions {
-            if ext.name() == ext_name {
-                return ext.call_import(func_name, &args);
+    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
+        std::sync::Arc::new(move |ext_name, func_name, args| {
+            for ext in &cb_extensions {
+                if ext.name() == ext_name {
+                    return ext.call_import(func_name, &args);
+                }
             }
-        }
-        Err(format!("Extension '{}' not found", ext_name))
-    });
+            Err(format!("Extension '{}' not found", ext_name))
+        });
 
     let result = tokio::task::block_in_place(|| {
         executor.evaluate(
@@ -359,7 +416,7 @@ async fn cmd_run(
             Some(ext_cb),
         )
     });
-    
+
     if result.success {
         println!("Execution successful!");
         println!("Output: {}", result.output);

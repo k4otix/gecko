@@ -36,10 +36,8 @@ async fn test_schema_initialization() {
         .expect("Failed to apply core schema");
 
     // 3. Assemble extensions
-    let extensions: Vec<Box<dyn GeckoExtension>> = vec![
-        Box::new(CyberGecko::new()),
-        Box::new(MemGecko::new()),
-    ];
+    let extensions: Vec<Box<dyn GeckoExtension>> =
+        vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
 
     // 4. Apply extension schemas
     for ext in extensions {
@@ -52,21 +50,39 @@ async fn test_schema_initialization() {
     }
 
     // 5. Verify schemas were applied by querying the defined types
-    let tx = db.begin_read().await.expect("Failed to begin read transaction");
-    
+    let tx = db
+        .begin_read()
+        .await
+        .expect("Failed to begin read transaction");
+
     // Check for a core type
-    let answer = tx.query("match $t sub concept;").await.expect("Failed to query core type");
+    let answer = tx
+        .query("match $t sub concept;")
+        .await
+        .expect("Failed to query core type");
     assert!(answer.is_row_stream());
     let rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
     assert!(!rows.is_empty(), "Core schema 'concept' type not found");
 
     // Check for a cyber extension type
-    let answer = tx.query("match $t sub cyber-entity;").await.expect("Failed to query cyber type");
+    let answer = tx
+        .query("match $t sub cyber-entity;")
+        .await
+        .expect("Failed to query cyber type");
     let cyber_rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
-    assert!(!cyber_rows.is_empty(), "Cyber schema 'cyber-entity' type not found");
+    assert!(
+        !cyber_rows.is_empty(),
+        "Cyber schema 'cyber-entity' type not found"
+    );
 
     // Check for a mem extension type
-    let answer = tx.query("match $t sub execution-episode;").await.expect("Failed to query mem type");
+    let answer = tx
+        .query("match $t sub execution-episode;")
+        .await
+        .expect("Failed to query mem type");
     let mem_rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
-    assert!(!mem_rows.is_empty(), "Mem schema 'execution-episode' type not found");
+    assert!(
+        !mem_rows.is_empty(),
+        "Mem schema 'execution-episode' type not found"
+    );
 }

@@ -42,7 +42,8 @@ impl GeckoExtension for MemGecko {
         vec![
             HostImportDef {
                 name: "record_episode".to_string(),
-                description: "Record an execution episode in the cognitive memory graph".to_string(),
+                description: "Record an execution episode in the cognitive memory graph"
+                    .to_string(),
             },
             HostImportDef {
                 name: "query_memory".to_string(),
@@ -51,7 +52,11 @@ impl GeckoExtension for MemGecko {
         ]
     }
 
-    fn call_import(&self, name: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    fn call_import(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         match name {
             "record_episode" => {
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");

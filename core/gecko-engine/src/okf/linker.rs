@@ -181,7 +181,8 @@ And [Config](config.md#section)."#;
 
     #[test]
     fn test_extract_code_blocks() {
-        let body = "Some text\n```python\ndef foo():\n    pass\n```\nMore text\n```sql\nSELECT 1;\n```\n";
+        let body =
+            "Some text\n```python\ndef foo():\n    pass\n```\nMore text\n```sql\nSELECT 1;\n```\n";
         let blocks = extract_code_blocks(body);
         assert_eq!(blocks.len(), 2);
         assert!(blocks[0].contains("def foo()"));

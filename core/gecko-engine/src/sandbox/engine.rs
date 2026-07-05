@@ -24,7 +24,9 @@ pub struct HostImports {
 }
 
 /// Callback for executing extension host imports.
-pub type ExtensionCallback = std::sync::Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+pub type ExtensionCallback = std::sync::Arc<
+    dyn Fn(&str, &str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync,
+>;
 
 /// Result of a sandboxed script execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

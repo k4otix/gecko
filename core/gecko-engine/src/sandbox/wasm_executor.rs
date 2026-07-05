@@ -1,8 +1,8 @@
 use anyhow::Result;
 use uuid::Uuid;
-use wasmtime::{Config, Engine, Module, Store, Linker};
-use wasmtime_wasi::{WasiCtxBuilder, p1::WasiP1Ctx};
+use wasmtime::{Config, Engine, Linker, Module, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
+use wasmtime_wasi::{WasiCtxBuilder, p1::WasiP1Ctx};
 
 use crate::okf::types::ScriptEngine;
 
@@ -11,9 +11,16 @@ use super::engine::{ExecutionResult, HostImports, ScriptExecutor};
 // Embed the pre-compiled Boa JavaScript WebAssembly binary into the executable.
 const QUICKJS_WASM: &[u8] = include_bytes!("quickjs.wasm");
 
-fn read_string<T>(memory: &wasmtime::Memory, caller: &wasmtime::Caller<'_, T>, ptr: u32, len: u32) -> Result<String, ()> {
+fn read_string<T>(
+    memory: &wasmtime::Memory,
+    caller: &wasmtime::Caller<'_, T>,
+    ptr: u32,
+    len: u32,
+) -> Result<String, ()> {
     let mut buf = vec![0u8; len as usize];
-    memory.read(caller, ptr as usize, &mut buf).map_err(|_| ())?;
+    memory
+        .read(caller, ptr as usize, &mut buf)
+        .map_err(|_| ())?;
     String::from_utf8(buf).map_err(|_| ())
 }
 
@@ -31,18 +38,18 @@ impl WasmExecutor {
     pub fn new() -> Result<Self> {
         // Configure a highly secure, compute-only execution environment
         let mut config = Config::new();
-        
+
         // Disable all caching and unneeded features
         config.wasm_simd(false);
         config.wasm_relaxed_simd(false);
         config.wasm_bulk_memory(true);
         config.wasm_multi_value(true);
-        
+
         // Enable Epoch Interruption for timeout mechanisms
         config.epoch_interruption(true);
-        
+
         let engine = Engine::new(&config)?;
-        
+
         // Spawn a background thread to tick the epoch every 10ms
         let ticker_engine = engine.clone();
         std::thread::spawn(move || {
@@ -51,7 +58,7 @@ impl WasmExecutor {
                 ticker_engine.increment_epoch();
             }
         });
-        
+
         // Compile the embedded WebAssembly module once
         let module = Module::from_binary(&engine, QUICKJS_WASM)?;
 
@@ -102,12 +109,21 @@ impl ScriptExecutor for WasmExecutor {
                 error: Some(format!("Failed to link WASI: {}", e)),
             };
         }
-        
+
         // 5. Link custom host imports
         let _ = linker.func_wrap(
             "env",
             "host_call_extension",
-            |mut caller: wasmtime::Caller<'_, ExecutorCtx>, ext_name_ptr: u32, ext_name_len: u32, func_name_ptr: u32, func_name_len: u32, args_json_ptr: u32, args_json_len: u32, out_buf_ptr: u32, out_buf_capacity: u32| -> i32 {
+            |mut caller: wasmtime::Caller<'_, ExecutorCtx>,
+             ext_name_ptr: u32,
+             ext_name_len: u32,
+             func_name_ptr: u32,
+             func_name_len: u32,
+             args_json_ptr: u32,
+             args_json_len: u32,
+             out_buf_ptr: u32,
+             out_buf_capacity: u32|
+             -> i32 {
                 let memory = match caller.get_export("memory") {
                     Some(wasmtime::Extern::Memory(m)) => m,
                     _ => return -1, // Error
@@ -122,11 +138,13 @@ impl ScriptExecutor for WasmExecutor {
                     Ok(s) => s,
                     Err(_) => return -3,
                 };
-                let args_json_str = match read_string(&memory, &caller, args_json_ptr, args_json_len) {
-                    Ok(s) => s,
-                    Err(_) => return -4,
-                };
-                let args_json: serde_json::Value = serde_json::from_str(&args_json_str).unwrap_or(serde_json::Value::Null);
+                let args_json_str =
+                    match read_string(&memory, &caller, args_json_ptr, args_json_len) {
+                        Ok(s) => s,
+                        Err(_) => return -4,
+                    };
+                let args_json: serde_json::Value =
+                    serde_json::from_str(&args_json_str).unwrap_or(serde_json::Value::Null);
 
                 // Execute callback if it exists
                 let cb = caller.data().extension_callback.clone();
@@ -144,7 +162,10 @@ impl ScriptExecutor for WasmExecutor {
                         if len > out_buf_capacity {
                             return -5;
                         }
-                        if memory.write(&mut caller, out_buf_ptr as usize, bytes).is_err() {
+                        if memory
+                            .write(&mut caller, out_buf_ptr as usize, bytes)
+                            .is_err()
+                        {
                             return -6;
                         }
                         return -(len as i32); // Negative length indicates error
@@ -156,11 +177,14 @@ impl ScriptExecutor for WasmExecutor {
                 if len > out_buf_capacity {
                     return -7;
                 }
-                
-                if memory.write(&mut caller, out_buf_ptr as usize, bytes).is_err() {
+
+                if memory
+                    .write(&mut caller, out_buf_ptr as usize, bytes)
+                    .is_err()
+                {
                     return -8;
                 }
-                
+
                 len as i32
             },
         );
@@ -195,7 +219,7 @@ impl ScriptExecutor for WasmExecutor {
                 // 6. Read the JSON output from the virtual stdout pipe
                 let output_bytes = stdout.contents();
                 let output_str = String::from_utf8_lossy(&output_bytes);
-                
+
                 // Try to parse the JS engine's output as JSON
                 let output_json = serde_json::from_str(&output_str).unwrap_or_else(|_| {
                     serde_json::json!({
