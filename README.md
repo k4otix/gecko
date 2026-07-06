@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/gecko_logo.svg" alt="GECKO Logo" width="150" />
+  <img src="assets/gecko_logo.svg" alt="GECKO Logo" width="250" />
 </p>
 
 # GECKO: Graph Execution of Contextual Knowledge Objects
