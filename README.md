@@ -1,9 +1,13 @@
+<p align="center">
+  <img src="assets/gecko_logo.svg" alt="GECKO Logo" width="150" />
+</p>
+
 # GECKO: Graph Execution of Contextual Knowledge Objects
 
-[![Build Status](https://github.com/k4otix/gecko/actions/workflows/rust.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/rust.yml)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 [![TypeDB](https://img.shields.io/badge/TypeDB-3.0-blue.svg)](https://typedb.com/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasmtime-654FF0.svg)](https://wasmtime.dev/)
+[![Build Status](https://github.com/k4otix/gecko/actions/workflows/rust.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/rust.yml)
 
 At its core, **GECKO** is a strongly-typed semantic knowledge graph designed to underlie Open Knowledge Framework (OKF) objects. While GECKO acts as a high-performance framework for orchestrating execution and context-aware workflows, its foundational capability is ingesting human-readable documentation bundles and rigorously mapping them into an interconnected, queryable graph of domain knowledge.
 
@@ -97,11 +101,3 @@ Security and isolation are foundational to GECKO's execution model. The `gecko-e
 ## Contributing
 
 Contributions to the core engine or new domain extensions are welcome. When developing new extensions, ensure they adhere strictly to the `GeckoExtension` trait and do not introduce breaking changes to the core TypeQL schema hierarchy.
-
-### Code Quality and Toolchain
-
-We use a strict toolchain to maintain code quality. Please ensure you run the following checks before submitting a Pull Request:
-*   **Formatting**: We enforce a 100-character line limit. Run `cargo fmt --all`.
-*   **Linting**: Run `cargo clippy --workspace -- -W clippy::pedantic` and fix any warnings.
-*   **Testing**: We use `cargo-nextest`. Run tests with `cargo nextest run --workspace`.
-*   **Security**: Check for vulnerabilities by running `cargo audit`.
