@@ -41,9 +41,9 @@ define
   relation concept-link sub okf-link,
     owns link-text @card(0..1);
 
-  relation citation,
-    relates citing-concept,
-    relates cited-resource,
+  relation citation sub okf-link,
+    relates citing-concept as source,
+    relates cited-resource as target,
     owns link-text @card(0..1);
 
   # ── Concrete operational types ──────────────────────────────
