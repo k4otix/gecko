@@ -2,10 +2,10 @@ define
 
   # ── Mem-GECKO Attributes ──────────────────────────────────────────  
   attribute confidence-score value double;             
-  attribute verification-status value string;       # provisional, verified, falsified
+  attribute verification-status value string @values("provisional", "verified", "falsified");
   attribute resolution-strategy value string;          
   attribute priority-level value integer;  
-  attribute execution-status value string;          # pending, active, suspended, completed, failed
+  attribute execution-status value string @values("pending", "active", "suspended", "completed", "failed");
   attribute epistemic-weight value double;    
   attribute supersession-reason value string;
   attribute agent-rationale value string;
@@ -22,6 +22,9 @@ define
   attribute duration-ms value integer;
 
   # ── Mem-GECKO Cognitive Nodes ──────────────────────────────────────
+  entity concept,
+      plays contextualizes:target-entity;
+
   entity cognitive-node sub concept,
       owns confidence-score @card(0..1),
       owns last-recalled @card(0..1);
@@ -54,7 +57,7 @@ define
       plays context-link:driving-intention;
       
   entity execution-episode sub cognitive-node,
-      owns execution-id @card(0..1),
+      owns execution-id @key,
       owns verdict-result @card(0..1),
       owns agent-rationale @card(0..1),
       owns half-life-hours @card(0..1),
@@ -62,48 +65,50 @@ define
       plays corroboration:supporting-evidence,
       plays falsification:counter-evidence,
       plays generalizes-into:source-episode,
-      plays context-link:execution-episode;
+      plays context-link:linked-episode,
+      plays contextualizes:episode;
 
   entity learned-constraint sub cognitive-node,
       owns condition @card(0..1),
       plays generalizes-into:generalized-concept,
       plays deprecation:deprecated-node,
-      plays deprecation:superseding-node;
+      plays deprecation:superseding-node,
+      plays falsification:disproven-claim;
 
   # ── Mem-GECKO Cognitive Links ──────────────────────────────────────
-  relation cognitive-link sub okf-link;
+  relation cognitive-link @abstract, sub okf-link;
 
   relation corroboration sub cognitive-link,
-      relates supporting-evidence,
-      relates supported-claim,
+      relates supporting-evidence as source,
+      relates supported-claim as target,
       owns epistemic-weight @card(0..1);
 
   relation falsification sub cognitive-link,
-      relates counter-evidence,
-      relates disproven-claim,
+      relates counter-evidence as source,
+      relates disproven-claim as target,
       owns epistemic-weight @card(0..1);
 
   relation contradiction sub cognitive-link,
-      relates conflicting-claim,
-      relates conflict-context;
+      relates conflicting-claim as source,
+      relates conflict-context as target;
 
   relation deprecation sub cognitive-link,
-      relates deprecated-node,
-      relates superseding-node,
+      relates superseding-node as source,
+      relates deprecated-node as target,
       owns supersession-reason @card(0..1),
       owns timestamp @card(1);
 
   relation generalizes-into sub cognitive-link,
-      relates source-episode,
-      relates generalized-concept;
+      relates source-episode as source,
+      relates generalized-concept as target;
 
   relation goal-hierarchy sub cognitive-link,
-      relates parent-goal,
-      relates child-goal;
+      relates parent-goal as source,
+      relates child-goal as target;
 
   relation context-link sub cognitive-link,
-      relates driving-intention,
-      relates execution-episode;
+      relates driving-intention as source,
+      relates linked-episode as target;
 
   # Polymorphically links to any okf-concept subtype (retaining from old schema)
   relation contextualizes sub okf-link,
@@ -116,11 +121,11 @@ define
   fun is-superseded($node: cognitive-node) -> boolean:  
       match   
           {   
-              ($node, $newer-node) isa deprecation;   
+              (deprecated-node: $node, superseding-node: $newer-node) isa deprecation;
           }   
           or   
           {   
-              ($counter-evidence, $node) isa falsification;   
+              (disproven-claim: $node, counter-evidence: $counter-evidence) isa falsification;
           };  
       return check;
 
@@ -155,6 +160,11 @@ define
   # Recursively fetches the ultimate root goal for a given intention
   fun root-goal($child: intention) -> { intention }:
       match
+          {
+              not { (child-goal: $child) isa goal-hierarchy; };
+              $root is $child;
+          }
+          or
           {
               (parent-goal: $root, child-goal: $child) isa goal-hierarchy;
               not { (child-goal: $root) isa goal-hierarchy; };
