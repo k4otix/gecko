@@ -79,3 +79,41 @@ impl GeckoExtension for MemGecko {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_contains_cognitive_nodes() {
+        let schema = MEM_SCHEMA;
+        assert!(schema.contains("entity cognitive-node sub concept"));
+        assert!(schema.contains("entity semantic-belief sub cognitive-node"));
+        assert!(schema.contains("entity intention sub cognitive-node"));
+        assert!(schema.contains("entity anomaly sub cognitive-node"));
+    }
+
+    #[test]
+    fn test_schema_contains_atms_functions() {
+        let schema = MEM_SCHEMA;
+        assert!(schema.contains("fun is-superseded($node: cognitive-node) -> boolean:"));
+        assert!(schema.contains("fun active-semantic-beliefs() -> { semantic-belief }:"));
+        assert!(schema.contains("fun active-intentions() -> { intention }:"));
+        assert!(schema.contains("fun root-goal($child: intention) -> { intention }:"));
+        assert!(schema.contains("fun unresolved-anomalies() -> { anomaly }:"));
+        assert!(schema.contains(
+            "fun foundational-evidence($belief: semantic-belief) -> { execution-episode }:"
+        ));
+    }
+
+    #[test]
+    fn test_schema_contains_temporal_attributes() {
+        let schema = MEM_SCHEMA;
+        assert!(schema.contains("attribute valid-from value datetime;"));
+        assert!(schema.contains("attribute valid-until value datetime;"));
+        assert!(schema.contains("attribute half-life-hours value double;"));
+        assert!(schema.contains("attribute last-recalled value datetime;"));
+        assert!(schema.contains("attribute deadline value datetime;"));
+        assert!(schema.contains("attribute duration-ms value integer;"));
+    }
+}

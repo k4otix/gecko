@@ -12,7 +12,7 @@ use std::process;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
