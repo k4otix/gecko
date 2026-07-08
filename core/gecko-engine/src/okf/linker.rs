@@ -78,30 +78,22 @@ pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
     // Strip trailing .md
     let path_part = path_part.strip_suffix(".md").unwrap_or(path_part);
 
-    if path_part.contains(':') {
-        // Already namespaced cross-bundle link, return as-is
-        return path_part.to_string();
-    }
-
-    let (namespace, source_path) = match source_concept_id.find(':') {
-        Some(idx) => (&source_concept_id[..=idx], &source_concept_id[idx + 1..]),
-        None => ("", source_concept_id),
+    // GECKO is single-bundle-scoped, so concept IDs are plain bundle-relative
+    // paths. The source directory is everything before the last `/`.
+    let source_dir = match source_concept_id.rfind('/') {
+        Some(idx) => &source_concept_id[..idx],
+        None => "", // root-level concept
     };
 
-    // Get the source directory
-    let source_dir = match source_path.rfind('/') {
-        Some(idx) => &source_path[..idx],
-        None => "", // root
-    };
-
-    // Combine source dir and relative path
+    // OKF absolute links begin with `/` and are bundle-root-relative; relative
+    // links resolve against the source concept's directory.
     let combined = if source_dir.is_empty() || path_part.starts_with('/') {
         path_part.trim_start_matches('/').to_string()
     } else {
         format!("{source_dir}/{path_part}")
     };
 
-    // Normalize by resolving `.` and `..` components
+    // Normalize by resolving `.` and `..` components.
     let mut parts: Vec<&str> = Vec::new();
     for component in combined.split('/') {
         match component {
@@ -113,7 +105,7 @@ pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
         }
     }
 
-    format!("{}{}", namespace, parts.join("/"))
+    parts.join("/")
 }
 
 #[cfg(test)]
@@ -197,26 +189,19 @@ And [Config](config.md#section)."#;
     }
 
     #[test]
-    fn test_resolve_relative_path_already_namespaced() {
+    fn test_resolve_relative_path_absolute() {
+        // OKF absolute links (leading `/`) are bundle-root-relative.
         assert_eq!(
-            resolve_relative_path("other_bundle:some/concept.md", "datasets/users"),
-            "other_bundle:some/concept"
+            resolve_relative_path("/tables/orders.md", "datasets/users"),
+            "tables/orders"
         );
     }
 
     #[test]
-    fn test_resolve_relative_path_with_source_namespace() {
+    fn test_resolve_relative_path_nested_source() {
         assert_eq!(
-            resolve_relative_path("../tables/orders.md#schema", "my_bundle:datasets/users"),
-            "my_bundle:tables/orders"
+            resolve_relative_path("../orders.md", "a/b/users"),
+            "a/orders"
         );
-    }
-
-    #[test]
-    fn test_extract_links_namespaced_source() {
-        let body = r#"See [Orders](../tables/orders.md) for details."#;
-        let (links, _) = extract_links(body, "bundle:datasets/users");
-        assert_eq!(links.len(), 1);
-        assert_eq!(links[0].target_id, "bundle:tables/orders");
     }
 }

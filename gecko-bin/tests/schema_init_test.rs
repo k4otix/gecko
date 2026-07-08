@@ -1,33 +1,20 @@
 use futures_util::StreamExt;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use cyber_gecko::CyberGecko;
-use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use mem_gecko::MemGecko;
 
-/// Generates a unique database name to avoid collisions in concurrent tests
-fn unique_db_name() -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("gecko_test_{}", ts)
-}
+mod common;
+use common::TestDb;
 
 #[tokio::test]
 async fn test_schema_initialization() {
-    let db_name = unique_db_name();
-    let config = DbConfig {
-        address: "localhost:1729".to_string(),
-        database: db_name.clone(),
-        username: "admin".to_string(),
-        password: "password".to_string(),
-        tls: TlsMode::Disabled,
-    };
+    // Self-cleaning database: dropped from the server when `test_db` goes out of
+    // scope (declared first so it drops last, after `db` closes).
+    let test_db = TestDb::new("gecko_test_schema");
 
     // 1. Initialize router and create DB
-    let mut db = TypeDbRouter::new(config.clone());
+    let mut db = test_db.router();
 
     // 2. Apply core schema
     let core_schema = include_str!("../../core/gecko-engine/schema/core_schema.tql");

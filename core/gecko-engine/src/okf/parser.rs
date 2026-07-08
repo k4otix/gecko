@@ -36,7 +36,9 @@ pub enum ParseError {
 
 /// Derives a concept ID from a file path relative to the bundle root.
 ///
-/// Generates a normalized concept ID based on the file path relative to the bundle root.
+/// GECKO is single-bundle-scoped (one bundle per TypeDB database), so the concept
+/// ID is the pure OKF bundle-relative path with the `.md` extension removed and no
+/// namespace prefix — matching the OKF spec exactly.
 ///
 /// # Example
 /// ```
@@ -44,20 +46,18 @@ pub enum ParseError {
 /// use gecko_engine::okf::parser::file_to_concept_id;
 ///
 /// assert_eq!(
-///     file_to_concept_id(Path::new("bundle/tables/orders.md"), Path::new("bundle"), "bundle-name"),
-///     "bundle-name:tables/orders"
+///     file_to_concept_id(Path::new("bundle/tables/orders.md"), Path::new("bundle")),
+///     "tables/orders"
 /// );
 /// ```
-pub fn file_to_concept_id(file_path: &Path, bundle_root: &Path, bundle_name: &str) -> String {
+pub fn file_to_concept_id(file_path: &Path, bundle_root: &Path) -> String {
     let relative = file_path
         .strip_prefix(bundle_root)
         .expect("file_path must be under bundle_root");
 
     // Strip the .md extension and convert to forward-slash posix path
     let without_ext = relative.with_extension("");
-    let path_str = without_ext.to_string_lossy().replace('\\', "/");
-
-    format!("{bundle_name}:{path_str}")
+    without_ext.to_string_lossy().replace('\\', "/")
 }
 
 /// Returns true if the file matches reserved names (index.md, log.md).
@@ -119,11 +119,7 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 /// Parses an individual OKF concept document.
 ///
 /// Parses a markdown file into an `OkfConcept` by extracting frontmatter and links.
-pub fn parse_concept(
-    file_path: &Path,
-    bundle_root: &Path,
-    bundle_name: &str,
-) -> Result<OkfConcept, ParseError> {
+pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept, ParseError> {
     let raw_content = std::fs::read_to_string(file_path).map_err(|e| ParseError::Io {
         path: file_path.display().to_string(),
         source: e,
@@ -201,7 +197,7 @@ pub fn parse_concept(
         })
         .collect();
 
-    let concept_id = file_to_concept_id(file_path, bundle_root, bundle_name);
+    let concept_id = file_to_concept_id(file_path, bundle_root);
     let source_path = file_path
         .strip_prefix(bundle_root)
         .unwrap_or(file_path)
@@ -242,10 +238,10 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
             source: e,
         })?;
 
-    let bundle_name = bundle_root
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // Bundle identity/metadata comes from an optional `bundle.json` manifest,
+    // falling back to the directory name. This is metadata only — concept IDs are
+    // NOT namespaced by it (GECKO is single-bundle-scoped, one bundle per database).
+    let (bundle_name, bundle_description) = read_bundle_manifest(&bundle_root);
 
     let mut concepts = Vec::new();
     let mut links = Vec::new();
@@ -261,14 +257,16 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
             continue;
         }
 
-        let concept = parse_concept(file_path, &bundle_root, &bundle_name)?;
+        let concept = parse_concept(file_path, &bundle_root)?;
 
         // Extract links and citations
         let (concept_links, concept_citations) = extract_links(&concept.body, &concept.concept_id);
         links.extend(concept_links);
         citations.extend(concept_citations);
 
-        // Determine parent directory for hierarchy
+        // Determine parent directory for hierarchy. Since concept IDs are the
+        // bundle-relative path (no prefix), a parent directory's path IS the
+        // parent concept ID directly.
         let rel_path = file_path.strip_prefix(&bundle_root).unwrap();
         let parent_dir = rel_path.parent();
 
@@ -282,26 +280,23 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
                     child_id: concept.concept_id.clone(),
                 });
             } else {
-                let prefixed_parent = format!("{bundle_name}:{parent_str}");
                 hierarchy.push(HierarchyEdge {
-                    parent_id: prefixed_parent,
+                    parent_id: parent_str,
                     child_id: concept.concept_id.clone(),
                 });
 
-                // Walk up parent directories to connect directory hierarchy
+                // Walk up parent directories to connect the directory hierarchy.
                 let mut current = parent.to_path_buf();
                 while let Some(grandparent) = current.parent() {
                     let gp_str = grandparent.to_string_lossy().replace('\\', "/");
                     if gp_str.is_empty() || gp_str == "." {
                         break;
                     }
-                    let gp_prefixed = format!("{bundle_name}:{gp_str}");
                     let child_str = current.to_string_lossy().replace('\\', "/");
-                    let child_prefixed = format!("{bundle_name}:{child_str}");
 
                     hierarchy.push(HierarchyEdge {
-                        parent_id: gp_prefixed,
-                        child_id: child_prefixed,
+                        parent_id: gp_str,
+                        child_id: child_str,
                     });
                     current = grandparent.to_path_buf();
                 }
@@ -318,11 +313,60 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
     Ok(OkfBundle {
         bundle_path: bundle_root.to_string_lossy().to_string(),
         bundle_name,
+        bundle_description,
         concepts,
         links,
         citations,
         hierarchy,
     })
+}
+
+/// Reads a bundle's declared name (from `bundle.json`, falling back to the
+/// directory name) without parsing the whole bundle. Used to derive the target
+/// database in the single-bundle-per-database workflow.
+pub fn bundle_name(bundle_root_path: &Path) -> Result<String, ParseError> {
+    let bundle_root = bundle_root_path
+        .canonicalize()
+        .map_err(|e| ParseError::Io {
+            path: bundle_root_path.display().to_string(),
+            source: e,
+        })?;
+    Ok(read_bundle_manifest(&bundle_root).0)
+}
+
+/// Reads bundle identity metadata from an optional `bundle.json` manifest at the
+/// bundle root. Returns `(name, description)`. Falls back to the directory name
+/// when the manifest is absent, unreadable, or has no `name` field. Parse/IO
+/// errors are tolerated (OKF favors permissive consumption) — a bad manifest just
+/// means we fall back to the directory name.
+fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
+    let dir_name = bundle_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let manifest_path = bundle_root.join("bundle.json");
+    let Ok(contents) = std::fs::read_to_string(&manifest_path) else {
+        return (dir_name, None);
+    };
+
+    match serde_json::from_str::<serde_json::Value>(&contents) {
+        Ok(json) => {
+            let name = json
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or(dir_name);
+            let description = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            (name, description)
+        }
+        Err(_) => (dir_name, None),
+    }
 }
 
 /// Recursively finds all `.md` files under a directory.
@@ -485,16 +529,16 @@ def calculate_monthly_revenue():
     fn test_file_to_concept_id() {
         let root = Path::new("bundle");
         assert_eq!(
-            "test-bundle:tables/orders",
-            file_to_concept_id(Path::new("bundle/tables/orders.md"), root, "test-bundle")
+            "tables/orders",
+            file_to_concept_id(Path::new("bundle/tables/orders.md"), root)
         );
         assert_eq!(
-            "test-bundle:simple",
-            file_to_concept_id(Path::new("bundle/simple.md"), root, "test-bundle")
+            "simple",
+            file_to_concept_id(Path::new("bundle/simple.md"), root)
         );
         assert_eq!(
-            "test-bundle:a/b/c",
-            file_to_concept_id(Path::new("bundle/a/b/c.md"), root, "test-bundle")
+            "a/b/c",
+            file_to_concept_id(Path::new("bundle/a/b/c.md"), root)
         );
     }
 
@@ -524,14 +568,9 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
-        let concept = parse_concept(
-            &dir.path().join("datasets/users.md"),
-            dir.path(),
-            "test-bundle",
-        )
-        .unwrap();
+        let concept = parse_concept(&dir.path().join("datasets/users.md"), dir.path()).unwrap();
 
-        assert_eq!(concept.concept_id, "test-bundle:datasets/users");
+        assert_eq!(concept.concept_id, "datasets/users");
         assert_eq!(concept.concept_type, "Dataset");
         assert_eq!(concept.title.as_deref(), Some("Users Dataset"));
         assert_eq!(
@@ -559,8 +598,7 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_minimal_bundle(dir.path());
 
-        let concept =
-            parse_concept(&dir.path().join("simple.md"), dir.path(), "test-bundle").unwrap();
+        let concept = parse_concept(&dir.path().join("simple.md"), dir.path()).unwrap();
 
         assert_eq!(concept.concept_type, "Note");
         assert!(concept.title.is_none());
@@ -573,7 +611,7 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_invalid_bundle(dir.path());
 
-        let result = parse_concept(&dir.path().join("no-type.md"), dir.path(), "test-bundle");
+        let result = parse_concept(&dir.path().join("no-type.md"), dir.path());
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -586,12 +624,7 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
-        let concept = parse_concept(
-            &dir.path().join("metrics/revenue.md"),
-            dir.path(),
-            "test-bundle",
-        )
-        .unwrap();
+        let concept = parse_concept(&dir.path().join("metrics/revenue.md"), dir.path()).unwrap();
 
         assert_eq!(concept.code_blocks.len(), 1);
         assert!(concept.code_blocks[0].contains("calculate_monthly_revenue"));
@@ -617,8 +650,7 @@ Playbook body.
         )
         .unwrap();
 
-        let concept =
-            parse_concept(&dir.path().join("playbook.md"), dir.path(), "test-bundle").unwrap();
+        let concept = parse_concept(&dir.path().join("playbook.md"), dir.path()).unwrap();
 
         assert_eq!(concept.engine, Some(ScriptEngine::Rhai));
         assert_eq!(concept.consumes, vec!["alert", "asset"]);
@@ -635,31 +667,65 @@ Playbook body.
         let bundle = parse_bundle(dir.path()).unwrap();
 
         assert_eq!(bundle.concepts.len(), 3); // index.md skipped
-        let bundle_name = bundle.bundle_name;
-        let ids: HashSet<_> = bundle
+
+        // Concept IDs are bundle-relative paths with no namespace prefix (OKF spec).
+        let ids: HashSet<&str> = bundle
             .concepts
             .iter()
             .map(|c| c.concept_id.as_str())
             .collect();
-        assert!(ids.contains(&format!("{}:datasets/users", bundle_name) as &str));
-        assert!(ids.contains(&format!("{}:tables/orders", bundle_name) as &str));
-        assert!(ids.contains(&format!("{}:metrics/revenue", bundle_name) as &str));
+        assert!(ids.contains("datasets/users"));
+        assert!(ids.contains("tables/orders"));
+        assert!(ids.contains("metrics/revenue"));
 
-        // Check hierarchy edges exist
-        let hierarchy_set: HashSet<_> = bundle
+        // Check hierarchy edges exist (also prefix-free).
+        let hierarchy_set: HashSet<(&str, &str)> = bundle
             .hierarchy
             .iter()
             .map(|h| (h.parent_id.as_str(), h.child_id.as_str()))
             .collect();
-        let d_str = format!("{}:datasets", bundle_name);
-        let u_str = format!("{}:datasets/users", bundle_name);
-        assert!(hierarchy_set.contains(&(d_str.as_str(), u_str.as_str())));
-        let t_str = format!("{}:tables", bundle_name);
-        let o_str = format!("{}:tables/orders", bundle_name);
-        assert!(hierarchy_set.contains(&(t_str.as_str(), o_str.as_str())));
-        let m_str = format!("{}:metrics", bundle_name);
-        let r_str = format!("{}:metrics/revenue", bundle_name);
-        assert!(hierarchy_set.contains(&(m_str.as_str(), r_str.as_str())));
+        assert!(hierarchy_set.contains(&("datasets", "datasets/users")));
+        assert!(hierarchy_set.contains(&("tables", "tables/orders")));
+        assert!(hierarchy_set.contains(&("metrics", "metrics/revenue")));
+    }
+
+    #[test]
+    fn test_parse_bundle_reads_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        create_minimal_bundle(dir.path());
+        fs::write(
+            dir.path().join("bundle.json"),
+            r#"{"name": "acme-playbooks", "description": "Acme's playbook bundle."}"#,
+        )
+        .unwrap();
+
+        let bundle = parse_bundle(dir.path()).unwrap();
+        assert_eq!(bundle.bundle_name, "acme-playbooks");
+        assert_eq!(
+            bundle.bundle_description.as_deref(),
+            Some("Acme's playbook bundle.")
+        );
+    }
+
+    #[test]
+    fn test_parse_bundle_manifest_falls_back_to_dir_name() {
+        let dir = tempfile::tempdir().unwrap();
+        create_minimal_bundle(dir.path());
+        // No bundle.json, and a malformed one should also fall back gracefully.
+        fs::write(dir.path().join("bundle.json"), "{ not valid json").unwrap();
+
+        let bundle = parse_bundle(dir.path()).unwrap();
+        // Falls back to the (canonicalized) directory's file name.
+        let expected = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(bundle.bundle_name, expected);
+        assert!(bundle.bundle_description.is_none());
     }
 
     #[test]
@@ -706,7 +772,7 @@ Playbook body.
         let content = "---\ntitle: No Type\n---\nBody";
         std::fs::write(&file_path, content).unwrap();
 
-        let result = parse_concept(&file_path, dir.path(), "test_bundle");
+        let result = parse_concept(&file_path, dir.path());
         assert!(matches!(result, Err(ParseError::MissingType { path: _ })));
     }
 }

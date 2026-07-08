@@ -1,23 +1,16 @@
 use futures_util::StreamExt;
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::ScriptEngine;
 use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
 use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
 use gecko_engine::syncer::bundle::sync_bundle;
 
-fn unique_db_name() -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-    format!("gecko_test_sandbox_{}", ts)
-}
+mod common;
+use common::TestDb;
 
 #[tokio::test]
 async fn test_sandbox_execution() {
@@ -55,25 +48,20 @@ x + y
 
     // 2. Parse the bundle
     let manifest = parse_bundle(bundle_path).expect("Failed to parse bundle");
-    let bundle_name = bundle_path.file_name().unwrap().to_str().unwrap();
-    let expected_id = format!("{}:playbooks/test_playbook", bundle_name);
+    // Single-bundle-scoped: concept IDs are bundle-relative paths with no prefix.
+    let expected_id = "playbooks/test_playbook";
 
     assert_eq!(manifest.concepts.len(), 1);
+    // bundle.json declares the bundle name (metadata only, not a concept-id prefix).
+    assert_eq!(manifest.bundle_name, "test-bundle");
     let concept = &manifest.concepts[0];
     assert_eq!(concept.concept_id, expected_id);
     assert_eq!(concept.concept_type, "playbook");
     assert_eq!(concept.code_blocks.len(), 1);
 
-    // 3. Setup TypeDB
-    let config = DbConfig {
-        address: "localhost:1729".to_string(),
-        database: unique_db_name(),
-        username: "admin".to_string(),
-        password: "password".to_string(),
-        tls: TlsMode::Disabled,
-    };
-
-    let mut db = TypeDbRouter::new(config.clone());
+    // 3. Setup TypeDB (self-cleaning database, dropped when `test_db` drops)
+    let test_db = TestDb::new("gecko_test_sandbox");
+    let mut db = test_db.router();
 
     // Apply core schema
     let core_schema = include_str!("../../core/gecko-engine/schema/core_schema.tql");

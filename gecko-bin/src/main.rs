@@ -19,6 +19,7 @@ use uuid::Uuid;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
+use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
 use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
 use gecko_engine::sandbox::wasm_executor::WasmExecutor;
@@ -38,9 +39,10 @@ struct Cli {
     #[arg(long, default_value = "localhost:1729", global = true)]
     address: String,
 
-    /// TypeDB database name
-    #[arg(long, default_value = "gecko", global = true)]
-    database: String,
+    /// TypeDB database name. Defaults to the bundle's declared name (from
+    /// bundle.json) for `init`/`sync`, otherwise "gecko". One database per bundle.
+    #[arg(long, global = true)]
+    database: Option<String>,
 
     /// TypeDB username
     #[arg(long, default_value = "admin", global = true)]
@@ -66,6 +68,9 @@ struct Cli {
 enum Commands {
     /// Initialize the TypeDB schema (core + extensions)
     Init {
+        /// Optional bundle directory; its bundle.json name selects the database
+        bundle: Option<PathBuf>,
+
         /// Path to custom core schema file (default: embedded)
         #[arg(long)]
         schema: Option<PathBuf>,
@@ -91,6 +96,15 @@ enum Commands {
         /// Concept ID of the playbook to execute
         concept_id: String,
     },
+
+    /// Delete a TypeDB database by name
+    Drop {
+        /// Name of the database to delete
+        database: String,
+    },
+
+    /// List all databases on the server
+    Databases,
 }
 
 #[tokio::main]
@@ -110,45 +124,115 @@ async fn main() {
     }
 }
 
-async fn run(cli: Cli) -> Result<()> {
+/// Resolves the target database: an explicit `--database` wins; otherwise the
+/// bundle's declared name (when there is a bundle context); otherwise "gecko".
+fn resolve_db(explicit: &Option<String>, derived: Option<&str>) -> String {
+    explicit
+        .clone()
+        .or_else(|| derived.map(str::to_string))
+        .unwrap_or_else(|| "gecko".to_string())
+}
+
+/// Builds a `DbConfig` for the resolved database using the shared connection args.
+fn make_config(cli: &Cli, database: String) -> DbConfig {
     let tls = if cli.tls {
         TlsMode::Enabled {
-            ca_cert: cli.ca_cert,
+            ca_cert: cli.ca_cert.clone(),
         }
     } else {
         TlsMode::Disabled
     };
-
-    let config = DbConfig {
-        address: cli.address,
-        database: cli.database,
-        username: cli.username,
-        password: cli.password,
+    DbConfig {
+        address: cli.address.clone(),
+        database,
+        username: cli.username.clone(),
+        password: cli.password.clone(),
         tls,
-    };
+    }
+}
 
+async fn run(cli: Cli) -> Result<()> {
     // Assemble extensions (design §2: The Assembler Pattern)
     let extensions: Vec<Box<dyn GeckoExtension>> =
         vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
 
-    match cli.command {
-        Commands::Init { schema } => cmd_init(config, &extensions, schema).await,
-        Commands::Sync { bundle_path } => cmd_sync(config, bundle_path).await,
-        Commands::Query { query_str } => cmd_query(config, &query_str).await,
-        Commands::Status => cmd_status(config).await,
-        Commands::Run { concept_id } => cmd_run(config, &extensions, &concept_id).await,
+    match &cli.command {
+        Commands::Init { bundle, schema } => {
+            let derived = match bundle {
+                Some(path) => Some(
+                    gecko_engine::okf::parser::bundle_name(path)
+                        .with_context(|| format!("Failed to read bundle at {}", path.display()))?,
+                ),
+                None => None,
+            };
+            let config = make_config(&cli, resolve_db(&cli.database, derived.as_deref()));
+            cmd_init(config, &extensions, schema.clone()).await
+        }
+        Commands::Sync { bundle_path } => {
+            println!("Parsing bundle at {}...", bundle_path.display());
+            let manifest = parse_bundle(bundle_path).context("Failed to parse OKF bundle")?;
+            let config = make_config(&cli, resolve_db(&cli.database, Some(&manifest.bundle_name)));
+            cmd_sync(config, &extensions, manifest).await
+        }
+        Commands::Query { query_str } => {
+            cmd_query(
+                make_config(&cli, resolve_db(&cli.database, None)),
+                query_str,
+            )
+            .await
+        }
+        Commands::Status => cmd_status(make_config(&cli, resolve_db(&cli.database, None))).await,
+        Commands::Run { concept_id } => {
+            cmd_run(
+                make_config(&cli, resolve_db(&cli.database, None)),
+                &extensions,
+                concept_id,
+            )
+            .await
+        }
+        Commands::Drop { database } => cmd_drop(make_config(&cli, database.clone())).await,
+        Commands::Databases => {
+            cmd_databases(make_config(&cli, resolve_db(&cli.database, None))).await
+        }
     }
 }
 
-/// Initialize TypeDB with core schema + extension schemas.
-async fn cmd_init(
-    config: DbConfig,
+/// Delete a database by name.
+async fn cmd_drop(config: DbConfig) -> Result<()> {
+    let name = config.database.clone();
+    let mut db = TypeDbRouter::new(config);
+    db.delete_database(&name)
+        .await
+        .with_context(|| format!("Failed to delete database '{name}'"))?;
+    println!("✓ Dropped database '{name}'");
+    Ok(())
+}
+
+/// List all databases on the server.
+async fn cmd_databases(config: DbConfig) -> Result<()> {
+    let mut db = TypeDbRouter::new(config);
+    let names = db
+        .list_databases()
+        .await
+        .context("Failed to list databases")?;
+    if names.is_empty() {
+        println!("No databases.");
+    } else {
+        for n in names {
+            println!("{n}");
+        }
+    }
+    Ok(())
+}
+
+/// Applies the core schema (embedded or a custom file) plus every extension
+/// schema, and runs each extension's init hook. Idempotent — TypeDB `define` is a
+/// no-op for already-defined types, so this is safe to re-run on every sync.
+async fn apply_all_schemas(
+    db: &mut TypeDbRouter,
     extensions: &[Box<dyn GeckoExtension>],
     custom_schema: Option<PathBuf>,
 ) -> Result<()> {
-    let mut db = TypeDbRouter::new(config);
-
-    // Apply core schema
     let core_schema = if let Some(path) = custom_schema {
         std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read schema file: {}", path.display()))?
@@ -161,7 +245,6 @@ async fn cmd_init(
         .context("Failed to apply core schema")?;
     info!("Core schema applied");
 
-    // Apply extension schemas
     for ext in extensions {
         let schema = ext.schema();
         if !schema.trim().is_empty() {
@@ -171,30 +254,48 @@ async fn cmd_init(
             info!(extension = ext.name(), "Extension schema applied");
         }
 
-        // Run extension init hook
         ext.on_init()
             .map_err(|e| anyhow::anyhow!("Extension {} init failed: {}", ext.name(), e))?;
     }
+    Ok(())
+}
 
+/// Initialize TypeDB with core schema + extension schemas.
+async fn cmd_init(
+    config: DbConfig,
+    extensions: &[Box<dyn GeckoExtension>],
+    custom_schema: Option<PathBuf>,
+) -> Result<()> {
+    let database = config.database.clone();
+    let mut db = TypeDbRouter::new(config);
+    apply_all_schemas(&mut db, extensions, custom_schema).await?;
     println!(
-        "✓ Schema initialized (core + {} extensions)",
+        "✓ Schema initialized in '{}' (core + {} extensions)",
+        database,
         extensions.len()
     );
     Ok(())
 }
 
-/// Parse and sync an OKF bundle.
-async fn cmd_sync(config: DbConfig, bundle_path: PathBuf) -> Result<()> {
-    println!("Parsing bundle at {}...", bundle_path.display());
-
-    let manifest = parse_bundle(&bundle_path).with_context(|| "Failed to parse OKF bundle")?;
-
+/// Sync a parsed OKF bundle. The bundle's database is ensured (schema applied,
+/// idempotently) so the single-bundle-per-database flow works from one command.
+async fn cmd_sync(
+    config: DbConfig,
+    extensions: &[Box<dyn GeckoExtension>],
+    manifest: OkfBundle,
+) -> Result<()> {
     println!(
-        "Found {} concepts. Syncing to TypeDB...",
-        manifest.concepts.len()
+        "Found {} concepts. Syncing bundle '{}' to database '{}'...",
+        manifest.concepts.len(),
+        manifest.bundle_name,
+        config.database
     );
 
     let mut db = TypeDbRouter::new(config);
+    apply_all_schemas(&mut db, extensions, None)
+        .await
+        .context("Failed to ensure database schema")?;
+
     let result = sync_bundle(&mut db, &manifest)
         .await
         .context("Failed to sync bundle")?;
@@ -203,6 +304,7 @@ async fn cmd_sync(config: DbConfig, bundle_path: PathBuf) -> Result<()> {
     println!("  Concepts inserted: {}", result.concepts_inserted);
     println!("  Concepts updated:  {}", result.concepts_updated);
     println!("  Concepts skipped:  {}", result.concepts_skipped);
+    println!("  Concepts deleted:  {}", result.concepts_deleted);
     println!("  Links created:     {}", result.links_created);
     println!("  Citations created: {}", result.citations_created);
 
@@ -253,7 +355,9 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
         .context("Failed to begin read transaction")?;
 
     let answer = tx
-        .query(r#"match $b isa bundle, has bundle_path $path; fetch {"path": $path};"#)
+        .query(
+            r#"match $b isa bundle, has bundle-name $name; fetch {"name": $name, "path": $b.bundle-path};"#,
+        )
         .await
         .map_err(|e| gecko_engine::db::router::DbError::Query(e.to_string()))?;
 
@@ -286,31 +390,21 @@ async fn cmd_run(
         .await
         .context("Failed to begin read transaction")?;
 
-    let query = if concept_id.contains(':') {
-        format!(
-            r#"
-            match 
-                $c isa concept, 
-                    has concept-id "{}",
-                    has concept-id $id,
-                    has code-block $cb;
-            fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
-        "#,
-            gecko_engine::syncer::bundle::escape_tql(concept_id)
-        )
-    } else {
-        format!(
-            r#"
-            match 
-                $c isa concept, 
-                    has concept-id $id,
-                    has code-block $cb;
-                $id like ".*:{}";
-            fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
-        "#,
-            gecko_engine::syncer::bundle::escape_tql(concept_id)
-        )
-    };
+    // Single-bundle-scoped: concept IDs are exact bundle-relative paths (no
+    // namespace). A concept with multiple code blocks yields multiple rows here;
+    // that ambiguity is handled by the caller (fixed properly in the program-model
+    // workstream).
+    let query = format!(
+        r#"
+        match
+            $c isa concept,
+                has concept-id "{}",
+                has concept-id $id,
+                has code-block $cb;
+        fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
+    "#,
+        gecko_engine::syncer::bundle::escape_tql(concept_id)
+    );
 
     let answer = tx
         .query(&query)

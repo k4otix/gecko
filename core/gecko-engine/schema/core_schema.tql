@@ -47,9 +47,11 @@ define
     owns link-text @card(0..1);
 
   # ── Concrete operational types ──────────────────────────────
+  # Single-bundle-scoped: one bundle per database, keyed on its declared name
+  # (from bundle.json). bundle-path is machine-local provenance, not identity.
   entity bundle,
-    owns bundle-path @key,
-    owns bundle-name @card(0..1),
+    owns bundle-name @key,
+    owns bundle-path @card(0..1),
     owns title @card(0..1),
     owns description @card(0..1),
     owns synced-at @card(0..1),
