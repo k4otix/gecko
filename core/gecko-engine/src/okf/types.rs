@@ -17,6 +17,28 @@ pub enum ScriptEngine {
     QuickJs,
 }
 
+impl ScriptEngine {
+    /// The canonical engine token stored in the graph and accepted in frontmatter.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ScriptEngine::Rhai => "rhai",
+            ScriptEngine::QuickJs => "quickjs",
+        }
+    }
+
+    /// Resolves a code-fence language tag (or a frontmatter `engine` value) to the
+    /// engine that executes it. Returns `None` for non-executable languages
+    /// (`python`, `sql`, `mermaid`, plain text, …), which are treated as
+    /// documentation rather than program source.
+    pub fn from_lang(lang: &str) -> Option<Self> {
+        match lang.trim().to_lowercase().as_str() {
+            "rhai" => Some(ScriptEngine::Rhai),
+            "js" | "javascript" | "quickjs" => Some(ScriptEngine::QuickJs),
+            _ => None,
+        }
+    }
+}
+
 /// A single parsed OKF concept document.
 ///
 /// Represents a parsed OKF document with its metadata and extracted content.
@@ -37,8 +59,13 @@ pub struct OkfConcept {
     /// Raw markdown body after frontmatter.
     pub body: String,
 
-    /// Extracted fenced code blocks from body.
-    pub code_blocks: Vec<String>,
+    /// The concept's executable program: the fenced code blocks whose language
+    /// matches the declared `engine`, concatenated in document order. `None` when
+    /// the concept declares no engine or has no matching fence — such a concept is
+    /// documentation, not executable. One program per concept: multiple fences are
+    /// a literate-programming affordance, joined into a single program at parse
+    /// time (TypeDB attribute sets are unordered, so the join must happen here).
+    pub program: Option<String>,
 
     /// Arbitrary extension frontmatter keys not consumed by the parser.
     pub extra_metadata: HashMap<String, String>,

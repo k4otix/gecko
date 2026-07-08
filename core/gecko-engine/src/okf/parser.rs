@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::linker::{extract_code_blocks, extract_links};
+use super::linker::{extract_links, extract_program};
 use super::types::{HierarchyEdge, OkfBundle, OkfConcept, ScriptEngine};
 
 #[derive(Debug, Error)]
@@ -176,12 +176,7 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     // GECKO-specific extension fields
     let consumes = extract_string_list(&mut metadata, "consumes");
     let produces = extract_string_list(&mut metadata, "produces");
-    let engine =
-        extract_string(&mut metadata, "engine").and_then(|s| match s.to_lowercase().as_str() {
-            "rhai" => Some(ScriptEngine::Rhai),
-            "quickjs" => Some(ScriptEngine::QuickJs),
-            _ => None,
-        });
+    let engine = extract_string(&mut metadata, "engine").and_then(|s| ScriptEngine::from_lang(&s));
     let scopes = extract_string_list(&mut metadata, "scopes");
     let timeout_ms = metadata.remove("timeout-ms").and_then(|v| v.as_u64());
 
@@ -204,7 +199,9 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
         .to_string_lossy()
         .replace('\\', "/");
 
-    let code_blocks = extract_code_blocks(body);
+    // One program per concept: pull only the fences whose language matches the
+    // declared engine and concatenate them in document order (C3 / WS3).
+    let program = extract_program(body, engine.as_ref());
 
     Ok(OkfConcept {
         concept_id,
@@ -215,7 +212,7 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
         tags,
         timestamp,
         body: body.to_string(),
-        code_blocks,
+        program,
         extra_metadata,
         file_hash,
         source_path,
@@ -620,14 +617,59 @@ def calculate_monthly_revenue():
     }
 
     #[test]
-    fn test_parse_concept_code_blocks() {
+    fn test_parse_concept_program_none_for_documentation() {
+        // metrics/revenue.md has a ```python fence but declares no engine, so its
+        // code is documentation — no executable program is extracted.
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
         let concept = parse_concept(&dir.path().join("metrics/revenue.md"), dir.path()).unwrap();
 
-        assert_eq!(concept.code_blocks.len(), 1);
-        assert!(concept.code_blocks[0].contains("calculate_monthly_revenue"));
+        assert!(concept.engine.is_none());
+        assert!(concept.program.is_none());
+    }
+
+    #[test]
+    fn test_parse_concept_program_concatenates_matching_fences() {
+        // Engine-matched extraction (WS3): only fences whose language maps to the
+        // declared engine form the program, concatenated in document order; other
+        // languages (here python) are treated as prose.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("calc.md"),
+            r#"---
+type: playbook
+title: Calc
+engine: quickjs
+---
+
+First we set up:
+
+```js
+const a = 1;
+```
+
+An illustrative aside (not executed):
+
+```python
+print("ignored")
+```
+
+Then compute:
+
+```javascript
+const b = a + 1;
+```
+"#,
+        )
+        .unwrap();
+
+        let concept = parse_concept(&dir.path().join("calc.md"), dir.path()).unwrap();
+
+        assert_eq!(concept.engine, Some(ScriptEngine::QuickJs));
+        let program = concept.program.expect("expected an executable program");
+        assert_eq!(program, "const a = 1;\n\nconst b = a + 1;");
+        assert!(!program.contains("ignored"));
     }
 
     #[test]

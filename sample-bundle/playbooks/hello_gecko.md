@@ -2,6 +2,7 @@
 type: playbook
 title: Hello GECKO
 description: A sample playbook to verify the execution sandbox is working correctly.
+engine: rhai
 tags: [demo, hello-world]
 ---
 

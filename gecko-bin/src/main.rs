@@ -390,18 +390,17 @@ async fn cmd_run(
         .await
         .context("Failed to begin read transaction")?;
 
-    // Single-bundle-scoped: concept IDs are exact bundle-relative paths (no
-    // namespace). A concept with multiple code blocks yields multiple rows here;
-    // that ambiguity is handled by the caller (fixed properly in the program-model
-    // workstream).
+    // Single-bundle-scoped: concept IDs are exact bundle-relative paths. Each
+    // concept has exactly one executable program — its engine-matched code fences
+    // were concatenated at parse time — so there is no ambiguity to resolve. We
+    // fetch the concept's single code-block (as a 0-or-1 element list) and engine.
     let query = format!(
         r#"
-        match
-            $c isa concept,
-                has concept-id "{}",
-                has concept-id $id,
-                has code-block $cb;
-        fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
+        match $c isa concept, has concept-id "{}";
+        fetch {{
+            "engine": $c.engine,
+            "code": [ $c.code-block ]
+        }};
     "#,
         gecko_engine::syncer::bundle::escape_tql(concept_id)
     );
@@ -411,50 +410,41 @@ async fn cmd_run(
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {e}"))?;
 
-    let mut matches = Vec::new();
-
+    let mut doc_json: Option<serde_json::Value> = None;
     if answer.is_document_stream() {
         let mut stream = answer.into_documents();
-        while let Some(Ok(doc)) = stream.next().await {
-            let json_str = doc.into_json().to_string();
-            let json: serde_json::Value = serde_json::from_str(&json_str).unwrap_or_default();
-
-            let id = json
-                .as_object()
-                .and_then(|m| m.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let code = json
-                .as_object()
-                .and_then(|m| m.get("code"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let engine = json
-                .as_object()
-                .and_then(|m| m.get("engine"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            matches.push((id, code, engine));
+        if let Some(Ok(doc)) = stream.next().await {
+            doc_json = serde_json::from_str(&doc.into_json().to_string()).ok();
         }
     }
 
-    if matches.is_empty() {
-        anyhow::bail!("Playbook '{concept_id}' not found or has no code blocks.");
-    } else if matches.len() > 1 {
-        let found_ids: Vec<String> = matches.into_iter().map(|(id, _, _)| id).collect();
+    let Some(json) = doc_json else {
+        anyhow::bail!("Playbook '{concept_id}' not found.");
+    };
+
+    // `code` is a list projection: zero elements if the concept has no program.
+    let code_block = json
+        .get("code")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if code_block.trim().is_empty() {
         anyhow::bail!(
-            "Ambiguous playbook ID '{}'. Please specify the namespace. Found:\n  - {}",
-            concept_id,
-            found_ids.join("\n  - ")
+            "Playbook '{concept_id}' has no executable program \
+             (no code fence matching its engine)."
         );
     }
 
-    let (resolved_id, code_block, engine_type) = matches.pop().unwrap();
-    println!("Resolved to: {resolved_id}");
+    let engine_type = json
+        .get("engine")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    println!("Resolved to: {concept_id}");
 
     println!(
         "Extensions loaded: {:?}",

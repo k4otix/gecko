@@ -22,6 +22,7 @@ async fn test_sandbox_execution() {
     let playbook_content = r#"---
 type: playbook
 title: Test Playbook
+engine: rhai
 ---
 
 # Test Playbook
@@ -57,7 +58,13 @@ x + y
     let concept = &manifest.concepts[0];
     assert_eq!(concept.concept_id, expected_id);
     assert_eq!(concept.concept_type, "playbook");
-    assert_eq!(concept.code_blocks.len(), 1);
+    // One program per concept: the engine-matched rhai fence is the program.
+    assert_eq!(concept.engine, Some(ScriptEngine::Rhai));
+    let program = concept
+        .program
+        .as_deref()
+        .expect("expected an executable program");
+    assert!(program.contains("x + y"));
 
     // 3. Setup TypeDB (self-cleaning database, dropped when `test_db` drops)
     let test_db = TestDb::new("gecko_test_sandbox");

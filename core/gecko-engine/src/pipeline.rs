@@ -62,10 +62,12 @@ pub async fn execute_playbook(
     // Step 1: Trigger (concept provided by caller)
     info!(concept_id = %concept.concept_id, "Pipeline: executing playbook");
 
-    // Validate that the concept has executable content
-    if concept.code_blocks.is_empty() {
-        return Err(PipelineError::NoCodeBlocks(concept.concept_id.clone()));
-    }
+    // Validate that the concept has an executable program (its engine-matched
+    // fences were concatenated into one program at parse time).
+    let code = concept
+        .program
+        .clone()
+        .ok_or_else(|| PipelineError::NoCodeBlocks(concept.concept_id.clone()))?;
 
     let engine = concept
         .engine
@@ -80,7 +82,6 @@ pub async fn execute_playbook(
     // Step 3: Graph resolution (already done — concept is provided)
 
     // Step 4 + 5 + 6: Transaction + sandbox + execution
-    let code = concept.code_blocks.join("\n");
     let timeout_ms = concept.timeout_ms;
 
     let execution = sandbox_pool.execute(engine, &code, handle_id, host_imports, timeout_ms, None);
