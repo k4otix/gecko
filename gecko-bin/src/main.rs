@@ -14,14 +14,12 @@ use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::HostImports;
-use gecko_engine::sandbox::wasm_executor::WasmExecutor;
 use gecko_engine::syncer::bundle::sync_bundle;
 
 use cyber_gecko::CyberGecko;
@@ -466,8 +464,6 @@ async fn cmd_run(
     );
     println!("Running script using engine: {engine_type}...");
 
-    let executor = WasmExecutor::new().context("Failed to initialize Wasm engine")?;
-
     let cb_extensions: Vec<Box<dyn GeckoExtension>> = extensions
         .iter()
         .map(|e| -> Result<Box<dyn GeckoExtension>> {
@@ -492,17 +488,34 @@ async fn cmd_run(
             Err(format!("Extension '{ext_name}' not found"))
         });
 
-    let result = executor
-        .evaluate(
-            &code_block,
-            Uuid::new_v4(),
-            &HostImports::default(),
-            &scopes,
-            None,
-            Some(ext_cb),
-        )
-        .await;
+    // Execute through the pipeline: it owns the state-handle lifecycle (RAII), the
+    // shared sandbox pool, and the execution record — no execution logic is
+    // duplicated here. `gecko run` sources the program from the graph, so build the
+    // run descriptor from the fetched row. (timeout-ms is not persisted yet, so the
+    // sandbox default applies; the pipeline honors an explicit timeout when given.)
+    let state_registry = gecko_engine::state::registry::StateRegistry::new();
+    let sandbox_pool = gecko_engine::sandbox::wasm_pool::SandboxPool::new();
+    let host_imports = HostImports::default();
 
+    let run = gecko_engine::pipeline::PlaybookRun {
+        concept_id,
+        program: &code_block,
+        scopes: &scopes,
+        timeout_ms: None,
+    };
+
+    let pipeline_result = gecko_engine::pipeline::execute_playbook(
+        &run,
+        &mut db,
+        &state_registry,
+        &sandbox_pool,
+        &host_imports,
+        Some(ext_cb),
+    )
+    .await
+    .context("Pipeline execution failed")?;
+
+    let result = pipeline_result.execution;
     if result.success {
         println!("Execution successful!");
         println!("Output: {}", result.output);
