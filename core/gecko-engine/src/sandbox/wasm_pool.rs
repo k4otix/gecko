@@ -1,38 +1,32 @@
 //! Sandbox execution pool.
 //!
-//! Dispatches script execution to the appropriate engine:
-//! - `Rhai`: Native embedded Rhai engine with step-capped evaluation.
-//! - `QuickJs`: JavaScript execution via a WebAssembly-sandboxed JS runtime.
+//! Holds the single WebAssembly executor (QuickJS guest), lazily initialized on
+//! first use to avoid paying the WASM compilation cost until a program actually
+//! runs. All engines are WASM now, so there is no cross-engine dispatch — MCP/API/
+//! DB/TypeQL are scope-gated host capabilities, not separate engines.
 
 use std::sync::OnceLock;
 
 use tracing::info;
 use uuid::Uuid;
 
-use super::engine::{ExecutionResult, HostImports, ScriptExecutor};
-use super::rhai_executor::RhaiExecutor;
+use super::engine::{ExecutionResult, ExtensionCallback, HostImports};
 use super::wasm_executor::WasmExecutor;
 use crate::okf::types::ScriptEngine;
 
-/// Pool of sandbox instances.
-///
-/// Holds a Rhai executor (always available) and a lazily-initialized
-/// WasmExecutor for QuickJS (initialized on first JS execution to avoid
-/// paying the Wasm compilation cost when only Rhai scripts are used).
+/// Pool wrapping the lazily-initialized [`WasmExecutor`].
 pub struct SandboxPool {
-    rhai: RhaiExecutor,
     wasm: OnceLock<Result<WasmExecutor, String>>,
 }
 
 impl SandboxPool {
     pub fn new() -> Self {
         Self {
-            rhai: RhaiExecutor::new(),
             wasm: OnceLock::new(),
         }
     }
 
-    /// Returns a reference to the WasmExecutor, initializing it on first call.
+    /// Returns the WasmExecutor, initializing (and compiling the module) on first call.
     fn wasm_executor(&self) -> Result<&WasmExecutor, String> {
         self.wasm
             .get_or_init(|| {
@@ -43,39 +37,35 @@ impl SandboxPool {
             .map_err(std::clone::Clone::clone)
     }
 
-    /// Dispatch execution to the appropriate engine based on the script type.
-    pub fn execute(
+    /// Execute a program in the WASM sandbox. `scopes` are the concept's granted
+    /// capability scopes, enforced by the host bridge (S3).
+    pub async fn execute(
         &self,
-        engine: &ScriptEngine,
         code: &str,
         handle_id: Uuid,
         host_imports: &HostImports,
+        scopes: &[String],
         timeout_ms: Option<u64>,
-        extension_callback: Option<crate::sandbox::engine::ExtensionCallback>,
+        extension_callback: Option<ExtensionCallback>,
     ) -> ExecutionResult {
-        match engine {
-            ScriptEngine::Rhai => self.rhai.evaluate(
-                code,
-                handle_id,
-                host_imports,
-                timeout_ms,
-                extension_callback,
-            ),
-            ScriptEngine::QuickJs => match self.wasm_executor() {
-                Ok(wasm) => wasm.evaluate(
+        match self.wasm_executor() {
+            Ok(wasm) => {
+                wasm.evaluate(
                     code,
                     handle_id,
                     host_imports,
+                    scopes,
                     timeout_ms,
                     extension_callback,
-                ),
-                Err(e) => ExecutionResult {
-                    output: serde_json::Value::Null,
-                    duration_ms: 0,
-                    engine: ScriptEngine::QuickJs,
-                    success: false,
-                    error: Some(e),
-                },
+                )
+                .await
+            }
+            Err(e) => ExecutionResult {
+                output: serde_json::Value::Null,
+                duration_ms: 0,
+                engine: ScriptEngine::QuickJs,
+                success: false,
+                error: Some(e),
             },
         }
     }

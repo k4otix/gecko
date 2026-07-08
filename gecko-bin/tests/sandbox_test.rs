@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::ScriptEngine;
-use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
-use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
+use gecko_engine::sandbox::engine::HostImports;
+use gecko_engine::sandbox::wasm_executor::WasmExecutor;
 use gecko_engine::syncer::bundle::sync_bundle;
 
 mod common;
@@ -18,20 +18,21 @@ async fn test_sandbox_execution() {
     let temp_dir = TempDir::new().unwrap();
     let bundle_path = temp_dir.path();
 
-    // Create a playbook concept in the bundle
+    // A QuickJS playbook: all synced code runs in the one WASM sandbox boundary.
     let playbook_content = r#"---
 type: playbook
 title: Test Playbook
+engine: quickjs
 ---
 
 # Test Playbook
 
 This is a test playbook.
 
-```rhai
-let x = 40;
-let y = 2;
-x + y
+```js
+const x = 40;
+const y = 2;
+({ answer: x + y })
 ```
 "#;
 
@@ -57,7 +58,13 @@ x + y
     let concept = &manifest.concepts[0];
     assert_eq!(concept.concept_id, expected_id);
     assert_eq!(concept.concept_type, "playbook");
-    assert_eq!(concept.code_blocks.len(), 1);
+    // One program per concept: the engine-matched js fence is the program.
+    assert_eq!(concept.engine, Some(ScriptEngine::QuickJs));
+    let program = concept
+        .program
+        .as_deref()
+        .expect("expected an executable program");
+    assert!(program.contains("x + y"));
 
     // 3. Setup TypeDB (self-cleaning database, dropped when `test_db` drops)
     let test_db = TestDb::new("gecko_test_sandbox");
@@ -81,10 +88,10 @@ x + y
         .expect("Failed to begin read transaction");
     let query = format!(
         r#"
-        match 
-            $c isa concept, 
+        match
+            $c isa concept,
                 has concept-id "{}",
-                has code-block $cb; 
+                has code-block $cb;
         fetch {{"code": $cb}};
     "#,
         expected_id
@@ -113,21 +120,24 @@ x + y
         "Failed to fetch code block from database"
     );
 
-    // 6. Execute in Sandbox
-    let executor = RhaiExecutor::new();
-    let result = executor.evaluate(
-        &code_block,
-        Uuid::new_v4(),
-        &HostImports::default(),
-        None,
-        None,
-    );
+    // 6. Execute in the WASM sandbox (async). No host calls, so no scopes needed.
+    let executor = WasmExecutor::new().expect("Failed to initialize Wasm engine");
+    let result = executor
+        .evaluate(
+            &code_block,
+            Uuid::new_v4(),
+            &HostImports::default(),
+            &[],
+            None,
+            None,
+        )
+        .await;
 
     assert!(
         result.success,
         "Script execution failed: {:?}",
         result.error
     );
-    assert_eq!(result.output, serde_json::json!(42));
-    assert_eq!(result.engine, ScriptEngine::Rhai);
+    assert_eq!(result.output, serde_json::json!({ "answer": 42 }));
+    assert_eq!(result.engine, ScriptEngine::QuickJs);
 }

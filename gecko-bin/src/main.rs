@@ -14,15 +14,12 @@ use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
-use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
-use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
-use gecko_engine::sandbox::wasm_executor::WasmExecutor;
+use gecko_engine::sandbox::engine::HostImports;
 use gecko_engine::syncer::bundle::sync_bundle;
 
 use cyber_gecko::CyberGecko;
@@ -390,18 +387,19 @@ async fn cmd_run(
         .await
         .context("Failed to begin read transaction")?;
 
-    // Single-bundle-scoped: concept IDs are exact bundle-relative paths (no
-    // namespace). A concept with multiple code blocks yields multiple rows here;
-    // that ambiguity is handled by the caller (fixed properly in the program-model
-    // workstream).
+    // Single-bundle-scoped: concept IDs are exact bundle-relative paths. Each
+    // concept has exactly one executable program — its engine-matched code fences
+    // were concatenated at parse time — so there is no ambiguity to resolve. We
+    // fetch the concept's single code-block plus its engine and granted scopes
+    // (both as lists to tolerate the 0-or-1 / 0-or-N cardinalities).
     let query = format!(
         r#"
-        match
-            $c isa concept,
-                has concept-id "{}",
-                has concept-id $id,
-                has code-block $cb;
-        fetch {{"id": $id, "code": $cb, "engine": $c.engine}};
+        match $c isa concept, has concept-id "{}";
+        fetch {{
+            "engine": $c.engine,
+            "code": [ $c.code-block ],
+            "scopes": [ $c.scope ]
+        }};
     "#,
         gecko_engine::syncer::bundle::escape_tql(concept_id)
     );
@@ -411,70 +409,60 @@ async fn cmd_run(
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {e}"))?;
 
-    let mut matches = Vec::new();
-
+    let mut doc_json: Option<serde_json::Value> = None;
     if answer.is_document_stream() {
         let mut stream = answer.into_documents();
-        while let Some(Ok(doc)) = stream.next().await {
-            let json_str = doc.into_json().to_string();
-            let json: serde_json::Value = serde_json::from_str(&json_str).unwrap_or_default();
-
-            let id = json
-                .as_object()
-                .and_then(|m| m.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let code = json
-                .as_object()
-                .and_then(|m| m.get("code"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let engine = json
-                .as_object()
-                .and_then(|m| m.get("engine"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            matches.push((id, code, engine));
+        if let Some(Ok(doc)) = stream.next().await {
+            doc_json = serde_json::from_str(&doc.into_json().to_string()).ok();
         }
     }
 
-    if matches.is_empty() {
-        anyhow::bail!("Playbook '{concept_id}' not found or has no code blocks.");
-    } else if matches.len() > 1 {
-        let found_ids: Vec<String> = matches.into_iter().map(|(id, _, _)| id).collect();
+    let Some(json) = doc_json else {
+        anyhow::bail!("Playbook '{concept_id}' not found.");
+    };
+
+    // `code` is a list projection: zero elements if the concept has no program.
+    let code_block = json
+        .get("code")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if code_block.trim().is_empty() {
         anyhow::bail!(
-            "Ambiguous playbook ID '{}'. Please specify the namespace. Found:\n  - {}",
-            concept_id,
-            found_ids.join("\n  - ")
+            "Playbook '{concept_id}' has no executable program \
+             (no code fence matching its engine)."
         );
     }
 
-    let (resolved_id, code_block, engine_type) = matches.pop().unwrap();
-    println!("Resolved to: {resolved_id}");
+    // The engine token is informational — all concepts run in the one WASM
+    // (QuickJS) boundary now.
+    let engine_type = json
+        .get("engine")
+        .and_then(|v| v.as_str())
+        .unwrap_or("quickjs")
+        .to_string();
+
+    // Granted capability scopes gate host-extension calls in the sandbox (S3).
+    let scopes: Vec<String> = json
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    println!("Resolved to: {concept_id}");
 
     println!(
         "Extensions loaded: {:?}",
         extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
     );
-    println!(
-        "Running script using engine: {}...",
-        if engine_type.is_empty() {
-            "rhai"
-        } else {
-            &engine_type
-        }
-    );
-
-    let executor: Box<dyn ScriptExecutor> = match engine_type.as_str() {
-        "quickjs" | "wasm" => {
-            Box::new(WasmExecutor::new().context("Failed to initialize Wasm engine")?)
-        }
-        _ => Box::new(RhaiExecutor::new()),
-    };
+    println!("Running script using engine: {engine_type}...");
 
     let cb_extensions: Vec<Box<dyn GeckoExtension>> = extensions
         .iter()
@@ -500,16 +488,34 @@ async fn cmd_run(
             Err(format!("Extension '{ext_name}' not found"))
         });
 
-    let result = tokio::task::block_in_place(|| {
-        executor.evaluate(
-            &code_block,
-            Uuid::new_v4(),
-            &HostImports::default(),
-            None,
-            Some(ext_cb),
-        )
-    });
+    // Execute through the pipeline: it owns the state-handle lifecycle (RAII), the
+    // shared sandbox pool, and the execution record — no execution logic is
+    // duplicated here. `gecko run` sources the program from the graph, so build the
+    // run descriptor from the fetched row. (timeout-ms is not persisted yet, so the
+    // sandbox default applies; the pipeline honors an explicit timeout when given.)
+    let state_registry = gecko_engine::state::registry::StateRegistry::new();
+    let sandbox_pool = gecko_engine::sandbox::wasm_pool::SandboxPool::new();
+    let host_imports = HostImports::default();
 
+    let run = gecko_engine::pipeline::PlaybookRun {
+        concept_id,
+        program: &code_block,
+        scopes: &scopes,
+        timeout_ms: None,
+    };
+
+    let pipeline_result = gecko_engine::pipeline::execute_playbook(
+        &run,
+        &mut db,
+        &state_registry,
+        &sandbox_pool,
+        &host_imports,
+        Some(ext_cb),
+    )
+    .await
+    .context("Pipeline execution failed")?;
+
+    let result = pipeline_result.execution;
     if result.success {
         println!("Execution successful!");
         println!("Output: {}", result.output);

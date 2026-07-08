@@ -8,13 +8,36 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// The scripting engine to use for executing a concept's code blocks.
+/// The scripting engine to use for executing a concept's program.
+///
+/// GECKO runs *all* synced code as untrusted inside one WebAssembly sandbox
+/// boundary, so QuickJS (JavaScript, via a WASM guest) is the only MVP engine.
+/// Native Rhai was dropped in the all-WASM rewrite; additional engines can return
+/// later as WASM guest artifacts, which is why this stays an enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptEngine {
-    Rhai,
-    #[serde(alias = "quickjs")]
     QuickJs,
+}
+
+impl ScriptEngine {
+    /// The canonical engine token stored in the graph and accepted in frontmatter.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ScriptEngine::QuickJs => "quickjs",
+        }
+    }
+
+    /// Resolves a code-fence language tag (or a frontmatter `engine` value) to the
+    /// engine that executes it. Returns `None` for non-executable languages
+    /// (`python`, `sql`, `mermaid`, plain text, …), which are treated as
+    /// documentation rather than program source.
+    pub fn from_lang(lang: &str) -> Option<Self> {
+        match lang.trim().to_lowercase().as_str() {
+            "js" | "javascript" | "quickjs" => Some(ScriptEngine::QuickJs),
+            _ => None,
+        }
+    }
 }
 
 /// A single parsed OKF concept document.
@@ -37,8 +60,13 @@ pub struct OkfConcept {
     /// Raw markdown body after frontmatter.
     pub body: String,
 
-    /// Extracted fenced code blocks from body.
-    pub code_blocks: Vec<String>,
+    /// The concept's executable program: the fenced code blocks whose language
+    /// matches the declared `engine`, concatenated in document order. `None` when
+    /// the concept declares no engine or has no matching fence — such a concept is
+    /// documentation, not executable. One program per concept: multiple fences are
+    /// a literate-programming affordance, joined into a single program at parse
+    /// time (TypeDB attribute sets are unordered, so the join must happen here).
+    pub program: Option<String>,
 
     /// Arbitrary extension frontmatter keys not consumed by the parser.
     pub extra_metadata: HashMap<String, String>,

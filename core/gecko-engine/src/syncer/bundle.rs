@@ -22,7 +22,7 @@ use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
 use crate::db::router::{DbError, TypeDbRouter};
-use crate::okf::types::{OkfBundle, OkfConcept, ScriptEngine};
+use crate::okf::types::{OkfBundle, OkfConcept};
 
 /// Results of a bundle sync operation.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -184,14 +184,6 @@ fn str_entry(s: &str) -> GivenRowEntry {
 
 fn dt_entry(dt: &DateTime<Utc>) -> GivenRowEntry {
     GivenRowEntry::Value(Value::Datetime(dt.naive_utc()))
-}
-
-fn engine_str(engine: &ScriptEngine) -> String {
-    match engine {
-        ScriptEngine::Rhai => "rhai",
-        ScriptEngine::QuickJs => "quickjs",
-    }
-    .to_string()
 }
 
 /// Runs a parameterized `given` write, feeding `rows` as typed input values.
@@ -420,7 +412,11 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     })
     .await?;
     attach_attr(tx, concepts, "engine", |c| {
-        c.engine.as_ref().map(engine_str).into_iter().collect()
+        c.engine
+            .as_ref()
+            .map(|e| e.as_str().to_string())
+            .into_iter()
+            .collect()
     })
     .await?;
     attach_attr(tx, concepts, "metadata-json", |c| {
@@ -432,9 +428,14 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     })
     .await?;
 
-    // Multi-valued.
+    // Multi-valued tags and granted host-capability scopes (S3); and the single
+    // concatenated program (one code-block).
     attach_attr(tx, concepts, "tag", |c| c.tags.clone()).await?;
-    attach_attr(tx, concepts, "code-block", |c| c.code_blocks.clone()).await?;
+    attach_attr(tx, concepts, "scope", |c| c.scopes.clone()).await?;
+    attach_attr(tx, concepts, "code-block", |c| {
+        c.program.clone().into_iter().collect()
+    })
+    .await?;
 
     // Timestamp (datetime-typed).
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
@@ -614,7 +615,7 @@ mod tests {
             tags: vec![],
             timestamp: None,
             body: String::new(),
-            code_blocks: vec![],
+            program: None,
             extra_metadata: HashMap::new(),
             file_hash: hash.to_string(),
             source_path: format!("{id}.md"),

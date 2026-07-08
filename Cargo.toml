@@ -31,12 +31,6 @@ serde_yaml = "0.9"
 # TypeDB — 3.12+ required for parameterized `given` queries (query_with_rows)
 typedb-driver = "3.12"
 
-# Wasm sandbox (Phase 2 — compiled but gated behind feature)
-# wasmtime = "30"
-
-# Scripting engines
-rhai = "1"
-
 # Markdown / text processing
 pulldown-cmark = "0.13"
 regex = "1"
@@ -60,9 +54,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-
-# Async trait
-async-trait = "0.1"
 
 [profile.dev]
 debug = 0

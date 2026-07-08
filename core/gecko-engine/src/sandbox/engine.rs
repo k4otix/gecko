@@ -1,10 +1,9 @@
-//! Script executor trait and common types.
+//! Shared sandbox types.
 //!
-//! All sandbox implementations (Rhai, QuickJS, future Wasm-isolated variants)
-//! implement the `ScriptExecutor` trait for uniform dispatch.
+//! Common types used by the single WebAssembly executor ([`super::wasm_executor`]):
+//! host-import descriptors, the extension-call bridge, and the execution result.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::okf::types::ScriptEngine;
 
@@ -41,25 +40,4 @@ pub struct ExecutionResult {
     pub success: bool,
     /// Error message if execution failed.
     pub error: Option<String>,
-}
-
-/// Trait for script execution engines.
-///
-/// Implementations provide sandboxed evaluation of code blocks with access
-/// to host state via opaque UUID handles.
-pub trait ScriptExecutor: Send + Sync {
-    /// Evaluate a code string in the sandbox.
-    ///
-    /// - `code`: The script source to execute.
-    /// - `handle_id`: Opaque UUID for accessing host state via imports.
-    /// - `host_imports`: Available host functions.
-    /// - `timeout_ms`: Optional execution timeout.
-    fn evaluate(
-        &self,
-        code: &str,
-        handle_id: Uuid,
-        host_imports: &HostImports,
-        timeout_ms: Option<u64>,
-        extension_callback: Option<ExtensionCallback>,
-    ) -> ExecutionResult;
 }

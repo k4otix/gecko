@@ -1,18 +1,52 @@
-//! The 8-step execution and contextual pipeline (design §5).
+//! The execution and contextual pipeline (design §5).
 //!
-//! Orchestrates the full lifecycle of a playbook execution:
-//! trigger → handle allocation → graph resolution → transaction →
-//! sandbox → execution → commit/rollback → cleanup.
+//! Orchestrates the lifecycle of a playbook execution:
+//! trigger → handle allocation → sandbox execution → record → RAII cleanup.
+//!
+//! This is the single execution path. Callers (`gecko run`, and future bundle- or
+//! trigger-driven runs) describe *what* to run with a [`PlaybookRun`] and hand it
+//! here; the pipeline owns the state-handle lifecycle, the shared sandbox pool, and
+//! the record hook.
 
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::db::router::{DbError, TypeDbRouter};
 use crate::okf::types::OkfConcept;
-use crate::sandbox::engine::ExecutionResult;
-use crate::sandbox::engine::HostImports;
+use crate::sandbox::engine::{ExecutionResult, ExtensionCallback, HostImports};
 use crate::sandbox::wasm_pool::SandboxPool;
 use crate::state::registry::StateRegistry;
+
+/// A source-agnostic description of the program to execute.
+///
+/// Built either from a parsed [`OkfConcept`] (a bundle/in-memory run, via
+/// [`PlaybookRun::from_concept`]) or reconstructed from the knowledge graph (the
+/// `gecko run <concept-id>` path). Holding only the executable essentials keeps the
+/// pipeline independent of how the concept was obtained.
+#[derive(Debug, Clone, Copy)]
+pub struct PlaybookRun<'a> {
+    /// The concept's ID (for logging and the execution record).
+    pub concept_id: &'a str,
+    /// The single concatenated program to run (one program per concept).
+    pub program: &'a str,
+    /// Granted host-capability scopes; the sandbox default-denies ungranted calls (S3).
+    pub scopes: &'a [String],
+    /// Optional execution timeout; the sandbox applies its default when `None`.
+    pub timeout_ms: Option<u64>,
+}
+
+impl<'a> PlaybookRun<'a> {
+    /// Borrows the executable parts of a parsed concept. Returns `None` when the
+    /// concept has no program (it is documentation, not executable).
+    pub fn from_concept(concept: &'a OkfConcept) -> Option<Self> {
+        Some(Self {
+            concept_id: &concept.concept_id,
+            program: concept.program.as_deref()?,
+            scopes: &concept.scopes,
+            timeout_ms: concept.timeout_ms,
+        })
+    }
+}
 
 /// Result of a pipeline execution.
 #[derive(Debug)]
@@ -21,19 +55,13 @@ pub struct PipelineResult {
     pub handle_id: Uuid,
     /// The sandbox execution result.
     pub execution: ExecutionResult,
-    /// Whether the TypeDB transaction was committed.
+    /// Whether the execution was recorded (transaction committed).
     pub committed: bool,
 }
 
 /// Errors during pipeline execution.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
-    #[error("Concept '{0}' has no code blocks to execute")]
-    NoCodeBlocks(String),
-
-    #[error("Concept '{0}' has no engine specified in frontmatter")]
-    NoEngine(String),
-
     #[error("Database error: {0}")]
     Db(#[from] DbError),
 
@@ -41,56 +69,50 @@ pub enum PipelineError {
     ExecutionFailed(String),
 }
 
-/// Executes a playbook concept through the full 8-step pipeline.
+/// Executes a playbook through the pipeline (design §5).
 ///
-/// Design §5:
-/// 1. Trigger (caller provides the concept)
-/// 2. Handle allocation from StateRegistry
-/// 3. Graph resolution (concept already resolved by caller)
-/// 4. Transaction start
-/// 5. Sandbox instantiation
-/// 6. Script execution
-/// 7. Commit/rollback + optional episode generation
-/// 8. RAII cleanup (automatic via StateHandleGuard drop)
+/// 1. Trigger (caller supplies the [`PlaybookRun`])
+/// 2. Handle allocation from the [`StateRegistry`]
+/// 3. Sandbox instantiation + execution in the one WASM boundary
+/// 4. Record the execution (commit/rollback)
+/// 5. RAII cleanup (automatic when the state handle drops)
+///
+/// All synced code is untrusted and runs in the WASM sandbox; the run's granted
+/// `scopes` gate host capabilities (S3). Returns the execution result even when the
+/// script itself failed — inspect [`PipelineResult::execution`].
 pub async fn execute_playbook(
-    concept: &OkfConcept,
+    run: &PlaybookRun<'_>,
     db: &mut TypeDbRouter,
     state_registry: &StateRegistry,
     sandbox_pool: &SandboxPool,
     host_imports: &HostImports,
+    extension_callback: Option<ExtensionCallback>,
 ) -> Result<PipelineResult, PipelineError> {
-    // Step 1: Trigger (concept provided by caller)
-    info!(concept_id = %concept.concept_id, "Pipeline: executing playbook");
+    info!(concept_id = %run.concept_id, "Pipeline: executing playbook");
 
-    // Validate that the concept has executable content
-    if concept.code_blocks.is_empty() {
-        return Err(PipelineError::NoCodeBlocks(concept.concept_id.clone()));
-    }
-
-    let engine = concept
-        .engine
-        .as_ref()
-        .ok_or_else(|| PipelineError::NoEngine(concept.concept_id.clone()))?;
-
-    // 1. Context initialization
+    // Step 2: allocate a state handle (RAII-cleaned when it drops below).
     let handle = state_registry.allocate();
     let handle_id = handle.id;
     info!(handle = %handle_id, "Pipeline: state handle allocated");
 
-    // Step 3: Graph resolution (already done — concept is provided)
+    // Step 3: sandbox execution. The extension callback bridges permitted host
+    // capability calls; the sandbox enforces the run's scopes (S3).
+    let execution = sandbox_pool
+        .execute(
+            run.program,
+            handle_id,
+            host_imports,
+            run.scopes,
+            run.timeout_ms,
+            extension_callback,
+        )
+        .await;
 
-    // Step 4 + 5 + 6: Transaction + sandbox + execution
-    let code = concept.code_blocks.join("\n");
-    let timeout_ms = concept.timeout_ms;
-
-    let execution = sandbox_pool.execute(engine, &code, handle_id, host_imports, timeout_ms, None);
-
-    // Step 7: Commit or rollback
+    // Step 4: record on success; roll back (record nothing) on failure.
     let committed = if execution.success {
-        // Attempt to record execution in TypeDB
-        match record_execution(db, concept, &execution) {
+        match record_execution(db, run.concept_id, &execution) {
             Ok(()) => {
-                info!(concept_id = %concept.concept_id, "Pipeline: transaction committed");
+                info!(concept_id = %run.concept_id, "Pipeline: execution recorded");
                 true
             }
             Err(e) => {
@@ -100,16 +122,14 @@ pub async fn execute_playbook(
         }
     } else {
         error!(
-            concept_id = %concept.concept_id,
+            concept_id = %run.concept_id,
             error = execution.error.as_deref().unwrap_or("unknown"),
             "Pipeline: execution failed, rolling back"
         );
         false
     };
 
-    // Step 8: Cleanup — handle is dropped automatically (RAII)
-    // The `handle` goes out of scope here, triggering StateHandleGuard::drop()
-
+    // Step 5: `handle` drops here, triggering StateHandleGuard::drop() (RAII).
     Ok(PipelineResult {
         handle_id,
         execution,
@@ -117,16 +137,17 @@ pub async fn execute_playbook(
     })
 }
 
-/// Records a successful execution event in TypeDB.
+/// Records a successful execution event.
+///
+/// For now this logs the execution; full mem-gecko episode generation (writing a
+/// contextualizing relation into the graph) lands when that extension is wired in.
 fn record_execution(
     _db: &mut TypeDbRouter,
-    concept: &OkfConcept,
+    concept_id: &str,
     result: &ExecutionResult,
 ) -> Result<(), DbError> {
-    // For Phase 1, we log the execution. Full mem-gecko episode generation
-    // happens when the mem-gecko extension is wired in.
     info!(
-        concept_id = %concept.concept_id,
+        concept_id,
         duration_ms = result.duration_ms,
         engine = ?result.engine,
         "Execution recorded"
