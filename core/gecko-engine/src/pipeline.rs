@@ -69,10 +69,10 @@ pub async fn execute_playbook(
         .clone()
         .ok_or_else(|| PipelineError::NoCodeBlocks(concept.concept_id.clone()))?;
 
-    let engine = concept
-        .engine
-        .as_ref()
-        .ok_or_else(|| PipelineError::NoEngine(concept.concept_id.clone()))?;
+    // A program only exists when an engine was declared, but validate explicitly.
+    if concept.engine.is_none() {
+        return Err(PipelineError::NoEngine(concept.concept_id.clone()));
+    }
 
     // 1. Context initialization
     let handle = state_registry.allocate();
@@ -81,10 +81,20 @@ pub async fn execute_playbook(
 
     // Step 3: Graph resolution (already done — concept is provided)
 
-    // Step 4 + 5 + 6: Transaction + sandbox + execution
+    // Step 4 + 5 + 6: Transaction + sandbox + execution. Everything runs in the
+    // one WASM boundary; the concept's granted scopes gate host capabilities (S3).
     let timeout_ms = concept.timeout_ms;
 
-    let execution = sandbox_pool.execute(engine, &code, handle_id, host_imports, timeout_ms, None);
+    let execution = sandbox_pool
+        .execute(
+            &code,
+            handle_id,
+            host_imports,
+            &concept.scopes,
+            timeout_ms,
+            None,
+        )
+        .await;
 
     // Step 7: Commit or rollback
     let committed = if execution.success {

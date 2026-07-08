@@ -16,7 +16,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 typedb-driver = { workspace = true }
-rhai = { workspace = true }
 pulldown-cmark = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
@@ -25,7 +24,6 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-async-trait = { workspace = true }
 futures-util = "0.3.32"
 wasmtime = "46.0.1"
 wasmtime-wasi = "46.0.1"

@@ -8,12 +8,15 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// The scripting engine to use for executing a concept's code blocks.
+/// The scripting engine to use for executing a concept's program.
+///
+/// GECKO runs *all* synced code as untrusted inside one WebAssembly sandbox
+/// boundary, so QuickJS (JavaScript, via a WASM guest) is the only MVP engine.
+/// Native Rhai was dropped in the all-WASM rewrite; additional engines can return
+/// later as WASM guest artifacts, which is why this stays an enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptEngine {
-    Rhai,
-    #[serde(alias = "quickjs")]
     QuickJs,
 }
 
@@ -21,7 +24,6 @@ impl ScriptEngine {
     /// The canonical engine token stored in the graph and accepted in frontmatter.
     pub fn as_str(&self) -> &'static str {
         match self {
-            ScriptEngine::Rhai => "rhai",
             ScriptEngine::QuickJs => "quickjs",
         }
     }
@@ -32,7 +34,6 @@ impl ScriptEngine {
     /// documentation rather than program source.
     pub fn from_lang(lang: &str) -> Option<Self> {
         match lang.trim().to_lowercase().as_str() {
-            "rhai" => Some(ScriptEngine::Rhai),
             "js" | "javascript" | "quickjs" => Some(ScriptEngine::QuickJs),
             _ => None,
         }

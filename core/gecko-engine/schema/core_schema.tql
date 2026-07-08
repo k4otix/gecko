@@ -58,6 +58,7 @@ define
     plays containment:container;
 
   attribute engine value string;           # execution engine for code-blocks
+  attribute scope value string;            # granted host-capability scope, e.g. "cyber-gecko:isolate"
 
   entity concept sub okf-concept,
     owns concept-type @card(0..1),
@@ -67,6 +68,7 @@ define
     owns body @card(0..1),
     owns code-block @card(0..),
     owns engine @card(0..1),
+    owns scope @card(0..),
     owns metadata-json @card(0..1),
     owns synced-at @card(0..1),
     owns file-hash @card(0..1),

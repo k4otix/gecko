@@ -680,7 +680,7 @@ const b = a + 1;
             r#"---
 type: Playbook
 title: Containment
-engine: rhai
+engine: quickjs
 consumes: [alert, asset]
 produces: [containment-result]
 scopes: [mde:isolate]
@@ -694,7 +694,7 @@ Playbook body.
 
         let concept = parse_concept(&dir.path().join("playbook.md"), dir.path()).unwrap();
 
-        assert_eq!(concept.engine, Some(ScriptEngine::Rhai));
+        assert_eq!(concept.engine, Some(ScriptEngine::QuickJs));
         assert_eq!(concept.consumes, vec!["alert", "asset"]);
         assert_eq!(concept.produces, vec!["containment-result"]);
         assert_eq!(concept.scopes, vec!["mde:isolate"]);

@@ -20,8 +20,7 @@ use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
-use gecko_engine::sandbox::engine::{HostImports, ScriptExecutor};
-use gecko_engine::sandbox::rhai_executor::RhaiExecutor;
+use gecko_engine::sandbox::engine::HostImports;
 use gecko_engine::sandbox::wasm_executor::WasmExecutor;
 use gecko_engine::syncer::bundle::sync_bundle;
 
@@ -393,13 +392,15 @@ async fn cmd_run(
     // Single-bundle-scoped: concept IDs are exact bundle-relative paths. Each
     // concept has exactly one executable program — its engine-matched code fences
     // were concatenated at parse time — so there is no ambiguity to resolve. We
-    // fetch the concept's single code-block (as a 0-or-1 element list) and engine.
+    // fetch the concept's single code-block plus its engine and granted scopes
+    // (both as lists to tolerate the 0-or-1 / 0-or-N cardinalities).
     let query = format!(
         r#"
         match $c isa concept, has concept-id "{}";
         fetch {{
             "engine": $c.engine,
-            "code": [ $c.code-block ]
+            "code": [ $c.code-block ],
+            "scopes": [ $c.scope ]
         }};
     "#,
         gecko_engine::syncer::bundle::escape_tql(concept_id)
@@ -438,11 +439,24 @@ async fn cmd_run(
         );
     }
 
+    // The engine token is informational — all concepts run in the one WASM
+    // (QuickJS) boundary now.
     let engine_type = json
         .get("engine")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .unwrap_or("quickjs")
         .to_string();
+
+    // Granted capability scopes gate host-extension calls in the sandbox (S3).
+    let scopes: Vec<String> = json
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
 
     println!("Resolved to: {concept_id}");
 
@@ -450,21 +464,9 @@ async fn cmd_run(
         "Extensions loaded: {:?}",
         extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
     );
-    println!(
-        "Running script using engine: {}...",
-        if engine_type.is_empty() {
-            "rhai"
-        } else {
-            &engine_type
-        }
-    );
+    println!("Running script using engine: {engine_type}...");
 
-    let executor: Box<dyn ScriptExecutor> = match engine_type.as_str() {
-        "quickjs" | "wasm" => {
-            Box::new(WasmExecutor::new().context("Failed to initialize Wasm engine")?)
-        }
-        _ => Box::new(RhaiExecutor::new()),
-    };
+    let executor = WasmExecutor::new().context("Failed to initialize Wasm engine")?;
 
     let cb_extensions: Vec<Box<dyn GeckoExtension>> = extensions
         .iter()
@@ -490,15 +492,16 @@ async fn cmd_run(
             Err(format!("Extension '{ext_name}' not found"))
         });
 
-    let result = tokio::task::block_in_place(|| {
-        executor.evaluate(
+    let result = executor
+        .evaluate(
             &code_block,
             Uuid::new_v4(),
             &HostImports::default(),
+            &scopes,
             None,
             Some(ext_cb),
         )
-    });
+        .await;
 
     if result.success {
         println!("Execution successful!");

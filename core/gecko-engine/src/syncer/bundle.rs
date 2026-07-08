@@ -428,8 +428,10 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     })
     .await?;
 
-    // Multi-valued tags; and the single concatenated program (one code-block).
+    // Multi-valued tags and granted host-capability scopes (S3); and the single
+    // concatenated program (one code-block).
     attach_attr(tx, concepts, "tag", |c| c.tags.clone()).await?;
+    attach_attr(tx, concepts, "scope", |c| c.scopes.clone()).await?;
     attach_attr(tx, concepts, "code-block", |c| {
         c.program.clone().into_iter().collect()
     })
