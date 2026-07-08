@@ -99,10 +99,17 @@ pub struct HierarchyEdge {
 /// Parsed content of a complete OKF bundle.
 ///
 /// Represents a collection of OKF concepts, typically parsed from a directory.
+///
+/// GECKO is single-bundle-scoped: one bundle maps to one TypeDB database, so
+/// concept IDs are pure OKF bundle-relative paths (e.g. `tables/orders`) with no
+/// namespace prefix. `bundle_name`/`bundle_description` are metadata sourced from
+/// an optional `bundle.json` manifest (falling back to the directory name); they
+/// identify the bundle entity but are NOT used to namespace concept IDs.
 #[derive(Debug, Clone)]
 pub struct OkfBundle {
     pub bundle_path: String,
     pub bundle_name: String,
+    pub bundle_description: Option<String>,
     pub concepts: Vec<OkfConcept>,
     pub links: Vec<OkfLink>,
     pub citations: Vec<OkfCitation>,

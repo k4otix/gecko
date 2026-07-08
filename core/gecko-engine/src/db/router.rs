@@ -154,6 +154,40 @@ impl TypeDbRouter {
         Ok(())
     }
 
+    /// Deletes a database by name if it exists (a no-op if it does not).
+    pub async fn delete_database(&mut self, name: &str) -> Result<(), DbError> {
+        let driver = self.driver().await?;
+        let exists = driver
+            .databases()
+            .contains(name)
+            .await
+            .map_err(|e| DbError::Connection(e.to_string()))?;
+        if exists {
+            let database = driver
+                .databases()
+                .get(name)
+                .await
+                .map_err(|e| DbError::Connection(e.to_string()))?;
+            database
+                .delete()
+                .await
+                .map_err(|e| DbError::Connection(e.to_string()))?;
+            info!(database = %name, "Deleted database");
+        }
+        Ok(())
+    }
+
+    /// Lists the names of all databases on the server.
+    pub async fn list_databases(&mut self) -> Result<Vec<String>, DbError> {
+        let driver = self.driver().await?;
+        let all = driver
+            .databases()
+            .all()
+            .await
+            .map_err(|e| DbError::Connection(e.to_string()))?;
+        Ok(all.iter().map(|d| d.name().to_string()).collect())
+    }
+
     /// Installs a TypeQL schema definition into the database.
     pub async fn apply_schema(&mut self, schema_content: &str) -> Result<(), DbError> {
         self.ensure_database().await?;
