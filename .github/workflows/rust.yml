@@ -44,7 +44,10 @@ jobs:
       run: cargo audit
       
     - name: Build
-      run: cargo build --verbose
+      # --workspace --all-targets so this compiles the same feature-unified graph
+      # (dev-dependencies included) that the test step needs — otherwise the test
+      # step recompiles ~120 crates that differ only in feature resolution.
+      run: cargo build --workspace --all-targets --verbose
       
     - name: Run Tests
       run: cargo nextest run --workspace
