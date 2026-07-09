@@ -6,6 +6,8 @@
 //! (cyber-gecko, mem-gecko), and dispatches to the appropriate handler.
 //! This is the only crate that depends on both gecko-engine AND extensions (design §2).
 
+mod config;
+
 use std::path::PathBuf;
 use std::process;
 
@@ -16,14 +18,14 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
-use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::HostImports;
 use gecko_engine::syncer::bundle::sync_bundle;
 
-use cyber_gecko::CyberGecko;
-use mem_gecko::MemGecko;
+use gecko_extension_api::GeckoExtension;
+
+use crate::config::{build_extensions, GeckoConfig};
 
 #[derive(Parser)]
 #[command(
@@ -56,6 +58,10 @@ struct Cli {
     /// Path to CA certificate for TLS
     #[arg(long, global = true)]
     ca_cert: Option<PathBuf>,
+
+    /// Path to the runtime extension-selection config
+    #[arg(long, default_value = "gecko.toml", global = true)]
+    config: PathBuf,
 
     #[command(subcommand)]
     command: Commands,
@@ -149,9 +155,12 @@ fn make_config(cli: &Cli, database: String) -> DbConfig {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    // Assemble extensions (design §2: The Assembler Pattern)
-    let extensions: Vec<Box<dyn GeckoExtension>> =
-        vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
+    // Assemble extensions (design §2: The Assembler Pattern). The runtime config
+    // selects which registered extensions are activated; mem is forced-on and
+    // registered first so schemas apply in subtyping order. Registration is the
+    // gate — only these extensions get functions loaded and write-paths opened.
+    let cfg = GeckoConfig::load(&cli.config)?;
+    let extensions = build_extensions(&cfg)?;
 
     match &cli.command {
         Commands::Init { bundle, schema } => {
@@ -182,7 +191,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Run { concept_id } => {
             cmd_run(
                 make_config(&cli, resolve_db(&cli.database, None)),
-                &extensions,
+                &cfg,
                 concept_id,
             )
             .await
@@ -376,7 +385,7 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 /// Execute a playbook concept in the sandbox.
 async fn cmd_run(
     config: DbConfig,
-    extensions: &[Box<dyn GeckoExtension>],
+    cfg: &GeckoConfig,
     concept_id: &str,
 ) -> Result<()> {
     println!("Executing playbook: {concept_id}");
@@ -458,25 +467,16 @@ async fn cmd_run(
 
     println!("Resolved to: {concept_id}");
 
+    // Rebuild the activated extension set from config for the host-call bridge.
+    // Registration is the gate: only these extensions' imports are reachable from
+    // the sandbox — a disabled extension exposes no write-path.
+    let cb_extensions = build_extensions(cfg)?;
+
     println!(
         "Extensions loaded: {:?}",
-        extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
+        cb_extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
     );
     println!("Running script using engine: {engine_type}...");
-
-    let cb_extensions: Vec<Box<dyn GeckoExtension>> = extensions
-        .iter()
-        .map(|e| -> Result<Box<dyn GeckoExtension>> {
-            // Re-instantiate the extension based on name, because we can't easily clone Box<dyn GeckoExtension>
-            match e.name() {
-                "cyber-gecko" => {
-                    Ok(Box::new(cyber_gecko::CyberGecko::new()) as Box<dyn GeckoExtension>)
-                }
-                "mem-gecko" => Ok(Box::new(mem_gecko::MemGecko::new()) as Box<dyn GeckoExtension>),
-                _ => anyhow::bail!("Unknown extension: {}", e.name()),
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
 
     let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
         std::sync::Arc::new(move |ext_name, func_name, args| {

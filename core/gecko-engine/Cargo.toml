@@ -11,6 +11,7 @@ default = []
 integration = []  # Gate integration tests requiring live TypeDB
 
 [dependencies]
+gecko-extension-api = { path = "../gecko-extension-api" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

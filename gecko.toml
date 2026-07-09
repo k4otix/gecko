@@ -1,0 +1,10 @@
+# GECKO runtime extension selection.
+#
+# One binary ships every compiled-in extension; this file decides which are
+# activated at runtime — no rebuild required. Registration is the gate: only
+# activated extensions get their host functions loaded and write-paths opened.
+
+[extensions]
+# Domain extensions to activate. The `mem` substrate is always-on and does not
+# need to be listed. Unknown or not-compiled names cause startup to fail.
+enabled = ["cyber"]

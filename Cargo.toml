@@ -1,15 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "core/gecko-engine", "core/js-sandbox",
+    "core/gecko-engine", "core/gecko-extension-api", "core/js-sandbox",
+    "core/mem-gecko",
     "extensions/cyber-gecko",
-    "extensions/mem-gecko",
     "gecko-bin",
 ]
 default-members = [
     "core/gecko-engine",
+    "core/gecko-extension-api",
+    "core/mem-gecko",
     "extensions/cyber-gecko",
-    "extensions/mem-gecko",
     "gecko-bin",
 ]
 
@@ -27,6 +28,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+toml = "0.9"
 
 # TypeDB — 3.12+ required for parameterized `given` queries (query_with_rows)
 typedb-driver = "3.12"

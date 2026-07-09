@@ -6,8 +6,7 @@
 //! Generates `execution-episode` nodes linked to involved entities via `contextualizes`
 //! relations for future LLM-powered retrieval (design §4.3).
 
-use gecko_engine::extension::GeckoExtension;
-use gecko_engine::sandbox::engine::HostImportDef;
+use gecko_extension_api::{GeckoExtension, HostImportDef};
 
 /// The mem-gecko TypeQL schema extending the core `okf-concept` and `okf-link` types.
 ///
@@ -27,6 +26,14 @@ impl Default for MemGecko {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Construct the mem-gecko substrate extension as a boxed [`GeckoExtension`].
+///
+/// mem-gecko is always-on: the Assembler registers this unconditionally, before
+/// any optional domain extension, so mem's schema is applied first.
+pub fn extension() -> Box<dyn GeckoExtension> {
+    Box::new(MemGecko::new())
 }
 
 impl GeckoExtension for MemGecko {

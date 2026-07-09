@@ -5,8 +5,7 @@
 //! Provides domain-specific TypeDB schema types (indicators, assets, threat actors)
 //! and host-imported functions for security operations (e.g., host isolation).
 
-use gecko_engine::extension::GeckoExtension;
-use gecko_engine::sandbox::engine::HostImportDef;
+use gecko_extension_api::{GeckoExtension, HostImportDef};
 
 /// The cyber-gecko TypeQL schema extending the core `okf-concept` and `okf-link` types.
 ///
@@ -26,6 +25,12 @@ impl Default for CyberGecko {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Construct the cyber-gecko extension as a boxed [`GeckoExtension`], ready for
+/// the Assembler to register.
+pub fn extension() -> Box<dyn GeckoExtension> {
+    Box::new(CyberGecko::new())
 }
 
 impl GeckoExtension for CyberGecko {
