@@ -53,9 +53,7 @@ impl GeckoConfig {
                 );
                 Ok(GeckoConfig::default())
             }
-            Err(e) => {
-                Err(e).with_context(|| format!("Failed to read {}", path.display()))
-            }
+            Err(e) => Err(e).with_context(|| format!("Failed to read {}", path.display())),
         }
     }
 }
@@ -153,8 +151,9 @@ mod tests {
 
     #[test]
     fn unknown_extension_errors() {
-        assert!(expect_err(&cfg_with(&["bogus"]))
-            .contains("unknown or not-compiled extension: bogus"));
+        assert!(
+            expect_err(&cfg_with(&["bogus"])).contains("unknown or not-compiled extension: bogus")
+        );
     }
 
     #[cfg(feature = "cyber")]

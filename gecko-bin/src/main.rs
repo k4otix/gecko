@@ -25,7 +25,7 @@ use gecko_engine::syncer::bundle::sync_bundle;
 
 use gecko_extension_api::GeckoExtension;
 
-use crate::config::{build_extensions, GeckoConfig};
+use crate::config::{GeckoConfig, build_extensions};
 
 #[derive(Parser)]
 #[command(
@@ -383,11 +383,7 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 }
 
 /// Execute a playbook concept in the sandbox.
-async fn cmd_run(
-    config: DbConfig,
-    cfg: &GeckoConfig,
-    concept_id: &str,
-) -> Result<()> {
+async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Result<()> {
     println!("Executing playbook: {concept_id}");
 
     let mut db = TypeDbRouter::new(config);

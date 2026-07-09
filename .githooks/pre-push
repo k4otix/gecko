@@ -1,0 +1,17 @@
+#!/bin/sh
+# Backstop rustfmt check before every push — same check CI runs
+# (.github/workflows/rust.yml: `cargo fmt --all -- --check`).
+#
+# Enabled by `git config core.hooksPath .githooks` (see scripts/setup-hooks.sh).
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-push: cargo not found on PATH — skipping fmt check" >&2
+    exit 0
+fi
+
+echo "pre-push: cargo fmt --all -- --check"
+if ! cargo fmt --all -- --check; then
+    echo >&2
+    echo "✗ Formatting check failed. Run 'cargo fmt --all' and commit before pushing." >&2
+    exit 1
+fi
