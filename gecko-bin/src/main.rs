@@ -7,6 +7,7 @@
 //! This is the only crate that depends on both gecko-engine AND extensions (design §2).
 
 mod config;
+mod orchestrator;
 
 use std::path::PathBuf;
 use std::process;
@@ -33,7 +34,7 @@ use gecko_extension_api::{
 use gecko_semantic_index::CandleEmbedder;
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
-use crate::config::{GeckoConfig, build_extensions};
+use crate::config::{GeckoConfig, TypedbMode, build_extensions};
 
 #[derive(Parser)]
 #[command(
@@ -81,6 +82,17 @@ enum Commands {
     /// Write a default gecko.toml if absent (idempotent; never clobbers an
     /// existing config).
     Init,
+
+    /// Bring up TypeDB for the configured run mode. In `orchestrated` mode this
+    /// ensures the pinned TypeDB is present, spawns it as a managed child, and
+    /// waits for readiness (idempotent — a no-op if already running). In
+    /// `compose`/`external` mode it prints the path to take (gecko manages
+    /// nothing).
+    Up,
+
+    /// Tear down the managed TypeDB child started by `gecko up` (orchestrated
+    /// mode only). A no-op if nothing is running; other modes print guidance.
+    Down,
 
     /// Initialize the TypeDB schema (core + extensions)
     SchemaInit {
@@ -219,8 +231,16 @@ async fn run(cli: Cli) -> Result<()> {
     let extensions = build_extensions(&cfg)?;
     let address = resolve_address(&cli, &cfg);
 
+    // `gecko up`/`down` manage (or point at) the server itself — they route on the
+    // run mode and never assemble a DB connection like the query commands below.
     match &cli.command {
-        Commands::Init => unreachable!("handled above"),
+        Commands::Up => return cmd_up(&cli, &cfg, &address).await,
+        Commands::Down => return cmd_down(&cfg, &address).await,
+        _ => {}
+    }
+
+    let result = match &cli.command {
+        Commands::Init | Commands::Up | Commands::Down => unreachable!("handled above"),
         Commands::SchemaInit { bundle, schema } => {
             let derived = match bundle {
                 Some(path) => Some(
@@ -275,7 +295,102 @@ async fn run(cli: Cli) -> Result<()> {
                 cmd_model_fetch(&cfg, model.clone(), path.clone())
             }
         },
+    };
+
+    // In orchestrated mode, a connection failure almost always means the managed
+    // server was never started — `gecko *` does NOT auto-spawn TypeDB (that is
+    // `gecko up`'s job). Turn the raw driver error into an actionable hint.
+    result.map_err(|e| {
+        if cfg.typedb.mode == TypedbMode::Orchestrated && looks_like_connection_failure(&e) {
+            e.context(format!(
+                "could not reach the orchestrated TypeDB at '{address}' — run `gecko up` first \
+                 to start it (or set `[typedb] mode` to external/compose)"
+            ))
+        } else {
+            e
+        }
+    })
+}
+
+/// Heuristic: does this error chain look like a failure to reach the server (as
+/// opposed to a query/schema error)? Used only to append the `gecko up` hint.
+fn looks_like_connection_failure(e: &anyhow::Error) -> bool {
+    let msg = format!("{e:#}").to_lowercase();
+    msg.contains("connection")
+        || msg.contains("connect")
+        || msg.contains("unable to connect")
+        || msg.contains("transport")
+        || msg.contains("refused")
+}
+
+/// `gecko up` — bring up TypeDB for the configured run mode.
+async fn cmd_up(cli: &Cli, cfg: &GeckoConfig, address: &str) -> Result<()> {
+    match cfg.typedb.mode {
+        TypedbMode::Orchestrated => {
+            let cache_root = config::cache_dir(cfg)?;
+            println!(
+                "Bringing up orchestrated TypeDB {} (endpoint {address})...",
+                orchestrator::PINNED_TYPEDB
+            );
+            match orchestrator::up(&cache_root, address, &cli.username, &cli.password).await? {
+                orchestrator::UpOutcome::AlreadyRunning => {
+                    println!("✓ TypeDB already running at {address} — nothing to do.");
+                }
+                orchestrator::UpOutcome::Started { pid } => {
+                    println!("✓ Started managed TypeDB (pid {pid}) at {address}, ready.");
+                }
+            }
+        }
+        TypedbMode::Compose => {
+            println!(
+                "[typedb] mode = compose: gecko does not manage the Docker stack.\n\
+                 Run:  docker compose up -d\n\
+                 (TypeDB will be available at {address}.)"
+            );
+        }
+        TypedbMode::External => {
+            println!(
+                "[typedb] mode = external: gecko connects to a TypeDB you run yourself.\n\
+                 Start your server and point `[typedb] endpoint` (currently {address}) at it;\n\
+                 gecko will not spawn or manage a process."
+            );
+        }
     }
+    Ok(())
+}
+
+/// `gecko down` — tear down TypeDB for the configured run mode.
+async fn cmd_down(cfg: &GeckoConfig, address: &str) -> Result<()> {
+    match cfg.typedb.mode {
+        TypedbMode::Orchestrated => {
+            let cache_root = config::cache_dir(cfg)?;
+            match orchestrator::down(&cache_root)? {
+                orchestrator::DownOutcome::NotRunning => {
+                    println!("No managed TypeDB is running — nothing to stop.");
+                }
+                orchestrator::DownOutcome::Stopped { pid, graceful } => {
+                    if graceful {
+                        println!("✓ Stopped managed TypeDB (pid {pid}).");
+                    } else {
+                        println!("✓ Stopped managed TypeDB (pid {pid}) — needed SIGKILL.");
+                    }
+                }
+            }
+        }
+        TypedbMode::Compose => {
+            println!(
+                "[typedb] mode = compose: gecko does not manage the Docker stack.\n\
+                 Run:  docker compose down"
+            );
+        }
+        TypedbMode::External => {
+            println!(
+                "[typedb] mode = external: gecko never started a server, so there is nothing \
+                 to stop (the server at {address} is yours to manage)."
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `gecko model fetch` — stage the embedding model into the runtime cache.

@@ -31,8 +31,8 @@ fn init_writes_default_config_then_is_a_noop() {
     assert!(parsed.get("typedb").is_some());
     assert_eq!(
         parsed["typedb"]["mode"].as_str(),
-        Some("external"),
-        "P1 default mode is external"
+        Some("orchestrated"),
+        "P3 flips the default run mode to orchestrated"
     );
 
     // 2. Present → idempotent no-op: existing content is preserved byte-for-byte.

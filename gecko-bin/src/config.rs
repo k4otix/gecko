@@ -135,10 +135,11 @@ pub enum TypedbMode {
 
 impl Default for TypedbMode {
     fn default() -> Self {
-        // P1: default to External (connect to `endpoint`) — the current
-        // behavior. P3 implements orchestration and will flip this to
-        // `Orchestrated`.
-        TypedbMode::External
+        // P3: now that orchestration exists, `Orchestrated` is the default — the
+        // best local UX (`gecko up` manages a pinned TypeDB child process, no
+        // database-install odyssey and no forced Docker). `compose` and
+        // `external` are opt-in alternatives.
+        TypedbMode::Orchestrated
     }
 }
 
@@ -151,8 +152,9 @@ pub struct TypedbConfig {
     /// `--address` flag overrides this when passed.
     #[serde(default = "default_endpoint")]
     pub endpoint: String,
-    /// The TypeDB run mode. **Default `External` for now** (P3 flips it to
-    /// `Orchestrated` once orchestration is implemented).
+    /// The TypeDB run mode. **Default `Orchestrated`** (P3): `gecko up` manages a
+    /// pinned TypeDB child process. Set `external` to connect to a server you run,
+    /// or `compose` for the Docker stack.
     #[serde(default)]
     pub mode: TypedbMode,
 }
@@ -356,13 +358,18 @@ auto_fetch = false
 # model_path = "/pre/provisioned/model/dir"   # optional override (air-gapped)
 # model_source = "https://mirror.example/models"  # optional mirror; default: HuggingFace
 
-# How to reach (and, from P3, how to run) the TypeDB server.
+# How to reach (and how to run) the TypeDB server.
 [typedb]
 endpoint = "localhost:1729"
-# Run mode: "external" | "compose" | "orchestrated". Default "external" (connect
-# to `endpoint`, the current behavior). P3 implements orchestration and will flip
-# the default to "orchestrated".
-mode = "external"
+# Run mode: "orchestrated" | "compose" | "external".
+#   orchestrated (default): `gecko up` downloads a PINNED TypeDB once into the
+#                cache and runs it as a managed child process; `gecko down` stops
+#                it. No database install, no Docker required.
+#   compose:     bring TypeDB up yourself via `docker compose up -d` (see the
+#                repo's docker-compose.yml).
+#   external:    point `endpoint` at a TypeDB you run yourself; gecko connects but
+#                never manages a process.
+mode = "orchestrated"
 "#
 }
 
@@ -655,9 +662,17 @@ mod tests {
     }
 
     #[test]
-    fn typedb_defaults_to_external_endpoint() {
+    fn typedb_defaults_to_orchestrated_endpoint() {
+        // P3: orchestrated is the default local-UX mode; endpoint unchanged.
         let cfg = GeckoConfig::default();
         assert_eq!(cfg.typedb.endpoint, "localhost:1729");
+        assert_eq!(cfg.typedb.mode, TypedbMode::Orchestrated);
+    }
+
+    #[test]
+    fn typedb_mode_external_still_parses() {
+        // External remains selectable for bring-your-own deployments.
+        let cfg: GeckoConfig = toml::from_str("[typedb]\nmode = \"external\"\n").unwrap();
         assert_eq!(cfg.typedb.mode, TypedbMode::External);
     }
 
@@ -693,6 +708,6 @@ mod tests {
         assert_eq!(cfg.semantic_index.model_id, "bge-large-en-v1.5@<revision>");
         assert!(!cfg.semantic_index.auto_fetch);
         assert_eq!(cfg.typedb.endpoint, "localhost:1729");
-        assert_eq!(cfg.typedb.mode, TypedbMode::External);
+        assert_eq!(cfg.typedb.mode, TypedbMode::Orchestrated);
     }
 }

@@ -41,6 +41,17 @@ futures-util = "0.3.32"
 typedb-driver.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
+# TypeDB orchestration (`orchestrator` module, plan P3): download + extract the
+# pinned server dist and manage it as a child process. Kept light — a blocking
+# HTTP client (matches gecko-semantic-index) + archive extraction + POSIX signals.
+ureq = "2"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3.27.0"
 uuid = { workspace = true, features = ["v4"] }
