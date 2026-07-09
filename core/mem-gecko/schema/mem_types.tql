@@ -7,7 +7,7 @@ define
   # ── A2.2 State enums ──────────────────────────────────────────────
   attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");
   attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");
-  attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "llm-synthesis");
+  attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "type-db-function", "external-tool", "human-assertion", "llm-synthesis");
   attribute entrenchment value string @values("axiom", "user-stated", "tool-derived", "inferred", "llm");
   attribute stability-tier value string @values("volatile", "provisional", "stable", "canonical");
   attribute visibility value string @values("private", "team", "shared");
@@ -80,6 +80,8 @@ define
       plays ownership:owned,
       plays rests-on:resting,
       plays rests-on:assumption,
+      plays pivot:from-state,            # A2.8 pivot: a memory-item is the state pivoted from
+      plays pivot:to-state,              # A2.8 pivot: ...and the state pivoted to
       plays surfaced:item;               # anything surfaced by a retrieval (typically a belief)
 
   entity episode sub memory-item,
@@ -189,7 +191,8 @@ define
   # ══════════════════════════════════════════════════════════════════
   entity agent,
       owns agent-id @key,
-      plays ownership:owner;
+      plays ownership:owner,
+      plays pivot:pivoting-agent;         # A2.8 pivot: the agent that made the investigative move
 
   relation ownership,
       relates owned,
@@ -288,8 +291,9 @@ define
   # cross-source resolution record. (population-member:member / resolves:record-* are scoped
   # to `concept` — not external-resource — so typed functions can return a single `{ concept }`
   # type; external-resource is not a `okf-concept` subtype and would break return-type inference.)
-  entity concept,
-      plays source-link:origin,
+  # `concept` and `external-resource` are DEFINED in core_schema.tql; mem only ADDS plays roles
+  # (additive `<type> plays <role>;` form — never a root re-declaration of `entity concept`).
+  concept plays source-link:origin,
       plays contextualizes:context-target,
       plays population-member:member,
       plays resolves:record-a,
@@ -297,5 +301,4 @@ define
 
   # external-resource participates only as a source-link origin (citation target), never as a
   # typed-function return player.
-  entity external-resource,
-      plays source-link:origin;
+  external-resource plays source-link:origin;

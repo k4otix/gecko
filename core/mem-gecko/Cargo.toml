@@ -15,4 +15,9 @@ ulid = "1"
 
 [dev-dependencies]
 chrono = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# Live schema-acceptance integration tests (A2 acceptance): reuse the engine's
+# TypeDB router and drive raw parameterized TQL against a throwaway db.
+gecko-engine = { path = "../gecko-engine" }
+typedb-driver = { workspace = true }
+futures-util = "0.3"

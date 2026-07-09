@@ -1929,9 +1929,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures-util",
+ "gecko-engine",
  "gecko-extension-api",
  "serde_json",
  "tokio",
+ "typedb-driver",
  "ulid",
  "uuid",
 ]
