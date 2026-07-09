@@ -10,9 +10,10 @@ use std::sync::LazyLock;
 
 use gecko_extension_api::{GeckoExtension, HostImportDef};
 
+mod tql;
 pub mod writer;
 
-pub use writer::{BeliefCommitter, MemWriter, StubCommitter};
+pub use writer::MemWriter;
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
 /// the type ontology (`mem_types.tql`, A2) and the persisted reasoning functions

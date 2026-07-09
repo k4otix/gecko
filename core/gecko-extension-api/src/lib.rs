@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 // re-exports them for sandbox host-fn injection.
 pub mod epistemic;
 pub mod error;
+pub mod graph;
 pub mod ids;
 pub mod provenance;
 pub mod semantic;
@@ -40,6 +41,7 @@ pub use epistemic::{
     EpistemicReader, EpistemicWriter, Outcome, RecallQuery,
 };
 pub use error::EpistemicError;
+pub use graph::{GraphStore, GraphValue, GraphWrite};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext};
 pub use semantic::{BeliefState, Embedder, FilterMeta, SemanticIndex, Visibility};

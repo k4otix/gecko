@@ -10,12 +10,12 @@ repository.workspace = true
 gecko-extension-api = { path = "../gecko-extension-api" }
 serde_json.workspace = true
 uuid = { workspace = true }
+chrono = { workspace = true }
 async-trait = "0.1"
 ulid = "1"
 
 [dev-dependencies]
-chrono = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
 # Live schema-acceptance integration tests (A2 acceptance): reuse the engine's
 # TypeDB router and drive raw parameterized TQL against a throwaway db.
 gecko-engine = { path = "../gecko-engine" }

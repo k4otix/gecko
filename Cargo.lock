@@ -1291,6 +1291,7 @@ name = "gecko-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "futures-util",
  "gecko-extension-api",

@@ -124,8 +124,24 @@ pub enum Outcome {
 /// A recall request against the epistemic reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecallQuery {
-    /// The natural-language query text.
+    /// The natural-language query text (embedded for the present-state path).
     pub text: String,
+    /// When set, recall is an **as-of-time-T** query: it routes through the
+    /// temporal path ([`believed_at`](EpistemicReader::believed_at)) and **skips
+    /// the semantic index entirely** (invariant 8 — the index is present-state
+    /// only). `None` is the ordinary present-state recall.
+    #[serde(default)]
+    pub as_of: Option<DateTime>,
+}
+
+impl RecallQuery {
+    /// A present-state recall over `text` (no as-of constraint).
+    pub fn now(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            as_of: None,
+        }
+    }
 }
 
 /// A budget bounding how much context recall may return.
