@@ -63,7 +63,7 @@ kebab_enum! {
 /// Coarse, denormalized pre-filter carried alongside a vector in the index so ANN
 /// does not return obviously-gateable candidates. **Best-effort, never
 /// authoritative** — real gating happens in TypeDB after the fetch (invariant 8).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterMeta {
     pub owner: ActorId,
     pub visibility: Visibility,
@@ -115,6 +115,23 @@ pub trait SemanticIndex: Send + Sync {
 
     /// Model identity; must match the [`Embedder`]'s or the index needs a rebuild.
     fn model_id(&self) -> &str;
+
+    /// Number of live vectors currently held. Used by the rebuild-from-graph path
+    /// (A5.4): a `0` length (missing/corrupt/model-id-bumped index) signals a full
+    /// reconstruction is due. Defaults to `0` for trivial/no-op impls.
+    fn len(&self) -> usize {
+        0
+    }
+
+    /// Whether the index holds no live vectors (see [`len`](Self::len)).
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Drops all vectors, returning the index to an empty state (retaining its
+    /// model identity). The rebuild-from-graph path calls this before replaying the
+    /// graph's current-state embeddables. Defaults to a no-op.
+    fn reset(&self) {}
 }
 
 #[cfg(test)]

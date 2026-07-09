@@ -21,6 +21,7 @@ cyber = ["dep:cyber-gecko"]
 gecko-engine = { path = "../core/gecko-engine" }
 gecko-extension-api = { path = "../core/gecko-extension-api" }
 mem-gecko = { path = "../core/mem-gecko" }               # substrate — not optional
+gecko-semantic-index = { path = "../core/gecko-semantic-index" }  # A5 accelerator (rip-out surface)
 cyber-gecko = { path = "../extensions/cyber-gecko", optional = true }
 
 tokio = { workspace = true }

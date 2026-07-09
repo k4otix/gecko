@@ -1,0 +1,16 @@
+[package]
+name = "gecko-semantic-index"
+description = "GECKO in-process semantic retrieval accelerator: an HNSW ANN index + stub embedder implementing the gecko-extension-api SemanticIndex/Embedder traits. A pure, rebuildable bolt-on (invariant 8) — deletable when TypeDB ships native vector search."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gecko-extension-api = { path = "../gecko-extension-api" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hnsw_rs = "0.3"
+
+[dev-dependencies]
+chrono = { workspace = true }

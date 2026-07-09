@@ -9,8 +9,8 @@
 //! sources, how many claims), never a value.
 
 use gecko_extension_api::{
-    BeliefDraft, DateTime, DerivationMethod, EpisodeDraft, GraphValue, GraphWrite, MemId,
-    ProvenanceSource, RunContext,
+    BeliefDraft, ConceptId, DateTime, DerivationMethod, EpisodeDraft, GraphValue, GraphWrite,
+    MemId, ProvenanceSource, RunContext,
 };
 
 /// Open-set `origin-kind` discriminator for a run's provenance source (invariant 9:
@@ -302,6 +302,51 @@ pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     p.write(
         "match $b isa belief, has concept-id $bc; $bc == $bid;
          insert (predicted-belief: $b) isa prediction-resolution, has predicted-probability == $pp;",
+    )
+}
+
+// ── A5.4 rebuild-from-graph reads ─────────────────────────────────────────────
+
+/// Enumerates current-state **beliefs** (asserted, not superseded/retracted) with
+/// their embeddable title text and denormalized FilterMeta (owner/visibility). The
+/// index is fully rebuildable from these (invariant 8). Deterministic ordering is
+/// imposed host-side (sorted by concept-id) so any reconstruction yields an
+/// identical ANN graph.
+pub(crate) fn enumerate_beliefs_read() -> &'static str {
+    "match
+       $b isa belief, has concept-id $bid, has title $ttl, has belief-state $st;
+       $st == \"asserted\";
+       $b has valid-from $vf;
+       $own isa ownership, links (owned: $b, owner: $ag);
+       $own has visibility $vis;
+       $ag has agent-id $aid;
+     fetch { \"id\": $bid, \"text\": $ttl, \"owner\": $aid, \"vis\": $vis, \"vf\": $vf };"
+}
+
+/// Enumerates current-state **episodes** (excluding retrieval-events, which are
+/// provenance records, not embeddable content) with their title text and owner.
+pub(crate) fn enumerate_episodes_read() -> &'static str {
+    "match
+       $e isa episode, has concept-id $eid, has title $ttl, has event-time $et;
+       not { $e isa retrieval-event; };
+       $own isa ownership, links (owned: $e, owner: $ag);
+       $ag has agent-id $aid;
+     fetch { \"id\": $eid, \"text\": $ttl, \"owner\": $aid, \"vf\": $et };"
+}
+
+/// Single current-state-belief lookup by concept-id (dirty-set repair, A5.4).
+pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, Vec<GraphValue>) {
+    let mut p = Params::new();
+    p.s("cid", cid.0.clone());
+    p.read(
+        "match
+           $b isa belief, has concept-id $bc; $bc == $cid;
+           $b has title $ttl, has belief-state $st; $st == \"asserted\";
+           $b has valid-from $vf;
+           $own isa ownership, links (owned: $b, owner: $ag);
+           $own has visibility $vis;
+           $ag has agent-id $aid;
+         fetch { \"id\": $bc, \"text\": $ttl, \"owner\": $aid, \"vis\": $vis, \"vf\": $vf };",
     )
 }
 

@@ -22,6 +22,67 @@ use tracing::{info, warn};
 pub struct GeckoConfig {
     #[serde(default)]
     pub extensions: ExtSel,
+    /// The `[semantic_index]` table (plan A5.5). Absent ⇒ accelerator disabled
+    /// (a bare checkout stays fully functional and drag-free).
+    #[serde(default)]
+    pub semantic_index: SemanticIndexConfig,
+}
+
+/// The `[semantic_index]` table: the in-process HNSW retrieval accelerator (A5).
+///
+/// The accelerator is a **pure, rebuildable bolt-on** (invariant 8). When
+/// `enabled = false` the writer runs with no index at all — recall falls back to
+/// the non-vector path and no drag is added.
+#[derive(Debug, Deserialize)]
+pub struct SemanticIndexConfig {
+    /// Whether the semantic index is active. Default `false` (substrate-only).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the persisted (file-serialized) index. Default `"gecko.hnsw"`.
+    #[serde(default = "default_index_path")]
+    pub path: String,
+    /// Which embedder to build. Only `"stub"` is compiled today; the real
+    /// `bge-large-en-v1.5` impl is deferred behind a feature.
+    #[serde(default = "default_embedder")]
+    pub embedder: String,
+    /// Which index backend. Only `"hnsw"` today; `"typedb-native"` is the future
+    /// drop-in (A5.6).
+    #[serde(default = "default_backend")]
+    pub backend: String,
+    /// Whether to record retrieval provenance (A5.7). When unset, defaults to
+    /// `enabled` (on when the index is on).
+    #[serde(default)]
+    pub record_retrieval_provenance: Option<bool>,
+}
+
+fn default_index_path() -> String {
+    "gecko.hnsw".to_string()
+}
+fn default_embedder() -> String {
+    "stub".to_string()
+}
+fn default_backend() -> String {
+    "hnsw".to_string()
+}
+
+impl Default for SemanticIndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_index_path(),
+            embedder: default_embedder(),
+            backend: default_backend(),
+            record_retrieval_provenance: None,
+        }
+    }
+}
+
+impl SemanticIndexConfig {
+    /// Resolves whether retrieval-provenance recording is on: the explicit setting
+    /// if given, else defaults to `enabled` (A5.7: default on when the index is on).
+    pub fn record_provenance(&self) -> bool {
+        self.record_retrieval_provenance.unwrap_or(self.enabled)
+    }
 }
 
 /// The `[extensions]` table: the operator's runtime selection.
@@ -109,6 +170,7 @@ mod tests {
             extensions: ExtSel {
                 enabled: enabled.iter().map(|s| s.to_string()).collect(),
             },
+            ..Default::default()
         }
     }
 
@@ -120,6 +182,40 @@ mod tests {
     fn parses_enabled_list() {
         let cfg: GeckoConfig = toml::from_str("[extensions]\nenabled = [\"cyber\"]\n").unwrap();
         assert_eq!(cfg.extensions.enabled, vec!["cyber".to_string()]);
+    }
+
+    #[test]
+    fn semantic_index_defaults_to_disabled_and_drag_free() {
+        // No [semantic_index] table ⇒ accelerator off (bare checkout stays drag-free).
+        let cfg = GeckoConfig::default();
+        assert!(!cfg.semantic_index.enabled);
+        assert_eq!(cfg.semantic_index.path, "gecko.hnsw");
+        assert_eq!(cfg.semantic_index.embedder, "stub");
+        assert_eq!(cfg.semantic_index.backend, "hnsw");
+        // record-provenance defaults to `enabled` (off here).
+        assert!(!cfg.semantic_index.record_provenance());
+    }
+
+    #[test]
+    fn parses_semantic_index_table() {
+        let cfg: GeckoConfig = toml::from_str(
+            "[semantic_index]\nenabled = true\npath = \"x.hnsw\"\nembedder = \"stub\"\nbackend = \"hnsw\"\n",
+        )
+        .unwrap();
+        assert!(cfg.semantic_index.enabled);
+        assert_eq!(cfg.semantic_index.path, "x.hnsw");
+        // Unset record flag defaults to `enabled` (true here).
+        assert!(cfg.semantic_index.record_provenance());
+    }
+
+    #[test]
+    fn record_provenance_can_be_overridden() {
+        let cfg: GeckoConfig = toml::from_str(
+            "[semantic_index]\nenabled = true\nrecord_retrieval_provenance = false\n",
+        )
+        .unwrap();
+        assert!(cfg.semantic_index.enabled);
+        assert!(!cfg.semantic_index.record_provenance());
     }
 
     #[test]

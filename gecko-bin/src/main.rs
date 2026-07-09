@@ -26,10 +26,12 @@ use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
 use gecko_engine::syncer::bundle::sync_bundle;
 
 use gecko_extension_api::{
-    ActorId, ConceptId, EpistemicWriter, GeckoExtension, ProvenanceSource, RunContext, SandboxCtx,
+    ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
+    RunContext, SandboxCtx, SemanticIndex,
 };
+use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
-use crate::config::{GeckoConfig, build_extensions};
+use crate::config::{GeckoConfig, SemanticIndexConfig, build_extensions};
 
 #[derive(Parser)]
 #[command(
@@ -387,6 +389,55 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 }
 
 /// Execute a playbook concept in the sandbox.
+/// Builds mem's epistemic writer, wiring the A5 semantic-index accelerator when the
+/// `[semantic_index]` config enables it.
+///
+/// - **Disabled** ⇒ `MemWriter::without_index` (recall falls back to the non-vector
+///   path; no drag — the A4 shape).
+/// - **Enabled** ⇒ concrete `HnswIndex` + stub `Embedder`, rebuilt from the graph
+///   (A5.4) before serving recalls, with retrieval-provenance recording per config
+///   (A5.7). The trait is the swap seam (A5.6): a future `typedb-native` backend
+///   drops in here.
+async fn build_epistemic_writer(
+    store: std::sync::Arc<dyn GraphStore>,
+    sic: &SemanticIndexConfig,
+) -> Result<std::sync::Arc<dyn EpistemicWriter>> {
+    if !sic.enabled {
+        return Ok(std::sync::Arc::new(mem_gecko::MemWriter::without_index(
+            store,
+        )));
+    }
+    if sic.backend != "hnsw" {
+        anyhow::bail!(
+            "unsupported semantic_index.backend '{}': only 'hnsw' is compiled \
+             (future drop-in: 'typedb-native')",
+            sic.backend
+        );
+    }
+    if sic.embedder != "stub" {
+        anyhow::bail!(
+            "unsupported semantic_index.embedder '{}': only 'stub' is compiled \
+             (real bge-large-en-v1.5 is deferred behind a cargo feature)",
+            sic.embedder
+        );
+    }
+
+    let dim = 384usize;
+    let embedder = std::sync::Arc::new(StubEmbedder::new(dim));
+    let index = std::sync::Arc::new(HnswIndex::open(&sic.path, embedder.model_id(), dim)?);
+    let embedder: std::sync::Arc<dyn Embedder> = embedder;
+    let index: std::sync::Arc<dyn SemanticIndex> = index;
+
+    let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index));
+    // A5.4: reconstruct the accelerator from the graph (SoR) before serving recalls.
+    writer.rebuild_index_from_graph().await?;
+    info!(
+        path = %sic.path,
+        "Semantic index enabled (hnsw + stub embedder); rebuilt from graph"
+    );
+    Ok(std::sync::Arc::new(writer))
+}
+
 async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Result<()> {
     println!("Executing playbook: {concept_id}");
 
@@ -483,18 +534,18 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     );
     println!("Running script using engine: {engine_type}...");
 
-    // Activation (plan A4.2): construct mem's epistemic writer over its own graph
-    // connection, then run each activated extension's `inject_epistemic_host_fns`
-    // hook. mem (forced-on, first) binds the writer into the sandbox context; other
-    // extensions inherit the no-op. The index/embedder are `None` for now (A5
-    // supplies real ones), so the belief write commits to the graph with no
-    // accelerator upsert.
+    // Activation (plan A4.2 + A5.5): construct mem's epistemic writer over its own
+    // graph connection, then run each activated extension's
+    // `inject_epistemic_host_fns` hook. mem (forced-on, first) binds the writer into
+    // the sandbox context; other extensions inherit the no-op. When the
+    // `[semantic_index]` accelerator is enabled we build the concrete `HnswIndex` +
+    // stub `Embedder`, rebuild it from the graph (A5.4), and inject them; otherwise
+    // the writer runs with no index (recall falls back, drag-free — the A4 shape).
     let graph_router =
         std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
+    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router));
     let writer: std::sync::Arc<dyn EpistemicWriter> =
-        std::sync::Arc::new(mem_gecko::MemWriter::without_index(std::sync::Arc::new(
-            RouterGraphStore::new(graph_router),
-        )));
+        build_epistemic_writer(store, &cfg.semantic_index).await?;
     let mut sandbox_ctx = SandboxCtx::new();
     for ext in &cb_extensions {
         ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());

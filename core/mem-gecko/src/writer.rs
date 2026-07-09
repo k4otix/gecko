@@ -102,6 +102,103 @@ impl MemWriter {
         self.dirty.lock().expect("dirty set mutex poisoned").len()
     }
 
+    // ── A5.4 rebuild-from-graph (cold start / version bump / corruption) ─────
+
+    /// Enumerates the graph's current-state embeddables — asserted beliefs and
+    /// (non-retrieval-event) episodes — as `(id, embeddable text, FilterMeta)`,
+    /// sorted by concept-id for deterministic replay. The graph is the SoR; the
+    /// index is fully reconstructible from this (invariant 8).
+    pub async fn enumerate_current_state_embeddables(
+        &self,
+    ) -> Result<Vec<(ConceptId, String, FilterMeta)>> {
+        let mut out = Vec::new();
+        for d in self
+            .graph
+            .read(tql::enumerate_beliefs_read(), &[], &[])
+            .await?
+        {
+            if let Some(e) = row_to_embeddable(&d, Visibility::Private) {
+                out.push(e);
+            }
+        }
+        for d in self
+            .graph
+            .read(tql::enumerate_episodes_read(), &[], &[])
+            .await?
+        {
+            // Episodes have no visibility/belief-state of their own; they were
+            // indexed as private/asserted (see `observe`), so replay them the same.
+            if let Some(e) = row_to_embeddable(&d, Visibility::Private) {
+                out.push(e);
+            }
+        }
+        out.sort_by(|a, b| a.0.0.cmp(&b.0.0));
+        Ok(out)
+    }
+
+    /// Rebuilds the index from the graph when it is missing/corrupt or its model-id
+    /// no longer matches the embedder (A5.4), then drains the dirty set. A no-op when
+    /// no index/embedder is configured. Call once at startup before serving recalls.
+    pub async fn rebuild_index_from_graph(&self) -> Result<()> {
+        let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
+            return Ok(());
+        };
+        if idx.model_id() != emb.model_id() || idx.is_empty() {
+            idx.reset();
+            for (id, text, meta) in self.enumerate_current_state_embeddables().await? {
+                match emb.embed_document(&text) {
+                    Ok(v) => {
+                        if idx.upsert(id.clone(), &v, meta).is_err() {
+                            self.mark_dirty(id);
+                        }
+                    }
+                    Err(_) => self.mark_dirty(id),
+                }
+            }
+        }
+        self.drain_dirty_set().await?;
+        Ok(())
+    }
+
+    /// Repairs the dirty set: for each dirty concept-id, re-fetch its current-state
+    /// text + meta and re-upsert (clearing it on success). An id that is no longer
+    /// current-state (superseded/removed) is dropped from the index and the set.
+    pub async fn drain_dirty_set(&self) -> Result<()> {
+        let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
+            return Ok(());
+        };
+        for cid in self.dirty_snapshot() {
+            let (q, v, r) = tql::fetch_belief_embeddable(&cid);
+            let rows = self.graph.read(&q, &v, &r).await?;
+            match rows
+                .first()
+                .and_then(|d| row_to_embeddable(d, Visibility::Private))
+            {
+                Some((id, text, meta)) => {
+                    if let Ok(vec) = emb.embed_document(&text) {
+                        if idx.upsert(id, &vec, meta).is_ok() {
+                            self.clear_dirty(&cid);
+                        }
+                    }
+                }
+                None => {
+                    // No longer current-state: drop from the accelerator and clear.
+                    let _ = idx.remove(cid.clone());
+                    self.clear_dirty(&cid);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes `id` from the dirty set (a successful repair / drop).
+    fn clear_dirty(&self, id: &ConceptId) {
+        self.dirty
+            .lock()
+            .expect("dirty set mutex poisoned")
+            .remove(id);
+    }
+
     // ── Best-effort index hooks (post-commit; never fail the graph write) ────
 
     fn best_effort_index(&self, id: &MemId, text: &str, meta: FilterMeta) {
@@ -365,6 +462,33 @@ fn decay_of(d: &Value, now: DateTime) -> f64 {
         Some(la) => recency_decay(la, now, DEFAULT_HALF_LIFE_HOURS),
         None => 1.0,
     }
+}
+
+/// Parses a rebuild/repair fetch row into `(ConceptId, text, FilterMeta)`. The
+/// `belief-state` is treated as asserted (the enumerate queries already restrict to
+/// current-state), and `visibility` falls back to `default_vis` when absent (e.g.
+/// episodes). Returns `None` when the mandatory id/text are missing.
+fn row_to_embeddable(
+    d: &Value,
+    default_vis: Visibility,
+) -> Option<(ConceptId, String, FilterMeta)> {
+    let id = str_field(d, "id");
+    if id.is_empty() {
+        return None;
+    }
+    let text = str_field(d, "text");
+    let visibility = d
+        .get("vis")
+        .and_then(|v| v.as_str())
+        .and_then(Visibility::from_str)
+        .unwrap_or(default_vis);
+    let meta = FilterMeta {
+        owner: ActorId::new(str_field(d, "owner")),
+        visibility,
+        belief_state: BeliefState::Asserted,
+        valid_from: dt_field(d, "vf").unwrap_or_else(chrono::Utc::now),
+    };
+    Some((ConceptId(id), text, meta))
 }
 
 /// Collects the `"id"` field from each doc, de-duplicated, order-preserving.

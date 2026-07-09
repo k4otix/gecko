@@ -19,5 +19,9 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 # Live schema-acceptance integration tests (A2 acceptance): reuse the engine's
 # TypeDB router and drive raw parameterized TQL against a throwaway db.
 gecko-engine = { path = "../gecko-engine" }
+# The concrete A5 accelerator — dev-only, to drive the real HnswIndex through the
+# writer in the A5.4/A5.7 acceptance tests. (mem's production deps stay minimal:
+# only gecko-extension-api.)
+gecko-semantic-index = { path = "../gecko-semantic-index" }
 typedb-driver = { workspace = true }
 futures-util = "0.3"
