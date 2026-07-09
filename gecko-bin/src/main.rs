@@ -176,17 +176,19 @@ fn resolve_address(cli: &Cli, cfg: &GeckoConfig) -> String {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    // `gecko init` writes config and must run WITHOUT assembling extensions or
+    // touching TypeDB — it exists to bring a gecko.toml into being.
+    // Handle this BEFORE loading config so we don't warn about a missing gecko.toml
+    // that this command is about to create.
+    if let Commands::Init = &cli.command {
+        return cmd_init_config(&cli.config);
+    }
+
     // Assemble extensions (design §2: The Assembler Pattern). The runtime config
     // selects which registered extensions are activated; mem is forced-on and
     // registered first so schemas apply in subtyping order. Registration is the
     // gate — only these extensions get functions loaded and write-paths opened.
     let cfg = GeckoConfig::load(&cli.config)?;
-
-    // `gecko init` writes config and must run WITHOUT assembling extensions or
-    // touching TypeDB — it exists to bring a gecko.toml into being.
-    if let Commands::Init = &cli.command {
-        return cmd_init_config(&cli.config);
-    }
 
     let extensions = build_extensions(&cfg)?;
     let address = resolve_address(&cli, &cfg);
