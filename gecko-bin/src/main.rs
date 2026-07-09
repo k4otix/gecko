@@ -17,13 +17,17 @@ use futures_util::StreamExt;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::HostImports;
+use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
 use gecko_engine::syncer::bundle::sync_bundle;
 
-use gecko_extension_api::GeckoExtension;
+use gecko_extension_api::{
+    ActorId, ConceptId, EpistemicWriter, GeckoExtension, ProvenanceSource, RunContext, SandboxCtx,
+};
 
 use crate::config::{GeckoConfig, build_extensions};
 
@@ -386,6 +390,11 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Result<()> {
     println!("Executing playbook: {concept_id}");
 
+    // The epistemic writer needs its own connection to the same database: the
+    // pipeline borrows `db` mutably for the run, while belief-tier writes commit
+    // through this second router (belief writes are sparse — invariant 4 — so a
+    // dedicated serialised connection is not a bottleneck).
+    let writer_config = config.clone();
     let mut db = TypeDbRouter::new(config);
     let tx = db
         .begin_read()
@@ -474,7 +483,25 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     );
     println!("Running script using engine: {engine_type}...");
 
-    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
+    // Activation (plan A4.2): construct mem's epistemic writer over its own graph
+    // connection, then run each activated extension's `inject_epistemic_host_fns`
+    // hook. mem (forced-on, first) binds the writer into the sandbox context; other
+    // extensions inherit the no-op. The index/embedder are `None` for now (A5
+    // supplies real ones), so the belief write commits to the graph with no
+    // accelerator upsert.
+    let graph_router =
+        std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
+    let writer: std::sync::Arc<dyn EpistemicWriter> =
+        std::sync::Arc::new(mem_gecko::MemWriter::without_index(std::sync::Arc::new(
+            RouterGraphStore::new(graph_router),
+        )));
+    let mut sandbox_ctx = SandboxCtx::new();
+    for ext in &cb_extensions {
+        ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
+    }
+
+    // The base bridge dispatches plain host imports over the activated extensions.
+    let base_cb: gecko_engine::sandbox::engine::ExtensionCallback =
         std::sync::Arc::new(move |ext_name, func_name, args| {
             for ext in &cb_extensions {
                 if ext.name() == ext_name {
@@ -483,6 +510,26 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
             }
             Err(format!("Extension '{ext_name}' not found"))
         });
+
+    // If an epistemic extension was activated, wrap the base bridge so mem host fns
+    // (`remember`/`derive`/`supersede`/`contest`) reach the injected writer — each
+    // stamped with a host-minted RunContext (invariant 2: the sandbox cannot forge
+    // or omit `run_id`/`actor`/`source`). The host mints exactly one RunContext per
+    // run, bound to the executing concept (`ExecutableDoc`).
+    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
+        match sandbox_ctx.epistemic_writer() {
+            Some(writer) => {
+                let run_ctx = RunContext::new(
+                    ActorId::new("system"),
+                    ProvenanceSource::ExecutableDoc {
+                        concept_id: ConceptId::new(concept_id),
+                    },
+                    chrono::Utc::now(),
+                );
+                epistemic_extension_callback(run_ctx, writer, base_cb)
+            }
+            None => base_cb,
+        };
 
     // Execute through the pipeline: it owns the state-handle lifecycle (RAII), the
     // shared sandbox pool, and the execution record — no execution logic is

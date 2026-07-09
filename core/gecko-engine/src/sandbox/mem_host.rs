@@ -11,8 +11,15 @@
 //! [`EpistemicWriter`]: gecko_extension_api::EpistemicWriter
 //! [`EpistemicReader`]: gecko_extension_api::EpistemicReader
 
-use gecko_extension_api::{ActorId, ProvenanceSource, RunContext, RunId};
-use serde_json::Value;
+use std::sync::Arc;
+
+use gecko_extension_api::{
+    ActorId, BeliefDraft, DateTime, DerivationMethod, EpisodeDraft, EpistemicWriter, MemId,
+    ProvenanceSource, RunContext, RunId, Visibility,
+};
+use serde_json::{Value, json};
+
+use super::engine::ExtensionCallback;
 
 /// The mem host-function set callable from sandboxed exec-docs.
 ///
@@ -88,8 +95,24 @@ pub struct StampedMemCall {
     pub actor: ActorId,
     /// The host's provenance source.
     pub source: ProvenanceSource,
+    /// The host's ingest-time anchor for this run.
+    pub occurred_at: DateTime,
     /// Sandbox-supplied payload with reserved provenance keys stripped.
     pub payload: Value,
+}
+
+impl StampedMemCall {
+    /// Reconstructs the host-minted [`RunContext`] this call was stamped with, to
+    /// hand to the [`EpistemicWriter`]. The `run_id`/`actor`/`source`/`occurred_at`
+    /// are the host's — never the sandbox's.
+    pub fn run_context(&self) -> RunContext {
+        RunContext {
+            run_id: self.run_id,
+            actor: self.actor.clone(),
+            source: self.source.clone(),
+            occurred_at: self.occurred_at,
+        }
+    }
 }
 
 /// Binds a host-minted [`RunContext`] to a sandbox-supplied call.
@@ -109,8 +132,147 @@ pub fn bind_mem_call(ctx: &RunContext, func: MemHostFn, mut args: Value) -> Stam
         run_id: ctx.run_id,
         actor: ctx.actor.clone(),
         source: ctx.source.clone(),
+        occurred_at: ctx.occurred_at,
         payload: args,
     }
+}
+
+// ── Async writer dispatch + the async→sync sandbox bridge (plan A4.2) ─────────
+
+/// Reads a required string field, erroring with the field name if absent/non-string.
+fn req_str(payload: &Value, key: &str) -> Result<String, String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("mem call missing required string field '{key}'"))
+}
+
+/// Collects a `[MemId]` from an optional string-array field (absent ⇒ empty).
+fn mem_ids(payload: &Value, key: &str) -> Vec<MemId> {
+    payload
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(MemId::new))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parses an optional RFC3339 datetime field, falling back to `default`.
+fn opt_dt(payload: &Value, key: &str, default: DateTime) -> DateTime {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or(default)
+}
+
+/// Dispatches a host-stamped mem call to the injected [`EpistemicWriter`].
+///
+/// The [`RunContext`] handed to every writer method is reconstructed from the
+/// *host's* stamp ([`StampedMemCall::run_context`]) — never from sandbox-supplied
+/// args — so provenance is un-forgeable (invariant 2). `recall` is a *reader* op and
+/// is not reachable through this write bridge (the reader path is wired separately).
+pub async fn dispatch_mem_call(
+    writer: &Arc<dyn EpistemicWriter>,
+    call: StampedMemCall,
+) -> Result<Value, String> {
+    let ctx = call.run_context();
+    let p = &call.payload;
+    let err = |e: gecko_extension_api::EpistemicError| e.to_string();
+
+    match call.func {
+        MemHostFn::Remember => {
+            let text = req_str(p, "text")?;
+            let ep = EpisodeDraft {
+                text,
+                event_time: opt_dt(p, "event_time", ctx.occurred_at),
+                ingest_time: ctx.occurred_at,
+            };
+            let id = writer.observe(&ctx, ep).await.map_err(err)?;
+            Ok(json!({ "id": id.0 }))
+        }
+        MemHostFn::Derive => {
+            let belief = BeliefDraft {
+                text: req_str(p, "text")?,
+                owner: ctx.actor.clone(),
+                visibility: Visibility::Private,
+                confidence: p.get("confidence").and_then(Value::as_f64),
+            };
+            let evidence = mem_ids(p, "evidence");
+            let method = p
+                .get("method")
+                .and_then(Value::as_str)
+                .and_then(DerivationMethod::from_str)
+                .unwrap_or(DerivationMethod::LlmSynthesis);
+            let id = writer
+                .assert_belief(&ctx, belief, &evidence, method)
+                .await
+                .map_err(err)?;
+            Ok(json!({ "id": id.0 }))
+        }
+        MemHostFn::Supersede => {
+            let old = MemId::new(req_str(p, "old")?);
+            let belief = BeliefDraft {
+                text: req_str(p, "text")?,
+                owner: ctx.actor.clone(),
+                visibility: Visibility::Private,
+                confidence: p.get("confidence").and_then(Value::as_f64),
+            };
+            let reason = p.get("reason").and_then(Value::as_str).unwrap_or("");
+            let id = writer
+                .supersede(&ctx, old, belief, reason)
+                .await
+                .map_err(err)?;
+            Ok(json!({ "id": id.0 }))
+        }
+        MemHostFn::Contest => {
+            let claims = mem_ids(p, "claims");
+            let anomaly = writer.contest(&ctx, &claims).await.map_err(err)?;
+            Ok(json!({ "anomaly": anomaly.0 }))
+        }
+        MemHostFn::Recall => Err(
+            "mem.recall is a reader operation and is not exposed on the epistemic write bridge"
+                .to_string(),
+        ),
+    }
+}
+
+/// Builds the sandbox [`ExtensionCallback`] that routes the mem host fns to the
+/// injected [`EpistemicWriter`], falling through to `base` for every other
+/// extension call.
+///
+/// This is the async→sync integration seam: the sandbox host-call bridge is a
+/// **synchronous** [`ExtensionCallback`], but [`EpistemicWriter`] is **async**. A mem
+/// call is stamped with the host's `ctx` ([`bind_mem_call`]) and driven to
+/// completion on the ambient Tokio runtime via `block_in_place` + `Handle::block_on`
+/// (the callback runs inside the wasm executor's async host bridge, so it is already
+/// on a runtime worker; `block_in_place` yields the worker while the writer's DB I/O
+/// completes). Requires the multi-threaded runtime the binary and the wasm sandbox
+/// already run on.
+pub fn epistemic_extension_callback(
+    ctx: RunContext,
+    writer: Arc<dyn EpistemicWriter>,
+    base: ExtensionCallback,
+) -> ExtensionCallback {
+    let handle = tokio::runtime::Handle::current();
+    Arc::new(move |ext_name: &str, func_name: &str, args: Value| {
+        if ext_name == "mem"
+            && let Some(func) = MemHostFn::from_name(func_name)
+        {
+            let call = bind_mem_call(&ctx, func, args);
+            let writer = writer.clone();
+            let handle = handle.clone();
+            return tokio::task::block_in_place(move || {
+                handle.block_on(async move { dispatch_mem_call(&writer, call).await })
+            });
+        }
+        base(ext_name, func_name, args)
+    })
 }
 
 #[cfg(test)]

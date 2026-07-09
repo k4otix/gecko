@@ -1269,6 +1269,7 @@ name = "gecko-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "cyber-gecko",
  "futures-util",

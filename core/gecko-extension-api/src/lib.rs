@@ -21,6 +21,8 @@
 //!
 //! [`host_imports`]: GeckoExtension::host_imports
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 // ── Epistemic substrate contract (additive; see plan A0 carry-forward) ───────
@@ -34,6 +36,7 @@ pub mod error;
 pub mod graph;
 pub mod ids;
 pub mod provenance;
+pub mod sandbox_ctx;
 pub mod semantic;
 
 pub use epistemic::{
@@ -44,6 +47,7 @@ pub use error::EpistemicError;
 pub use graph::{GraphStore, GraphValue, GraphWrite};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext};
+pub use sandbox_ctx::SandboxCtx;
 pub use semantic::{BeliefState, Embedder, FilterMeta, SemanticIndex, Visibility};
 
 /// Host-imported function definition exposed to sandboxed scripts.
@@ -99,4 +103,18 @@ pub trait GeckoExtension: Send + Sync {
     ) -> Result<serde_json::Value, String> {
         Err(format!("Import '{name}' not implemented"))
     }
+
+    /// Activation hook (plan A4.1): called during `build_extensions` for each
+    /// **enabled** extension, handed a host-constructed [`EpistemicWriter`].
+    ///
+    /// Registration is the activation gate (invariant 3) — a disabled extension's
+    /// hook is never called, so there is **no second trait**. The default is a
+    /// no-op: non-epistemic extensions (`cyber-gecko`) inherit it and leave the
+    /// context untouched. An epistemic extension (the `mem` substrate) overrides it
+    /// to bind the writer into the [`SandboxCtx`] via
+    /// [`set_epistemic_writer`](SandboxCtx::set_epistemic_writer), which the engine's
+    /// sandbox bridge then routes the mem host fns to — each stamped with a
+    /// host-minted [`RunContext`](crate::RunContext) the sandbox cannot forge
+    /// (invariant 2).
+    fn inject_epistemic_host_fns(&self, _ctx: &mut SandboxCtx, _writer: Arc<dyn EpistemicWriter>) {}
 }
