@@ -77,7 +77,7 @@ async fn fetch(router: &mut TypeDbRouter, tql: &str) -> Vec<serde_json::Value> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: schema applies clean (this is `gecko init` at the schema level).
+// Acceptance: schema applies clean (this is `gecko schema-init` at the schema level).
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn schema_applies_clean() {

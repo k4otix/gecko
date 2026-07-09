@@ -17,3 +17,20 @@ Thumbs.db
 
 # Environment
 .env
+
+# Runtime assets (P1) — the model, index, and any cache MUST never land in-tree.
+# Load-bearing rule #1: the ~1.3GB embedding model is a RUNTIME asset resolved
+# from the cache dir OUTSIDE the repo, never a build dependency. These patterns
+# are a backstop against a stray weight/index file being committed.
+models/
+*.safetensors
+*.onnx
+*.gguf
+# Model weight blobs (surgical: no *.bin fixtures exist in-tree today).
+*.weights.bin
+# Persisted HNSW index (derived, rebuildable).
+*.hnsw
+gecko.hnsw
+# Any local cache copies.
+.cache/gecko/
+/cache/

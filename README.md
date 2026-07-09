@@ -62,10 +62,16 @@ cargo install --path gecko-bin
 
 The `gecko` CLI tool manages the full lifecycle of the knowledge graph and playbook execution. We have provided a `sample-bundle` to test the functionality.
 
+**Write a default config** (optional)
+Creates a `gecko.toml` with sensible defaults if one does not already exist (idempotent — never clobbers an existing file).
+```bash
+gecko init
+```
+
 **Initialize the Database**
 Applies the core GECKO schema and any registered extension schemas to the TypeDB instance.
 ```bash
-gecko init
+gecko schema-init
 ```
 
 **Sync a Knowledge Bundle**

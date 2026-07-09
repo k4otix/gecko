@@ -31,7 +31,7 @@ use gecko_extension_api::{
 };
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
-use crate::config::{GeckoConfig, SemanticIndexConfig, build_extensions};
+use crate::config::{GeckoConfig, build_extensions};
 
 #[derive(Parser)]
 #[command(
@@ -40,9 +40,10 @@ use crate::config::{GeckoConfig, SemanticIndexConfig, build_extensions};
     version
 )]
 struct Cli {
-    /// TypeDB server address
-    #[arg(long, default_value = "localhost:1729", global = true)]
-    address: String,
+    /// TypeDB server address. When unset, `[typedb] endpoint` in gecko.toml is
+    /// used (default `localhost:1729`); passing `--address` overrides the config.
+    #[arg(long, global = true)]
+    address: Option<String>,
 
     /// TypeDB database name. Defaults to the bundle's declared name (from
     /// bundle.json) for `init`/`sync`, otherwise "gecko". One database per bundle.
@@ -75,8 +76,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Write a default gecko.toml if absent (idempotent; never clobbers an
+    /// existing config).
+    Init,
+
     /// Initialize the TypeDB schema (core + extensions)
-    Init {
+    SchemaInit {
         /// Optional bundle directory; its bundle.json name selects the database
         bundle: Option<PathBuf>,
 
@@ -143,7 +148,9 @@ fn resolve_db(explicit: &Option<String>, derived: Option<&str>) -> String {
 }
 
 /// Builds a `DbConfig` for the resolved database using the shared connection args.
-fn make_config(cli: &Cli, database: String) -> DbConfig {
+/// The address is resolved by `resolve_address` (CLI `--address` overrides the
+/// `[typedb] endpoint` config).
+fn make_config(cli: &Cli, address: &str, database: String) -> DbConfig {
     let tls = if cli.tls {
         TlsMode::Enabled {
             ca_cert: cli.ca_cert.clone(),
@@ -152,12 +159,20 @@ fn make_config(cli: &Cli, database: String) -> DbConfig {
         TlsMode::Disabled
     };
     DbConfig {
-        address: cli.address.clone(),
+        address: address.to_string(),
         database,
         username: cli.username.clone(),
         password: cli.password.clone(),
         tls,
     }
+}
+
+/// Resolves the effective TypeDB address: the CLI `--address` flag wins;
+/// otherwise the `[typedb] endpoint` from config (default `localhost:1729`).
+fn resolve_address(cli: &Cli, cfg: &GeckoConfig) -> String {
+    cli.address
+        .clone()
+        .unwrap_or_else(|| cfg.typedb.endpoint.clone())
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -166,10 +181,19 @@ async fn run(cli: Cli) -> Result<()> {
     // registered first so schemas apply in subtyping order. Registration is the
     // gate — only these extensions get functions loaded and write-paths opened.
     let cfg = GeckoConfig::load(&cli.config)?;
+
+    // `gecko init` writes config and must run WITHOUT assembling extensions or
+    // touching TypeDB — it exists to bring a gecko.toml into being.
+    if let Commands::Init = &cli.command {
+        return cmd_init_config(&cli.config);
+    }
+
     let extensions = build_extensions(&cfg)?;
+    let address = resolve_address(&cli, &cfg);
 
     match &cli.command {
-        Commands::Init { bundle, schema } => {
+        Commands::Init => unreachable!("handled above"),
+        Commands::SchemaInit { bundle, schema } => {
             let derived = match bundle {
                 Some(path) => Some(
                     gecko_engine::okf::parser::bundle_name(path)
@@ -177,36 +201,61 @@ async fn run(cli: Cli) -> Result<()> {
                 ),
                 None => None,
             };
-            let config = make_config(&cli, resolve_db(&cli.database, derived.as_deref()));
-            cmd_init(config, &extensions, schema.clone()).await
+            let config = make_config(
+                &cli,
+                &address,
+                resolve_db(&cli.database, derived.as_deref()),
+            );
+            cmd_schema_init(config, &extensions, schema.clone()).await
         }
         Commands::Sync { bundle_path } => {
             println!("Parsing bundle at {}...", bundle_path.display());
             let manifest = parse_bundle(bundle_path).context("Failed to parse OKF bundle")?;
-            let config = make_config(&cli, resolve_db(&cli.database, Some(&manifest.bundle_name)));
+            let config = make_config(
+                &cli,
+                &address,
+                resolve_db(&cli.database, Some(&manifest.bundle_name)),
+            );
             cmd_sync(config, &extensions, manifest).await
         }
         Commands::Query { query_str } => {
             cmd_query(
-                make_config(&cli, resolve_db(&cli.database, None)),
+                make_config(&cli, &address, resolve_db(&cli.database, None)),
                 query_str,
             )
             .await
         }
-        Commands::Status => cmd_status(make_config(&cli, resolve_db(&cli.database, None))).await,
+        Commands::Status => {
+            cmd_status(make_config(&cli, &address, resolve_db(&cli.database, None))).await
+        }
         Commands::Run { concept_id } => {
             cmd_run(
-                make_config(&cli, resolve_db(&cli.database, None)),
+                make_config(&cli, &address, resolve_db(&cli.database, None)),
                 &cfg,
                 concept_id,
             )
             .await
         }
-        Commands::Drop { database } => cmd_drop(make_config(&cli, database.clone())).await,
+        Commands::Drop { database } => {
+            cmd_drop(make_config(&cli, &address, database.clone())).await
+        }
         Commands::Databases => {
-            cmd_databases(make_config(&cli, resolve_db(&cli.database, None))).await
+            cmd_databases(make_config(&cli, &address, resolve_db(&cli.database, None))).await
         }
     }
+}
+
+/// `gecko init` — write a default `gecko.toml` at `path` if absent. Idempotent:
+/// an existing file is NEVER clobbered.
+fn cmd_init_config(path: &std::path::Path) -> Result<()> {
+    if path.exists() {
+        println!("✓ {} already exists — leaving it untouched", path.display());
+        return Ok(());
+    }
+    std::fs::write(path, config::default_gecko_toml())
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    println!("✓ Wrote default config to {}", path.display());
+    Ok(())
 }
 
 /// Delete a database by name.
@@ -273,7 +322,7 @@ async fn apply_all_schemas(
 }
 
 /// Initialize TypeDB with core schema + extension schemas.
-async fn cmd_init(
+async fn cmd_schema_init(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
     custom_schema: Option<PathBuf>,
@@ -400,8 +449,9 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 ///   drops in here.
 async fn build_epistemic_writer(
     store: std::sync::Arc<dyn GraphStore>,
-    sic: &SemanticIndexConfig,
+    cfg: &GeckoConfig,
 ) -> Result<std::sync::Arc<dyn EpistemicWriter>> {
+    let sic = &cfg.semantic_index;
     if !sic.enabled {
         return Ok(std::sync::Arc::new(mem_gecko::MemWriter::without_index(
             store,
@@ -422,9 +472,16 @@ async fn build_epistemic_writer(
         );
     }
 
+    // Resolve the effective index path: derived under the cache root by default,
+    // or an explicit `[semantic_index] path` override (P1).
+    let resolved_index_path = config::index_path(cfg)?;
     let dim = 384usize;
     let embedder = std::sync::Arc::new(StubEmbedder::new(dim));
-    let index = std::sync::Arc::new(HnswIndex::open(&sic.path, embedder.model_id(), dim)?);
+    let index = std::sync::Arc::new(HnswIndex::open(
+        &resolved_index_path,
+        embedder.model_id(),
+        dim,
+    )?);
     let embedder: std::sync::Arc<dyn Embedder> = embedder;
     let index: std::sync::Arc<dyn SemanticIndex> = index;
 
@@ -433,7 +490,7 @@ async fn build_epistemic_writer(
     // A5.4: reconstruct the accelerator from the graph (SoR) before serving recalls.
     writer.rebuild_index_from_graph().await?;
     info!(
-        path = %sic.path,
+        path = %resolved_index_path.display(),
         record_provenance = sic.record_provenance(),
         "Semantic index enabled (hnsw + stub embedder); rebuilt from graph"
     );
@@ -546,8 +603,7 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     let graph_router =
         std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
     let store = std::sync::Arc::new(RouterGraphStore::new(graph_router));
-    let writer: std::sync::Arc<dyn EpistemicWriter> =
-        build_epistemic_writer(store, &cfg.semantic_index).await?;
+    let writer: std::sync::Arc<dyn EpistemicWriter> = build_epistemic_writer(store, cfg).await?;
     let mut sandbox_ctx = SandboxCtx::new();
     for ext in &cb_extensions {
         ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
