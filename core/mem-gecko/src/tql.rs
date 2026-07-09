@@ -73,6 +73,10 @@ impl Params {
         self.add(name, "double", GraphValue::Double(v));
     }
 
+    pub(crate) fn i(&mut self, name: &str, v: i64) {
+        self.add(name, "integer", GraphValue::Long(v));
+    }
+
     fn given(&self) -> String {
         if self.decls.is_empty() {
             String::new()
@@ -347,6 +351,91 @@ pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, 
            $own has visibility $vis;
            $ag has agent-id $aid;
          fetch { \"id\": $bc, \"text\": $ttl, \"owner\": $aid, \"vis\": $vis, \"vf\": $vf };",
+    )
+}
+
+// ── A5.7 retrieval-provenance write path ──────────────────────────────────────
+
+/// `retrieval-event`: the stamped episodic record that a semantic retrieval
+/// happened, plus a `surfaced` edge per gated candidate (with its similarity score
+/// and `was-used=false`). This is an authoritative episodic write, DISTINCT from
+/// the best-effort index upsert (invariant 8 — two ledgers).
+pub(crate) fn retrieval_event_ops(
+    ctx: &RunContext,
+    ev_id: &MemId,
+    method: &str,
+    candidate_count: i64,
+    surfaced: &[(ConceptId, f32)],
+) -> Vec<GraphWrite> {
+    let mut p = Params::new();
+    p.s("eid", ev_id.0.clone());
+    p.dt("now", ctx.occurred_at);
+    p.s("rid", ctx.run_id.to_string());
+    p.s("aid", ctx.actor.0.clone());
+    p.s("kind", origin_kind(&ctx.source));
+    p.s("meth", method);
+    p.i("cc", candidate_count);
+    let mut match_lines = String::from(
+        "$run isa doc-run, has run-id $rr; $rr == $rid;\n           $ag isa agent, has agent-id $aa; $aa == $aid;\n",
+    );
+    let mut surf_inserts = String::new();
+    for (idx, (cid, score)) in surfaced.iter().enumerate() {
+        p.s(&format!("c{idx}"), cid.0.clone());
+        p.f(&format!("s{idx}"), *score as f64);
+        match_lines.push_str(&format!(
+            "           $it{idx} isa memory-item, has concept-id $ic{idx}; $ic{idx} == $c{idx};\n"
+        ));
+        surf_inserts.push_str(&format!(
+            "\n           (surfacer: $re, item: $it{idx}) isa surfaced, has similarity-score == $s{idx}, has was-used false;"
+        ));
+    }
+    let body = format!(
+        "match\n           {match_lines}         insert
+           $re isa retrieval-event, has concept-id == $eid, has event-time == $now,
+               has ingest-time == $now, has retrieval-method == $meth, has candidate-count == $cc;
+           (memory: $re, origin: $run) isa source-link, has origin-kind == $kind;
+           (owned: $re, owner: $ag) isa ownership;{surf_inserts}"
+    );
+    vec![ensure_run(ctx), ensure_agent(ctx), p.write(&body)]
+}
+
+/// `informs-synthesis(retrieval: $ev, synthesized: $belief)` — ties a synthesized
+/// belief to the retrieval-event that fed it (the retrieval ledger).
+pub(crate) fn informs_synthesis_op(ev: &MemId, belief: &MemId) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("eid", ev.0.clone());
+    p.s("bid", belief.0.clone());
+    p.write(
+        "match
+           $re isa retrieval-event, has concept-id $rc; $rc == $eid;
+           $b isa belief, has concept-id $bc; $bc == $bid;
+         insert (retrieval: $re, synthesized: $b) isa informs-synthesis;",
+    )
+}
+
+/// Flips `was-used` to `true` on the `surfaced` edge linking retrieval-event `ev`
+/// to the used evidence item.
+pub(crate) fn set_was_used_op(ev: &MemId, item: &MemId) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("eid", ev.0.clone());
+    p.s("iid", item.0.clone());
+    p.write(
+        "match
+           $re isa retrieval-event, has concept-id $rc; $rc == $eid;
+           $it isa memory-item, has concept-id $ic; $ic == $iid;
+           $s isa surfaced, links (surfacer: $re, item: $it);
+         update $s has was-used true;",
+    )
+}
+
+/// Sets the write-once `retrieval-provenance` summary flag on a belief (A2.10).
+pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("bid", belief.0.clone());
+    p.s("pv", provenance);
+    p.write(
+        "match $b isa belief, has concept-id $bc; $bc == $bid;
+         insert $b has retrieval-provenance == $pv;",
     )
 }
 

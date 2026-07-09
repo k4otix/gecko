@@ -111,6 +111,12 @@ impl StampedMemCall {
             actor: self.actor.clone(),
             source: self.source.clone(),
             occurred_at: self.occurred_at,
+            // A fresh per-call scratch: the retrieval-provenance correlation ledger
+            // (A5.7) is only meaningful when `recall` and a later `assert_belief`
+            // share one context, which happens on the direct writer/reader path.
+            // This write-only sandbox bridge does not dispatch `recall`, so a shared
+            // scratch would have nothing to correlate here.
+            scratch: gecko_extension_api::SharedScratch::default(),
         }
     }
 }

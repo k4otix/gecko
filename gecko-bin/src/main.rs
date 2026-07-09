@@ -428,11 +428,13 @@ async fn build_epistemic_writer(
     let embedder: std::sync::Arc<dyn Embedder> = embedder;
     let index: std::sync::Arc<dyn SemanticIndex> = index;
 
-    let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index));
+    let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
+        .with_retrieval_provenance(sic.record_provenance());
     // A5.4: reconstruct the accelerator from the graph (SoR) before serving recalls.
     writer.rebuild_index_from_graph().await?;
     info!(
         path = %sic.path,
+        record_provenance = sic.record_provenance(),
         "Semantic index enabled (hnsw + stub embedder); rebuilt from graph"
     );
     Ok(std::sync::Arc::new(writer))

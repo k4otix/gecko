@@ -425,6 +425,109 @@ async fn forced_upsert_failure_is_repaired_by_drain_dirty_set() {
     fx.drop_db().await;
 }
 
+// ── Acceptance (A5.7): a belief synthesized from a semantic recall gets provenance ──
+#[tokio::test]
+async fn retrieval_provenance_links_synthesized_belief() {
+    let fx = Fixture::new().await;
+    let path = tmp_index_path();
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx.store(), Some(embedder), Some(index)).with_retrieval_provenance(true);
+    let ctx = ctx_at("agent-1", dt("2026-01-02T00:00:00Z"));
+
+    // A prior belief that the semantic recall will surface as a gated candidate.
+    let evidence = w
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("smb lateral movement observed", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    // Recall surfaces it → stamps a retrieval-event + scratch entry.
+    let chunks = w
+        .recall(&ctx, RecallQuery::now("lateral movement"), budget(10))
+        .await
+        .unwrap();
+    assert!(
+        chunks.iter().any(|c| c.id == evidence),
+        "recall surfaced the prior belief"
+    );
+
+    // A retrieval-event was minted (episodic ledger).
+    let events = fx
+        .raw_fetch(r#"match $re isa retrieval-event, has retrieval-method $m; fetch { "m": $m };"#)
+        .await;
+    assert_eq!(
+        events.len(),
+        1,
+        "exactly one semantic retrieval-event recorded"
+    );
+    assert_eq!(events[0]["m"], "semantic");
+
+    // Synthesize a belief FROM that recalled evidence.
+    let synth = w
+        .assert_belief(
+            &ctx,
+            belief("host is compromised via smb", "agent-1", 0.7),
+            &[evidence.clone()],
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .unwrap();
+
+    // The synthesized belief carries retrieval-provenance = "semantic".
+    let prov = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}", has retrieval-provenance $p; fetch {{ "p": $p }};"#,
+            synth.0
+        ))
+        .await;
+    assert_eq!(prov.len(), 1, "synthesized belief has the retrieval axis");
+    assert_eq!(prov[0]["p"], "semantic");
+
+    // …and an informs-synthesis edge back to the retrieval-event, with was-used=true.
+    let link = fx
+        .raw_fetch(&format!(
+            r#"match
+                 $b isa belief, has concept-id "{}";
+                 $re isa retrieval-event;
+                 (retrieval: $re, synthesized: $b) isa informs-synthesis;
+                 (surfacer: $re, item: $ev) isa surfaced, has was-used $u;
+                 $ev has concept-id "{}";
+               fetch {{ "u": $u }};"#,
+            synth.0, evidence.0
+        ))
+        .await;
+    assert_eq!(
+        link.len(),
+        1,
+        "informs-synthesis edge ties belief ↔ retrieval-event"
+    );
+    assert_eq!(
+        link[0]["u"], true,
+        "the used surfaced edge is flagged was-used"
+    );
+
+    // The retrieval ledger is walked by its own function, never derivation-chain.
+    let chain = w.derivation_chain(synth.clone()).await.unwrap();
+    assert!(
+        chain.contains(&evidence),
+        "derivation-chain walks the evidence"
+    );
+    let prov_walk = w.retrieval_provenance_of(&synth).await.unwrap();
+    assert_eq!(
+        prov_walk.len(),
+        1,
+        "retrieval-provenance-of finds the retrieval-event"
+    );
+
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}
+
 // ── Acceptance (A5.7): a plain sync (no index, record off) mints zero retrieval-events ──
 #[tokio::test]
 async fn plain_sync_produces_zero_retrieval_events() {

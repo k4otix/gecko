@@ -51,6 +51,11 @@ pub struct MemWriter {
     embedder: Option<Arc<dyn Embedder>>,
     index: Option<Arc<dyn SemanticIndex>>,
     dirty: Mutex<HashSet<ConceptId>>,
+    /// A5.7: when on, `recall` stamps a `retrieval-event` + `surfaced` edges and
+    /// `assert_belief` links the synthesized belief back to the retrieval(s) whose
+    /// gated candidates overlap its evidence. Off ⇒ beliefs simply lack the
+    /// retrieval axis and no retrieval-events are minted (no-drag preserved).
+    record_retrieval_provenance: bool,
 }
 
 impl MemWriter {
@@ -65,12 +70,21 @@ impl MemWriter {
             embedder,
             index,
             dirty: Mutex::new(HashSet::new()),
+            record_retrieval_provenance: false,
         }
     }
 
     /// A writer over `graph` with no index configured (the A5-disabled shape).
     pub fn without_index(graph: Arc<dyn GraphStore>) -> Self {
         Self::new(graph, None, None)
+    }
+
+    /// Enables/disables the A5.7 retrieval-provenance write path (default off).
+    /// Builder-style so `gecko-bin` can flip it on when the index + config request
+    /// it, before wrapping the writer in an `Arc`.
+    pub fn with_retrieval_provenance(mut self, on: bool) -> Self {
+        self.record_retrieval_provenance = on;
+        self
     }
 
     // ── Dirty-set (invariant 8: the accelerator can never gate truth) ────────
@@ -360,6 +374,32 @@ impl MemWriter {
         Ok(dedup_ids(&docs).into_iter().map(MemId).collect())
     }
 
+    // ── A5.7 retrieval-provenance write path ─────────────────────────────────
+
+    /// Mints a stamped `retrieval-event` for a semantic recall, creates a `surfaced`
+    /// edge (with similarity score, `was-used=false`) per gated candidate, and
+    /// records `(event, gated candidate ids)` on the run's scratch so a later
+    /// `assert_belief` in the same run can correlate by evidence overlap.
+    async fn record_retrieval(&self, ctx: &RunContext, gated: &[(Chunk, f64)]) -> Result<()> {
+        let ev_id = mint("mem/ep");
+        let surfaced: Vec<(ConceptId, f32)> = gated
+            .iter()
+            .map(|(c, _)| (ConceptId(c.id.0.clone()), c.score))
+            .collect();
+        self.graph
+            .write(&tql::retrieval_event_ops(
+                ctx,
+                &ev_id,
+                "semantic",
+                surfaced.len() as i64,
+                &surfaced,
+            ))
+            .await?;
+        let candidates: HashSet<ConceptId> = surfaced.into_iter().map(|(c, _)| c).collect();
+        ctx.push_retrieval(ev_id, candidates);
+        Ok(())
+    }
+
     // ── Recall paths (invariant 8) ───────────────────────────────────────────
 
     /// As-of-time-T recall: routes through `believed-at`, **never touches the
@@ -534,6 +574,25 @@ impl EpistemicWriter for MemWriter {
         if let Some(deriv) = tql::derivation_op(&id, evidence, method, b.confidence) {
             ops.push(deriv);
         }
+        // A5.7: correlate this belief with the run's prior semantic retrievals by
+        // evidence overlap (auto-linked; the agent passes nothing). Same transaction
+        // as the belief so the retrieval-provenance axis lands atomically with it.
+        if self.record_retrieval_provenance {
+            let matched = ctx.matched_retrievals(evidence);
+            for (ev, used) in &matched {
+                ops.push(tql::informs_synthesis_op(ev, &id));
+                for item in used {
+                    ops.push(tql::set_was_used_op(ev, item));
+                }
+            }
+            // Only semantic retrievals are recorded today ⇒ single method or none.
+            let provenance = if matched.is_empty() {
+                "none"
+            } else {
+                "semantic"
+            };
+            ops.push(tql::set_retrieval_provenance_op(&id, provenance));
+        }
         self.graph.write(&ops).await?;
         // Best-effort embed + upsert; failure marks dirty, never fails the write.
         let meta = self.belief_meta(&b, ctx, BeliefState::Asserted);
@@ -662,6 +721,13 @@ impl EpistemicReader for MemWriter {
                     ));
                 }
             }
+            // A5.7: record the retrieval as episodic provenance (authoritative,
+            // stamped) — DISTINCT from the best-effort index upsert. Gated by config;
+            // off ⇒ no retrieval-events, no flags (no-drag preserved).
+            if self.record_retrieval_provenance && !scored.is_empty() {
+                self.record_retrieval(ctx, &scored).await?;
+            }
+
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             Ok(scored
                 .into_iter()
