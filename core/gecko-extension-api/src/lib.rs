@@ -48,7 +48,7 @@ pub use graph::{GraphStore, GraphValue, GraphWrite};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
 pub use sandbox_ctx::SandboxCtx;
-pub use semantic::{BeliefState, Embedder, FilterMeta, SemanticIndex, Visibility};
+pub use semantic::{BeliefState, Embedder, Entrenchment, FilterMeta, SemanticIndex, Visibility};
 
 /// Host-imported function definition exposed to sandboxed scripts.
 ///

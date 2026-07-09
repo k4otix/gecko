@@ -19,8 +19,8 @@ use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_extension_api::GeckoExtension;
 use gecko_extension_api::{
     ActorId, BeliefDraft, BeliefQuery, ConceptId, ContextBudget, DateTime, DerivationMethod,
-    Embedder, EpisodeDraft, EpistemicError, EpistemicReader, EpistemicWriter, FilterMeta, MemId,
-    ProvenanceSource, RecallQuery, RunContext, SemanticIndex, Visibility,
+    Embedder, Entrenchment, EpisodeDraft, EpistemicError, EpistemicReader, EpistemicWriter,
+    FilterMeta, MemId, ProvenanceSource, RecallQuery, RunContext, SemanticIndex, Visibility,
 };
 use mem_gecko::MemWriter;
 use ulid::Ulid;
@@ -112,6 +112,23 @@ fn belief(text: &str, owner: &str, conf: f64) -> BeliefDraft {
         owner: ActorId::new(owner),
         visibility: Visibility::Private,
         confidence: Some(conf),
+        entrenchment: None,
+    }
+}
+
+/// A belief draft with an explicit visibility scope (FIX 1 gate-visibility tests).
+fn belief_vis(text: &str, owner: &str, conf: f64, vis: Visibility) -> BeliefDraft {
+    BeliefDraft {
+        visibility: vis,
+        ..belief(text, owner, conf)
+    }
+}
+
+/// A belief draft with an explicit entrenchment tier (FIX 2 supersede-guard tests).
+fn belief_ent(text: &str, owner: &str, conf: f64, ent: Entrenchment) -> BeliefDraft {
+    BeliefDraft {
+        entrenchment: Some(ent),
+        ..belief(text, owner, conf)
     }
 }
 
@@ -485,6 +502,253 @@ async fn gate_and_is_superseded_exclude_superseded_beliefs() {
         !w.gate(&new, &ActorId::new("other"), now).await.unwrap(),
         "gate enforces ownership scope"
     );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1: gate composes VISIBILITY, not owner-only scoping. A team/shared belief owned
+// by a DIFFERENT agent is reachable; a private belief owned by another agent is not.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn gate_composes_visibility_across_owners() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let now = dt("2026-01-02T00:00:00Z");
+    // The graph owner is the ctx actor (see `insert_belief_ops`), so beliefs written
+    // under `owner_ctx` are owned by "owner-agent".
+    let owner_ctx = ctx_at("owner-agent", dt("2026-01-01T00:00:00Z"));
+    let other = ActorId::new("other-agent");
+    // The querying agent must exist as a node (the `gate` wrapper matches `$ag isa
+    // agent`); in a live run the actor always exists. Seed it for this fixture.
+    fx.raw_write(r#"insert $a isa agent, has agent-id "other-agent";"#)
+        .await;
+
+    // TEAM-visibility belief owned by owner-agent ⇒ visible to a DIFFERENT agent.
+    let team = w
+        .assert_belief(
+            &owner_ctx,
+            belief_vis("team belief", "owner-agent", 0.7, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    assert!(
+        w.gate(&team, &other, now).await.unwrap(),
+        "a team-visibility belief passes gate for a non-owner (composes visibility)"
+    );
+
+    // SHARED-visibility belief owned by owner-agent ⇒ likewise visible.
+    let shared = w
+        .assert_belief(
+            &owner_ctx,
+            belief_vis("shared belief", "owner-agent", 0.7, Visibility::Shared),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    assert!(
+        w.gate(&shared, &other, now).await.unwrap(),
+        "a shared-visibility belief passes gate for a non-owner"
+    );
+
+    // PRIVATE belief owned by owner-agent ⇒ NOT visible to a different agent…
+    let private = w
+        .assert_belief(
+            &owner_ctx,
+            belief_vis("private belief", "owner-agent", 0.7, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !w.gate(&private, &other, now).await.unwrap(),
+        "a private belief owned by another agent is gated OUT"
+    );
+    // …but IS visible to its own owner.
+    assert!(
+        w.gate(&private, &ActorId::new("owner-agent"), now)
+            .await
+            .unwrap(),
+        "a private belief passes gate for its owner"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1 (cont.): a superseded OR expired (valid-to < now) belief always fails gate,
+// regardless of visibility/ownership.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn gate_excludes_superseded_and_expired_beliefs() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let now = dt("2026-01-03T00:00:00Z");
+    let agent = ActorId::new("agent-1");
+
+    // Superseded belief fails gate even for its owner.
+    let old = w
+        .assert_belief(
+            &ctx,
+            belief("old view", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.supersede(
+        &ctx,
+        old.clone(),
+        belief("new view", "agent-1", 0.9),
+        "moved on",
+    )
+    .await
+    .unwrap();
+    assert!(
+        !w.gate(&old, &agent, now).await.unwrap(),
+        "a superseded belief fails gate"
+    );
+
+    // Expired belief (valid-to in the past) fails gate.
+    let expiring = w
+        .assert_belief(
+            &ctx,
+            belief("time-boxed view", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    fx.raw_write(&format!(
+        r#"match $b isa belief, has concept-id "{}"; insert $b has valid-to 2026-01-02T00:00:00;"#,
+        expiring.0
+    ))
+    .await;
+    assert!(
+        !w.gate(&expiring, &agent, now).await.unwrap(),
+        "an expired belief (valid-to < now) fails gate"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 2: invariant-7 entrenchment guard — a lower-entrenchment belief is
+// STRUCTURALLY forbidden from superseding a higher-entrenchment one (write NOTHING).
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn supersede_rejects_lower_entrenchment_and_leaves_graph_unchanged() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    // A user-stated belief (HumanAssertion ⇒ entrenchment "user-stated").
+    let held = w
+        .assert_belief(
+            &ctx,
+            belief("firmly held view", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    // An llm-synthesis (lowest-entrenchment) supersede is rejected with a typed error.
+    let err = w
+        .supersede(
+            &ctx,
+            held.clone(),
+            belief_ent("cheap guess", "agent-1", 0.3, Entrenchment::Llm),
+            "llm wants to overwrite",
+        )
+        .await
+        .expect_err("a lower-entrenchment belief cannot supersede a higher one");
+    assert!(matches!(err, EpistemicError::EntrenchmentViolation(_)));
+
+    // The graph is UNCHANGED: the protected belief is still asserted…
+    assert!(
+        !w.is_superseded(&held).await.unwrap(),
+        "the protected belief is NOT superseded"
+    );
+    // …no supersession lineage was written…
+    let supers = fx
+        .raw_fetch(r#"match $s isa supersession; fetch { "ca": $s.created-at };"#)
+        .await;
+    assert!(supers.is_empty(), "no supersession relation was written");
+    // …and no new belief was minted (only the original remains).
+    let beliefs = fx
+        .raw_fetch(r#"match $b isa belief, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert_eq!(beliefs.len(), 1, "no new belief was minted");
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 2 (cont.): an equal-or-higher entrenchment supersede SUCCEEDS.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn supersede_allows_equal_or_higher_entrenchment() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    // EQUAL: a user-stated belief superseded by another user-stated belief.
+    let v1 = w
+        .assert_belief(
+            &ctx,
+            belief("v1", "agent-1", 0.8),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let v2 = w
+        .supersede(
+            &ctx,
+            v1.clone(),
+            belief_ent("v2", "agent-1", 0.9, Entrenchment::UserStated),
+            "revised by the same authority",
+        )
+        .await
+        .expect("equal-entrenchment supersede succeeds");
+    assert!(w.is_superseded(&v1).await.unwrap(), "v1 is superseded");
+    assert!(!w.is_superseded(&v2).await.unwrap(), "v2 is current");
+
+    // HIGHER: an llm belief superseded by a more-entrenched inferred belief.
+    let weak = w
+        .assert_belief(
+            &ctx,
+            belief("weak llm claim", "agent-1", 0.4),
+            &[],
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .unwrap();
+    let stronger = w
+        .supersede(
+            &ctx,
+            weak.clone(),
+            belief_ent(
+                "stronger inferred claim",
+                "agent-1",
+                0.6,
+                Entrenchment::Inferred,
+            ),
+            "upgraded",
+        )
+        .await
+        .expect("higher-entrenchment supersede succeeds");
+    assert!(
+        w.is_superseded(&weak).await.unwrap(),
+        "the weak llm belief is superseded by a more-entrenched one"
+    );
+    assert!(!w.is_superseded(&stronger).await.unwrap());
 
     fx.drop_db().await;
 }

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::EpistemicError;
 use crate::ids::{DateTime, MemId};
 use crate::provenance::RunContext;
-use crate::semantic::Visibility;
+use crate::semantic::{Entrenchment, Visibility};
 
 // Module-local alias so the trait signatures read exactly like the plan.
 type Result<T> = std::result::Result<T, EpistemicError>;
@@ -108,6 +108,14 @@ pub struct BeliefDraft {
     pub visibility: Visibility,
     /// Optional confidence in `[0.0, 1.0]`; provable methods may reach 1.0.
     pub confidence: Option<f64>,
+    /// Optional explicit entrenchment tier. Governs the invariant-7 guard in
+    /// [`supersede`](EpistemicWriter::supersede): when set, it is the new belief's
+    /// entrenchment (and the supersede is rejected if it ranks *below* the belief it
+    /// would replace). When `None`, `supersede` inherits the old belief's tier (a
+    /// revision preserves entrenchment) and `assert_belief` derives it from the
+    /// [`DerivationMethod`].
+    #[serde(default)]
+    pub entrenchment: Option<Entrenchment>,
 }
 
 /// The resolved outcome of a recorded prediction (calibration flywheel).

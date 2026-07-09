@@ -34,6 +34,13 @@ pub enum EpistemicError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// Invariant 7: a lower-entrenchment belief attempted to supersede a
+    /// higher-entrenchment one. The write is rejected and nothing is committed —
+    /// an `llm`/`inferred` synthesis is structurally forbidden from overwriting an
+    /// `axiom`/`user-stated` belief.
+    #[error("entrenchment violation: {0}")]
+    EntrenchmentViolation(String),
+
     /// An id or enum string could not be parsed against the schema contract.
     #[error("parse error: {0}")]
     Parse(String),

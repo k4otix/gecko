@@ -60,6 +60,35 @@ kebab_enum! {
     }
 }
 
+kebab_enum! {
+    /// How entrenched (defeasible) a belief is (mirrors the schema
+    /// `entrenchment @values`, highest→lowest: axiom > user-stated > tool-derived >
+    /// inferred > llm). Governs invariant 7: a lower-entrenchment belief is
+    /// structurally forbidden from superseding a higher-entrenchment one.
+    Entrenchment {
+        Axiom => "axiom",
+        UserStated => "user-stated",
+        ToolDerived => "tool-derived",
+        Inferred => "inferred",
+        Llm => "llm",
+    }
+}
+
+impl Entrenchment {
+    /// Entrenchment strength: **higher is more entrenched** (`axiom` = 4 … `llm` = 0),
+    /// the @values order. A supersede is forbidden when the new belief's strength is
+    /// *below* the old belief's (invariant 7).
+    pub fn strength(&self) -> u8 {
+        match self {
+            Self::Axiom => 4,
+            Self::UserStated => 3,
+            Self::ToolDerived => 2,
+            Self::Inferred => 1,
+            Self::Llm => 0,
+        }
+    }
+}
+
 /// Coarse, denormalized pre-filter carried alongside a vector in the index so ANN
 /// does not return obviously-gateable candidates. **Best-effort, never
 /// authoritative** — real gating happens in TypeDB after the fetch (invariant 8).

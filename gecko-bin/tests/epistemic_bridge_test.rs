@@ -261,6 +261,7 @@ async fn hook_delivers_working_writer_to_domain_extension() {
                 owner: run_ctx.actor.clone(),
                 visibility: Visibility::Private,
                 confidence: Some(0.8),
+                entrenchment: None,
             },
             &[],
             DerivationMethod::LlmSynthesis,

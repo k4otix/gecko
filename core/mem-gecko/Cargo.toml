@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 gecko-extension-api = { path = "../gecko-extension-api" }
 serde_json.workspace = true
-uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = "0.1"
 ulid = "1"
@@ -20,8 +19,9 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 # TypeDB router and drive raw parameterized TQL against a throwaway db.
 gecko-engine = { path = "../gecko-engine" }
 # The concrete A5 accelerator — dev-only, to drive the real HnswIndex through the
-# writer in the A5.4/A5.7 acceptance tests. (mem's production deps stay minimal:
-# only gecko-extension-api.)
+# writer in the A5.4/A5.7 acceptance tests. The load-bearing constraint on mem's
+# production deps is that NONE is gecko-engine (no cycle: the engine owns the driver,
+# mem owns its TQL). serde_json/chrono/async-trait/ulid are also production deps.
 gecko-semantic-index = { path = "../gecko-semantic-index" }
 typedb-driver = { workspace = true }
 futures-util = "0.3"

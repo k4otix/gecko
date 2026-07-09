@@ -267,6 +267,17 @@ impl MemWriter {
         Ok(!self.graph.read(&q, &v, &r).await?.is_empty())
     }
 
+    /// Reads a belief's stored `entrenchment` tier (invariant-7 supersede guard input).
+    /// `None` when the belief carries no entrenchment attribute.
+    async fn read_entrenchment(&self, b: &MemId) -> Result<Option<String>> {
+        let (q, v, r) = tql::read_entrenchment_read(b);
+        let docs = self.graph.read(&q, &v, &r).await?;
+        Ok(docs
+            .first()
+            .map(|d| str_field(d, "e"))
+            .filter(|s| !s.is_empty()))
+    }
+
     /// `gate($n,$agent,$now)` — supersession · validity · scope, all at once. Every
     /// retrieved candidate passes through this.
     pub async fn gate(&self, n: &MemId, agent: &ActorId, now: DateTime) -> Result<bool> {
@@ -681,9 +692,28 @@ impl EpistemicWriter for MemWriter {
         new: BeliefDraft,
         reason: &str,
     ) -> Result<MemId> {
+        // Invariant 7 entrenchment guard: a lower-entrenchment belief is STRUCTURALLY
+        // forbidden from superseding a higher-entrenchment one. Read the OLD belief's
+        // entrenchment; the NEW belief's entrenchment is its explicit tier when the
+        // draft carries one, else it INHERITS the old belief's tier (a revision
+        // preserves entrenchment) — falling back to "inferred" only when the old tier
+        // is unknown. Reject (writing NOTHING) when the new tier ranks below the old.
+        let old_entrenchment = self.read_entrenchment(&old).await?;
+        let new_entrenchment: &str = match new.entrenchment {
+            Some(e) => e.as_str(),
+            None => old_entrenchment.as_deref().unwrap_or("inferred"),
+        };
+        if let Some(old_ent) = &old_entrenchment {
+            if tql::entrenchment_rank(new_entrenchment) < tql::entrenchment_rank(old_ent) {
+                return Err(EpistemicError::EntrenchmentViolation(format!(
+                    "a '{new_entrenchment}' belief cannot supersede a more-entrenched \
+                     '{old_ent}' belief (invariant 7)"
+                )));
+            }
+        }
         let new_id = mint("mem/bel");
         // AUTHORITATIVE: new belief + supersession lineage + old→superseded commit first.
-        let mut ops = tql::insert_belief_ops(ctx, &new, &new_id, "inferred");
+        let mut ops = tql::insert_belief_ops(ctx, &new, &new_id, new_entrenchment);
         ops.extend(tql::supersession_ops(
             &old,
             &new_id,
@@ -879,6 +909,7 @@ mod tests {
             owner: ActorId::new("agent-1"),
             visibility: Visibility::Private,
             confidence: Some(0.7),
+            entrenchment: None,
         }
     }
 

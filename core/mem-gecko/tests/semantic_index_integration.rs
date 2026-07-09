@@ -99,6 +99,7 @@ fn belief(text: &str, owner: &str, conf: f64) -> BeliefDraft {
         owner: ActorId::new(owner),
         visibility: Visibility::Private,
         confidence: Some(conf),
+        entrenchment: None,
     }
 }
 

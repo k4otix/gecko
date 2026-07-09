@@ -9,8 +9,8 @@
 //! sources, how many claims), never a value.
 
 use gecko_extension_api::{
-    BeliefDraft, ConceptId, DateTime, DerivationMethod, EpisodeDraft, GraphValue, GraphWrite,
-    MemId, ProvenanceSource, RunContext,
+    BeliefDraft, ConceptId, DateTime, DerivationMethod, Entrenchment, EpisodeDraft, GraphValue,
+    GraphWrite, MemId, ProvenanceSource, RunContext,
 };
 
 /// Open-set `origin-kind` discriminator for a run's provenance source (invariant 9:
@@ -36,6 +36,28 @@ pub(crate) fn entrenchment_for(method: DerivationMethod) -> &'static str {
         | DerivationMethod::TypeDbFunction
         | DerivationMethod::ExternalTool => "tool-derived",
     }
+}
+
+/// Entrenchment strength for an entrenchment string read from the graph: **higher
+/// is more entrenched** (`axiom` = 4 … `llm` = 0), the @values order. An unknown or
+/// absent string ranks as the least entrenched (0) so it can never *block* a
+/// supersede — the invariant-7 guard only rejects an explicit downgrade. Delegates
+/// to [`Entrenchment::strength`] so the ranking has a single source of truth.
+pub(crate) fn entrenchment_rank(entrenchment: &str) -> u8 {
+    Entrenchment::from_str(entrenchment)
+        .map(|e| e.strength())
+        .unwrap_or(0)
+}
+
+/// Reads a belief's stored `entrenchment` attribute by concept-id (invariant-7
+/// guard input). `None` when the belief is absent or carries no entrenchment.
+pub(crate) fn read_entrenchment_read(old: &MemId) -> (String, Vec<String>, Vec<GraphValue>) {
+    let mut p = Params::new();
+    p.s("bid", old.0.clone());
+    p.read(
+        "match $b isa belief, has concept-id $bc, has entrenchment $e; $bc == $bid;
+         fetch { \"e\": $e };",
+    )
 }
 
 /// A tiny typed-parameter accumulator: keeps the `given` declaration, the variable

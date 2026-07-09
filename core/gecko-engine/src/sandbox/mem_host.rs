@@ -193,6 +193,9 @@ pub async fn dispatch_mem_call(
                 owner: ctx.actor.clone(),
                 visibility: Visibility::Private,
                 confidence: p.get("confidence").and_then(Value::as_f64),
+                // Entrenchment for a fresh assertion is derived from the method
+                // (see `entrenchment_for`); the sandbox does not set it here.
+                entrenchment: None,
             };
             let evidence = mem_ids(p, "evidence");
             let method = p
@@ -213,6 +216,9 @@ pub async fn dispatch_mem_call(
                 owner: ctx.actor.clone(),
                 visibility: Visibility::Private,
                 confidence: p.get("confidence").and_then(Value::as_f64),
+                // None ⇒ supersede inherits the old belief's entrenchment tier and
+                // enforces the invariant-7 guard against a downgrade.
+                entrenchment: None,
             };
             let reason = p.get("reason").and_then(Value::as_str).unwrap_or("");
             let id = writer
@@ -226,6 +232,13 @@ pub async fn dispatch_mem_call(
             let anomaly = writer.contest(&ctx, &claims).await.map_err(err)?;
             Ok(json!({ "anomaly": anomaly.0 }))
         }
+        // DELIBERATE SCOPE-DEFERRAL (not a bug): `mem.recall` is NOT reachable from a
+        // sandboxed `gecko run`. The reader path (async reader bridge + the QuickJS-guest
+        // FFI binding) is intentionally out of scope for this refactor — no in-tree guest
+        // binding exists — so A5.7 retrieval-provenance correlation is exercised only from
+        // mem-gecko's own library tests, never a live run. See
+        // docs/refactor/KNOWN-LIMITATIONS.md. Do NOT wire the reader bridge here to
+        // "fix" this rejection; that is tracked, deferred work.
         MemHostFn::Recall => Err(
             "mem.recall is a reader operation and is not exposed on the epistemic write bridge"
                 .to_string(),
@@ -251,6 +264,17 @@ pub fn epistemic_extension_callback(
     base: ExtensionCallback,
 ) -> ExtensionCallback {
     let handle = tokio::runtime::Handle::current();
+    // The async→sync bridge below drives the writer with `block_in_place` + `block_on`.
+    // `block_in_place` **panics on a current-thread runtime** — it can only hand the
+    // worker back to the scheduler when there IS a multi-threaded scheduler. The binary
+    // and the wasm sandbox both run on a multi-thread runtime; assert the flavor here so
+    // a misconfiguration fails loudly at wiring time rather than deep inside a host call.
+    debug_assert_eq!(
+        handle.runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::MultiThread,
+        "epistemic mem host bridge requires a multi-thread tokio runtime \
+         (block_in_place + block_on panics on the current-thread scheduler)"
+    );
     Arc::new(move |ext_name: &str, func_name: &str, args: Value| {
         if ext_name == "mem"
             && let Some(func) = MemHostFn::from_name(func_name)
