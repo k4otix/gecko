@@ -7,5 +7,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gecko-engine = { path = "../../core/gecko-engine" }
+gecko-extension-api = { path = "../../core/gecko-extension-api" }
 serde_json.workspace = true

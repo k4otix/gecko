@@ -1,0 +1,11 @@
+[package]
+name = "gecko-extension-api"
+description = "GECKO extension contract: the GeckoExtension trait and host-function descriptors that domain extensions implement, decoupled from the engine internals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

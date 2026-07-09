@@ -895,7 +895,7 @@ dependencies = [
 name = "cyber-gecko"
 version = "0.1.0"
 dependencies = [
- "gecko-engine",
+ "gecko-extension-api",
  "serde_json",
 ]
 
@@ -1273,10 +1273,13 @@ dependencies = [
  "cyber-gecko",
  "futures-util",
  "gecko-engine",
+ "gecko-extension-api",
  "mem-gecko",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "typedb-driver",
@@ -1290,6 +1293,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures-util",
+ "gecko-extension-api",
  "pulldown-cmark",
  "regex",
  "serde",
@@ -1304,6 +1308,14 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "gecko-extension-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1911,7 +1923,7 @@ checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
 name = "mem-gecko"
 version = "0.1.0"
 dependencies = [
- "gecko-engine",
+ "gecko-extension-api",
  "serde_json",
  "uuid",
 ]

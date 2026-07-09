@@ -1,0 +1,12 @@
+[package]
+name = "mem-gecko"
+description = "GECKO cognitive memory substrate: GraphRAG episodic memory, execution episodes, and learned constraints. Always-on trusted base — housed in core/, not extensions/."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gecko-extension-api = { path = "../gecko-extension-api" }
+serde_json.workspace = true
+uuid = { workspace = true }

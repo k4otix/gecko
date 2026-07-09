@@ -7,14 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::okf::types::ScriptEngine;
 
-/// Host-imported function definition exposed to sandboxed scripts.
-#[derive(Debug, Clone)]
-pub struct HostImportDef {
-    /// Function name callable from the script (e.g., "mde_isolate").
-    pub name: String,
-    /// Human-readable description.
-    pub description: String,
-}
+// The host-import descriptor is part of the extension contract, so it lives in
+// `gecko-extension-api`. Re-exported here to preserve the
+// `gecko_engine::sandbox::engine::HostImportDef` path used across the engine.
+pub use gecko_extension_api::HostImportDef;
 
 /// Collection of host-imported functions available to a sandbox.
 #[derive(Debug, Clone, Default)]
