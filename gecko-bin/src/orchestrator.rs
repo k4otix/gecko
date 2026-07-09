@@ -347,6 +347,38 @@ fn process_alive(_pid: u32) -> bool {
     false
 }
 
+/// The command-name fragment the identity guard looks for in a live PID's
+/// command line before treating it as "the TypeDB server we spawned".
+const TYPEDB_SERVER_BIN_NAME: &str = "typedb_server_bin";
+
+/// Identity guard for `down()`: a PID existing is NOT enough evidence that it
+/// is the TypeDB child this orchestrator spawned — PIDs get recycled, and a
+/// long-lived pidfile could now point at an unrelated process. Shells out to
+/// `ps -p <pid> -o command=` (portable across macOS + Linux, unlike
+/// `/proc/<pid>/cmdline`) and checks the command string for the known server
+/// binary name. Any ambiguity (ps missing, empty output, pid raced away)
+/// resolves to `false` — the caller must then treat the pidfile as stale
+/// rather than ever signal a process it cannot positively identify.
+#[cfg(unix)]
+fn pid_is_typedb_server(pid: u32) -> bool {
+    let output = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("command=")
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).contains(TYPEDB_SERVER_BIN_NAME)
+        }
+        _ => false,
+    }
+}
+#[cfg(not(unix))]
+fn pid_is_typedb_server(_pid: u32) -> bool {
+    false
+}
+
 fn write_pidfile(path: &Path, pid: u32) -> Result<()> {
     fs::write(path, pid.to_string())
         .with_context(|| format!("cannot write pidfile {}", path.display()))
@@ -388,10 +420,33 @@ pub async fn up(
 
     match wait_ready(endpoint, username, password, READY_TIMEOUT).await {
         Ok(()) => Ok(UpOutcome::Started { pid }),
-        Err(e) => Err(e.context(format!(
-            "spawned TypeDB (pid {pid}) never became ready; see the log at {}",
+        Err(e) => {
+            let context = cleanup_after_ready_timeout(cache_root, pid, &log);
+            Err(e.context(context))
+        }
+    }
+}
+
+/// Called when a just-spawned child never reaches readiness: never leave it
+/// orphaned. Stops it via the same path `down()` uses and, only once the stop
+/// actually ran, removes the pidfile (so a stop failure does not erase the
+/// only record of a still-running process). Returns the context string to
+/// attach to the readiness error.
+fn cleanup_after_ready_timeout(cache_root: &Path, pid: u32, log: &Path) -> String {
+    if stop_process(pid).is_ok() {
+        let _ = fs::remove_file(&pidfile_path(cache_root, PINNED_TYPEDB));
+        format!(
+            "spawned TypeDB (pid {pid}) never became ready within the timeout; \
+             it has been stopped so it is not left orphaned. See the log at {}",
             log.display()
-        ))),
+        )
+    } else {
+        format!(
+            "spawned TypeDB (pid {pid}) never became ready within the timeout, \
+             AND it could not be stopped automatically — you may need to stop \
+             it manually. See the log at {}",
+            log.display()
+        )
     }
 }
 
@@ -404,6 +459,14 @@ pub fn down(cache_root: &Path) -> Result<DownOutcome> {
     };
     if !process_alive(pid) {
         // Stale pidfile (server already gone) — clean it up.
+        let _ = fs::remove_file(&pidfile);
+        return Ok(DownOutcome::NotRunning);
+    }
+    if !pid_is_typedb_server(pid) {
+        // The PID exists but does not look like the TypeDB server we spawned
+        // — almost certainly a recycled PID now held by an unrelated process.
+        // Never signal it: treat the pidfile as stale instead (same cleanup
+        // as the dead-PID path above).
         let _ = fs::remove_file(&pidfile);
         return Ok(DownOutcome::NotRunning);
     }
@@ -556,5 +619,113 @@ mod tests {
         write_pidfile(&pf, 2_000_000_000).unwrap();
         assert_eq!(down(tmp.path()).unwrap(), DownOutcome::NotRunning);
         assert!(!pf.exists(), "stale pidfile should be cleaned up");
+    }
+
+    // ── FIX 1: PID-identity guard ────────────────────────────────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn down_treats_a_live_non_typedb_pid_as_stale_and_never_signals_it() {
+        // A pidfile can outlive the process it named if the PID gets recycled.
+        // Point it at OUR OWN test process (definitely alive, definitely not
+        // `typedb_server_bin`) and confirm `down()` refuses to signal it: it
+        // must clean the pidfile up as stale instead of sending SIGTERM/KILL.
+        let tmp = tempfile::tempdir().unwrap();
+        let vdir = version_dir(tmp.path(), PINNED_TYPEDB);
+        fs::create_dir_all(&vdir).unwrap();
+        let pf = pidfile_path(tmp.path(), PINNED_TYPEDB);
+        let own_pid = std::process::id();
+        write_pidfile(&pf, own_pid).unwrap();
+
+        assert!(!pid_is_typedb_server(own_pid));
+        assert_eq!(down(tmp.path()).unwrap(), DownOutcome::NotRunning);
+        assert!(
+            !pf.exists(),
+            "pidfile for a recycled/foreign PID should be cleaned up as stale"
+        );
+        // The real proof: we are still here to make this assertion — `down()`
+        // did not signal us.
+        assert!(
+            process_alive(own_pid),
+            "down() must never signal a PID that is not the TypeDB server"
+        );
+    }
+
+    // ── FIX 2: dead-port readiness-timeout test ──────────────────────────────
+
+    #[tokio::test]
+    async fn wait_ready_times_out_quickly_against_a_dead_port() {
+        // Bind an ephemeral port then drop the listener: the OS hands back a
+        // port with nothing listening on it, without ever touching 1729 or any
+        // other real endpoint.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let endpoint = format!("127.0.0.1:{port}");
+
+        let start = Instant::now();
+        // Low, test-only timeout (the injectable `timeout` param on
+        // `wait_ready`) so this runs in a couple of seconds, not 60s.
+        let result = wait_ready(&endpoint, "user", "pass", Duration::from_secs(2)).await;
+        let elapsed = start.elapsed();
+
+        let err = result.expect_err("probing a dead port must fail, never hang or succeed");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("ready") || msg.contains("timeout"),
+            "error should mention readiness/timeout; got: {msg}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the timeout must be short and bounded; took {elapsed:?}"
+        );
+    }
+
+    // ── FIX 3: don't orphan the child on readiness timeout ───────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn ready_timeout_cleanup_stops_the_child_and_clears_the_pidfile() {
+        // Exercises the up()-timeout path (`cleanup_after_ready_timeout`)
+        // without needing a real TypeDB binary or network: spawn a long-lived
+        // child directly, pretend it never became ready, and confirm the
+        // cleanup helper stops it (not left orphaned) and removes the pidfile.
+        let tmp = tempfile::tempdir().unwrap();
+        let vdir = version_dir(tmp.path(), PINNED_TYPEDB);
+        fs::create_dir_all(&vdir).unwrap();
+        let pf = pidfile_path(tmp.path(), PINNED_TYPEDB);
+        let log = logfile_path(tmp.path(), PINNED_TYPEDB);
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("failed to spawn `sleep 30` for the test");
+        let pid = child.id();
+        write_pidfile(&pf, pid).unwrap();
+        assert!(process_alive(pid), "test child should start out alive");
+
+        // A `std::process::Child` that nobody `.wait()`s on becomes a zombie
+        // once it exits — and `kill(pid, 0)` still reports a zombie as
+        // "alive". In production that's harmless (the short-lived `gecko`
+        // process exits right after, and the zombie gets reaped/reparented),
+        // but this test process is long-lived, so reap concurrently on a
+        // background thread — exactly what lets `process_alive` observe the
+        // child as truly gone once `stop_process`'s SIGTERM lands.
+        let reaper = std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+
+        let context = cleanup_after_ready_timeout(tmp.path(), pid, &log);
+        assert!(context.contains("stopped"), "got: {context}");
+
+        reaper.join().expect("reaper thread panicked");
+        assert!(
+            !process_alive(pid),
+            "a never-ready spawn must be stopped, not left orphaned"
+        );
+        assert!(
+            !pf.exists(),
+            "the pidfile should be cleared once the child is stopped"
+        );
     }
 }
