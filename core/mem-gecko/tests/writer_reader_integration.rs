@@ -168,6 +168,33 @@ impl SemanticIndex for StubIndex {
     }
 }
 
+/// An index that records every id passed to `remove` (and a fixed candidate list for
+/// `query`) so the A6 dedup acceptance can assert the loser's vector was dropped.
+#[derive(Default)]
+struct RecordingIndex {
+    removed: std::sync::Mutex<Vec<ConceptId>>,
+}
+impl SemanticIndex for RecordingIndex {
+    fn upsert(&self, _id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<(), EpistemicError> {
+        Ok(())
+    }
+    fn remove(&self, id: ConceptId) -> Result<(), EpistemicError> {
+        self.removed.lock().unwrap().push(id);
+        Ok(())
+    }
+    fn query(
+        &self,
+        _v: &[f32],
+        _k: usize,
+        _p: &FilterMeta,
+    ) -> Result<Vec<(ConceptId, f32)>, EpistemicError> {
+        Ok(vec![])
+    }
+    fn model_id(&self) -> &str {
+        "stub"
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // A1 bullet 1 + bullet 3 (writer level): provenance is host-mediated + run-stamped.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -750,6 +777,184 @@ async fn population_members_and_canonical_entity() {
             ConceptId::new("src-b/evil.com")
         ],
         "provable resolution collapses both seams into one canonical class"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A6 ACCEPTANCE: a manual dedup of two identical-content-hash episodes tombstones
+// the loser in the graph AND removes the loser's vector from the index (via the
+// existing best-effort SemanticIndex::remove hook, invariant 8).
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
+    let fx = Fixture::new().await;
+    let index = Arc::new(RecordingIndex::default());
+    // Embedder + index both present ⇒ observe upserts each episode's vector, and
+    // dedup will attempt the (real) remove of the loser.
+    let w = fx.writer(Some(Arc::new(StubEmbedder)), Some(index.clone()));
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    // Two episodes with an IDENTICAL content-hash (same observed text).
+    let dup = EpisodeDraft {
+        text: "the host phoned home at 03:14".into(),
+        event_time: dt("2026-01-01T00:00:00Z"),
+        ingest_time: dt("2026-01-01T00:00:00Z"),
+    };
+    let keeper = w.observe(&ctx, dup.clone()).await.unwrap();
+    let loser = w.observe(&ctx, dup.clone()).await.unwrap();
+
+    // The manual consolidation op.
+    w.dedup_episodes(&keeper, &loser)
+        .await
+        .expect("dedup of two identical-hash episodes succeeds");
+
+    // Graph: the loser is tombstoned (terminal consolidation-state)…
+    let tomb = fx
+        .raw_fetch(&format!(
+            r#"match $l isa episode, has concept-id "{}", has consolidation-state $s;
+               fetch {{ "s": $s }};"#,
+            loser.0
+        ))
+        .await;
+    assert_eq!(tomb.len(), 1, "loser carries a consolidation-state");
+    assert_eq!(tomb[0]["s"], "tombstoned", "loser is tombstoned");
+
+    // …and the keeper is NOT tombstoned (it survives, un-marked).
+    let keep_state = fx
+        .raw_fetch(&format!(
+            r#"match $k isa episode, has concept-id "{}";
+               try {{ $k has consolidation-state $s; }};
+               fetch {{ "s": $s }};"#,
+            keeper.0
+        ))
+        .await;
+    assert_eq!(keep_state.len(), 1, "keeper still exists in the graph");
+    assert!(
+        keep_state[0]["s"].is_null(),
+        "keeper is NOT tombstoned (survives the dedup)"
+    );
+
+    // Index: the loser's id was removed via the best-effort remove hook; the keeper's
+    // was not.
+    let removed = index.removed.lock().unwrap().clone();
+    assert!(
+        removed.contains(&ConceptId(loser.0.clone())),
+        "the loser's vector was removed from the index"
+    );
+    assert!(
+        !removed.contains(&ConceptId(keeper.0.clone())),
+        "the keeper's vector is untouched"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A6: dedup is PROVABLE — two episodes with DIFFERENT content are never collapsed.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn dedup_episodes_refuses_non_duplicates() {
+    let fx = Fixture::new().await;
+    let index = Arc::new(RecordingIndex::default());
+    let w = fx.writer(Some(Arc::new(StubEmbedder)), Some(index.clone()));
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let a = w
+        .observe(
+            &ctx,
+            EpisodeDraft {
+                text: "one observation".into(),
+                event_time: dt("2026-01-01T00:00:00Z"),
+                ingest_time: dt("2026-01-01T00:00:00Z"),
+            },
+        )
+        .await
+        .unwrap();
+    let b = w
+        .observe(
+            &ctx,
+            EpisodeDraft {
+                text: "a DIFFERENT observation".into(),
+                event_time: dt("2026-01-01T00:00:00Z"),
+                ingest_time: dt("2026-01-01T00:00:00Z"),
+            },
+        )
+        .await
+        .unwrap();
+
+    let err = w
+        .dedup_episodes(&a, &b)
+        .await
+        .expect_err("distinct-content episodes must not be deduped");
+    assert!(matches!(err, EpistemicError::InvalidInput(_)));
+
+    // No tombstone was written and no vector removed (the guard fired first).
+    let states = fx
+        .raw_fetch(r#"match $e isa episode, has consolidation-state $s; fetch { "s": $s };"#)
+        .await;
+    assert!(states.is_empty(), "no episode was tombstoned");
+    assert!(
+        index.removed.lock().unwrap().is_empty(),
+        "no vector was removed"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A6 retrieval-provenance retention: a retrieval-event is safe to tombstone ONLY
+// once its informs-synthesis belief is superseded.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn retrieval_events_safe_to_tombstone_only_after_supersession() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    // A belief fed by a retrieval-event (the retrieval ledger).
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("synthesized from retrieval", "agent-1", 0.7),
+            &[],
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .unwrap();
+    fx.raw_write(&format!(
+        r#"match $b isa belief, has concept-id "{}";
+           insert
+             $re isa retrieval-event, has concept-id "mem/ep/re-ret",
+                 has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
+                 has retrieval-method "semantic", has candidate-count 1;
+             (retrieval: $re, synthesized: $b) isa informs-synthesis;"#,
+        b.0
+    ))
+    .await;
+
+    // While the belief is non-superseded, the event is NOT safe to tombstone.
+    let before = w.retrieval_events_safe_to_tombstone().await.unwrap();
+    assert!(
+        !before.contains(&MemId::new("mem/ep/re-ret")),
+        "a retrieval-event is NOT prunable while its belief is non-superseded"
+    );
+
+    // Supersede the belief → the event becomes safe to tombstone.
+    w.supersede(
+        &ctx,
+        b.clone(),
+        belief("revised synthesis", "agent-1", 0.9),
+        "newer evidence",
+    )
+    .await
+    .unwrap();
+
+    let after = w.retrieval_events_safe_to_tombstone().await.unwrap();
+    assert!(
+        after.contains(&MemId::new("mem/ep/re-ret")),
+        "once the belief is superseded, the retrieval-event is safe to tombstone"
     );
 
     fx.drop_db().await;

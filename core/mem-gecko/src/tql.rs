@@ -439,6 +439,59 @@ pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> G
     )
 }
 
+// ── A6 consolidation ("dreaming") ─────────────────────────────────────────────
+
+/// The **provable** dedup guard: do episodes `a` and `b` share an identical
+/// content-hash? Content-hash is proxied by the episode `title` (the observed text),
+/// and equality is enforced structurally by binding BOTH titles to the SAME variable
+/// `$t` — so a match exists iff both episodes exist AND their content is identical.
+/// A non-empty result means the pair is a genuine duplicate (never a false collapse).
+pub(crate) fn episodes_share_content_read(
+    a: &MemId,
+    b: &MemId,
+) -> (String, Vec<String>, Vec<GraphValue>) {
+    let mut p = Params::new();
+    p.s("aid", a.0.clone());
+    p.s("bid", b.0.clone());
+    p.read(
+        "match
+           $a isa episode, has concept-id $ac, has title $t; $ac == $aid;
+           $b isa episode, has concept-id $bc, has title $t; $bc == $bid;
+         fetch { \"ok\": $ac };",
+    )
+}
+
+/// Tombstones the loser episode: advances its `consolidation-state` to "tombstoned"
+/// (the terminal state of the A2.2 machine). The graph is the SoR — the loser's row
+/// stays queryable as a tombstone; only its index vector is dropped (best-effort,
+/// caller-side). `update` upserts the single-valued `consolidation-state @card(0..1)`.
+pub(crate) fn tombstone_episode_op(loser: &MemId) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("lid", loser.0.clone());
+    p.write(
+        "match $l isa episode, has concept-id $lc; $lc == $lid;
+         update $l has consolidation-state \"tombstoned\";",
+    )
+}
+
+/// A6 retrieval-provenance retention (concrete helper): the `retrieval-event`s that
+/// are **safe to tombstone** — those whose `informs-synthesis` belief IS superseded.
+/// The retention RULE it enforces: never tombstone a retrieval-event while its
+/// synthesized belief is non-superseded; once the belief is superseded the event may
+/// decay (its episodic detail is lost) — but the belief's write-once
+/// `retrieval-provenance` flag persists (the axis is retained on the belief, not the
+/// event). A retrieval-event that fed no belief (no `informs-synthesis`) is not
+/// returned here — it is out of scope for provenance-guarded pruning.
+pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
+    "match
+       $re isa retrieval-event, has concept-id $rid;
+       $b isa belief;
+       (retrieval: $re, synthesized: $b) isa informs-synthesis;
+       true == is-superseded($b);
+       not { $re has consolidation-state \"tombstoned\"; };
+     fetch { \"id\": $rid };"
+}
+
 /// `resolve_prediction`: mint a resolving `episode` (run + actor stamped) and attach
 /// it (plus the outcome) to the belief's `prediction-resolution`.
 pub(crate) fn resolve_prediction_ops(

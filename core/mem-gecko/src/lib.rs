@@ -12,9 +12,11 @@ use std::sync::Arc;
 
 use gecko_extension_api::{EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx};
 
+pub mod consolidation;
 mod tql;
 pub mod writer;
 
+pub use consolidation::{ConsolidationDaemon, ConsolidationReport, NoopConsolidationDaemon};
 pub use writer::MemWriter;
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
@@ -191,6 +193,25 @@ mod tests {
             6,
             "derivation-method must enumerate exactly 7 @values"
         );
+    }
+
+    #[test]
+    fn test_schema_contains_consolidation_state_machine() {
+        // A6: the consolidation-state machine (with tombstone semantics) must be in
+        // the schema so the dreaming daemon slots in without schema churn (A2.2).
+        let schema: &str = &MEM_SCHEMA;
+        assert!(schema.contains(
+            r#"attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");"#
+        ));
+        // All five states present, including the tombstone terminal state.
+        for state in ["raw", "candidate", "consolidated", "archived", "tombstoned"] {
+            assert!(
+                schema.contains(&format!("\"{state}\"")),
+                "consolidation-state missing {state}"
+            );
+        }
+        // memory-item owns consolidation-state (the state machine is on the substrate).
+        assert!(schema.contains("owns consolidation-state @card(0..1)"));
     }
 
     #[test]
