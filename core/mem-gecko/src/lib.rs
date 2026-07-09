@@ -8,6 +8,10 @@
 
 use gecko_extension_api::{GeckoExtension, HostImportDef};
 
+pub mod writer;
+
+pub use writer::{BeliefCommitter, MemWriter, StubCommitter};
+
 /// The mem-gecko TypeQL schema extending the core `okf-concept` and `okf-link` types.
 ///
 /// Design §4.3.

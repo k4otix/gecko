@@ -23,6 +23,27 @@
 
 use serde::{Deserialize, Serialize};
 
+// ── Epistemic substrate contract (additive; see plan A0 carry-forward) ───────
+//
+// `RunContext`/`EpistemicWriter`/`EpistemicReader`/`SemanticIndex`/`Embedder` are
+// added ALONGSIDE `GeckoExtension`/`HostImportDef` in this same crate — they do
+// not replace the existing contract. mem-gecko implements them; `gecko-engine`
+// re-exports them for sandbox host-fn injection.
+pub mod epistemic;
+pub mod error;
+pub mod ids;
+pub mod provenance;
+pub mod semantic;
+
+pub use epistemic::{
+    BeliefDraft, BeliefQuery, Chunk, ContextBudget, DerivationMethod, EpisodeDraft,
+    EpistemicReader, EpistemicWriter, Outcome, RecallQuery,
+};
+pub use error::EpistemicError;
+pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
+pub use provenance::{ProvenanceSource, RunContext};
+pub use semantic::{BeliefState, Embedder, FilterMeta, SemanticIndex, Visibility};
+
 /// Host-imported function definition exposed to sandboxed scripts.
 ///
 /// Returned by [`GeckoExtension::host_imports`] to declare which functions the

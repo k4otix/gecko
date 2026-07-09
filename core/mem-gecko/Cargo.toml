@@ -10,3 +10,9 @@ repository.workspace = true
 gecko-extension-api = { path = "../gecko-extension-api" }
 serde_json.workspace = true
 uuid = { workspace = true }
+async-trait = "0.1"
+ulid = "1"
+
+[dev-dependencies]
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
