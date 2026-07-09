@@ -16,6 +16,10 @@ path = "src/main.rs"
 # (`--no-default-features`), independent of the runtime `gecko.toml` selection.
 default = ["cyber"]
 cyber = ["dep:cyber-gecko"]
+# Forwards to gecko-semantic-index's `real-embedder`: compiles the candle-backed
+# CandleEmbedder into the binary. NON-default in P2 (P4 flips it default-on). The
+# `gecko model fetch` subcommand is compiled REGARDLESS of this feature.
+real-embedder = ["gecko-semantic-index/real-embedder"]
 
 [dependencies]
 gecko-engine = { path = "../core/gecko-engine" }

@@ -29,8 +29,14 @@
 //! **is** the seam; there is deliberately no shared code to disentangle.
 
 mod embedder;
+pub mod fetch;
 mod index;
 
+#[cfg(feature = "real-embedder")]
+mod candle_embedder;
+
+#[cfg(feature = "real-embedder")]
+pub use candle_embedder::CandleEmbedder;
 pub use embedder::StubEmbedder;
 pub use index::{HnswIndex, NoopIndex};
 

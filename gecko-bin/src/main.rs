@@ -29,6 +29,8 @@ use gecko_extension_api::{
     ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
     RunContext, SandboxCtx, SemanticIndex,
 };
+#[cfg(feature = "real-embedder")]
+use gecko_semantic_index::CandleEmbedder;
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
 use crate::config::{GeckoConfig, build_extensions};
@@ -119,6 +121,30 @@ enum Commands {
 
     /// List all databases on the server
     Databases,
+
+    /// Manage the embedding model runtime asset (fetch/stage).
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelCommands {
+    /// Download (stage) the embedding model into the runtime cache. Compiled in
+    /// every build (it needs no candle). Idempotent: a second run is a cache-hit
+    /// no-op. Never a silent pull elsewhere — this is the explicit opt-in.
+    Fetch {
+        /// Model id `"<model>@<revision>"` to fetch (overrides `[semantic_index]
+        /// model_id`).
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Destination directory (overrides the derived
+        /// `cache_dir/models/<model_id>/` and `[semantic_index] model_path`).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -244,7 +270,72 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Databases => {
             cmd_databases(make_config(&cli, &address, resolve_db(&cli.database, None))).await
         }
+        Commands::Model { command } => match command {
+            ModelCommands::Fetch { model, path } => {
+                cmd_model_fetch(&cfg, model.clone(), path.clone())
+            }
+        },
     }
+}
+
+/// `gecko model fetch` — stage the embedding model into the runtime cache.
+///
+/// Resolves the target `model_id` (flag > `[semantic_index] model_id`) and the
+/// destination dir (`--path` > `[semantic_index] model_path` > derived
+/// `cache_dir/models/<model_id>/`), then downloads the required files from the
+/// configured source (mirror > HuggingFace) with progress + checksum logging.
+/// Idempotent: a second run is a cache-hit no-op. Load-bearing rule #1: bytes only
+/// ever land in the cache dir, OUTSIDE the build tree.
+fn cmd_model_fetch(
+    cfg: &GeckoConfig,
+    model_flag: Option<String>,
+    path_flag: Option<PathBuf>,
+) -> Result<()> {
+    use gecko_semantic_index::fetch::{self, FetchOutcome};
+
+    let model_id = model_flag.unwrap_or_else(|| cfg.semantic_index.model_id.clone());
+    // Guard against fetching the unresolved placeholder — it can't map to a real
+    // upstream revision.
+    if model_id.contains("<revision>") {
+        anyhow::bail!(
+            "model_id '{model_id}' has an unresolved '<revision>' placeholder; pin a real \
+             revision in gecko.toml ([semantic_index] model_id) or pass --model \
+             '<model>@<revision-hash>'"
+        );
+    }
+
+    // Destination precedence: --path > config model_path > derived under cache root.
+    let override_dir = path_flag
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| cfg.semantic_index.model_path.clone());
+    let cache_root = config::cache_dir(cfg)?;
+    let dest = fetch::model_dir(&cache_root, &model_id, override_dir.as_deref());
+
+    println!("Fetching model '{model_id}' → {}", dest.display());
+    if let Some(src) = cfg.semantic_index.model_source.as_deref() {
+        println!("Source (mirror): {src}");
+    } else {
+        println!("Source: HuggingFace Hub ({})", fetch::DEFAULT_HF_BASE);
+    }
+
+    let outcome = fetch::fetch_model(
+        &model_id,
+        &dest,
+        cfg.semantic_index.model_source.as_deref(),
+        false,
+        &[],
+    )
+    .context("model fetch failed")?;
+
+    match outcome {
+        FetchOutcome::CacheHit => {
+            println!("✓ Already staged (cache hit) — nothing to do.");
+        }
+        FetchOutcome::Downloaded { files } => {
+            println!("✓ Staged {} files to {}", files.len(), dest.display());
+        }
+    }
+    Ok(())
 }
 
 /// `gecko init` — write a default `gecko.toml` at `path` if absent. Idempotent:
@@ -466,35 +557,63 @@ async fn build_epistemic_writer(
             sic.backend
         );
     }
-    if sic.embedder != "stub" {
-        anyhow::bail!(
-            "unsupported semantic_index.embedder '{}': only 'stub' is compiled \
-             (real bge-large-en-v1.5 is deferred behind a cargo feature)",
-            sic.embedder
-        );
-    }
+
+    // Embedder selection (plan P2 Deliverable 3): `"stub"` → the deterministic
+    // hash embedder (always compiled); any other value selects the real candle
+    // `CandleEmbedder`, which exists ONLY in a `--features real-embedder` build.
+    // When that feature is absent the real arm is uninstantiable (structural), so
+    // a non-stub config on a stub build is a hard, actionable error.
+    let (embedder, embedder_kind): (std::sync::Arc<dyn Embedder>, &str) = if sic.embedder == "stub"
+    {
+        (std::sync::Arc::new(StubEmbedder::new(384)), "stub")
+    } else {
+        #[cfg(feature = "real-embedder")]
+        {
+            // The model is a runtime asset — resolved to a PATH; loaded lazily on
+            // the first embed (never here, never on a doc-only run).
+            let model_dir = config::model_path(cfg)?;
+            let candle = CandleEmbedder::new(
+                sic.model_id.clone(),
+                model_dir,
+                sic.auto_fetch,
+                sic.model_source.clone(),
+            );
+            (std::sync::Arc::new(candle), "candle")
+        }
+        #[cfg(not(feature = "real-embedder"))]
+        {
+            anyhow::bail!(
+                "semantic_index.embedder '{}' selects the real embedder, which is not \
+                 compiled into this binary (build with `--features real-embedder`); only \
+                 'stub' is available in this build",
+                sic.embedder
+            );
+        }
+    };
+    let dim = embedder.dim();
 
     // Resolve the effective index path: derived under the cache root by default,
     // or an explicit `[semantic_index] path` override (P1).
     let resolved_index_path = config::index_path(cfg)?;
-    let dim = 384usize;
-    let embedder = std::sync::Arc::new(StubEmbedder::new(dim));
     let index = std::sync::Arc::new(HnswIndex::open(
         &resolved_index_path,
         embedder.model_id(),
         dim,
     )?);
-    let embedder: std::sync::Arc<dyn Embedder> = embedder;
     let index: std::sync::Arc<dyn SemanticIndex> = index;
 
     let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
         .with_retrieval_provenance(sic.record_provenance());
     // A5.4: reconstruct the accelerator from the graph (SoR) before serving recalls.
+    // For the real embedder this stays lazy: an empty/doc-only graph enumerates no
+    // embeddables, so the 1.3GB model is never loaded here.
     writer.rebuild_index_from_graph().await?;
     info!(
         path = %resolved_index_path.display(),
+        embedder = embedder_kind,
+        dim,
         record_provenance = sic.record_provenance(),
-        "Semantic index enabled (hnsw + stub embedder); rebuilt from graph"
+        "Semantic index enabled (hnsw); rebuilt from graph"
     );
     Ok(std::sync::Arc::new(writer))
 }
