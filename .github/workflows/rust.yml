@@ -47,7 +47,10 @@ jobs:
       # --workspace --all-targets so this compiles the same feature-unified graph
       # (dev-dependencies included) that the test step needs — otherwise the test
       # step recompiles ~120 crates that differ only in feature resolution.
-      run: cargo build --workspace --all-targets --verbose
+      # Exclude js-sandbox: it is a wasm guest (imports host_call_extension) and
+      # cannot be linked as a native bin. The test step still builds its unit-test
+      # harness (where `fn main` is pruned), so it stays covered.
+      run: cargo build --workspace --all-targets --exclude js-sandbox --verbose
       
     - name: Run Tests
       run: cargo nextest run --workspace
