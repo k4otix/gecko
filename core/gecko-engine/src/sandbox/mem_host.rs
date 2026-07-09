@@ -101,26 +101,6 @@ pub struct StampedMemCall {
     pub payload: Value,
 }
 
-impl StampedMemCall {
-    /// Reconstructs the host-minted [`RunContext`] this call was stamped with, to
-    /// hand to the [`EpistemicWriter`]. The `run_id`/`actor`/`source`/`occurred_at`
-    /// are the host's — never the sandbox's.
-    pub fn run_context(&self) -> RunContext {
-        RunContext {
-            run_id: self.run_id,
-            actor: self.actor.clone(),
-            source: self.source.clone(),
-            occurred_at: self.occurred_at,
-            // A fresh per-call scratch: the retrieval-provenance correlation ledger
-            // (A5.7) is only meaningful when `recall` and a later `assert_belief`
-            // share one context, which happens on the direct writer/reader path.
-            // This write-only sandbox bridge does not dispatch `recall`, so a shared
-            // scratch would have nothing to correlate here.
-            scratch: gecko_extension_api::SharedScratch::default(),
-        }
-    }
-}
-
 /// Binds a host-minted [`RunContext`] to a sandbox-supplied call.
 ///
 /// This is the forgery-resistance mechanism (invariant 2 / acceptance bullet 3):
@@ -179,15 +159,20 @@ fn opt_dt(payload: &Value, key: &str, default: DateTime) -> DateTime {
 
 /// Dispatches a host-stamped mem call to the injected [`EpistemicWriter`].
 ///
-/// The [`RunContext`] handed to every writer method is reconstructed from the
-/// *host's* stamp ([`StampedMemCall::run_context`]) — never from sandbox-supplied
-/// args — so provenance is un-forgeable (invariant 2). `recall` is a *reader* op and
-/// is not reachable through this write bridge (the reader path is wired separately).
+/// `ctx` is the **per-run** [`RunContext`] the host minted once for the whole run
+/// (never reconstructed per call) — so its `run_id`/`actor`/`source` are the
+/// host's, un-forgeable by the sandbox (invariant 2), and its `scratch` is shared
+/// across every mem call in the run. That shared scratch is what lets a `recall`
+/// populate `ctx.scratch.retrievals` and a later `assert_belief` in the same run
+/// read it back (A5.7 retrieval-provenance correlation). `call` only supplies the
+/// already-stamped `run_id`/`actor`/`source`/`payload` (see [`bind_mem_call`]); it
+/// must have been stamped from this same `ctx`. `recall` is a *reader* op and is
+/// not reachable through this write bridge (the reader path is wired separately).
 pub async fn dispatch_mem_call(
     writer: &Arc<dyn EpistemicWriter>,
+    ctx: &RunContext,
     call: StampedMemCall,
 ) -> Result<Value, String> {
-    let ctx = call.run_context();
     let p = &call.payload;
     let err = |e: gecko_extension_api::EpistemicError| e.to_string();
 
@@ -273,8 +258,8 @@ pub fn epistemic_extension_callback(
             let call = bind_mem_call(&ctx, func, args);
             let writer = writer.clone();
             let handle = handle.clone();
-            return tokio::task::block_in_place(move || {
-                handle.block_on(async move { dispatch_mem_call(&writer, call).await })
+            return tokio::task::block_in_place(|| {
+                handle.block_on(async { dispatch_mem_call(&writer, &ctx, call).await })
             });
         }
         base(ext_name, func_name, args)
