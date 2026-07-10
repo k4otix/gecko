@@ -49,7 +49,7 @@ jobs:
           - 1729:1729
 
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
@@ -57,7 +57,7 @@ jobs:
           toolchain: stable
 
       - name: Install nextest
-        uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2
         with:
           tool: nextest
 
@@ -71,7 +71,7 @@ jobs:
       # cache exactly once.
       - name: Cache the model (keyed on the immutable revision)
         id: model-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/gecko/models
           key: model-${{ env.MODEL_ID }}-${{ env.MODEL_REVISION }}
