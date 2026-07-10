@@ -23,16 +23,15 @@ use tracing::{info, warn};
 pub struct GeckoConfig {
     #[serde(default)]
     pub extensions: ExtSel,
-    /// The `[semantic_index]` table (plan A5.5). Absent ⇒ accelerator disabled
+    /// The `[semantic_index]` table. Absent ⇒ accelerator disabled
     /// (a bare checkout stays fully functional and drag-free).
     #[serde(default)]
     pub semantic_index: SemanticIndexConfig,
-    /// The `[typedb]` table (plan P1/P3). Absent ⇒ external mode connecting to
-    /// the default endpoint (current behavior).
+    /// The `[typedb]` table. Absent ⇒ the default endpoint in orchestrated mode.
     #[serde(default)]
     pub typedb: TypedbConfig,
     /// Optional override for the GECKO cache root — where all RUNTIME assets
-    /// (the ~1.3GB model, the HNSW index, and — P3 — a downloaded TypeDB) live.
+    /// (the ~1.3GB model, the HNSW index, and a downloaded TypeDB) live.
     /// This is a runtime asset location OUTSIDE the build tree; see
     /// [`cache_dir`] for the full precedence. Absent ⇒ `XDG_CACHE_HOME/gecko`
     /// (fallback `~/.cache/gecko`), overridable by the `GECKO_CACHE_DIR` env.
@@ -40,7 +39,7 @@ pub struct GeckoConfig {
     pub cache_dir: Option<String>,
 }
 
-/// The `[semantic_index]` table: the in-process HNSW retrieval accelerator (A5).
+/// The `[semantic_index]` table: the in-process HNSW retrieval accelerator.
 ///
 /// The accelerator is a **pure, rebuildable bolt-on** (invariant 8). When
 /// `enabled = false` the writer runs with no index at all — recall falls back to
@@ -53,9 +52,8 @@ pub struct SemanticIndexConfig {
     /// Path to the persisted (file-serialized) index. `None` (the default, or an
     /// absent `path` key) means "derive under `cache_dir/index/gecko.hnsw`"; a
     /// `Some(path)` is used VERBATIM as an explicit override — including a literal
-    /// relative path like `"gecko.hnsw"` or `"./gecko.hnsw"` in the working dir,
-    /// which the old sentinel-default could not express. [`index_path`] resolves
-    /// the effective location.
+    /// relative path like `"gecko.hnsw"` or `"./gecko.hnsw"` in the working dir.
+    /// [`index_path`] resolves the effective location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Which embedder to build. Only `"stub"` is compiled today; the real
@@ -63,23 +61,22 @@ pub struct SemanticIndexConfig {
     #[serde(default = "default_embedder")]
     pub embedder: String,
     /// Which index backend. Only `"hnsw"` today; `"typedb-native"` is the future
-    /// drop-in (A5.6).
+    /// drop-in.
     #[serde(default = "default_backend")]
     pub backend: String,
-    /// Whether to record retrieval provenance (A5.7). When unset, defaults to
+    /// Whether to record retrieval provenance. When unset, defaults to
     /// `enabled` (on when the index is on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_retrieval_provenance: Option<bool>,
     /// The SINGLE SOURCE OF TRUTH for the embedding model, of the form
-    /// `"<model>@<revision-hash>"` (A5.2). The model is a RUNTIME asset: its
+    /// `"<model>@<revision-hash>"`. The model is a RUNTIME asset: its
     /// on-disk path is DERIVED as `cache_dir/models/<model_id>/` ([`model_path`])
     /// and is content-addressed by this id — never a build dependency, never
     /// hand-configured. Changing the revision changes the cache location.
     #[serde(default = "default_model_id")]
     pub model_id: String,
     /// Whether to automatically fetch the model if absent. Default `false` —
-    /// GECKO never silently pulls ~1.3GB; the operator opts in (P2 wires the
-    /// actual download).
+    /// GECKO never silently pulls ~1.3GB; the operator opts in.
     #[serde(default)]
     pub auto_fetch: bool,
     /// Optional explicit override for the model directory, bypassing the derived
@@ -87,7 +84,7 @@ pub struct SemanticIndexConfig {
     /// deployments that stage weights out-of-band.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_path: Option<String>,
-    /// Optional mirror / base URL for model acquisition (P2/P5 consume it).
+    /// Optional mirror / base URL for model acquisition.
     /// `None` ⇒ the default source (HuggingFace).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_source: Option<String>,
@@ -129,30 +126,31 @@ impl Default for SemanticIndexConfig {
     }
 }
 
-/// How GECKO obtains the TypeDB server (plan P1/P3).
+/// How GECKO obtains the TypeDB server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TypedbMode {
-    /// GECKO downloads/manages the TypeDB server itself (P3). This is the
+    /// GECKO downloads/manages the TypeDB server itself. This is the
     /// default (best local UX — `gecko up` manages a pinned TypeDB child).
     #[default]
     Orchestrated,
-    /// TypeDB is brought up via a bundled `docker compose` stack (P3).
+    /// TypeDB is brought up via a bundled `docker compose` stack.
     Compose,
     /// GECKO connects to an externally-managed TypeDB at `endpoint`.
     External,
 }
 
-/// The `[typedb]` table: how to reach (and, from P3, how to run) the TypeDB
-/// server. In P1 only `endpoint` affects behavior; `mode` is plumbed but not yet
-/// acted on (main.rs still connects to `endpoint` regardless of mode).
+/// The `[typedb]` table: how to reach (and how to run) the TypeDB server.
+/// `endpoint` is the connection target; `mode` selects whether `gecko up`/`down`
+/// manage the server (orchestrated), defer to Docker (compose), or leave it to
+/// the operator (external).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TypedbConfig {
     /// The TypeDB server address. Default `"localhost:1729"`. The CLI
     /// `--address` flag overrides this when passed.
     #[serde(default = "default_endpoint")]
     pub endpoint: String,
-    /// The TypeDB run mode. **Default `Orchestrated`** (P3): `gecko up` manages a
+    /// The TypeDB run mode. **Default `Orchestrated`**: `gecko up` manages a
     /// pinned TypeDB child process. Set `external` to connect to a server you run,
     /// or `compose` for the Docker stack.
     #[serde(default)]
@@ -174,7 +172,7 @@ impl Default for TypedbConfig {
 
 impl SemanticIndexConfig {
     /// Resolves whether retrieval-provenance recording is on: the explicit setting
-    /// if given, else defaults to `enabled` (A5.7: default on when the index is on).
+    /// if given, else defaults to `enabled` (default on when the index is on).
     pub fn record_provenance(&self) -> bool {
         self.record_retrieval_provenance.unwrap_or(self.enabled)
     }
@@ -214,7 +212,7 @@ impl GeckoConfig {
     }
 }
 
-// ── Runtime asset layout (plan P1) ──────────────────────────────────────────
+// ── Runtime asset layout ────────────────────────────────────────────────────
 //
 // The cache-root / model-dir / index-path precedence resolvers live in the
 // `paths` submodule (keeping this file focused on the config schema itself). Load-
@@ -243,11 +241,11 @@ pub fn default_gecko_toml() -> &'static str {
 enabled = []
 
 # The GECKO cache root — where all RUNTIME assets live (the ~1.3GB embedding
-# model, the HNSW index, and — P3 — a downloaded TypeDB). Kept OUTSIDE the repo.
+# model, the HNSW index, and a downloaded TypeDB). Kept OUTSIDE the repo.
 # Precedence: GECKO_CACHE_DIR env > this key > XDG_CACHE_HOME/gecko > ~/.cache/gecko.
 # cache_dir = "/path/to/cache"
 
-# In-process semantic retrieval accelerator (plan A5). A PURE, rebuildable bolt-on
+# In-process semantic retrieval accelerator. A PURE, rebuildable bolt-on
 # (invariant 8) — never a source of truth, deletable when TypeDB ships native
 # vector search. When `enabled = false` (or this table is absent) the substrate
 # runs with no index: recall falls back to the non-vector path, drag-free.
@@ -262,7 +260,7 @@ backend  = "hnsw"          # future drop-in: "typedb-native"
 # The SINGLE SOURCE OF TRUTH for the model. The model directory is DERIVED as
 # cache_dir/models/<model_id>/ (content-addressed) — never hand-configured.
 model_id = "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
-# Never silently pull ~1.3GB; the operator opts in (P2 wires the download).
+# Never silently pull ~1.3GB; the operator opts in.
 auto_fetch = false
 # model_path = "/pre/provisioned/model/dir"   # optional override (air-gapped)
 # model_source = "https://mirror.example/models"  # optional mirror; default: HuggingFace
@@ -292,9 +290,6 @@ mode = "orchestrated"
 /// functions loaded and their write-paths opened. A `cyber` entry that names a
 /// not-compiled extension is a hard error, so the `#[cfg]` arms below and the
 /// operator's config can never silently disagree.
-// `vec_init_then_push`: mem is pushed (not folded into `vec![..]`) because the
-// later domain-extension pushes are `#[cfg]`-gated — under `--no-default-features`
-// (no `cyber`) nothing else pushes, so a `vec![..]` init would leave `mut` unused.
 #[allow(clippy::vec_init_then_push)]
 pub fn build_extensions(cfg: &GeckoConfig) -> Result<Vec<Box<dyn GeckoExtension>>> {
     // Initialize-then-push (not `vec![..]`): the later domain-extension pushes are
@@ -412,14 +407,11 @@ mod tests {
         assert_eq!(names(&exts), vec!["mem-gecko"]);
     }
 
-    /// Regression test for the P5 review fix: `model-integration.yml`'s
-    /// "Configure model mirror" step used to `>> gecko.toml` a second
-    /// `[semantic_index]` table onto the ALREADY-committed `gecko.toml`
-    /// (which ships its own `[semantic_index]` table), producing a duplicate
-    /// TOML table that fails to parse. The fix writes a standalone config
-    /// (never appended to the committed file) — this is the exact template
-    /// the workflow generates, asserting it parses as a single, complete,
-    /// valid document with the mirror wired up via `model_source`.
+    /// The CI model-mirror config template must parse as a single, complete,
+    /// valid document: a standalone `[semantic_index]` table with the mirror
+    /// wired up via `model_source` (not a second table appended onto the
+    /// committed `gecko.toml`, which would be a duplicate table that fails to
+    /// parse). This is the exact template `model-integration.yml` generates.
     #[test]
     fn ci_mirror_config_template_parses_without_duplicate_table() {
         let rendered = concat!(
@@ -480,13 +472,13 @@ mod tests {
         assert!(expect_err(&cfg_with(&["cyber"])).contains("not compiled"));
     }
 
-    // ── P1: cache layout + config schema ────────────────────────────────────
+    // ── cache layout + config schema ────────────────────────────────────────
     // (The cache/model/index path-resolution tests live alongside their code in
     // the `paths` submodule — see `config/paths.rs`.)
 
     #[test]
     fn typedb_defaults_to_orchestrated_endpoint() {
-        // P3: orchestrated is the default local-UX mode; endpoint unchanged.
+        // Orchestrated is the default local-UX mode; endpoint unchanged.
         let cfg = GeckoConfig::default();
         assert_eq!(cfg.typedb.endpoint, "localhost:1729");
         assert_eq!(cfg.typedb.mode, TypedbMode::Orchestrated);
@@ -542,11 +534,10 @@ mod tests {
 
     /// Regression guard for the documented first-run golden path: a shipped
     /// default `model_id` containing the literal `<revision>` placeholder
-    /// makes `gecko model fetch` (and `gecko doctor`'s model check) hard-fail
-    /// against the exact config `gecko init` writes — see FIX 1a of the
-    /// packaging review. Pin both the absence of the placeholder and the
-    /// exact Tier-3-validated SHA so a future edit can't silently
-    /// reintroduce the broken golden path.
+    /// would make `gecko model fetch` (and `gecko doctor`'s model check)
+    /// hard-fail against the exact config `gecko init` writes. Pin both the
+    /// absence of the placeholder and the exact Tier-3-validated SHA so a
+    /// future edit can't silently reintroduce a broken golden path.
     #[test]
     fn default_model_id_has_no_unresolved_revision_placeholder() {
         let id = default_model_id();

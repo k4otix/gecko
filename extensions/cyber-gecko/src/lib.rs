@@ -65,7 +65,8 @@ impl GeckoExtension for CyberGecko {
                 let machine_id = args
                     .get("machine_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "mde_isolate: missing required 'machine_id'".to_string())?;
                 // Mock isolation
                 Ok(serde_json::json!({
                     "status": "success",
@@ -74,7 +75,11 @@ impl GeckoExtension for CyberGecko {
                 }))
             }
             "sentinel_query" => {
-                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "sentinel_query: missing required 'query'".to_string())?;
                 // Mock query result
                 Ok(serde_json::json!({
                     "status": "success",

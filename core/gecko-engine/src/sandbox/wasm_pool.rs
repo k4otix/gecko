@@ -2,7 +2,7 @@
 //!
 //! Holds the single WebAssembly executor (QuickJS guest), lazily initialized on
 //! first use to avoid paying the WASM compilation cost until a program actually
-//! runs. All engines are WASM now, so there is no cross-engine dispatch — MCP/API/
+//! runs. Execution is WASM-only, so there is no cross-engine dispatch — MCP/API/
 //! DB/TypeQL are scope-gated host capabilities, not separate engines.
 
 use std::sync::OnceLock;

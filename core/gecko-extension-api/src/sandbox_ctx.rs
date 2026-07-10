@@ -1,4 +1,4 @@
-//! The activation-time sandbox context (plan A4.1).
+//! The activation-time sandbox context.
 //!
 //! Registration is the activation gate (invariant 3): `build_extensions` constructs
 //! only the enabled extensions, and the Assembler calls

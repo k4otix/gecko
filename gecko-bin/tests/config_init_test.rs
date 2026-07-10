@@ -1,4 +1,4 @@
-//! `gecko init` (config bootstrap, P1): writes a default gecko.toml if absent
+//! `gecko init` (config bootstrap): writes a default gecko.toml if absent
 //! and NEVER clobbers an existing one. Drives the real binary — no TypeDB needed
 //! (config init runs before any connection is opened).
 
@@ -24,7 +24,7 @@ fn init_writes_default_config_then_is_a_noop() {
     assert!(cfg_path.exists(), "gecko init should create gecko.toml");
 
     let written = std::fs::read_to_string(&cfg_path).unwrap();
-    // It must parse as valid TOML with the P1 tables present.
+    // It must parse as valid TOML with the expected tables present.
     let parsed: toml::Value = toml::from_str(&written).expect("default config must be valid TOML");
     assert!(parsed.get("extensions").is_some());
     assert!(parsed.get("semantic_index").is_some());
@@ -32,7 +32,7 @@ fn init_writes_default_config_then_is_a_noop() {
     assert_eq!(
         parsed["typedb"]["mode"].as_str(),
         Some("orchestrated"),
-        "P3 flips the default run mode to orchestrated"
+        "the default run mode is orchestrated"
     );
 
     // 2. Present → idempotent no-op: existing content is preserved byte-for-byte.

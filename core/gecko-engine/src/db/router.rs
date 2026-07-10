@@ -4,8 +4,10 @@
 //! targeting via `TlsMode`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 use typedb_driver::{
     Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
@@ -64,13 +66,25 @@ impl Default for DbConfig {
     }
 }
 
+/// Builds a `map_err` closure that turns any displayable driver error into the
+/// given [`DbError`] variant via `.to_string()`. Factors out the
+/// `.map_err(|e| DbError::X(e.to_string()))` pattern repeated across this
+/// module's driver calls; `ctor` is one of `DbError`'s tuple-variant
+/// constructors (e.g. `DbError::Connection`).
+fn to_db_err<E: std::fmt::Display>(ctor: fn(String) -> DbError) -> impl Fn(E) -> DbError {
+    move |e| ctor(e.to_string())
+}
+
 /// TypeDB connection and transaction router.
 ///
-/// Manages TypeDB driver lifecycle,
-/// database creation, schema application, and transaction scoping.
+/// Owns the driver lifecycle (connect, database creation, schema application) and
+/// vends short-lived transactions to callers that hold it exclusively. For the
+/// shared read/write hot path, [`Self::graph_handle`] hands out a cheap, cloneable
+/// [`GraphHandle`] that opens transactions without going through this router again.
 pub struct TypeDbRouter {
     config: DbConfig,
-    driver: Option<TypeDBDriver>,
+    driver: Option<Arc<TypeDBDriver>>,
+    write_gate: Arc<Semaphore>,
 }
 
 impl TypeDbRouter {
@@ -78,6 +92,7 @@ impl TypeDbRouter {
         Self {
             config,
             driver: None,
+            write_gate: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -88,7 +103,7 @@ impl TypeDbRouter {
         }
 
         let addresses = Addresses::try_from_address_str(&self.config.address)
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
 
         let credentials = Credentials::new(&self.config.username, &self.config.password);
 
@@ -97,7 +112,7 @@ impl TypeDbRouter {
             TlsMode::Enabled { ca_cert } => {
                 if let Some(cert_path) = ca_cert {
                     DriverTlsConfig::enabled_with_root_ca(cert_path)
-                        .map_err(|e| DbError::Connection(e.to_string()))?
+                        .map_err(to_db_err(DbError::Connection))?
                 } else {
                     DriverTlsConfig::enabled_with_native_root_ca()
                 }
@@ -108,10 +123,10 @@ impl TypeDbRouter {
 
         let driver = TypeDBDriver::new(addresses, credentials, options)
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
 
         info!(address = %self.config.address, "Connected to TypeDB");
-        self.driver = Some(driver);
+        self.driver = Some(Arc::new(driver));
         Ok(())
     }
 
@@ -123,12 +138,27 @@ impl TypeDbRouter {
         }
     }
 
-    /// Returns a reference to the active driver, connecting if necessary.
-    async fn driver(&mut self) -> Result<&TypeDBDriver, DbError> {
+    /// Returns a shared handle to the active driver, connecting if necessary. The
+    /// clone is cheap — `TypeDBDriver` is an `Arc`-backed handle that multiplexes
+    /// concurrent transactions.
+    async fn driver(&mut self) -> Result<Arc<TypeDBDriver>, DbError> {
         self.connect().await?;
         self.driver
-            .as_ref()
+            .clone()
             .ok_or_else(|| DbError::Connection("Driver not available after connect".into()))
+    }
+
+    /// Connects if necessary and returns a cheap, cloneable [`GraphHandle`] for the
+    /// shared read/write path. The handle opens read transactions concurrently
+    /// (lock-free) and serializes writers through this router's single-permit gate,
+    /// so belief-tier commits stay one-at-a-time and atomic.
+    pub async fn graph_handle(&mut self) -> Result<GraphHandle, DbError> {
+        let driver = self.driver().await?;
+        Ok(GraphHandle {
+            driver,
+            database: self.config.database.clone(),
+            write_gate: self.write_gate.clone(),
+        })
     }
 
     /// Creates the target database if it does not already exist.
@@ -140,14 +170,14 @@ impl TypeDbRouter {
             .databases()
             .contains(&db_name)
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
 
         if !exists {
             driver
                 .databases()
                 .create(&db_name)
                 .await
-                .map_err(|e| DbError::Connection(e.to_string()))?;
+                .map_err(to_db_err(DbError::Connection))?;
             info!(database = %db_name, "Created database");
         }
 
@@ -155,23 +185,33 @@ impl TypeDbRouter {
     }
 
     /// Deletes a database by name if it exists (a no-op if it does not).
+    ///
+    /// Refuses to delete the sacrosanct `"gecko"` database — the one real,
+    /// long-lived database this engine ships against. Integration tests target
+    /// their own uniquely-named throwaway databases and must never reach this
+    /// guard.
     pub async fn delete_database(&mut self, name: &str) -> Result<(), DbError> {
+        if name == "gecko" {
+            return Err(DbError::Connection(
+                "refusing to delete the reserved 'gecko' database".to_string(),
+            ));
+        }
         let driver = self.driver().await?;
         let exists = driver
             .databases()
             .contains(name)
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
         if exists {
             let database = driver
                 .databases()
                 .get(name)
                 .await
-                .map_err(|e| DbError::Connection(e.to_string()))?;
+                .map_err(to_db_err(DbError::Connection))?;
             database
                 .delete()
                 .await
-                .map_err(|e| DbError::Connection(e.to_string()))?;
+                .map_err(to_db_err(DbError::Connection))?;
             info!(database = %name, "Deleted database");
         }
         Ok(())
@@ -184,7 +224,7 @@ impl TypeDbRouter {
             .databases()
             .all()
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
         Ok(all.iter().map(|d| d.name().to_string()).collect())
     }
 
@@ -197,15 +237,13 @@ impl TypeDbRouter {
         let tx = driver
             .transaction(&db_name, TransactionType::Schema)
             .await
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(to_db_err(DbError::Schema))?;
 
         tx.query(schema_content)
             .await
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(to_db_err(DbError::Schema))?;
 
-        tx.commit()
-            .await
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+        tx.commit().await.map_err(to_db_err(DbError::Schema))?;
 
         info!(database = %db_name, "Schema applied");
         Ok(())
@@ -219,7 +257,7 @@ impl TypeDbRouter {
         driver
             .transaction(&db_name, TransactionType::Write)
             .await
-            .map_err(|e| DbError::Transaction(e.to_string()))
+            .map_err(to_db_err(DbError::Transaction))
     }
 
     /// Begins a read transaction.
@@ -230,7 +268,7 @@ impl TypeDbRouter {
         driver
             .transaction(&db_name, TransactionType::Read)
             .await
-            .map_err(|e| DbError::Transaction(e.to_string()))
+            .map_err(to_db_err(DbError::Transaction))
     }
 
     /// Reads the connected server's version string (e.g. `"3.12.0"`), connecting
@@ -242,7 +280,7 @@ impl TypeDbRouter {
         let version = driver
             .server_version()
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
         Ok(version.version().to_string())
     }
 
@@ -260,5 +298,74 @@ impl TypeDbRouter {
 impl Drop for TypeDbRouter {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+/// A cheap, cloneable handle to an established TypeDB connection.
+///
+/// Opens read transactions lock-free — the driver multiplexes concurrent
+/// transactions and TypeDB gives each reader a consistent snapshot — while write
+/// transactions pass through a shared single-permit gate so belief-tier commits
+/// are serialized (one writer at a time, each batch atomic). Clones share the same
+/// driver and gate; construct one via [`TypeDbRouter::graph_handle`].
+#[derive(Clone)]
+pub struct GraphHandle {
+    driver: Arc<TypeDBDriver>,
+    database: String,
+    write_gate: Arc<Semaphore>,
+}
+
+impl GraphHandle {
+    /// Opens a read transaction. Independent of any other reader or writer.
+    pub async fn begin_read(&self) -> Result<Transaction, DbError> {
+        self.driver
+            .transaction(&self.database, TransactionType::Read)
+            .await
+            .map_err(to_db_err(DbError::Transaction))
+    }
+
+    /// Acquires the single-writer gate, then opens a write transaction. Acquiring
+    /// before opening keeps a queued writer from holding an idle server-side
+    /// transaction. The returned [`WriteTransaction`] holds the permit until it is
+    /// committed or dropped, so writers never overlap.
+    pub async fn begin_write(&self) -> Result<WriteTransaction, DbError> {
+        let permit = self
+            .write_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| DbError::Transaction("write gate closed".to_string()))?;
+        let tx = self
+            .driver
+            .transaction(&self.database, TransactionType::Write)
+            .await
+            .map_err(to_db_err(DbError::Transaction))?;
+        Ok(WriteTransaction {
+            tx,
+            _permit: permit,
+        })
+    }
+}
+
+/// A write transaction bound to the single-writer gate.
+///
+/// Run statements against [`transaction`](Self::transaction), then
+/// [`commit`](Self::commit). The gate permit is released only when this value is
+/// dropped — after the commit completes — so no other writer can start mid-batch.
+pub struct WriteTransaction {
+    tx: Transaction,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl WriteTransaction {
+    /// The underlying transaction, for issuing queries.
+    pub fn transaction(&self) -> &Transaction {
+        &self.tx
+    }
+
+    /// Commits the batch, holding the writer gate until the commit resolves.
+    pub async fn commit(self) -> Result<(), DbError> {
+        let WriteTransaction { tx, _permit } = self;
+        tx.commit().await.map_err(to_db_err(DbError::Transaction))
     }
 }

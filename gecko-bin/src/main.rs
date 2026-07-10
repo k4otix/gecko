@@ -10,7 +10,7 @@ mod config;
 mod doctor;
 mod orchestrator;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -154,10 +154,9 @@ enum Commands {
         #[arg(long)]
         quiet: bool,
 
-        /// Run only a single named check
-        /// (config|cache-dir|typedb|model|index|embedder).
+        /// Run only a single named check (clap validates against the known set).
         #[arg(long)]
-        check: Option<String>,
+        check: Option<doctor::DoctorCheck>,
     },
 }
 
@@ -202,7 +201,7 @@ async fn main() -> ExitCode {
     // and must run even with a broken/absent gecko.toml — so it short-circuits
     // BEFORE run()'s strict config load + extension assembly.
     if let Commands::Doctor { json, quiet, check } = &cli.command {
-        return doctor::run_doctor(&cli, check.as_deref(), *json, *quiet).await;
+        return doctor::run_doctor(&cli, *check, *json, *quiet).await;
     }
 
     match run(cli).await {
@@ -223,23 +222,29 @@ fn resolve_db(explicit: &Option<String>, derived: Option<&str>) -> String {
         .unwrap_or_else(|| "gecko".to_string())
 }
 
+/// Maps the `--tls` flag (and optional `--ca-cert`) to a [`TlsMode`]. Shared by
+/// `make_config`, `gecko doctor`'s typedb check, and the orchestrator's readiness
+/// probe so all three connect with the same TLS posture.
+pub(crate) fn tls_mode(tls: bool, ca_cert: Option<&Path>) -> TlsMode {
+    if tls {
+        TlsMode::Enabled {
+            ca_cert: ca_cert.map(Path::to_path_buf),
+        }
+    } else {
+        TlsMode::Disabled
+    }
+}
+
 /// Builds a `DbConfig` for the resolved database using the shared connection args.
 /// The address is resolved by `resolve_address` (CLI `--address` overrides the
 /// `[typedb] endpoint` config).
 fn make_config(cli: &Cli, address: &str, database: String) -> DbConfig {
-    let tls = if cli.tls {
-        TlsMode::Enabled {
-            ca_cert: cli.ca_cert.clone(),
-        }
-    } else {
-        TlsMode::Disabled
-    };
     DbConfig {
         address: address.to_string(),
         database,
         username: cli.username.clone(),
         password: cli.password.clone(),
-        tls,
+        tls: tls_mode(cli.tls, cli.ca_cert.as_deref()),
     }
 }
 
@@ -260,13 +265,16 @@ async fn run(cli: Cli) -> Result<()> {
         return cmd_init_config(&cli.config);
     }
 
-    // Assemble extensions (design §2: The Assembler Pattern). The runtime config
+    // Load the runtime config (design §2: The Assembler Pattern). The config
     // selects which registered extensions are activated; mem is forced-on and
     // registered first so schemas apply in subtyping order. Registration is the
     // gate — only these extensions get functions loaded and write-paths opened.
+    //
+    // Extensions are assembled per-command, only in the arms that use them
+    // (SchemaInit / Sync / Run), so a typo in `[extensions] enabled` can only fail
+    // those commands — never server management or read-only ones (up/down/query/
+    // status/drop/databases/model).
     let cfg = GeckoConfig::load(&cli.config)?;
-
-    let extensions = build_extensions(&cfg)?;
     let address = resolve_address(&cli, &cfg);
 
     // `gecko up`/`down` manage (or point at) the server itself — they route on the
@@ -281,6 +289,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Init | Commands::Up | Commands::Down => unreachable!("handled above"),
         Commands::Doctor { .. } => unreachable!("handled in main before run()"),
         Commands::SchemaInit { bundle, schema } => {
+            let extensions = build_extensions(&cfg)?;
             let derived = match bundle {
                 Some(path) => Some(
                     gecko_engine::okf::parser::bundle_name(path)
@@ -296,6 +305,7 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_schema_init(config, &extensions, schema.clone()).await
         }
         Commands::Sync { bundle_path } => {
+            let extensions = build_extensions(&cfg)?;
             println!("Parsing bundle at {}...", bundle_path.display());
             let manifest = parse_bundle(bundle_path).context("Failed to parse OKF bundle")?;
             let config = make_config(
@@ -316,10 +326,12 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_status(make_config(&cli, &address, resolve_db(&cli.database, None))).await
         }
         Commands::Run { concept_id } => {
+            let extensions = build_extensions(&cfg)?;
             cmd_run(
                 make_config(&cli, &address, resolve_db(&cli.database, None)),
                 &cfg,
                 concept_id,
+                extensions,
             )
             .await
         }
@@ -371,7 +383,8 @@ async fn cmd_up(cli: &Cli, cfg: &GeckoConfig, address: &str) -> Result<()> {
                 "Bringing up orchestrated TypeDB {} (endpoint {address})...",
                 orchestrator::PINNED_TYPEDB
             );
-            match orchestrator::up(&cache_root, address, &cli.username, &cli.password).await? {
+            let tls = tls_mode(cli.tls, cli.ca_cert.as_deref());
+            match orchestrator::up(&cache_root, address, &cli.username, &cli.password, tls).await? {
                 orchestrator::UpOutcome::AlreadyRunning => {
                     println!("✓ TypeDB already running at {address} — nothing to do.");
                 }
@@ -403,7 +416,13 @@ async fn cmd_down(cfg: &GeckoConfig, address: &str) -> Result<()> {
     match cfg.typedb.mode {
         TypedbMode::Orchestrated => {
             let cache_root = config::cache_dir(cfg)?;
-            match orchestrator::down(&cache_root)? {
+            // `down` blocks on SIGTERM → wait → SIGKILL (a `std::thread::sleep`
+            // poll loop); run it off the async runtime so it never stalls the
+            // reactor thread.
+            let outcome = tokio::task::spawn_blocking(move || orchestrator::down(&cache_root))
+                .await
+                .context("TypeDB shutdown task panicked")??;
+            match outcome {
                 orchestrator::DownOutcome::NotRunning => {
                     println!("No managed TypeDB is running — nothing to stop.");
                 }
@@ -542,7 +561,8 @@ async fn apply_all_schemas(
     custom_schema: Option<PathBuf>,
 ) -> Result<()> {
     let core_schema = if let Some(path) = custom_schema {
-        std::fs::read_to_string(&path)
+        tokio::fs::read_to_string(&path)
+            .await
             .with_context(|| format!("Failed to read schema file: {}", path.display()))?
     } else {
         include_str!("../../core/gecko-engine/schema/core_schema.tql").to_string()
@@ -613,8 +633,8 @@ async fn cmd_sync(
     println!("  Concepts updated:  {}", result.concepts_updated);
     println!("  Concepts skipped:  {}", result.concepts_skipped);
     println!("  Concepts deleted:  {}", result.concepts_deleted);
-    println!("  Links created:     {}", result.links_created);
-    println!("  Citations created: {}", result.citations_created);
+    println!("  Links attempted:    {}", result.links_attempted);
+    println!("  Citations attempted: {}", result.citations_attempted);
 
     Ok(())
 }
@@ -634,7 +654,10 @@ async fn cmd_query(config: DbConfig, query_str: &str) -> Result<()> {
 
     if answer.is_row_stream() {
         let mut stream = answer.into_rows();
-        while let Some(Ok(row)) = stream.next().await {
+        // Propagate a stream error instead of silently ending the loop on the
+        // first `Err` (which would truncate results and hide a real DB fault).
+        while let Some(item) = stream.next().await {
+            let row = item.context("error reading query row stream")?;
             for col in row.get_column_names() {
                 if let Ok(Some(concept)) = row.get(col) {
                     println!("${col}: {concept}");
@@ -644,7 +667,8 @@ async fn cmd_query(config: DbConfig, query_str: &str) -> Result<()> {
         }
     } else if answer.is_document_stream() {
         let mut stream = answer.into_documents();
-        while let Some(Ok(doc)) = stream.next().await {
+        while let Some(item) = stream.next().await {
+            let doc = item.context("error reading query document stream")?;
             println!("{}", doc.into_json());
         }
     } else {
@@ -672,7 +696,8 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
     let mut found = false;
     if answer.is_document_stream() {
         let mut stream = answer.into_documents();
-        while let Some(Ok(doc)) = stream.next().await {
+        while let Some(item) = stream.next().await {
+            let doc = item.context("error reading bundle document stream")?;
             found = true;
             println!("{}", doc.into_json());
         }
@@ -684,15 +709,14 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
     Ok(())
 }
 
-/// Execute a playbook concept in the sandbox.
-/// Builds mem's epistemic writer, wiring the A5 semantic-index accelerator when the
+/// Builds mem's epistemic writer, wiring the semantic-index accelerator when the
 /// `[semantic_index]` config enables it.
 ///
 /// - **Disabled** ⇒ `MemWriter::without_index` (recall falls back to the non-vector
-///   path; no drag — the A4 shape).
-/// - **Enabled** ⇒ concrete `HnswIndex` + stub `Embedder`, rebuilt from the graph
-///   (A5.4) before serving recalls, with retrieval-provenance recording per config
-///   (A5.7). The trait is the swap seam (A5.6): a future `typedb-native` backend
+///   path; no drag).
+/// - **Enabled** ⇒ concrete `HnswIndex` + configured `Embedder`, rebuilt from the
+///   graph before serving recalls, with retrieval-provenance recording per config.
+///   The `SemanticIndex` trait is the swap seam: a future `typedb-native` backend
 ///   drops in here.
 async fn build_epistemic_writer(
     store: std::sync::Arc<dyn GraphStore>,
@@ -712,15 +736,14 @@ async fn build_epistemic_writer(
         );
     }
 
-    // Embedder selection (plan P2 Deliverable 3): `"stub"` → the deterministic
-    // hash embedder (always compiled); any other value selects the real candle
-    // `CandleEmbedder`, which exists ONLY in a `--features real-embedder` build.
-    // When that feature is absent the real arm is uninstantiable (structural), so
-    // a non-stub config on a stub build is a hard, actionable error.
+    // Embedder selection: `"stub"` → the deterministic hash embedder (always
+    // compiled); `"candle"` → the real `CandleEmbedder`, which exists ONLY in a
+    // `--features real-embedder` build. Any other value is a hard, actionable error
+    // rather than a silent fallback to candle.
     let (embedder, embedder_kind): (std::sync::Arc<dyn Embedder>, &str) = if sic.embedder == "stub"
     {
         (std::sync::Arc::new(StubEmbedder::new(384)), "stub")
-    } else {
+    } else if sic.embedder == "candle" {
         #[cfg(feature = "real-embedder")]
         {
             // The model is a runtime asset — resolved to a PATH; loaded lazily on
@@ -737,17 +760,21 @@ async fn build_epistemic_writer(
         #[cfg(not(feature = "real-embedder"))]
         {
             anyhow::bail!(
-                "semantic_index.embedder '{}' selects the real embedder, which is not \
+                "semantic_index.embedder 'candle' selects the real embedder, which is not \
                  compiled into this binary (build with `--features real-embedder`); only \
-                 'stub' is available in this build",
-                sic.embedder
+                 'stub' is available in this build"
             );
         }
+    } else {
+        anyhow::bail!(
+            "unknown semantic_index.embedder '{}': expected 'stub' or 'candle'",
+            sic.embedder
+        );
     };
     let dim = embedder.dim();
 
     // Resolve the effective index path: derived under the cache root by default,
-    // or an explicit `[semantic_index] path` override (P1).
+    // or an explicit `[semantic_index] path` override.
     let resolved_index_path = config::index_path(cfg)?;
     let index = std::sync::Arc::new(HnswIndex::open(
         &resolved_index_path,
@@ -758,9 +785,9 @@ async fn build_epistemic_writer(
 
     let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
         .with_retrieval_provenance(sic.record_provenance());
-    // A5.4: reconstruct the accelerator from the graph (SoR) before serving recalls.
-    // For the real embedder this stays lazy: an empty/doc-only graph enumerates no
-    // embeddables, so the 1.3GB model is never loaded here.
+    // Reconstruct the accelerator from the graph (the source of truth) before
+    // serving recalls. For the real embedder this stays lazy: an empty/doc-only
+    // graph enumerates no embeddables, so the 1.3GB model is never loaded here.
     writer.rebuild_index_from_graph().await?;
     info!(
         path = %resolved_index_path.display(),
@@ -772,25 +799,26 @@ async fn build_epistemic_writer(
     Ok(std::sync::Arc::new(writer))
 }
 
-async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Result<()> {
-    println!("Executing playbook: {concept_id}");
+/// A concept's executable program plus the metadata `gecko run` needs to execute
+/// it: the (informational) engine token and the capability scopes it grants.
+struct FetchedPlaybook {
+    code_block: String,
+    engine_type: String,
+    scopes: Vec<String>,
+}
 
-    // The epistemic writer needs its own connection to the same database: the
-    // pipeline borrows `db` mutably for the run, while belief-tier writes commit
-    // through this second router (belief writes are sparse — invariant 4 — so a
-    // dedicated serialised connection is not a bottleneck).
-    let writer_config = config.clone();
-    let mut db = TypeDbRouter::new(config);
+/// Fetches a concept's single code-block, engine, and granted scopes from the graph.
+///
+/// Single-bundle-scoped: concept IDs are exact bundle-relative paths, and each
+/// concept has exactly one executable program (its engine-matched code fences were
+/// concatenated at parse time), so there is no ambiguity to resolve. `code` and
+/// `scopes` are list projections to tolerate the 0-or-1 / 0-or-N cardinalities.
+async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<FetchedPlaybook> {
     let tx = db
         .begin_read()
         .await
         .context("Failed to begin read transaction")?;
 
-    // Single-bundle-scoped: concept IDs are exact bundle-relative paths. Each
-    // concept has exactly one executable program — its engine-matched code fences
-    // were concatenated at parse time — so there is no ambiguity to resolve. We
-    // fetch the concept's single code-block plus its engine and granted scopes
-    // (both as lists to tolerate the 0-or-1 / 0-or-N cardinalities).
     let query = format!(
         r#"
         match $c isa concept, has concept-id "{}";
@@ -811,8 +839,10 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     let mut doc_json: Option<serde_json::Value> = None;
     if answer.is_document_stream() {
         let mut stream = answer.into_documents();
-        if let Some(Ok(doc)) = stream.next().await {
-            doc_json = serde_json::from_str(&doc.into_json().to_string()).ok();
+        // Surface a stream error rather than masking it as "playbook not found".
+        if let Some(item) = stream.next().await {
+            let doc = item.context("error reading playbook document stream")?;
+            doc_json = serde_json::to_value(doc.into_json()).ok();
         }
     }
 
@@ -837,7 +867,7 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     }
 
     // The engine token is informational — all concepts run in the one WASM
-    // (QuickJS) boundary now.
+    // (QuickJS) boundary.
     let engine_type = json
         .get("engine")
         .and_then(|v| v.as_str())
@@ -855,39 +885,41 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
         })
         .unwrap_or_default();
 
-    println!("Resolved to: {concept_id}");
+    Ok(FetchedPlaybook {
+        code_block,
+        engine_type,
+        scopes,
+    })
+}
 
-    // Rebuild the activated extension set from config for the host-call bridge.
-    // Registration is the gate: only these extensions' imports are reachable from
-    // the sandbox — a disabled extension exposes no write-path.
-    let cb_extensions = build_extensions(cfg)?;
-
-    println!(
-        "Extensions loaded: {:?}",
-        cb_extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
-    );
-    println!("Running script using engine: {engine_type}...");
-
-    // Activation (plan A4.2 + A5.5): construct mem's epistemic writer over its own
-    // graph connection, then run each activated extension's
-    // `inject_epistemic_host_fns` hook. mem (forced-on, first) binds the writer into
-    // the sandbox context; other extensions inherit the no-op. When the
-    // `[semantic_index]` accelerator is enabled we build the concrete `HnswIndex` +
-    // stub `Embedder`, rebuild it from the graph (A5.4), and inject them; otherwise
-    // the writer runs with no index (recall falls back, drag-free — the A4 shape).
+/// Builds the sandbox host-call bridge for a run. Constructs mem's epistemic writer
+/// over its own graph connection and injects it into each activated extension; when
+/// an epistemic writer is present it wraps the base import dispatcher so `mem.*`
+/// host fns reach the writer stamped with a host-minted `RunContext` (invariant 2:
+/// the sandbox cannot forge or omit `run_id`/`actor`/`source`). Registration is the
+/// gate — only these extensions' imports are reachable from the sandbox.
+async fn build_host_bridge(
+    concept_id: &str,
+    cfg: &GeckoConfig,
+    writer_config: DbConfig,
+    extensions: Vec<Box<dyn GeckoExtension>>,
+) -> Result<gecko_engine::sandbox::engine::ExtensionCallback> {
     let graph_router =
         std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
     let store = std::sync::Arc::new(RouterGraphStore::new(graph_router));
     let writer: std::sync::Arc<dyn EpistemicWriter> = build_epistemic_writer(store, cfg).await?;
+
+    // mem (forced-on, first) binds the writer into the sandbox context; other
+    // extensions inherit the no-op.
     let mut sandbox_ctx = SandboxCtx::new();
-    for ext in &cb_extensions {
+    for ext in &extensions {
         ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
     }
 
     // The base bridge dispatches plain host imports over the activated extensions.
     let base_cb: gecko_engine::sandbox::engine::ExtensionCallback =
         std::sync::Arc::new(move |ext_name, func_name, args| {
-            for ext in &cb_extensions {
+            for ext in &extensions {
                 if ext.name() == ext_name {
                     return ext.call_import(func_name, &args);
                 }
@@ -897,41 +929,80 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
 
     // If an epistemic extension was activated, wrap the base bridge so mem host fns
     // (`remember`/`derive`/`supersede`/`contest`) reach the injected writer — each
-    // stamped with a host-minted RunContext (invariant 2: the sandbox cannot forge
-    // or omit `run_id`/`actor`/`source`). The host mints exactly one RunContext per
-    // run, bound to the executing concept (`ExecutableDoc`).
-    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
-        match sandbox_ctx.epistemic_writer() {
-            Some(writer) => {
-                let run_ctx = RunContext::new(
-                    ActorId::new("system"),
-                    ProvenanceSource::ExecutableDoc {
-                        concept_id: ConceptId::new(concept_id),
-                    },
-                    chrono::Utc::now(),
-                );
-                // mem's writer is also a reader, so wire the `mem.recall` reader
-                // bridge from the same object (shared per-run scratch → A5.7). No
-                // guest binding calls it yet — see docs/refactor/KNOWN-LIMITATIONS.md.
-                let reader = writer.clone().as_epistemic_reader();
-                epistemic_extension_callback(run_ctx, writer, reader, base_cb)
-            }
-            None => base_cb,
-        };
+    // stamped with a host-minted RunContext bound to the executing concept
+    // (`ExecutableDoc`). Exactly one RunContext is minted per run.
+    let ext_cb = match sandbox_ctx.epistemic_writer() {
+        Some(writer) => {
+            let run_ctx = RunContext::new(
+                ActorId::new("system"),
+                ProvenanceSource::ExecutableDoc {
+                    concept_id: ConceptId::new(concept_id),
+                },
+                chrono::Utc::now(),
+            );
+            // mem's writer is also a reader, so wire the `mem.recall` reader bridge
+            // from the same object (shared per-run scratch). See
+            // docs/refactor/KNOWN-LIMITATIONS.md.
+            let reader = writer.clone().as_epistemic_reader();
+            epistemic_extension_callback(run_ctx, writer, reader, base_cb)
+        }
+        None => base_cb,
+    };
+    Ok(ext_cb)
+}
+
+/// Prints the outcome of a pipeline execution.
+fn render_execution_result(result: &gecko_engine::sandbox::engine::ExecutionResult) {
+    if result.success {
+        println!("Execution successful!");
+        println!("Output: {}", result.output);
+        println!("Duration: {} ms", result.duration_ms);
+    } else {
+        println!("Execution failed!");
+        if let Some(err) = &result.error {
+            println!("Error: {err}");
+        }
+    }
+}
+
+/// Execute a playbook concept in the sandbox.
+async fn cmd_run(
+    config: DbConfig,
+    cfg: &GeckoConfig,
+    concept_id: &str,
+    extensions: Vec<Box<dyn GeckoExtension>>,
+) -> Result<()> {
+    println!("Executing playbook: {concept_id}");
+
+    // The epistemic writer needs its own connection to the same database: the
+    // pipeline borrows `db` mutably for the run, while belief-tier writes commit
+    // through a second router (belief writes are sparse — invariant 4 — so a
+    // dedicated serialised connection is not a bottleneck).
+    let writer_config = config.clone();
+    let mut db = TypeDbRouter::new(config);
+
+    let playbook = fetch_playbook(&mut db, concept_id).await?;
+    println!("Resolved to: {concept_id}");
+    println!(
+        "Extensions loaded: {:?}",
+        extensions.iter().map(|e| e.name()).collect::<Vec<_>>()
+    );
+    println!("Running script using engine: {}...", playbook.engine_type);
+
+    let ext_cb = build_host_bridge(concept_id, cfg, writer_config, extensions).await?;
 
     // Execute through the pipeline: it owns the state-handle lifecycle (RAII), the
     // shared sandbox pool, and the execution record — no execution logic is
-    // duplicated here. `gecko run` sources the program from the graph, so build the
-    // run descriptor from the fetched row. (timeout-ms is not persisted yet, so the
-    // sandbox default applies; the pipeline honors an explicit timeout when given.)
+    // duplicated here. (timeout-ms is not persisted, so the sandbox default applies;
+    // the pipeline honors an explicit timeout when given.)
     let state_registry = gecko_engine::state::registry::StateRegistry::new();
     let sandbox_pool = gecko_engine::sandbox::wasm_pool::SandboxPool::new();
     let host_imports = HostImports::default();
 
     let run = gecko_engine::pipeline::PlaybookRun {
         concept_id,
-        program: &code_block,
-        scopes: &scopes,
+        program: &playbook.code_block,
+        scopes: &playbook.scopes,
         timeout_ms: None,
     };
 
@@ -946,17 +1017,6 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     .await
     .context("Pipeline execution failed")?;
 
-    let result = pipeline_result.execution;
-    if result.success {
-        println!("Execution successful!");
-        println!("Output: {}", result.output);
-        println!("Duration: {} ms", result.duration_ms);
-    } else {
-        println!("Execution failed!");
-        if let Some(err) = result.error {
-            println!("Error: {err}");
-        }
-    }
-
+    render_execution_result(&pipeline_result.execution);
     Ok(())
 }

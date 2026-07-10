@@ -4,8 +4,8 @@
 //! method takes a host-minted [`RunContext`], so every belief write is
 //! run-id-stamped and attributable. mem-gecko implements these traits; the engine
 //! hands mem's impls to sandbox host-fn injection. Signatures here are the stable
-//! contract — graph-coupled bodies land in mem in A2/A3, and may return
-//! [`EpistemicError::NotYetImplemented`] until then.
+//! contract — graph-coupled bodies may return [`EpistemicError::NotYetImplemented`]
+//! until mem-gecko implements them.
 
 use std::sync::Arc;
 
@@ -42,7 +42,7 @@ pub enum DerivationMethod {
 }
 
 impl DerivationMethod {
-    /// The canonical kebab-case string — the contract A2's
+    /// The canonical kebab-case string — the contract the mem schema's
     /// `derivation-method @values(...)` mirrors.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -227,7 +227,7 @@ pub trait EpistemicWriter: Send + Sync {
     /// If this writer is ALSO an [`EpistemicReader`] (mem's `MemWriter` is), returns
     /// it as one so the host can wire the sandbox **reader** bridge (`mem.recall`)
     /// from the same object and the same shared per-run scratch — this is what lets
-    /// a recall and a later `assert_belief` in one run correlate (A5.7). Write-only
+    /// a recall and a later `assert_belief` in one run correlate. Write-only
     /// writers keep the default `None`, and `mem.recall` stays unavailable for them.
     fn as_epistemic_reader(self: Arc<Self>) -> Option<Arc<dyn EpistemicReader>> {
         None

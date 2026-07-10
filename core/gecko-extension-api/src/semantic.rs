@@ -105,9 +105,9 @@ pub struct FilterMeta {
 
 /// Produces embedding vectors for text.
 ///
-/// BGE-style models require an asymmetric prefix on queries vs documents; the
-/// plan (A5.2) mandates enforcing that asymmetry **on the trait** so the recall
-/// and index-upsert paths cannot drift. Implementors override
+/// BGE-style models require an asymmetric prefix on queries vs documents; that
+/// asymmetry is enforced **on the trait** so the recall and index-upsert paths
+/// cannot drift. Implementors override
 /// [`embed_query`](Embedder::embed_query) / [`embed_document`](Embedder::embed_document);
 /// [`embed`](Embedder::embed) defaults to the document side.
 pub trait Embedder: Send + Sync {
@@ -139,6 +139,18 @@ pub trait SemanticIndex: Send + Sync {
     /// Inserts or replaces the vector + pre-filter for `id`.
     fn upsert(&self, id: ConceptId, v: &[f32], meta: FilterMeta) -> Result<()>;
 
+    /// Inserts or replaces many vectors, persisting durable state at most once for
+    /// the whole batch. Bulk-load paths (rebuild-from-graph, dirty-set drain) use
+    /// this so a load of `n` vectors costs one persist rather than `n`. The default
+    /// applies each item via [`upsert`](Self::upsert); impls that persist per call
+    /// should override it to defer persistence until the batch completes.
+    fn upsert_many(&self, items: Vec<(ConceptId, Vec<f32>, FilterMeta)>) -> Result<()> {
+        for (id, v, meta) in items {
+            self.upsert(id, &v, meta)?;
+        }
+        Ok(())
+    }
+
     /// Removes `id`'s vector (e.g. on supersession).
     fn remove(&self, id: ConceptId) -> Result<()>;
 
@@ -148,8 +160,8 @@ pub trait SemanticIndex: Send + Sync {
     /// Model identity; must match the [`Embedder`]'s or the index needs a rebuild.
     fn model_id(&self) -> &str;
 
-    /// Number of live vectors currently held. Used by the rebuild-from-graph path
-    /// (A5.4): a `0` length (missing/corrupt/model-id-bumped index) signals a full
+    /// Number of live vectors currently held. Used by the rebuild-from-graph path:
+    /// a `0` length (missing/corrupt/model-id-bumped index) signals a full
     /// reconstruction is due. Defaults to `0` for trivial/no-op impls.
     fn len(&self) -> usize {
         0

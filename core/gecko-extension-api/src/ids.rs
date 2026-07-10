@@ -39,6 +39,12 @@ macro_rules! string_id {
             }
         }
 
+        impl std::borrow::Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                &self.0
+            }
+        }
+
         impl From<String> for $name {
             fn from(s: String) -> Self {
                 Self(s)

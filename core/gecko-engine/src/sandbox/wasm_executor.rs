@@ -6,9 +6,9 @@
 //!
 //! The executor is **async**: instantiation, `_start`, and the
 //! `host_call_extension` bridge all run on the async path (`instantiate_async` /
-//! `call_async` / `func_wrap_async`). The extension callback is currently
-//! synchronous and resolves immediately, but the plumbing is async-ready because
-//! real host capabilities (MCP, API, DB, TypeQL) are I/O-bound.
+//! `call_async` / `func_wrap_async`). The extension callback is a synchronous `Fn`,
+//! but the plumbing is async so I/O-bound host capabilities (MCP, API, DB, TypeQL)
+//! can be awaited on the same path.
 //!
 //! Safety limits (S1): a linear-memory cap and single instance/memory/table via
 //! `StoreLimits`, plus an epoch-based execution timeout. Host capability calls are
@@ -46,12 +46,27 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// the timeout in epochs is `timeout_ms / EPOCH_TICK_MS`.
 const EPOCH_TICK_MS: u64 = 10;
 
+/// Cap on a guest-supplied extension/function name length (bytes). The guest hands
+/// the host a `len`; reject an oversized one before allocating so a bogus length
+/// cannot force a huge buffer at the untrusted boundary.
+const MAX_IMPORT_NAME_LEN: usize = 256;
+
+/// Cap on a guest-supplied args-JSON length (bytes) at the untrusted boundary, for
+/// the same reason as [`MAX_IMPORT_NAME_LEN`].
+const MAX_ARGS_JSON_LEN: usize = 8 * 1024 * 1024;
+
+/// Reads a guest-supplied UTF-8 string from linear memory, rejecting any `len`
+/// above `max` before allocating (untrusted-boundary DoS guard).
 fn read_string<T>(
     memory: &wasmtime::Memory,
     caller: &Caller<'_, T>,
     ptr: u32,
     len: u32,
+    max: usize,
 ) -> Result<String, ()> {
+    if len as usize > max {
+        return Err(());
+    }
     let mut buf = vec![0u8; len as usize];
     memory
         .read(caller, ptr as usize, &mut buf)
@@ -79,8 +94,8 @@ impl WasmExecutor {
     pub fn new() -> Result<Self> {
         // A compute-only execution environment. Host capabilities (MCP/API/DB) are
         // I/O-bound, so the host bridge and guest calls run on the async path
-        // (`instantiate_async`/`call_async`/`func_wrap_async`); wasmtime 46 enables
-        // async unconditionally, so no explicit `async_support` toggle is needed.
+        // (`instantiate_async`/`call_async`/`func_wrap_async`). Async support is
+        // always on, so no explicit `async_support` toggle is needed.
         let mut config = Config::new();
 
         // Trim features we do not need; keep bulk memory / multi-value (used by
@@ -201,22 +216,40 @@ impl WasmExecutor {
                         _ => return -1,
                     };
 
-                    let ext_name = match read_string(&memory, &caller, ext_name_ptr, ext_name_len) {
+                    let ext_name = match read_string(
+                        &memory,
+                        &caller,
+                        ext_name_ptr,
+                        ext_name_len,
+                        MAX_IMPORT_NAME_LEN,
+                    ) {
                         Ok(s) => s,
                         Err(()) => return -2,
                     };
-                    let func_name =
-                        match read_string(&memory, &caller, func_name_ptr, func_name_len) {
-                            Ok(s) => s,
-                            Err(()) => return -3,
-                        };
-                    let args_json_str =
-                        match read_string(&memory, &caller, args_json_ptr, args_json_len) {
-                            Ok(s) => s,
-                            Err(()) => return -4,
-                        };
-                    let args_json: serde_json::Value =
-                        serde_json::from_str(&args_json_str).unwrap_or(serde_json::Value::Null);
+                    let func_name = match read_string(
+                        &memory,
+                        &caller,
+                        func_name_ptr,
+                        func_name_len,
+                        MAX_IMPORT_NAME_LEN,
+                    ) {
+                        Ok(s) => s,
+                        Err(()) => return -3,
+                    };
+                    let args_json_str = match read_string(
+                        &memory,
+                        &caller,
+                        args_json_ptr,
+                        args_json_len,
+                        MAX_ARGS_JSON_LEN,
+                    ) {
+                        Ok(s) => s,
+                        Err(()) => return -4,
+                    };
+                    // Malformed guest JSON is a real error surfaced back to the guest,
+                    // not a silent coercion to Null (which would mask as a confusing
+                    // downstream "missing field").
+                    let args_json = serde_json::from_str::<serde_json::Value>(&args_json_str);
 
                     // S3: default-deny. Only permit the call if the concept was
                     // granted the matching "ext:func" scope in its frontmatter.
@@ -232,13 +265,16 @@ impl WasmExecutor {
                             "scope '{required_scope}' not granted to this concept"
                         ))
                     } else {
-                        // The callback resolves synchronously today; awaiting here
-                        // keeps the bridge ready for I/O-bound capabilities.
-                        match caller.data().extension_callback.clone() {
-                            Some(callback) => {
-                                callback(&ext_name, &func_name, args_json).map(|v| v.to_string())
-                            }
-                            None => Err("No extensions loaded".to_string()),
+                        match args_json {
+                            // The callback is synchronous; awaiting here keeps the
+                            // bridge ready for I/O-bound capabilities.
+                            Ok(args) => match caller.data().extension_callback.clone() {
+                                Some(callback) => {
+                                    callback(&ext_name, &func_name, args).map(|v| v.to_string())
+                                }
+                                None => Err("No extensions loaded".to_string()),
+                            },
+                            Err(e) => Err(format!("invalid args JSON: {e}")),
                         }
                     };
 

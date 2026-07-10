@@ -56,7 +56,7 @@ impl StateRegistry {
     /// the associated ledger is automatically removed from the registry.
     pub fn allocate(&self) -> StateHandleGuard {
         let id = Uuid::new_v4();
-        let mut map = self.ledgers.write().unwrap();
+        let mut map = self.ledgers.write().unwrap_or_else(|e| e.into_inner());
         map.insert(id, InvestigationLedger::new());
 
         StateHandleGuard {
@@ -67,12 +67,16 @@ impl StateRegistry {
 
     /// Returns the number of active handles.
     pub fn active_count(&self) -> usize {
-        self.ledgers.read().unwrap().len()
+        self.ledgers.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Reads a ledger by handle ID (for host-side introspection).
     pub fn read_ledger(&self, id: &Uuid) -> Option<InvestigationLedger> {
-        self.ledgers.read().unwrap().get(id).cloned()
+        self.ledgers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
     }
 }
 
@@ -82,14 +86,11 @@ impl Default for StateRegistry {
     }
 }
 
-/// RAII guard for a state handle.
+/// RAII guard for a state handle (design §3.4).
 ///
 /// When this guard goes out of scope (Tokio task completes, panics, or rolls back),
 /// the `Drop` implementation automatically removes the associated ledger from
 /// the `StateRegistry`, freeing the memory instantly.
-///
-/// Design §3.4: "When the Tokio task finishes (by success, panic, or rollback),
-/// this Drop implementation automatically executes, freeing the memory instantly."
 pub struct StateHandleGuard {
     /// Opaque 128-bit handle passed to Wasm guests.
     pub id: Uuid,
@@ -99,7 +100,7 @@ pub struct StateHandleGuard {
 impl StateHandleGuard {
     /// Appends an entry to this handle's ledger.
     pub fn append(&self, entry: serde_json::Value) {
-        let mut map = self.registry.write().unwrap();
+        let mut map = self.registry.write().unwrap_or_else(|e| e.into_inner());
         if let Some(ledger) = map.get_mut(&self.id) {
             ledger.entries.push(entry);
         }
@@ -107,7 +108,7 @@ impl StateHandleGuard {
 
     /// Reads all entries from this handle's ledger.
     pub fn read_entries(&self) -> Vec<serde_json::Value> {
-        let map = self.registry.read().unwrap();
+        let map = self.registry.read().unwrap_or_else(|e| e.into_inner());
         map.get(&self.id)
             .map(|l| l.entries.clone())
             .unwrap_or_default()
@@ -116,7 +117,7 @@ impl StateHandleGuard {
 
 impl Drop for StateHandleGuard {
     fn drop(&mut self) {
-        let mut map = self.registry.write().unwrap();
+        let mut map = self.registry.write().unwrap_or_else(|e| e.into_inner());
         map.remove(&self.id);
     }
 }

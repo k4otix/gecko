@@ -1,4 +1,4 @@
-//! `gecko doctor` — the tested precondition checker (plan P7.2).
+//! `gecko doctor` — the tested precondition checker.
 //!
 //! "Is everything configured correctly?" is knowledge that must be *versioned
 //! with the code* (the pinned TypeDB version, whether the model revision matches,
@@ -30,15 +30,33 @@ use crate::Cli;
 use crate::config::{self, GeckoConfig, TypedbMode};
 use crate::orchestrator::PINNED_TYPEDB;
 
-/// The ordered list of check names (also the valid `--check <name>` values).
-const CHECK_NAMES: [&str; 6] = [
-    "config",
-    "cache-dir",
-    "typedb",
-    "model",
-    "index",
-    "embedder",
-];
+/// The precondition checks `gecko doctor` can run — also the accepted
+/// `--check <name>` values. clap renders each variant kebab-cased for the CLI
+/// (`CacheDir` → `cache-dir`), and validates `--check` against this set, so no
+/// hand-rolled name list is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DoctorCheck {
+    Config,
+    CacheDir,
+    Typedb,
+    Model,
+    Index,
+    Embedder,
+}
+
+impl DoctorCheck {
+    /// The stable string name, matching [`CheckResult::name`].
+    fn as_str(self) -> &'static str {
+        match self {
+            DoctorCheck::Config => "config",
+            DoctorCheck::CacheDir => "cache-dir",
+            DoctorCheck::Typedb => "typedb",
+            DoctorCheck::Model => "model",
+            DoctorCheck::Index => "index",
+            DoctorCheck::Embedder => "embedder",
+        }
+    }
+}
 
 /// Outcome of a single precondition check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -409,19 +427,13 @@ fn check_embedder() -> CheckResult {
 /// Runs the requested checks and returns the process exit code (FAILURE iff any
 /// check is `Fail`). `only` restricts to a single named check; `json` serializes;
 /// `quiet` suppresses all normal output (only the exit code is meaningful).
-pub async fn run_doctor(cli: &Cli, only: Option<&str>, json: bool, quiet: bool) -> ExitCode {
-    if let Some(name) = only
-        && !CHECK_NAMES.contains(&name)
-    {
-        if !quiet {
-            eprintln!("unknown check '{name}' (valid: {})", CHECK_NAMES.join(", "));
-        }
-        return ExitCode::FAILURE;
-    }
-
+pub async fn run_doctor(cli: &Cli, only: Option<DoctorCheck>, json: bool, quiet: bool) -> ExitCode {
+    // `--check` is a clap `ValueEnum`, so an unknown name is rejected before we
+    // ever get here — no manual validation needed.
     let loaded = load_config_lenient(&cli.config);
     let cfg = &loaded.cfg;
-    let want = |name: &str| only.is_none_or(|o| o == name);
+    let only_name = only.map(DoctorCheck::as_str);
+    let want = |name: &str| only_name.is_none_or(|o| o == name);
 
     // Only run the checks that were asked for — importantly, `--check model` (used
     // by setup.sh) must NOT connect to TypeDB, and `--check config` must not do
@@ -434,13 +446,7 @@ pub async fn run_doctor(cli: &Cli, only: Option<&str>, json: bool, quiet: bool) 
         checks.push(check_cache_dir(cfg));
     }
     if want("typedb") {
-        let tls = if cli.tls {
-            TlsMode::Enabled {
-                ca_cert: cli.ca_cert.clone(),
-            }
-        } else {
-            TlsMode::Disabled
-        };
+        let tls = crate::tls_mode(cli.tls, cli.ca_cert.as_deref());
         let address = cli
             .address
             .clone()

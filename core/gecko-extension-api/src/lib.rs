@@ -4,11 +4,10 @@
 //!
 //! Domain extensions (`cyber-gecko`) and the always-on substrate (`mem-gecko`)
 //! implement [`GeckoExtension`] to contribute a TypeQL schema and host-imported
-//! functions. Historically that trait lived inside `gecko-engine`, which forced
-//! every extension to depend on the *entire* engine (parser, sandbox, syncer,
-//! router) just to implement one trait.
+//! functions. This crate isolates that contract from the rest of the engine
+//! (parser, sandbox, syncer, router), so an extension needs only this thin
+//! crate — never a dependency on the whole engine — to implement one trait.
 //!
-//! This crate inverts that: it holds only the stabilized, reviewable contract.
 //! Extensions depend on this thin crate; `gecko-engine` re-exports these types
 //! for its internal plumbing; the Assembler (`gecko-bin`) dispatches over
 //! `Box<dyn GeckoExtension>`.
@@ -25,12 +24,11 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-// ── Epistemic substrate contract (additive; see plan A0 carry-forward) ───────
+// ── Epistemic substrate contract ──────────────────────────────────────────────
 //
-// `RunContext`/`EpistemicWriter`/`EpistemicReader`/`SemanticIndex`/`Embedder` are
-// added ALONGSIDE `GeckoExtension`/`HostImportDef` in this same crate — they do
-// not replace the existing contract. mem-gecko implements them; `gecko-engine`
-// re-exports them for sandbox host-fn injection.
+// `RunContext`/`EpistemicWriter`/`EpistemicReader`/`SemanticIndex`/`Embedder` live
+// alongside `GeckoExtension`/`HostImportDef` in this same crate. mem-gecko
+// implements them; `gecko-engine` re-exports them for sandbox host-fn injection.
 pub mod epistemic;
 pub mod error;
 pub mod graph;
@@ -104,8 +102,8 @@ pub trait GeckoExtension: Send + Sync {
         Err(format!("Import '{name}' not implemented"))
     }
 
-    /// Activation hook (plan A4.1): called during `build_extensions` for each
-    /// **enabled** extension, handed a host-constructed [`EpistemicWriter`].
+    /// Activation hook: called during `build_extensions` for each **enabled**
+    /// extension, handed a host-constructed [`EpistemicWriter`].
     ///
     /// Registration is the activation gate (invariant 3) — a disabled extension's
     /// hook is never called, so there is **no second trait**. The default is a

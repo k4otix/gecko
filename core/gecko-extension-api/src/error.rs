@@ -1,8 +1,8 @@
 //! The crate error type for the async epistemic traits and the (sync) semantic
 //! index/embedder traits.
 //!
-//! The plan mandates a concrete crate error (`EpistemicError`) over
-//! `Box<dyn Error>` so callers can match on the failure mode — in particular the
+//! A concrete crate error (`EpistemicError`) is used over `Box<dyn Error>` so
+//! callers can match on the failure mode — in particular the
 //! [`NotYetImplemented`](EpistemicError::NotYetImplemented) seam that lets
 //! mem-gecko land graph-coupled bodies in a later phase without changing this
 //! contract.
@@ -13,8 +13,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum EpistemicError {
     /// The method is part of the stable contract but its body ships in a later
-    /// phase (A2/A3). This is the A1↔A2 seam: mem returns this for graph-coupled
-    /// methods it cannot yet satisfy.
+    /// phase: mem returns this for graph-coupled methods it cannot yet satisfy.
     #[error("not yet implemented: {0}")]
     NotYetImplemented(&'static str),
 

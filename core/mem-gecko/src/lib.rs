@@ -20,8 +20,8 @@ pub use consolidation::{ConsolidationDaemon, ConsolidationReport, NoopConsolidat
 pub use writer::MemWriter;
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
-/// the type ontology (`mem_types.tql`, A2) and the persisted reasoning functions
-/// (`mem_functions.tql`, A3). Types must precede the functions that reference them.
+/// the type ontology (`mem_types.tql`) and the persisted reasoning functions
+/// (`mem_functions.tql`). Types must precede the functions that reference them.
 const MEM_TYPES: &str = include_str!("../schema/mem_types.tql");
 const MEM_FUNCTIONS: &str = include_str!("../schema/mem_functions.tql");
 
@@ -70,44 +70,17 @@ impl GeckoExtension for MemGecko {
     }
 
     fn host_imports(&self) -> Vec<HostImportDef> {
-        vec![
-            HostImportDef {
-                name: "record_episode".to_string(),
-                description: "Record an execution episode in the cognitive memory graph"
-                    .to_string(),
-            },
-            HostImportDef {
-                name: "query_memory".to_string(),
-                description: "Query episodic memory for relevant past executions".to_string(),
-            },
-        ]
+        vec![]
     }
 
     fn call_import(
         &self,
         name: &str,
-        args: &serde_json::Value,
+        _args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        match name {
-            "record_episode" => {
-                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                Ok(serde_json::json!({
-                    "status": "success",
-                    "episode_id": "ep-12345",
-                    "recorded_text": text
-                }))
-            }
-            "query_memory" => {
-                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                Ok(serde_json::json!({
-                    "status": "success",
-                    "memories": [
-                        {"memory": format!("Past memory matching: {}", query), "relevance": 0.95}
-                    ]
-                }))
-            }
-            _ => Err(format!("Unknown import: {name}")),
-        }
+        Err(format!(
+            "mem-gecko exposes no plain host imports; use the mem.* bindings (name: {name})"
+        ))
     }
 
     /// mem is the epistemic substrate: it binds the host-constructed writer into the
@@ -151,24 +124,24 @@ mod tests {
     #[test]
     fn test_schema_contains_memory_item_hierarchy() {
         let schema: &str = &MEM_SCHEMA;
-        // A2.1 four-layer substrate: abstract memory-item + its subtypes.
+        // Four-layer substrate: abstract memory-item + its subtypes.
         assert!(schema.contains("entity memory-item @abstract, sub okf-concept"));
         assert!(schema.contains("entity belief sub memory-item"));
         assert!(schema.contains("entity episode sub memory-item"));
         assert!(schema.contains("entity playbook sub memory-item"));
         assert!(schema.contains("entity working-set sub memory-item"));
-        // A2.9 cross-source identity: resolution IS a belief.
+        // Cross-source identity: resolution IS a belief.
         assert!(schema.contains("entity resolution sub belief"));
     }
 
     #[test]
     fn test_schema_contains_state_enums() {
         let schema: &str = &MEM_SCHEMA;
-        // A2.2 belief-state enum.
+        // belief-state enum.
         assert!(schema.contains(
             r#"attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");"#
         ));
-        // A2.2 derivation-method: the EXACT 7 kebab strings the A1 Rust enum serializes
+        // derivation-method: the exact 7 kebab strings the Rust enum serializes
         // to (this is the contract). Assert each is present and the count is exactly 7.
         for method in [
             "type-join",
@@ -197,8 +170,8 @@ mod tests {
 
     #[test]
     fn test_schema_contains_consolidation_state_machine() {
-        // A6: the consolidation-state machine (with tombstone semantics) must be in
-        // the schema so the dreaming daemon slots in without schema churn (A2.2).
+        // The consolidation-state machine (with tombstone semantics) must be in
+        // the schema so the dreaming daemon slots in without schema churn.
         let schema: &str = &MEM_SCHEMA;
         assert!(schema.contains(
             r#"attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");"#
@@ -217,7 +190,7 @@ mod tests {
     #[test]
     fn test_schema_contains_bitemporal_attributes() {
         let schema: &str = &MEM_SCHEMA;
-        // A2.4 bitemporal + decay attrs (invariant 6).
+        // Bitemporal + decay attrs (invariant 6).
         assert!(schema.contains("attribute event-time value datetime;"));
         assert!(schema.contains("attribute ingest-time value datetime;"));
         assert!(schema.contains("attribute valid-from value datetime;"));
@@ -233,20 +206,20 @@ mod tests {
     #[test]
     fn test_schema_contains_key_functions() {
         let schema: &str = &MEM_SCHEMA;
-        // A3 substrate functions by signature (load-bearing surface).
+        // Substrate functions by signature (load-bearing surface).
         assert!(schema.contains("fun is-superseded($b: memory-item) -> boolean:"));
         assert!(schema.contains("fun believed-at($t: datetime) -> { belief }:"));
         assert!(schema.contains("fun derivation-chain($b: memory-item) -> { memory-item }:"));
         assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }:"));
-        // A2.9 population / resolution functions.
+        // Population / resolution functions.
         assert!(schema.contains("fun population-members($pop: population) -> { concept }:"));
         assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }:"));
     }
 
     #[test]
     fn test_pivot_is_instantiable() {
-        // Carry-forward fix: pivot roles must have players (agent + memory-item),
-        // otherwise the substrate primitive is uninstantiable.
+        // Pivot roles must have players (agent + memory-item), otherwise the
+        // substrate primitive is uninstantiable.
         let schema: &str = &MEM_SCHEMA;
         assert!(schema.contains("plays pivot:pivoting-agent"));
         assert!(schema.contains("plays pivot:from-state"));

@@ -1,5 +1,6 @@
-//! A4 acceptance #2 — the activation hook delivers the writer, and the mem host-fn
-//! bridge closes A1 acceptance bullet 3 end-to-end at the dispatch level.
+//! The activation hook delivers a working [`EpistemicWriter`] to extensions, and
+//! the mem host-fn bridge enforces host-stamped run identity end-to-end at the
+//! dispatch level.
 //!
 //! Two properties against a live graph (`localhost:1729`, admin/password):
 //!
@@ -8,8 +9,8 @@
 //!    wires into the wasm pipeline — is invoked exactly as the sandbox host bridge
 //!    would call it (`cb("mem", "remember", args)`). It produces a run-stamped
 //!    episode in the graph, and a `run_id` the sandbox tries to smuggle in the
-//!    payload is **ignored** in favour of the host-minted one (invariant 2 / A1
-//!    bullet 3: the sandbox cannot forge or omit `run_id`).
+//!    payload is **ignored** in favour of the host-minted one (invariant 2: the
+//!    sandbox cannot forge or omit `run_id`).
 //! 2. **The hook delivers a working writer to a domain extension.** A test-double
 //!    domain extension's [`inject_epistemic_host_fns`] override receives the injected
 //!    [`EpistemicWriter`]; using it, `assert_belief` produces a run-stamped belief.
@@ -65,7 +66,7 @@ impl Fixture {
         }
     }
 
-    /// mem's writer over the shared router, no index (the A5-disabled shape).
+    /// mem's writer over the shared router, no semantic index wired.
     fn writer(&self) -> Arc<dyn EpistemicWriter> {
         Arc::new(MemWriter::without_index(Arc::new(RouterGraphStore::new(
             self.shared.clone(),
@@ -140,7 +141,7 @@ impl Drop for Fixture {
     }
 }
 
-/// A domain extension test-double: captures the writer the A4.1 hook delivers.
+/// A domain extension test-double: captures the writer the activation hook delivers.
 #[derive(Default)]
 struct DomainDouble {
     received: StdMutex<Option<Arc<dyn EpistemicWriter>>>,
@@ -234,7 +235,7 @@ async fn hook_delivers_working_writer_to_domain_extension() {
     let fx = Fixture::new().await;
     let writer = fx.writer();
 
-    // The domain extension receives the writer through the A4.1 hook.
+    // The domain extension receives the writer through the activation hook.
     let domain = DomainDouble::default();
     let mut ctx = SandboxCtx::new();
     domain.inject_epistemic_host_fns(&mut ctx, writer.clone());

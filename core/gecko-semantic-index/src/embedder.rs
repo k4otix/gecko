@@ -1,32 +1,24 @@
-//! The deterministic hash-based stub [`Embedder`] (plan A5.2).
+//! The deterministic hash-based stub [`Embedder`].
 //!
-//! A stand-in for the deferred real model (`bge-large-en-v1.5` in-process via
-//! `candle`), which is intentionally NOT pulled in by default so the build stays
-//! offline and light. This stub maps text → a fixed-dim L2-normalized (cosine-ready)
-//! vector by hashing tokens into dimensions, and it enforces the BGE **query/document
+//! A stand-in for the real model (`bge-large-en-v1.5` run in-process via `candle`),
+//! which is intentionally NOT pulled in by default so the build stays offline and
+//! light. This stub maps text → a fixed-dim L2-normalized (cosine-ready) vector by
+//! hashing tokens into dimensions, and it enforces the BGE **query/document
 //! asymmetry** on the trait: [`embed_query`](Embedder::embed_query) prepends the BGE
 //! search prefix before hashing while [`embed_document`](Embedder::embed_document)
 //! hashes raw, so the two paths deterministically differ.
 //!
-//! ## Deferred real embedder (TODO, feature-gated)
-//! The production embedder — `bge-large-en-v1.5` (1024-dim), run in-process via
-//! `candle`, embedding curated `title + summary + tags` (never code) — will land
-//! behind a cargo feature (e.g. `candle-bge`) as a sibling module implementing this
-//! same [`Embedder`] trait. It must keep the `<model>@<revision-hash>` `model_id`
-//! shape so a silent upstream reweight forces a rebuild (A5.4). Until then, `stub`
-//! is the only compiled embedder and no candle/onnx dependency is present.
+//! The real embedder is [`crate::CandleEmbedder`], compiled only under the
+//! `real-embedder` feature, implementing this same [`Embedder`] trait.
 
 use gecko_extension_api::{Embedder, EpistemicError};
 
-/// The BGE query-side prefix (plan A5.2). Prepended by [`StubEmbedder::embed_query`]
-/// so query and document embeddings of the same text deterministically differ,
-/// mirroring the asymmetry the real BGE model requires.
-const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+use crate::QUERY_PREFIX;
 
 /// A deterministic, dependency-free stand-in [`Embedder`].
 ///
 /// `model_id` is `"stub-hash-v1@<dim>"` (the `<model>@<rev>` shape) so a dimension
-/// change forces a full index rebuild via the header mismatch (A5.4).
+/// change forces a full index rebuild via the header mismatch.
 pub struct StubEmbedder {
     dim: usize,
     model_id: String,
@@ -75,15 +67,7 @@ impl StubEmbedder {
             };
             v[idx] += sign;
         }
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut v {
-                *x /= norm;
-            }
-        } else {
-            v[0] = 1.0; // fixed unit vector for empty/degenerate input
-        }
-        v
+        crate::l2_normalize(v)
     }
 }
 

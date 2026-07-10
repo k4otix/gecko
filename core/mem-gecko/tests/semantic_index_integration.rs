@@ -1,12 +1,11 @@
-//! A5 acceptance tests: the real [`HnswIndex`] driven through the [`MemWriter`]
-//! against live TypeDB 3.12 (`localhost:1729`, admin/password).
+//! Semantic index acceptance tests: the real [`HnswIndex`] driven through the
+//! [`MemWriter`] against live TypeDB 3.12 (`localhost:1729`, admin/password).
 //!
-//! Covers the plan's acceptance bullets: belief upsert/supersede against index
-//! state, rebuild-from-graph determinism (A5.4), model-id-bump rebuild, gated
-//! recall through the real index, dirty-set repair via `drain_dirty_set`, and the
-//! A5.7 retrieval-provenance write path (auto-linked; no-drag when off). Each test
-//! provisions a throwaway db + a temp index file and cleans both up. The real
-//! `gecko` database is never touched.
+//! Covers belief upsert/supersede against index state, rebuild-from-graph
+//! determinism, model-id-bump rebuild, gated recall through the real index,
+//! dirty-set repair via `drain_dirty_set`, and the retrieval-provenance write path
+//! (auto-linked; no-drag when off). Each test provisions a throwaway db + a temp
+//! index file and cleans both up. The real `gecko` database is never touched.
 
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -426,7 +425,7 @@ async fn forced_upsert_failure_is_repaired_by_drain_dirty_set() {
     fx.drop_db().await;
 }
 
-// ── Acceptance (A5.7): a belief synthesized from a semantic recall gets provenance ──
+// ── Acceptance: a belief synthesized from a semantic recall gets provenance ──
 #[tokio::test]
 async fn retrieval_provenance_links_synthesized_belief() {
     let fx = Fixture::new().await;
@@ -529,7 +528,7 @@ async fn retrieval_provenance_links_synthesized_belief() {
     fx.drop_db().await;
 }
 
-// ── Acceptance (A5.7): a plain sync (no index, record off) mints zero retrieval-events ──
+// ── Acceptance: a plain sync (no index, record off) mints zero retrieval-events ──
 #[tokio::test]
 async fn plain_sync_produces_zero_retrieval_events() {
     let fx = Fixture::new().await;

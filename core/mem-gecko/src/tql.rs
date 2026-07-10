@@ -118,6 +118,36 @@ impl Params {
     }
 }
 
+/// Binds a list of concept-ids as typed string params and appends one `match` line
+/// per id binding a fresh entity variable (`${entity_var}{i}`, of type `entity_type`,
+/// via concept var `${concept_var}{i}`) equal to param `${param}{i}`. Returns the
+/// bound entity variable names (e.g. `$m0`, `$m1`) in order so the caller can build
+/// the role/insert fragment that references them. Factors the id-list-binding loop
+/// shared by `derivation_op` / `contest_ops` / `rests_on_op` / `retrieval_event_ops`.
+fn bind_id_list<I, S>(
+    p: &mut Params,
+    match_lines: &mut String,
+    ids: I,
+    entity_type: &str,
+    entity_var: &str,
+    concept_var: &str,
+    param: &str,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut vars = Vec::new();
+    for (i, id) in ids.into_iter().enumerate() {
+        p.s(&format!("{param}{i}"), id.into());
+        match_lines.push_str(&format!(
+            "           ${entity_var}{i} isa {entity_type}, has concept-id ${concept_var}{i}; ${concept_var}{i} == ${param}{i};\n"
+        ));
+        vars.push(format!("${entity_var}{i}"));
+    }
+    vars
+}
+
 // ── Provenance-stamp primitives (invariant 2) ────────────────────────────────
 
 /// Ensures the run's `doc-run` node exists (keyed on run-id).
@@ -220,12 +250,16 @@ pub(crate) fn derivation_op(
     p.s("dm", method.as_str());
     let mut match_lines = String::from("$b isa belief, has concept-id $bc; $bc == $bid;\n");
     let mut source_roles = String::new();
-    for (i, e) in evidence.iter().enumerate() {
-        p.s(&format!("e{i}"), e.0.clone());
-        match_lines.push_str(&format!(
-            "           $m{i} isa memory-item, has concept-id $mc{i}; $mc{i} == $e{i};\n"
-        ));
-        source_roles.push_str(&format!(", source: $m{i}"));
+    for var in bind_id_list(
+        &mut p,
+        &mut match_lines,
+        evidence.iter().map(|e| e.0.clone()),
+        "memory-item",
+        "m",
+        "mc",
+        "e",
+    ) {
+        source_roles.push_str(&format!(", source: {var}"));
     }
     let conf_frag = if let Some(c) = confidence {
         p.f("cf", c);
@@ -281,12 +315,16 @@ pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -
         "$run isa doc-run, has run-id $rr; $rr == $rid;\n           $ag isa agent, has agent-id $aa; $aa == $aid;\n",
     );
     let mut claim_roles = String::new();
-    for (i, c) in claims.iter().enumerate() {
-        p.s(&format!("c{i}"), c.0.clone());
-        match_lines.push_str(&format!(
-            "           $cl{i} isa belief, has concept-id $cc{i}; $cc{i} == $c{i};\n"
-        ));
-        claim_roles.push_str(&format!(", claim: $cl{i}"));
+    for var in bind_id_list(
+        &mut p,
+        &mut match_lines,
+        claims.iter().map(|c| c.0.clone()),
+        "belief",
+        "cl",
+        "cc",
+        "c",
+    ) {
+        claim_roles.push_str(&format!(", claim: {var}"));
     }
     // Strip the leading ", " so the role list starts clean.
     let claim_roles = claim_roles.trim_start_matches(", ").to_string();
@@ -306,12 +344,16 @@ pub(crate) fn rests_on_op(resting: &MemId, assumptions: &[MemId]) -> GraphWrite 
     p.s("rid", resting.0.clone());
     let mut match_lines = String::from("$r isa memory-item, has concept-id $rc; $rc == $rid;\n");
     let mut roles = String::new();
-    for (i, a) in assumptions.iter().enumerate() {
-        p.s(&format!("a{i}"), a.0.clone());
-        match_lines.push_str(&format!(
-            "           $as{i} isa memory-item, has concept-id $ac{i}; $ac{i} == $a{i};\n"
-        ));
-        roles.push_str(&format!(", assumption: $as{i}"));
+    for var in bind_id_list(
+        &mut p,
+        &mut match_lines,
+        assumptions.iter().map(|a| a.0.clone()),
+        "memory-item",
+        "as",
+        "ac",
+        "a",
+    ) {
+        roles.push_str(&format!(", assumption: {var}"));
     }
     let body = format!(
         "match\n           {match_lines}         insert (resting: $r{roles}) isa rests-on;"
@@ -331,7 +373,7 @@ pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     )
 }
 
-// ── A5.4 rebuild-from-graph reads ─────────────────────────────────────────────
+// ── Rebuild-from-graph reads ──────────────────────────────────────────────────
 
 /// Enumerates current-state **beliefs** (asserted, not superseded/retracted) with
 /// their embeddable title text and denormalized FilterMeta (owner/visibility). The
@@ -360,7 +402,7 @@ pub(crate) fn enumerate_episodes_read() -> &'static str {
      fetch { \"id\": $eid, \"text\": $ttl, \"owner\": $aid, \"vf\": $et };"
 }
 
-/// Single current-state-belief lookup by concept-id (dirty-set repair, A5.4).
+/// Single current-state-belief lookup by concept-id (dirty-set repair).
 pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, Vec<GraphValue>) {
     let mut p = Params::new();
     p.s("cid", cid.0.clone());
@@ -376,7 +418,7 @@ pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, 
     )
 }
 
-// ── A5.7 retrieval-provenance write path ──────────────────────────────────────
+// ── Retrieval-provenance write path ───────────────────────────────────────────
 
 /// `retrieval-event`: the stamped episodic record that a semantic retrieval
 /// happened, plus a `surfaced` edge per gated candidate (with its similarity score
@@ -400,15 +442,20 @@ pub(crate) fn retrieval_event_ops(
     let mut match_lines = String::from(
         "$run isa doc-run, has run-id $rr; $rr == $rid;\n           $ag isa agent, has agent-id $aa; $aa == $aid;\n",
     );
+    let item_vars = bind_id_list(
+        &mut p,
+        &mut match_lines,
+        surfaced.iter().map(|(cid, _)| cid.0.clone()),
+        "memory-item",
+        "it",
+        "ic",
+        "c",
+    );
     let mut surf_inserts = String::new();
-    for (idx, (cid, score)) in surfaced.iter().enumerate() {
-        p.s(&format!("c{idx}"), cid.0.clone());
+    for (idx, ((_, score), var)) in surfaced.iter().zip(item_vars.iter()).enumerate() {
         p.f(&format!("s{idx}"), *score as f64);
-        match_lines.push_str(&format!(
-            "           $it{idx} isa memory-item, has concept-id $ic{idx}; $ic{idx} == $c{idx};\n"
-        ));
         surf_inserts.push_str(&format!(
-            "\n           (surfacer: $re, item: $it{idx}) isa surfaced, has similarity-score == $s{idx}, has was-used false;"
+            "\n           (surfacer: $re, item: {var}) isa surfaced, has similarity-score == $s{idx}, has was-used false;"
         ));
     }
     let body = format!(
@@ -450,7 +497,7 @@ pub(crate) fn set_was_used_op(ev: &MemId, item: &MemId) -> GraphWrite {
     )
 }
 
-/// Sets the write-once `retrieval-provenance` summary flag on a belief (A2.10).
+/// Sets the write-once `retrieval-provenance` summary flag on a belief.
 pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> GraphWrite {
     let mut p = Params::new();
     p.s("bid", belief.0.clone());
@@ -461,7 +508,7 @@ pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> G
     )
 }
 
-// ── A6 consolidation ("dreaming") ─────────────────────────────────────────────
+// ── Consolidation ("dreaming") ────────────────────────────────────────────────
 
 /// The **provable** dedup guard: do episodes `a` and `b` share an identical
 /// content-hash? Content-hash is proxied by the episode `title` (the observed text),
@@ -484,7 +531,7 @@ pub(crate) fn episodes_share_content_read(
 }
 
 /// Tombstones the loser episode: advances its `consolidation-state` to "tombstoned"
-/// (the terminal state of the A2.2 machine). The graph is the SoR — the loser's row
+/// (the terminal state of the state machine). The graph is the SoR — the loser's row
 /// stays queryable as a tombstone; only its index vector is dropped (best-effort,
 /// caller-side). `update` upserts the single-valued `consolidation-state @card(0..1)`.
 pub(crate) fn tombstone_episode_op(loser: &MemId) -> GraphWrite {
@@ -496,7 +543,7 @@ pub(crate) fn tombstone_episode_op(loser: &MemId) -> GraphWrite {
     )
 }
 
-/// A6 retrieval-provenance retention (concrete helper): the `retrieval-event`s that
+/// Retrieval-provenance retention (concrete helper): the `retrieval-event`s that
 /// are **safe to tombstone** — those whose `informs-synthesis` belief IS superseded.
 /// The retention RULE it enforces: never tombstone a retrieval-event while its
 /// synthesized belief is non-superseded; once the belief is superseded the event may

@@ -1,4 +1,4 @@
-//! A3 writer/reader acceptance tests (live TypeDB 3.12).
+//! Writer/reader acceptance tests (live TypeDB 3.12).
 //!
 //! These drive the **real** [`MemWriter`] over a [`RouterGraphStore`] against a
 //! live server (`localhost:1729`, admin/password): every write is a real TypeDB
@@ -81,8 +81,8 @@ impl Fixture {
         out
     }
 
-    /// Low-level write (bypasses the writer) for seeding fixtures the A3 writer
-    /// does not yet mint (e.g. retrieval-events — that path is A5).
+    /// Low-level write (bypasses the writer) for seeding fixtures the writer
+    /// itself does not mint (e.g. retrieval-events, which are seeded directly).
     async fn raw_write(&self, tql: &str) {
         let mut router = self.shared.lock().await;
         let tx = router.begin_write().await.expect("write tx");
@@ -116,7 +116,7 @@ fn belief(text: &str, owner: &str, conf: f64) -> BeliefDraft {
     }
 }
 
-/// A belief draft with an explicit visibility scope (FIX 1 gate-visibility tests).
+/// A belief draft with an explicit visibility scope, for gate-visibility tests.
 fn belief_vis(text: &str, owner: &str, conf: f64, vis: Visibility) -> BeliefDraft {
     BeliefDraft {
         visibility: vis,
@@ -124,7 +124,7 @@ fn belief_vis(text: &str, owner: &str, conf: f64, vis: Visibility) -> BeliefDraf
     }
 }
 
-/// A belief draft with an explicit entrenchment tier (FIX 2 supersede-guard tests).
+/// A belief draft with an explicit entrenchment tier, for supersede-guard tests.
 fn belief_ent(text: &str, owner: &str, conf: f64, ent: Entrenchment) -> BeliefDraft {
     BeliefDraft {
         entrenchment: Some(ent),
@@ -152,6 +152,7 @@ impl Embedder for StubEmbedder {
 
 /// A stub index that returns a FIXED candidate list (whatever ids the test seeds,
 /// including deliberately-gateable ones) and records whether `query` was called.
+/// Verifies that gating is applied after ANN retrieval.
 struct StubIndex {
     candidates: Vec<(ConceptId, f32)>,
     queried: AtomicBool,
@@ -186,7 +187,7 @@ impl SemanticIndex for StubIndex {
 }
 
 /// An index that records every id passed to `remove` (and a fixed candidate list for
-/// `query`) so the A6 dedup acceptance can assert the loser's vector was dropped.
+/// `query`) so the dedup acceptance test can assert the loser's vector was dropped.
 #[derive(Default)]
 struct RecordingIndex {
     removed: std::sync::Mutex<Vec<ConceptId>>,
@@ -213,7 +214,7 @@ impl SemanticIndex for RecordingIndex {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A1 bullet 1 + bullet 3 (writer level): provenance is host-mediated + run-stamped.
+// Writer level: provenance is host-mediated + run-stamped.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn provenance_stamp_roundtrips_run_id_and_source() {
@@ -270,7 +271,7 @@ async fn provenance_stamp_roundtrips_run_id_and_source() {
         "episode has BOTH event-time and ingest-time"
     );
 
-    // assert_belief → same source-link → run-id → source path (A1 bullet 1).
+    // assert_belief → same source-link → run-id → source path.
     let bel_id = w
         .assert_belief(
             &ctx,
@@ -329,7 +330,7 @@ async fn derivation_chain_never_touches_the_retrieval_ledger() {
         .await
         .unwrap();
 
-    // Seed a retrieval-event + informs-synthesis edge (the OTHER ledger, A5.7 path).
+    // Seed a retrieval-event + informs-synthesis edge (the OTHER ledger).
     fx.raw_write(&format!(
         r#"match $b isa belief, has concept-id "{}";
            insert
@@ -509,7 +510,7 @@ async fn gate_and_is_superseded_exclude_superseded_beliefs() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX 1: gate composes VISIBILITY, not owner-only scoping. A team/shared belief owned
+// gate composes VISIBILITY, not owner-only scoping. A team/shared belief owned
 // by a DIFFERENT agent is reachable; a private belief owned by another agent is not.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
@@ -582,7 +583,7 @@ async fn gate_composes_visibility_across_owners() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX 1 (cont.): a superseded OR expired (valid-to < now) belief always fails gate,
+// A superseded OR expired (valid-to < now) belief always fails gate,
 // regardless of visibility/ownership.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
@@ -640,7 +641,7 @@ async fn gate_excludes_superseded_and_expired_beliefs() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX 2: invariant-7 entrenchment guard — a lower-entrenchment belief is
+// invariant-7 entrenchment guard — a lower-entrenchment belief is
 // STRUCTURALLY forbidden from superseding a higher-entrenchment one (write NOTHING).
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
@@ -692,7 +693,7 @@ async fn supersede_rejects_lower_entrenchment_and_leaves_graph_unchanged() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX 2 (cont.): an equal-or-higher entrenchment supersede SUCCEEDS.
+// An equal-or-higher entrenchment supersede SUCCEEDS.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn supersede_allows_equal_or_higher_entrenchment() {
@@ -1049,9 +1050,9 @@ async fn population_members_and_canonical_entity() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A6 ACCEPTANCE: a manual dedup of two identical-content-hash episodes tombstones
+// Acceptance: a manual dedup of two identical-content-hash episodes tombstones
 // the loser in the graph AND removes the loser's vector from the index (via the
-// existing best-effort SemanticIndex::remove hook, invariant 8).
+// best-effort SemanticIndex::remove hook, invariant 8).
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
@@ -1118,7 +1119,7 @@ async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A6: dedup is PROVABLE — two episodes with DIFFERENT content are never collapsed.
+// Dedup is PROVABLE — two episodes with DIFFERENT content are never collapsed.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn dedup_episodes_refuses_non_duplicates() {
@@ -1170,7 +1171,7 @@ async fn dedup_episodes_refuses_non_duplicates() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A6 retrieval-provenance retention: a retrieval-event is safe to tombstone ONLY
+// Retrieval-provenance retention: a retrieval-event is safe to tombstone ONLY
 // once its informs-synthesis belief is superseded.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
@@ -1263,6 +1264,101 @@ async fn prediction_lifecycle() {
         "prediction resolved with an episode + outcome"
     );
     assert_eq!(rows[0]["o"], "confirmed");
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// One store fans reads out concurrently and serializes writers through the gate:
+// many parallel recalls all succeed, and many parallel writes all commit atomically.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn store_reads_run_concurrently_and_writes_are_gated() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    // Seed a few beliefs so recalls have current-state content to return.
+    let seed = fx.writer(None, None);
+    const N_SEED: usize = 5;
+    for i in 0..N_SEED {
+        seed.assert_belief(
+            &ctx,
+            belief(&format!("seed belief {i}"), "agent-1", 0.7),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .expect("seed commits");
+    }
+
+    // Many concurrent recalls through one shared store must all succeed and see the
+    // committed state — the read path opens independent transactions with no lock.
+    let reader = Arc::new(fx.writer(None, None));
+    let reads: Vec<_> = (0..24)
+        .map(|_| {
+            let r = reader.clone();
+            let c = ctx.clone();
+            tokio::spawn(async move {
+                r.recall(
+                    &c,
+                    RecallQuery::now("seed"),
+                    ContextBudget {
+                        max_chunks: 10,
+                        max_tokens: None,
+                    },
+                )
+                .await
+            })
+        })
+        .collect();
+    for h in reads {
+        let chunks = h.await.expect("read task joins").expect("recall ok");
+        assert_eq!(
+            chunks.len(),
+            N_SEED,
+            "each concurrent recall sees every seed"
+        );
+    }
+
+    // Many concurrent writers through one shared store must all commit. The
+    // single-permit gate serializes them, so none conflict and each persists.
+    let writer = Arc::new(fx.writer(None, None));
+    const N_WRITES: usize = 12;
+    let writes: Vec<_> = (0..N_WRITES)
+        .map(|i| {
+            let w = writer.clone();
+            let c = ctx.clone();
+            tokio::spawn(async move {
+                w.assert_belief(
+                    &c,
+                    belief(&format!("concurrent write {i}"), "agent-2", 0.6),
+                    &[],
+                    DerivationMethod::HumanAssertion,
+                )
+                .await
+            })
+        })
+        .collect();
+    let mut ids = std::collections::HashSet::new();
+    for h in writes {
+        let id = h.await.expect("write task joins").expect("assert commits");
+        ids.insert(id.0);
+    }
+    assert_eq!(
+        ids.len(),
+        N_WRITES,
+        "every concurrent write committed a distinct belief"
+    );
+
+    // All seed + concurrent writes are durably present (no lost updates from overlap).
+    let all = fx
+        .raw_fetch(r#"match $b isa belief, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert_eq!(
+        all.len(),
+        N_SEED + N_WRITES,
+        "all concurrently-written beliefs persisted alongside the seeds"
+    );
 
     fx.drop_db().await;
 }

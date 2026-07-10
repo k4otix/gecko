@@ -1,4 +1,4 @@
-//! Runtime-asset path resolution (plan P1) — extracted from `config.rs`.
+//! Runtime-asset path resolution — extracted from `config.rs`.
 //!
 //! GECKO ships three artifacts with three lifecycles: the `gecko` binary (build
 //! tree), the TypeDB server (its own process), and the ~1.3GB embedding model (a
@@ -20,6 +20,12 @@ use super::{GeckoConfig, SemanticIndexConfig};
 /// explicit `[semantic_index] path` override is set.
 const DERIVED_INDEX_FILENAME: &str = "gecko.hnsw";
 
+/// Treats an empty string as unset: `Some("")` collapses to `None`, so a blank
+/// config/env value falls through to the next precedence step.
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.filter(|v| !v.is_empty())
+}
+
 /// Pure precedence resolver for the cache root, factored out for testing. Order:
 /// `GECKO_CACHE_DIR` env > `gecko.toml` `cache_dir` > `XDG_CACHE_HOME/gecko` >
 /// `<home>/.cache/gecko`. Does no I/O and reads no environment itself — callers
@@ -30,16 +36,16 @@ fn resolve_cache_dir(
     xdg_cache_home: Option<&str>,
     home: Option<&str>,
 ) -> Result<PathBuf> {
-    if let Some(v) = env_override.filter(|s| !s.is_empty()) {
+    if let Some(v) = non_empty(env_override) {
         return Ok(PathBuf::from(v));
     }
-    if let Some(v) = cfg_cache.filter(|s| !s.is_empty()) {
+    if let Some(v) = non_empty(cfg_cache) {
         return Ok(PathBuf::from(v));
     }
-    if let Some(v) = xdg_cache_home.filter(|s| !s.is_empty()) {
+    if let Some(v) = non_empty(xdg_cache_home) {
         return Ok(PathBuf::from(v).join("gecko"));
     }
-    if let Some(v) = home.filter(|s| !s.is_empty()) {
+    if let Some(v) = non_empty(home) {
         return Ok(PathBuf::from(v).join(".cache").join("gecko"));
     }
     anyhow::bail!(
@@ -52,7 +58,7 @@ fn resolve_cache_dir(
 ///
 /// Precedence: `GECKO_CACHE_DIR` env > `gecko.toml` `cache_dir` >
 /// `XDG_CACHE_HOME/gecko` > `~/.cache/gecko`. All runtime assets (models, index,
-/// and — P3 — a downloaded TypeDB) live under the returned directory.
+/// and a downloaded TypeDB) live under the returned directory.
 pub fn cache_dir(cfg: &GeckoConfig) -> Result<PathBuf> {
     let env_override = std::env::var("GECKO_CACHE_DIR").ok();
     let xdg = std::env::var("XDG_CACHE_HOME").ok();
@@ -71,9 +77,9 @@ pub fn cache_dir(cfg: &GeckoConfig) -> Result<PathBuf> {
 /// Derives the model directory under a resolved cache root, honoring an explicit
 /// `model_path` override. Pure (no I/O); [`model_path`] wraps it with cache-root
 /// resolution.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by P2 (model fetch/load) + doctor
+#[cfg_attr(not(test), allow(dead_code))] // consumed by model fetch/load + doctor
 fn derive_model_path(cache_root: &Path, sic: &SemanticIndexConfig) -> PathBuf {
-    if let Some(explicit) = sic.model_path.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(explicit) = non_empty(sic.model_path.as_deref()) {
         return PathBuf::from(explicit);
     }
     cache_root.join("models").join(&sic.model_id)
@@ -83,15 +89,10 @@ fn derive_model_path(cache_root: &Path, sic: &SemanticIndexConfig) -> PathBuf {
 /// `cache_dir/models/<model_id>/` unless `[semantic_index] model_path` is set,
 /// which overrides (air-gapped / pre-provisioned dirs). Load-bearing rule #1:
 /// this path is always OUTSIDE the build tree.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by P2 (model fetch/load) + doctor
+#[cfg_attr(not(test), allow(dead_code))] // consumed by model fetch/load + doctor
 pub fn model_path(cfg: &GeckoConfig) -> Result<PathBuf> {
     // The explicit override needs no cache root.
-    if let Some(explicit) = cfg
-        .semantic_index
-        .model_path
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(explicit) = non_empty(cfg.semantic_index.model_path.as_deref()) {
         return Ok(PathBuf::from(explicit));
     }
     Ok(derive_model_path(&cache_dir(cfg)?, &cfg.semantic_index))
@@ -101,7 +102,7 @@ pub fn model_path(cfg: &GeckoConfig) -> Result<PathBuf> {
 /// derives under `cache_dir/index/gecko.hnsw`; a `Some(path)` is used verbatim as
 /// an explicit override. Pure (no I/O); [`index_path`] wraps it.
 fn derive_index_path(cache_root: &Path, sic: &SemanticIndexConfig) -> PathBuf {
-    match sic.path.as_deref().filter(|s| !s.is_empty()) {
+    match non_empty(sic.path.as_deref()) {
         Some(explicit) => PathBuf::from(explicit),
         None => cache_root.join("index").join(DERIVED_INDEX_FILENAME),
     }
@@ -112,7 +113,7 @@ fn derive_index_path(cache_root: &Path, sic: &SemanticIndexConfig) -> PathBuf {
 /// (any `Some(path)`, including a literal relative path, wins over the default).
 pub fn index_path(cfg: &GeckoConfig) -> Result<PathBuf> {
     // An explicit override needs no cache root.
-    if let Some(explicit) = cfg.semantic_index.path.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(explicit) = non_empty(cfg.semantic_index.path.as_deref()) {
         return Ok(PathBuf::from(explicit));
     }
     Ok(derive_index_path(&cache_dir(cfg)?, &cfg.semantic_index))
@@ -216,7 +217,7 @@ mod tests {
             derive_index_path(Path::new("/cache/gecko"), &sic),
             PathBuf::from("/cache/gecko/index/gecko.hnsw")
         );
-        // Explicit path wins over the derived default (keeps A5 temp-path tests working).
+        // Explicit path wins over the derived default.
         let sic = SemanticIndexConfig {
             path: Some("/tmp/test-abc.hnsw".to_string()),
             ..Default::default()
@@ -233,8 +234,8 @@ mod tests {
             index_path(&cfg).unwrap(),
             PathBuf::from("/tmp/test-abc.hnsw")
         );
-        // Option<String> now expresses what the old sentinel could not: a literal
-        // relative `gecko.hnsw` in the working dir (not the derived cache path).
+        // A literal relative `gecko.hnsw` is taken verbatim in the working dir
+        // (not resolved to the derived cache path).
         let sic = SemanticIndexConfig {
             path: Some("gecko.hnsw".to_string()),
             ..Default::default()

@@ -70,11 +70,11 @@ async fn test_bundle_sync() {
         .await
         .expect("Failed to sync bundle");
     assert_eq!(result.concepts_inserted, 1);
-    assert_eq!(result.citations_created, 1);
+    assert_eq!(result.citations_attempted, 1);
     // Concept IDs are bundle-relative paths with no namespace prefix.
     assert_eq!(bundle.concepts[0].concept_id, "playbooks/test_concept");
 
-    // Re-syncing an unchanged bundle must be idempotent (C1): the concept's
+    // Re-syncing an unchanged bundle must be idempotent: the concept's
     // content hash matches, so it is skipped rather than re-inserted.
     let result2 = sync_bundle(&mut db, &bundle)
         .await

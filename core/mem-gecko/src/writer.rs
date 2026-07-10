@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 use gecko_extension_api::{
     ActorId, AnomalyId, BeliefDraft, BeliefQuery, BeliefState, Chunk, ConceptId, ContextBudget,
     DateTime, DerivationMethod, Embedder, EpisodeDraft, EpistemicError, EpistemicReader,
@@ -30,9 +31,13 @@ use crate::tql::{self, Params};
 
 type Result<T> = std::result::Result<T, EpistemicError>;
 
-/// Default belief half-life for the recency-decay layer (one week). Episodes carry
-/// their own `half-life-hours`; beliefs use this substrate default.
+/// Belief half-life for the recency-decay layer (one week). The decay layer applies
+/// this single substrate-wide half-life to every item; per-item half-lives are not
+/// currently read.
 const DEFAULT_HALF_LIFE_HOURS: f64 = 168.0;
+
+/// Bounds how many gated-candidate fetches `recall` runs concurrently.
+const RECALL_FETCH_CONCURRENCY: usize = 8;
 
 /// Mints a fresh mem-id under `prefix` (e.g. `mem/ep`, `mem/bel`, `mem/anom`).
 fn mint(prefix: &str) -> MemId {
@@ -51,7 +56,7 @@ pub struct MemWriter {
     embedder: Option<Arc<dyn Embedder>>,
     index: Option<Arc<dyn SemanticIndex>>,
     dirty: Mutex<HashSet<ConceptId>>,
-    /// A5.7: when on, `recall` stamps a `retrieval-event` + `surfaced` edges and
+    /// When on, `recall` stamps a `retrieval-event` + `surfaced` edges and
     /// `assert_belief` links the synthesized belief back to the retrieval(s) whose
     /// gated candidates overlap its evidence. Off ⇒ beliefs simply lack the
     /// retrieval axis and no retrieval-events are minted (no-drag preserved).
@@ -74,12 +79,12 @@ impl MemWriter {
         }
     }
 
-    /// A writer over `graph` with no index configured (the A5-disabled shape).
+    /// A writer over `graph` with no index configured (index disabled).
     pub fn without_index(graph: Arc<dyn GraphStore>) -> Self {
         Self::new(graph, None, None)
     }
 
-    /// Enables/disables the A5.7 retrieval-provenance write path (default off).
+    /// Enables/disables the retrieval-provenance write path (default off).
     /// Builder-style so `gecko-bin` can flip it on when the index + config request
     /// it, before wrapping the writer in an `Arc`.
     pub fn with_retrieval_provenance(mut self, on: bool) -> Self {
@@ -94,29 +99,29 @@ impl MemWriter {
     pub fn mark_dirty(&self, id: ConceptId) {
         self.dirty
             .lock()
-            .expect("dirty set mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(id);
     }
 
-    /// Snapshot of the current dirty set (for the A5 background reindexer / tests).
+    /// Snapshot of the current dirty set (for the background reindexer / tests).
     pub fn dirty_snapshot(&self) -> HashSet<ConceptId> {
-        self.dirty.lock().expect("dirty set mutex poisoned").clone()
+        self.dirty.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Whether `id` is currently marked dirty.
     pub fn is_dirty(&self, id: &ConceptId) -> bool {
         self.dirty
             .lock()
-            .expect("dirty set mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .contains(id)
     }
 
     /// Number of concept-ids awaiting reindex.
     pub fn dirty_len(&self) -> usize {
-        self.dirty.lock().expect("dirty set mutex poisoned").len()
+        self.dirty.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    // ── A5.4 rebuild-from-graph (cold start / version bump / corruption) ─────
+    // ── Rebuild-from-graph (cold start / version bump / corruption) ──────────
 
     /// Enumerates the graph's current-state embeddables — asserted beliefs and
     /// (non-retrieval-event) episodes — as `(id, embeddable text, FilterMeta)`,
@@ -151,7 +156,7 @@ impl MemWriter {
     }
 
     /// Rebuilds the index from the graph when it is missing/corrupt or its model-id
-    /// no longer matches the embedder (A5.4), then drains the dirty set. A no-op when
+    /// differs from the embedder's, then drains the dirty set. A no-op when
     /// no index/embedder is configured. Call once at startup before serving recalls.
     pub async fn rebuild_index_from_graph(&self) -> Result<()> {
         let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
@@ -159,14 +164,20 @@ impl MemWriter {
         };
         if idx.model_id() != emb.model_id() || idx.is_empty() {
             idx.reset();
+            // Embed the whole current-state batch, then persist it in a single
+            // `upsert_many` (one persist for the batch, not one per item).
+            let mut items: Vec<(ConceptId, Vec<f32>, FilterMeta)> = Vec::new();
             for (id, text, meta) in self.enumerate_current_state_embeddables().await? {
                 match emb.embed_document(&text) {
-                    Ok(v) => {
-                        if idx.upsert(id.clone(), &v, meta).is_err() {
-                            self.mark_dirty(id);
-                        }
-                    }
+                    Ok(v) => items.push((id, v, meta)),
                     Err(_) => self.mark_dirty(id),
+                }
+            }
+            let queued: Vec<ConceptId> = items.iter().map(|(id, _, _)| id.clone()).collect();
+            if idx.upsert_many(items).is_err() {
+                // Batch persist failed: mark every embedded id dirty for repair.
+                for id in queued {
+                    self.mark_dirty(id);
                 }
             }
         }
@@ -175,12 +186,17 @@ impl MemWriter {
     }
 
     /// Repairs the dirty set: for each dirty concept-id, re-fetch its current-state
-    /// text + meta and re-upsert (clearing it on success). An id that is no longer
+    /// text + meta and re-upsert (clearing it on success). An id that has left
     /// current-state (superseded/removed) is dropped from the index and the set.
     pub async fn drain_dirty_set(&self) -> Result<()> {
         let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
             return Ok(());
         };
+        // Re-embed each dirty id, batching the successful ones into a single
+        // `upsert_many`. Ids that have left current-state are dropped immediately;
+        // ids that fail to embed stay dirty.
+        let mut items: Vec<(ConceptId, Vec<f32>, FilterMeta)> = Vec::new();
+        let mut queued: Vec<ConceptId> = Vec::new();
         for cid in self.dirty_snapshot() {
             let (q, v, r) = tql::fetch_belief_embeddable(&cid);
             let rows = self.graph.read(&q, &v, &r).await?;
@@ -189,17 +205,23 @@ impl MemWriter {
                 .and_then(|d| row_to_embeddable(d, Visibility::Private))
             {
                 Some((id, text, meta)) => {
-                    if let Ok(vec) = emb.embed_document(&text)
-                        && idx.upsert(id, &vec, meta).is_ok()
-                    {
-                        self.clear_dirty(&cid);
+                    if let Ok(vec) = emb.embed_document(&text) {
+                        items.push((id, vec, meta));
+                        queued.push(cid);
                     }
+                    // Embed failure: leave the id dirty for a later drain.
                 }
                 None => {
-                    // No longer current-state: drop from the accelerator and clear.
+                    // Left current-state: drop from the accelerator and clear.
                     let _ = idx.remove(cid.clone());
                     self.clear_dirty(&cid);
                 }
+            }
+        }
+        if !items.is_empty() && idx.upsert_many(items).is_ok() {
+            // Clear only the ids the batch persisted; on error keep them dirty.
+            for cid in queued {
+                self.clear_dirty(&cid);
             }
         }
         Ok(())
@@ -209,7 +231,7 @@ impl MemWriter {
     fn clear_dirty(&self, id: &ConceptId) {
         self.dirty
             .lock()
-            .expect("dirty set mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(id);
     }
 
@@ -217,7 +239,7 @@ impl MemWriter {
 
     fn best_effort_index(&self, id: &MemId, text: &str, meta: FilterMeta) {
         let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
-            return; // A5-disabled: skip embed/upsert entirely.
+            return; // index disabled: skip embed/upsert entirely.
         };
         let cid = ConceptId(id.0.clone());
         match emb.embed_document(text) {
@@ -230,9 +252,9 @@ impl MemWriter {
         }
     }
 
-    /// Best-effort vector removal via the EXISTING [`SemanticIndex::remove`] hook.
-    /// Gated on BOTH embedder+index present — a vector was only ever upserted when
-    /// both were (see [`best_effort_index`](Self::best_effort_index)), so a remove is
+    /// Best-effort vector removal via the [`SemanticIndex::remove`] hook.
+    /// Gated on BOTH embedder+index present — a vector is upserted only when both are
+    /// (see [`best_effort_index`](Self::best_effort_index)), so a remove is
     /// attempted exactly when an upsert would have happened. A failure marks the id
     /// dirty for background repair and **never** fails the caller (invariant 8: the
     /// graph is the SoR; the index is rebuildable; no new index API).
@@ -254,6 +276,9 @@ impl MemWriter {
     }
 
     // ── Reader helpers: Rust callers for the remaining substrate functions ───
+    // Note: several readers below still build their `match ... fetch` text inline
+    // rather than in `tql.rs`. Consolidating those ~13 inline read-queries into
+    // `tql.rs` is a deferred, larger refactor (kept out of this pass).
 
     /// `is-superseded($b)` — supersession lineage OR a retracted/superseded state.
     pub async fn is_superseded(&self, b: &MemId) -> Result<bool> {
@@ -365,7 +390,7 @@ impl MemWriter {
              fetch { \"id\": $mid };",
         );
         let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_ids(&docs).into_iter().map(ConceptId).collect())
+        Ok(dedup_mapped(&docs, ConceptId))
     }
 
     /// `canonical-entity($rec)` — the transitive closure over **provable**
@@ -380,7 +405,7 @@ impl MemWriter {
              fetch { \"id\": $oid };",
         );
         let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_ids(&docs).into_iter().map(ConceptId).collect())
+        Ok(dedup_mapped(&docs, ConceptId))
     }
 
     /// `retrieval-provenance-of($b)` — walks `informs-synthesis` (the retrieval
@@ -396,16 +421,16 @@ impl MemWriter {
              fetch { \"id\": $rid };",
         );
         let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_ids(&docs).into_iter().map(MemId).collect())
+        Ok(dedup_mapped(&docs, MemId))
     }
 
-    // ── A6 consolidation ("dreaming") ────────────────────────────────────────
+    // ── Consolidation ("dreaming") ───────────────────────────────────────────
 
-    /// A6: the ONE real consolidation operation — the seam proof. Given two episodes
+    /// The one real consolidation operation — the seam proof. Given two episodes
     /// the daemon's content-hash scan found to be byte-identical, keep `keeper`,
     /// **tombstone** `loser` (its `consolidation-state` → "tombstoned"; the graph is
     /// the source of record, so the tombstoned row stays queryable), AND best-effort
-    /// **remove** the loser's vector from the index via the EXISTING
+    /// **remove** the loser's vector from the index via the
     /// [`SemanticIndex::remove`] hook (invariant 8: never fail the graph op on an
     /// index error; a failed remove marks the id dirty for background repair — no new
     /// index API).
@@ -443,23 +468,23 @@ impl MemWriter {
         Ok(!self.graph.read(&q, &v, &r).await?.is_empty())
     }
 
-    /// A6 retrieval-provenance retention (concrete helper): the `retrieval-event`s
-    /// whose `informs-synthesis` belief IS superseded — i.e. those now safe to
+    /// Retrieval-provenance retention (concrete helper): the `retrieval-event`s
+    /// whose `informs-synthesis` belief IS superseded — i.e. those safe to
     /// tombstone. Enforces the retention RULE: a retrieval-event is NEVER surfaced
     /// here while its synthesized belief is still non-superseded; only after the
     /// belief is superseded may the event decay. The belief's write-once
     /// `retrieval-provenance` flag persists regardless (the axis is retained on the
-    /// belief, not the event). The future daemon's `ttl_prune_record_tier` job reads
+    /// belief, not the event). The `ttl_prune_record_tier` job reads
     /// this to know which episodic records it may prune.
     pub async fn retrieval_events_safe_to_tombstone(&self) -> Result<Vec<MemId>> {
         let docs = self
             .graph
             .read(tql::retrieval_events_safe_to_tombstone_read(), &[], &[])
             .await?;
-        Ok(dedup_ids(&docs).into_iter().map(MemId).collect())
+        Ok(dedup_mapped(&docs, MemId))
     }
 
-    // ── A5.7 retrieval-provenance write path ─────────────────────────────────
+    // ── Retrieval-provenance write path ──────────────────────────────────────
 
     /// Mints a stamped `retrieval-event` for a semantic recall, creates a `surfaced`
     /// edge (with similarity score, `was-used=false`) per gated candidate, and
@@ -534,6 +559,84 @@ impl MemWriter {
             let rank = f64_field(d, "act").unwrap_or(0.0) * decay_of(d, now);
             (str_field(d, "title"), rank)
         }))
+    }
+
+    /// Index-seeded present-state recall: the ANN generates candidates, then every
+    /// candidate is fetched authoritatively + gated (invariant 8, the crux). The
+    /// gated fetches run concurrently (bounded by [`RECALL_FETCH_CONCURRENCY`]); the
+    /// hits are collected, then sorted by score descending and truncated to budget.
+    async fn recall_indexed(
+        &self,
+        ctx: &RunContext,
+        emb: &Arc<dyn Embedder>,
+        idx: &Arc<dyn SemanticIndex>,
+        q: &RecallQuery,
+        budget: ContextBudget,
+    ) -> Result<Vec<Chunk>> {
+        let now = ctx.occurred_at;
+        let qv = emb.embed_query(&q.text)?; // BGE query-prefix path
+        let pre = FilterMeta {
+            owner: ctx.actor.clone(),
+            visibility: Visibility::Private,
+            belief_state: BeliefState::Asserted,
+            valid_from: now,
+        };
+        // Over-fetch (k*4) so gating has candidates to survive on.
+        let k = budget.max_chunks.max(1).saturating_mul(4);
+        let cand = idx.query(&qv, k, &pre)?; // ids + similarity scores
+
+        // AUTHORITATIVE fetch + gate per candidate, run concurrently. An ANN-surfaced
+        // but gateable id yields no row and is dropped. A fetch error aborts recall,
+        // exactly as the sequential path did.
+        let fetched: Vec<Option<(Chunk, f64)>> = stream::iter(cand)
+            .map(|(cid, sim)| async move {
+                let gated = self.fetch_gated(&cid, &ctx.actor, now).await?;
+                Ok::<_, EpistemicError>(gated.map(|(title, rank)| {
+                    (
+                        Chunk {
+                            id: MemId(cid.0),
+                            text: title,
+                            score: sim,
+                        },
+                        rank,
+                    )
+                }))
+            })
+            .buffer_unordered(RECALL_FETCH_CONCURRENCY)
+            .try_collect()
+            .await?;
+        let mut scored: Vec<(Chunk, f64)> = fetched.into_iter().flatten().collect();
+
+        // Record the retrieval as episodic provenance (authoritative, stamped) —
+        // DISTINCT from the best-effort index upsert. Gated by config; off ⇒ no
+        // retrieval-events, no flags (no-drag preserved).
+        if self.record_retrieval_provenance && !scored.is_empty() {
+            self.record_retrieval(ctx, &scored).await?;
+        }
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored
+            .into_iter()
+            .take(budget.max_chunks)
+            .map(|(c, _)| c)
+            .collect())
+    }
+
+    /// Non-vector present-state recall (no index / NoopIndex): recent + salient +
+    /// scoped beliefs via `select-for-context`, sorted by score descending.
+    async fn recall_fallback(&self, ctx: &RunContext, budget: ContextBudget) -> Result<Vec<Chunk>> {
+        let now = ctx.occurred_at;
+        let mut scored = self.select_for_context(&ctx.actor, now).await?;
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored
+            .into_iter()
+            .take(budget.max_chunks)
+            .map(|(id, _)| Chunk {
+                id,
+                text: String::new(),
+                score: 0.0,
+            })
+            .collect())
     }
 }
 
@@ -616,17 +719,25 @@ fn row_to_embeddable(
     Some((ConceptId(id), text, meta))
 }
 
-/// Collects the `"id"` field from each doc, de-duplicated, order-preserving.
+/// Collects the `"id"` field from each doc, de-duplicated, order-preserving. Borrows
+/// each id as `&str` for the seen-set and allocates only when pushing a new id.
 fn dedup_ids(docs: &[Value]) -> Vec<String> {
-    let mut seen = HashSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut out = Vec::new();
     for d in docs {
-        let id = str_field(d, "id");
-        if !id.is_empty() && seen.insert(id.clone()) {
-            out.push(id);
+        let id = d.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if !id.is_empty() && seen.insert(id) {
+            out.push(id.to_string());
         }
     }
     out
+}
+
+/// Reads `docs`' de-duplicated `"id"` fields and wraps each with `f` (the newtype
+/// constructor). Factors the `dedup_ids(&docs).into_iter().map(..).collect()` tail
+/// shared by the persisted-function readers.
+fn dedup_mapped<T>(docs: &[Value], f: impl Fn(String) -> T) -> Vec<T> {
+    dedup_ids(docs).into_iter().map(f).collect()
 }
 
 #[async_trait]
@@ -659,7 +770,7 @@ impl EpistemicWriter for MemWriter {
         if let Some(deriv) = tql::derivation_op(&id, evidence, method, b.confidence) {
             ops.push(deriv);
         }
-        // A5.7: correlate this belief with the run's prior semantic retrievals by
+        // Correlate this belief with the run's prior semantic retrievals by
         // evidence overlap (auto-linked; the agent passes nothing). Same transaction
         // as the belief so the retrieval-provenance axis lands atomically with it.
         if self.record_retrieval_provenance {
@@ -777,7 +888,7 @@ impl EpistemicWriter for MemWriter {
 
     /// `MemWriter` is both writer and [`EpistemicReader`], so hand it back as one:
     /// this is what lets the host wire the sandbox `mem.recall` reader bridge from
-    /// the same object (and share the per-run scratch for A5.7 correlation).
+    /// the same object (and share the per-run scratch for retrieval correlation).
     fn as_epistemic_reader(self: Arc<Self>) -> Option<Arc<dyn EpistemicReader>> {
         Some(self)
     }
@@ -791,67 +902,14 @@ impl EpistemicReader for MemWriter {
         q: RecallQuery,
         budget: ContextBudget,
     ) -> Result<Vec<Chunk>> {
-        let now = ctx.occurred_at;
-
         // As-of-T ⇒ temporal path; SKIP the index entirely (invariant 8).
         if let Some(t) = q.as_of {
             return self.recall_as_of(t, budget).await;
         }
-
         // Present-state: index-seeded when configured, else non-vector fallback.
-        if let (Some(emb), Some(idx)) = (&self.embedder, &self.index) {
-            let qv = emb.embed_query(&q.text)?; // BGE query-prefix path
-            let pre = FilterMeta {
-                owner: ctx.actor.clone(),
-                visibility: Visibility::Private,
-                belief_state: BeliefState::Asserted,
-                valid_from: now,
-            };
-            // Over-fetch (k*4) so gating has candidates to survive on.
-            let k = budget.max_chunks.max(1).saturating_mul(4);
-            let cand = idx.query(&qv, k, &pre)?; // ids + similarity scores
-
-            let mut scored: Vec<(Chunk, f64)> = Vec::new();
-            for (cid, sim) in cand {
-                // AUTHORITATIVE fetch + gate: an ANN-surfaced but gateable id
-                // yields no row here and is therefore dropped.
-                if let Some((title, rank)) = self.fetch_gated(&cid, &ctx.actor, now).await? {
-                    scored.push((
-                        Chunk {
-                            id: MemId(cid.0),
-                            text: title,
-                            score: sim,
-                        },
-                        rank,
-                    ));
-                }
-            }
-            // A5.7: record the retrieval as episodic provenance (authoritative,
-            // stamped) — DISTINCT from the best-effort index upsert. Gated by config;
-            // off ⇒ no retrieval-events, no flags (no-drag preserved).
-            if self.record_retrieval_provenance && !scored.is_empty() {
-                self.record_retrieval(ctx, &scored).await?;
-            }
-
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            Ok(scored
-                .into_iter()
-                .take(budget.max_chunks)
-                .map(|(c, _)| c)
-                .collect())
-        } else {
-            // A5 disabled / NoopIndex: recent+salient+scoped via select-for-context.
-            let mut scored = self.select_for_context(&ctx.actor, now).await?;
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            Ok(scored
-                .into_iter()
-                .take(budget.max_chunks)
-                .map(|(id, _)| Chunk {
-                    id,
-                    text: String::new(),
-                    score: 0.0,
-                })
-                .collect())
+        match (&self.embedder, &self.index) {
+            (Some(emb), Some(idx)) => self.recall_indexed(ctx, emb, idx, &q, budget).await,
+            _ => self.recall_fallback(ctx, budget).await,
         }
     }
 
@@ -866,7 +924,7 @@ impl EpistemicReader for MemWriter {
              fetch { \"id\": $mid };",
         );
         let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_ids(&docs).into_iter().map(MemId).collect())
+        Ok(dedup_mapped(&docs, MemId))
     }
 
     async fn believed_at(&self, at: DateTime, _q: BeliefQuery) -> Result<Vec<MemId>> {
@@ -879,7 +937,7 @@ impl EpistemicReader for MemWriter {
              fetch { \"id\": $bid };",
         );
         let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_ids(&docs).into_iter().map(MemId).collect())
+        Ok(dedup_mapped(&docs, MemId))
     }
 
     async fn blast_radius(&self, retracted: MemId) -> Result<Vec<MemId>> {
@@ -892,7 +950,7 @@ impl EpistemicReader for MemWriter {
              fetch { \"id\": $mid };",
         );
         let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_ids(&docs).into_iter().map(MemId).collect())
+        Ok(dedup_mapped(&docs, MemId))
     }
 }
 
@@ -1134,7 +1192,7 @@ mod tests {
 
     #[tokio::test]
     async fn supersede_without_embedder_never_removes() {
-        // Carry-forward fix: old-vector remove is gated on BOTH embedder+index.
+        // Old-vector remove is gated on BOTH embedder+index.
         let idx = Arc::new(FailingUpsertIndex::default());
         let w = MemWriter::new(
             Arc::new(RecordingGraphStore::default()),

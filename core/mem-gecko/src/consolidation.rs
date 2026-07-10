@@ -1,30 +1,28 @@
-//! A6 — Consolidation / "dreaming" daemon **scaffold** (build later).
+//! Consolidation / "dreaming" daemon scaffold.
 //!
 //! This module lays the hooks so the retention/consolidation daemon can slot in
-//! LATER without schema churn — it does **not** build the full daemon. What ships
-//! today is:
+//! without schema churn; the full daemon is not yet built. What ships today is:
 //!
 //! * [`ConsolidationDaemon`] — the trait describing the scheduled, whole-graph jobs
-//!   the future daemon will run. Every job beyond the scheduled entry point is a
-//!   **documented stub** (a signature + doc-comment whose default body returns
+//!   the daemon runs. Every job beyond the scheduled entry point is a documented
+//!   stub (a signature + doc-comment whose default body returns
 //!   [`EpistemicError::NotYetImplemented`] rather than panicking) — the deliverable is
 //!   the seam, not the body, so a premature caller gets a graceful `Err`, not a crash.
 //! * [`NoopConsolidationDaemon`] — a concrete daemon whose scheduled [`tick`] does
-//!   **nothing** today. It exists and is callable so the wiring is real now.
+//!   nothing. It exists and is callable so the wiring is real.
 //!
-//! The ONE real consolidation operation — content-hash episode dedup that also drops
+//! The one real consolidation operation — content-hash episode dedup that also drops
 //! the loser's vector — lives on [`MemWriter::dedup_episodes`](crate::MemWriter::dedup_episodes),
-//! because it needs the writer's graph seam + best-effort index hook. The future
-//! daemon's [`dedup_content_hash`](ConsolidationDaemon::dedup_content_hash) job will
-//! scan the whole graph for identical-hash cohorts and call that method per pair.
+//! because it needs the writer's graph seam + best-effort index hook. The
+//! [`dedup_content_hash`](ConsolidationDaemon::dedup_content_hash) job scans the whole
+//! graph for identical-hash cohorts and calls that method per pair.
 //!
 //! ## Invariant 8 (index interaction) binds every job here
-//! On tombstone/archive the daemon calls the **existing** best-effort
+//! On tombstone/archive the daemon calls the best-effort
 //! [`SemanticIndex::remove`](gecko_extension_api::SemanticIndex::remove) hook for the
-//! affected concept-ids — no new index API. On consolidation that mints a new merged
-//! belief, that belief rides the normal `assert_belief` embed+upsert path. The graph
-//! is the sole source of record; the index is derived and rebuildable; an index error
-//! never fails a graph op.
+//! affected concept-ids. On consolidation that mints a new merged belief, that belief
+//! rides the normal `assert_belief` embed+upsert path. The graph is the sole source of
+//! record; the index is derived and rebuildable; an index error never fails a graph op.
 //!
 //! [`tick`]: ConsolidationDaemon::tick
 
@@ -35,7 +33,7 @@ use gecko_extension_api::{DateTime, EpistemicError, MemId};
 type Result<T> = std::result::Result<T, EpistemicError>;
 
 /// A counting summary of what a scheduled [`tick`](ConsolidationDaemon::tick) did.
-/// Today's no-op tick returns the default (all zeroes); the future daemon fills it
+/// The no-op tick returns the default (all zeroes); an implemented tick fills it
 /// in so a scheduler/operator can observe consolidation progress.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsolidationReport {
@@ -52,12 +50,12 @@ pub struct ConsolidationReport {
 
 /// The scheduled, whole-graph consolidation ("dreaming") interface.
 ///
-/// SCAFFOLD: only [`tick`](Self::tick) has a real (no-op) default. Every other
-/// method is a documented **stub** — a signature the future daemon will implement,
-/// whose default body returns [`EpistemicError::NotYetImplemented`] (never panics) so a
-/// no-op impl compiles without carrying dead logic and a premature caller gets a
-/// graceful `Err`. Return types are counts/id-lists so the eventual bodies stay pure
-/// data-plane operations over the graph + the best-effort index hook (invariant 8).
+/// Only [`tick`](Self::tick) has a real (no-op) default. Every other method is a
+/// documented stub — a signature whose default body returns
+/// [`EpistemicError::NotYetImplemented`] (never panics) so a no-op impl compiles
+/// without carrying dead logic and a premature caller gets a graceful `Err`. Return
+/// types are counts/id-lists so the bodies stay pure data-plane operations over the
+/// graph + the best-effort index hook (invariant 8).
 #[async_trait]
 pub trait ConsolidationDaemon: Send + Sync {
     /// The scheduled entry point — one "sleep cycle" over the whole graph. A daemon
@@ -68,16 +66,16 @@ pub trait ConsolidationDaemon: Send + Sync {
         Ok(ConsolidationReport::default())
     }
 
-    // ── Whole-graph reasoning jobs (build later) ─────────────────────────────
+    // ── Whole-graph reasoning jobs ───────────────────────────────────────────
 
     /// **Provable** content-hash dedup: scan for cohorts of memory-items sharing an
     /// identical content-hash, keep one per cohort, and tombstone + de-vector the
     /// rest via [`MemWriter::dedup_episodes`](crate::MemWriter::dedup_episodes).
-    /// Returns the number of losers deduped. (The per-pair operation is the ONE real
-    /// body shipped in A6; this whole-graph scan is the build-later wrapper.)
+    /// Returns the number of losers deduped. (The per-pair operation is the one real
+    /// body; this whole-graph scan is the wrapper.)
     async fn dedup_content_hash(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: whole-graph identical-hash scan → dedup_episodes per pair",
+            "whole-graph identical-hash scan → dedup_episodes per pair: not yet implemented",
         ))
     }
 
@@ -86,7 +84,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// invariant 7). Structurally distinct from [`synthesize_links_llm`](Self::synthesize_links_llm).
     async fn discover_typed_join_links(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: typed-join link discovery (provable, type-join)",
+            "typed-join link discovery (provable, type-join): not yet implemented",
         ))
     }
 
@@ -96,7 +94,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// separate from the provable path so the two never blur.
     async fn synthesize_links_llm(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: LLM link synthesis (probabilistic, marked llm-synthesis)",
+            "LLM link synthesis (probabilistic, marked llm-synthesis): not yet implemented",
         ))
     }
 
@@ -104,7 +102,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// hub and reify the anomaly for the JTMS/argumentation layer to resolve.
     async fn contradiction_sweep(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: whole-graph contradiction detection → anomaly hubs",
+            "whole-graph contradiction detection → anomaly hubs: not yet implemented",
         ))
     }
 
@@ -113,7 +111,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// (calling the best-effort index remove hook on archive/tombstone — invariant 8).
     async fn decay_archive_tombstone(&self, _now: DateTime) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: decay → archive → tombstone with best-effort de-vector",
+            "decay → archive → tombstone with best-effort de-vector: not yet implemented",
         ))
     }
 
@@ -121,11 +119,11 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// while retaining the derivation/retrieval axes the retention rules protect).
     async fn summarize_archived_provenance(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: summarize archived-belief provenance",
+            "summarize archived-belief provenance: not yet implemented",
         ))
     }
 
-    // ── Tiering / materialization / retention hooks (build later) ────────────
+    // ── Tiering / materialization / retention hooks ──────────────────────────
 
     /// TTL-prune the record/episodic tier: tombstone episodic records past their
     /// retention window. MUST honour the retrieval-provenance retention rule (see
@@ -134,7 +132,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// non-superseded.
     async fn ttl_prune_record_tier(&self, _now: DateTime) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: TTL-prune record tier (honour retrieval-provenance retention)",
+            "TTL-prune record tier (honour retrieval-provenance retention): not yet implemented",
         ))
     }
 
@@ -142,7 +140,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// retained), reducing the episodic tier's footprint.
     async fn rollup_high_volume_episodes(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: roll up high-volume episodes to aggregates",
+            "roll up high-volume episodes to aggregates: not yet implemented",
         ))
     }
 
@@ -151,7 +149,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// belief persists (axis retained) even as episodic detail decays.
     async fn collapse_superseded_provenance(&self) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: collapse superseded-belief provenance to summaries",
+            "collapse superseded-belief provenance to summaries: not yet implemented",
         ))
     }
 
@@ -159,7 +157,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// retraction is O(read). The materialization is a cache: the graph stays SoR.
     async fn precompute_blast_radius(&self, _assumption: &MemId) -> Result<()> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: precompute blast-radius for critical assumptions",
+            "precompute blast-radius for critical assumptions: not yet implemented",
         ))
     }
 
@@ -167,15 +165,14 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// assumption's neighbourhood (the cache is only ever as good as the last write).
     async fn invalidate_blast_radius(&self, _assumption: &MemId) -> Result<()> {
         Err(EpistemicError::NotYetImplemented(
-            "A6 build-later: invalidate blast-radius on host-mediated write",
+            "invalidate blast-radius on host-mediated write: not yet implemented",
         ))
     }
 }
 
-/// The wired **no-op** consolidation daemon: its scheduled [`tick`] does nothing and
+/// The wired no-op consolidation daemon: its scheduled [`tick`] does nothing and
 /// reports zeroes (all other jobs inherit the trait's `NotYetImplemented` stubs and are
-/// never invoked today). This is the "daemon trait + no-op scheduled job wired" A6
-/// acceptance: it compiles, is callable, and does nothing.
+/// never invoked). It compiles, is callable, and does nothing.
 ///
 /// [`tick`]: ConsolidationDaemon::tick
 #[derive(Debug, Default, Clone, Copy)]
@@ -183,7 +180,7 @@ pub struct NoopConsolidationDaemon;
 
 impl ConsolidationDaemon for NoopConsolidationDaemon {
     // Inherits the trait default `tick` (a true no-op) and the `NotYetImplemented`
-    // job stubs. Nothing to override until the real daemon lands.
+    // job stubs. Nothing to override.
 }
 
 #[cfg(test)]
@@ -191,7 +188,7 @@ mod tests {
     use super::*;
 
     /// The no-op scheduled job is wired, callable, and does nothing (returns the
-    /// zeroed report). This is the A6 "daemon trait + no-op scheduled job" acceptance.
+    /// zeroed report).
     #[tokio::test]
     async fn noop_daemon_tick_does_nothing() {
         let daemon = NoopConsolidationDaemon;
@@ -206,7 +203,7 @@ mod tests {
         );
     }
 
-    /// A premature call to a build-later stub returns a graceful
+    /// A premature call to an unimplemented stub returns a graceful
     /// [`EpistemicError::NotYetImplemented`] — NOT a panic (invariant: a reachable
     /// stub must never crash a caller).
     #[tokio::test]
@@ -215,7 +212,7 @@ mod tests {
         let err = daemon
             .dedup_content_hash()
             .await
-            .expect_err("build-later stub is not yet implemented");
+            .expect_err("stub is not yet implemented");
         assert!(matches!(err, EpistemicError::NotYetImplemented(_)));
         let unit_err = daemon
             .precompute_blast_radius(&MemId::new("mem/bel/x"))
