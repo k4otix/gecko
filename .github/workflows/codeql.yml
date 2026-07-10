@@ -1,0 +1,37 @@
+name: CodeQL
+
+# Static analysis (SAST) for the Rust sources. Uses build-mode `none` so it
+# analyzes the source without compiling — this keeps the scan candle-free and
+# fast (no 1.3GB model, no candle build) and independent of the Tier-1/2 CI.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so newly published query updates catch latent issues even with no
+    # code change. Static day/time (cron has no notion of "random").
+    - cron: "27 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (rust)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload results to the Security tab
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+        with:
+          languages: rust
+          build-mode: none
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+        with:
+          category: "/language:rust"

@@ -10,6 +10,9 @@ name: Model Integration
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Full HuggingFace repo id INCLUDING the org — the fetch resolves
@@ -49,7 +52,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: stable
 
@@ -68,7 +71,7 @@ jobs:
       # cache exactly once.
       - name: Cache the model (keyed on the immutable revision)
         id: model-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/gecko/models
           key: model-${{ env.MODEL_ID }}-${{ env.MODEL_REVISION }}

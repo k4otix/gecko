@@ -17,6 +17,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Least privilege: the default GITHUB_TOKEN is read-only. No job here writes to
+# the repo, so nothing needs to elevate.
+permissions:
+  contents: read
+
 jobs:
   # Plan P5's one accepted tradeoff, enforced: a change to the pinned embedding
   # model (model_id in gecko-bin/src/config.rs, or MODEL_REVISION in
@@ -102,15 +107,15 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Install nextest and cargo-audit
+      - name: Install nextest, cargo-audit, cargo-deny
         uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2
         with:
-          tool: nextest,cargo-audit
+          tool: nextest,cargo-audit,cargo-deny
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -121,13 +126,18 @@ jobs:
       - name: Run Cargo Audit
         run: cargo audit
 
+      # License, source, and duplicate-dependency checks over the full lock graph
+      # (advisories are covered by cargo audit above). Config: deny.toml.
+      - name: Run cargo-deny
+        run: cargo deny check licenses bans sources
+
       # Gating (P7 cleared the clippy backlog): a regression here now fails the
       # build, not just shows up in the log.
       - name: Clippy (candle-free)
-        run: cargo clippy --workspace --exclude js-sandbox --no-default-features -- -D warnings
+        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --locked -- -D warnings
 
       - name: Clippy (candle-free, cyber)
-        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --features cyber -- -D warnings
+        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --features cyber --locked -- -D warnings
 
       # Structural guard: this job must NEVER compile candle. `--no-default-
       # features` drops `real-embedder` (default-on since P4), so candle should
@@ -149,7 +159,7 @@ jobs:
       # `real-embedder` is OFF here (no-default-features), so this never
       # compiles candle and never touches ~/.cache/gecko/models.
       - name: Test (Tier 1 + Tier 2, candle-free, cyber-on)
-        run: cargo nextest run --workspace --exclude js-sandbox --no-default-features --features cyber
+        run: cargo nextest run --workspace --exclude js-sandbox --no-default-features --features cyber --locked
 
       # Sanity check: the model-free per-push job must never have populated the
       # runtime model cache. The compiled feature boundary (P4) guarantees this
