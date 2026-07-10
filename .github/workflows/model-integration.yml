@@ -96,7 +96,6 @@ jobs:
 
           [semantic_index]
           enabled = true
-          path = "gecko.hnsw"
           embedder = "stub"
           backend = "hnsw"
           model_id = "${MODEL_ID}@${MODEL_REVISION}"

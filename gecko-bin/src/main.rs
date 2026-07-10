@@ -181,14 +181,22 @@ enum ModelCommands {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // Initialize tracing
+    let cli = Cli::parse();
+
+    // Initialize tracing. Parse the CLI first so `gecko doctor --quiet` can pin the
+    // default log floor to `error`: the TypeDB driver/router emit INFO on the
+    // doctor typedb check, and `--quiet` promises only the exit code is meaningful
+    // (setup.sh depends on it) — so their INFO must not leak to stderr. An explicit
+    // RUST_LOG still wins for anyone who wants the chatter back.
+    let default_filter = match &cli.command {
+        Commands::Doctor { quiet: true, .. } => "error",
+        _ => "info",
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
         .init();
-
-    let cli = Cli::parse();
 
     // `gecko doctor` owns its own exit code (FAILURE iff a hard precondition fails)
     // and must run even with a broken/absent gecko.toml — so it short-circuits
@@ -469,7 +477,7 @@ fn cmd_model_fetch(
         &dest,
         cfg.semantic_index.model_source.as_deref(),
         false,
-        &[],
+        fetch::known_checksums(&model_id),
     )
     .context("model fetch failed")?;
 

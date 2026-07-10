@@ -580,7 +580,7 @@ mod tests {
         let cfg = GeckoConfig {
             semantic_index: SemanticIndexConfig {
                 enabled: true,
-                path: tmp.path().join("nope.hnsw").to_string_lossy().into_owned(),
+                path: Some(tmp.path().join("nope.hnsw").to_string_lossy().into_owned()),
                 ..Default::default()
             },
             ..Default::default()

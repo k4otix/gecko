@@ -10,10 +10,11 @@
 //! enabled = ["cyber"]   # mem is substrate — always-on, regardless of this list
 //! ```
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use gecko_extension_api::GeckoExtension;
+use gecko_semantic_index::fetch::PINNED_MODEL_REVISION;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -49,12 +50,14 @@ pub struct SemanticIndexConfig {
     /// Whether the semantic index is active. Default `false` (substrate-only).
     #[serde(default)]
     pub enabled: bool,
-    /// Path to the persisted (file-serialized) index. The sentinel default
-    /// `"gecko.hnsw"` means "derive under `cache_dir/index/gecko.hnsw`"; set an
-    /// explicit (typically absolute) path to override the derived default —
-    /// [`index_path`] resolves the effective location.
-    #[serde(default = "default_index_path")]
-    pub path: String,
+    /// Path to the persisted (file-serialized) index. `None` (the default, or an
+    /// absent `path` key) means "derive under `cache_dir/index/gecko.hnsw`"; a
+    /// `Some(path)` is used VERBATIM as an explicit override — including a literal
+    /// relative path like `"gecko.hnsw"` or `"./gecko.hnsw"` in the working dir,
+    /// which the old sentinel-default could not express. [`index_path`] resolves
+    /// the effective location.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// Which embedder to build. Only `"stub"` is compiled today; the real
     /// `bge-large-en-v1.5` impl is deferred behind a feature.
     #[serde(default = "default_embedder")]
@@ -90,23 +93,18 @@ pub struct SemanticIndexConfig {
     pub model_source: Option<String>,
 }
 
-fn default_index_path() -> String {
-    "gecko.hnsw".to_string()
-}
 fn default_embedder() -> String {
     "stub".to_string()
 }
 fn default_backend() -> String {
     "hnsw".to_string()
 }
-/// The Tier-3-validated, pinned model revision — the SINGLE SOURCE OF TRUTH
-/// consumed by [`default_model_id`] and the shipped `gecko init` template.
-/// Kept in lockstep with `MODEL_REVISION` in
-/// `.github/workflows/model-integration.yml` (which is where this SHA was
-/// last validated); bumping either one without the other is a bug. A bump
-/// here is caught by the `model-bump-gate` CI job (see `ci.yml`), which
-/// requires a fresh Tier-3 run + the `tier3-validated` label before merge.
-const PINNED_MODEL_REVISION: &str = "d4aa6901d3a41ba39fb536a557fa166f842b0e09";
+// The Tier-3-validated, pinned model revision is the SINGLE SOURCE OF TRUTH in
+// `gecko_semantic_index::fetch::PINNED_MODEL_REVISION` (imported above), where it
+// also keys the enforced download checksums. It is kept in lockstep with
+// `MODEL_REVISION` in `.github/workflows/model-integration.yml`; a bump is caught
+// by the `model-bump-gate` CI job, which requires a fresh Tier-3 run + the
+// `tier3-validated` label before merge.
 
 fn default_model_id() -> String {
     format!("bge-large-en-v1.5@{PINNED_MODEL_REVISION}")
@@ -116,7 +114,7 @@ impl Default for SemanticIndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            path: default_index_path(),
+            path: None,
             embedder: default_embedder(),
             backend: default_backend(),
             record_retrieval_provenance: None,
@@ -215,109 +213,17 @@ impl GeckoConfig {
 
 // ── Runtime asset layout (plan P1) ──────────────────────────────────────────
 //
-// GECKO ships three artifacts with three lifecycles: the `gecko` binary (build
-// tree), the TypeDB server (its own process), and the ~1.3GB embedding model (a
-// RUNTIME asset). Load-bearing rule #1: the model is NEVER a build dependency —
-// the binary holds only a PATH, resolved at runtime here from `model_id`. All
-// runtime assets live under the cache root, OUTSIDE the repo/build tree.
-
-/// Pure precedence resolver for the cache root, factored out for testing. Order:
-/// `GECKO_CACHE_DIR` env > `gecko.toml` `cache_dir` > `XDG_CACHE_HOME/gecko` >
-/// `<home>/.cache/gecko`. Does no I/O and reads no environment itself — callers
-/// pass the resolved inputs.
-fn resolve_cache_dir(
-    env_override: Option<&str>,
-    cfg_cache: Option<&str>,
-    xdg_cache_home: Option<&str>,
-    home: Option<&str>,
-) -> Result<PathBuf> {
-    if let Some(v) = env_override.filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(v));
-    }
-    if let Some(v) = cfg_cache.filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(v));
-    }
-    if let Some(v) = xdg_cache_home.filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(v).join("gecko"));
-    }
-    if let Some(v) = home.filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(v).join(".cache").join("gecko"));
-    }
-    anyhow::bail!(
-        "cannot resolve GECKO cache dir: set GECKO_CACHE_DIR, or `cache_dir` in \
-         gecko.toml, or ensure HOME/XDG_CACHE_HOME is set"
-    )
-}
-
-/// Resolves the GECKO cache root and ensures it exists and is writable.
-///
-/// Precedence: `GECKO_CACHE_DIR` env > `gecko.toml` `cache_dir` >
-/// `XDG_CACHE_HOME/gecko` > `~/.cache/gecko`. All runtime assets (models, index,
-/// and — P3 — a downloaded TypeDB) live under the returned directory.
-pub fn cache_dir(cfg: &GeckoConfig) -> Result<PathBuf> {
-    let env_override = std::env::var("GECKO_CACHE_DIR").ok();
-    let xdg = std::env::var("XDG_CACHE_HOME").ok();
-    let home = std::env::var("HOME").ok();
-    let dir = resolve_cache_dir(
-        env_override.as_deref(),
-        cfg.cache_dir.as_deref(),
-        xdg.as_deref(),
-        home.as_deref(),
-    )?;
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("cache dir not creatable: {}", dir.display()))?;
-    Ok(dir)
-}
-
-/// Derives the model directory under a resolved cache root, honoring an explicit
-/// `model_path` override. Pure (no I/O); [`model_path`] wraps it with cache-root
-/// resolution.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by P2 (model fetch/load) + doctor
-fn derive_model_path(cache_root: &Path, sic: &SemanticIndexConfig) -> PathBuf {
-    if let Some(explicit) = sic.model_path.as_deref().filter(|s| !s.is_empty()) {
-        return PathBuf::from(explicit);
-    }
-    cache_root.join("models").join(&sic.model_id)
-}
-
-/// Resolves the embedding model directory. Content-addressed as
-/// `cache_dir/models/<model_id>/` unless `[semantic_index] model_path` is set,
-/// which overrides (air-gapped / pre-provisioned dirs). Load-bearing rule #1:
-/// this path is always OUTSIDE the build tree.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by P2 (model fetch/load) + doctor
-pub fn model_path(cfg: &GeckoConfig) -> Result<PathBuf> {
-    // The explicit override needs no cache root.
-    if let Some(explicit) = cfg
-        .semantic_index
-        .model_path
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        return Ok(PathBuf::from(explicit));
-    }
-    Ok(derive_model_path(&cache_dir(cfg)?, &cfg.semantic_index))
-}
-
-/// Derives the index path under a resolved cache root. The sentinel default
-/// `"gecko.hnsw"` derives under `cache_dir/index/gecko.hnsw`; any other value is
-/// an explicit override used verbatim. Pure (no I/O); [`index_path`] wraps it.
-fn derive_index_path(cache_root: &Path, sic: &SemanticIndexConfig) -> PathBuf {
-    if sic.path == default_index_path() {
-        return cache_root.join("index").join("gecko.hnsw");
-    }
-    PathBuf::from(&sic.path)
-}
-
-/// Resolves the effective HNSW index path. Defaults to
-/// `cache_dir/index/gecko.hnsw`; an explicit `[semantic_index] path` overrides
-/// (an absolute/explicit path wins over the derived default).
-pub fn index_path(cfg: &GeckoConfig) -> Result<PathBuf> {
-    // An explicit override needs no cache root.
-    if cfg.semantic_index.path != default_index_path() {
-        return Ok(PathBuf::from(&cfg.semantic_index.path));
-    }
-    Ok(derive_index_path(&cache_dir(cfg)?, &cfg.semantic_index))
-}
+// The cache-root / model-dir / index-path precedence resolvers live in the
+// `paths` submodule (keeping this file focused on the config schema itself). Load-
+// bearing rule #1 — the model is a RUNTIME asset resolved to a PATH, never a build
+// dependency — is enforced there and covered by that module's own tests.
+mod paths;
+pub use paths::{cache_dir, index_path};
+// `model_path` is consumed by doctor.rs + `gecko model fetch`, both behind
+// `real-embedder`; under `--no-default-features` it has no caller, matching the
+// `allow(dead_code)` on the underlying fn.
+#[cfg_attr(not(feature = "real-embedder"), allow(unused_imports))]
+pub use paths::model_path;
 
 /// The documented default `gecko.toml` written by `gecko init`. Reflects the
 /// struct defaults above so it round-trips through [`GeckoConfig::load`].
@@ -344,9 +250,10 @@ enabled = []
 # runs with no index: recall falls back to the non-vector path, drag-free.
 [semantic_index]
 enabled  = false
-# The persisted index path. "gecko.hnsw" (the default) derives under
-# cache_dir/index/gecko.hnsw; set an explicit path to override.
-path     = "gecko.hnsw"
+# The persisted index path. Omitted (the default) derives under
+# cache_dir/index/gecko.hnsw; set an explicit path to override — a relative value
+# like "gecko.hnsw" is taken literally in the working dir.
+# path     = "/explicit/index/path.hnsw"
 embedder = "stub"          # deterministic hash stub; future: "bge-large-en-v1.5", "api:<provider>"
 backend  = "hnsw"          # future drop-in: "typedb-native"
 # The SINGLE SOURCE OF TRUTH for the model. The model directory is DERIVED as
@@ -450,7 +357,10 @@ mod tests {
         // No [semantic_index] table ⇒ accelerator off (bare checkout stays drag-free).
         let cfg = GeckoConfig::default();
         assert!(!cfg.semantic_index.enabled);
-        assert_eq!(cfg.semantic_index.path, "gecko.hnsw");
+        assert!(
+            cfg.semantic_index.path.is_none(),
+            "absent path derives under the cache root"
+        );
         assert_eq!(cfg.semantic_index.embedder, "stub");
         assert_eq!(cfg.semantic_index.backend, "hnsw");
         // record-provenance defaults to `enabled` (off here).
@@ -464,7 +374,7 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.semantic_index.enabled);
-        assert_eq!(cfg.semantic_index.path, "x.hnsw");
+        assert_eq!(cfg.semantic_index.path.as_deref(), Some("x.hnsw"));
         // Unset record flag defaults to `enabled` (true here).
         assert!(cfg.semantic_index.record_provenance());
     }
@@ -519,7 +429,6 @@ mod tests {
             "\n",
             "[semantic_index]\n",
             "enabled = true\n",
-            "path = \"gecko.hnsw\"\n",
             "embedder = \"stub\"\n",
             "backend = \"hnsw\"\n",
             "model_id = \"bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09\"\n",
@@ -569,146 +478,8 @@ mod tests {
     }
 
     // ── P1: cache layout + config schema ────────────────────────────────────
-
-    /// Serializes the handful of tests that mutate process-global env vars.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn cache_dir_precedence_env_over_config_over_xdg_over_home() {
-        // env override wins over everything
-        assert_eq!(
-            resolve_cache_dir(Some("/e"), Some("/c"), Some("/x"), Some("/h")).unwrap(),
-            PathBuf::from("/e")
-        );
-        // config wins over xdg/home
-        assert_eq!(
-            resolve_cache_dir(None, Some("/c"), Some("/x"), Some("/h")).unwrap(),
-            PathBuf::from("/c")
-        );
-        // xdg (gets /gecko suffix) wins over home
-        assert_eq!(
-            resolve_cache_dir(None, None, Some("/x"), Some("/h")).unwrap(),
-            PathBuf::from("/x/gecko")
-        );
-        // home fallback → ~/.cache/gecko
-        assert_eq!(
-            resolve_cache_dir(None, None, None, Some("/h")).unwrap(),
-            PathBuf::from("/h/.cache/gecko")
-        );
-        // empty strings are treated as unset
-        assert_eq!(
-            resolve_cache_dir(Some(""), Some(""), Some(""), Some("/h")).unwrap(),
-            PathBuf::from("/h/.cache/gecko")
-        );
-        // nothing resolvable → error
-        assert!(resolve_cache_dir(None, None, None, None).is_err());
-    }
-
-    #[test]
-    fn cache_dir_env_override_is_created_and_writable() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path().join("nested/cache");
-        let prev = std::env::var("GECKO_CACHE_DIR").ok();
-        // SAFETY: serialized by ENV_LOCK; restored below.
-        unsafe { std::env::set_var("GECKO_CACHE_DIR", &target) };
-        let resolved = cache_dir(&GeckoConfig::default()).unwrap();
-        assert_eq!(resolved, target);
-        assert!(resolved.is_dir(), "cache dir should be created");
-        match prev {
-            Some(v) => unsafe { std::env::set_var("GECKO_CACHE_DIR", v) },
-            None => unsafe { std::env::remove_var("GECKO_CACHE_DIR") },
-        }
-    }
-
-    #[test]
-    fn model_path_derives_from_cache_and_model_id() {
-        let sic = SemanticIndexConfig {
-            model_id: "bge-large-en-v1.5@abc123".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(
-            derive_model_path(Path::new("/cache/gecko"), &sic),
-            PathBuf::from("/cache/gecko/models/bge-large-en-v1.5@abc123")
-        );
-    }
-
-    #[test]
-    fn model_path_explicit_override_wins() {
-        let sic = SemanticIndexConfig {
-            model_id: "bge-large-en-v1.5@abc123".to_string(),
-            model_path: Some("/opt/preprovisioned/model".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(
-            derive_model_path(Path::new("/cache/gecko"), &sic),
-            PathBuf::from("/opt/preprovisioned/model")
-        );
-        // The public resolver also honors the override without touching the cache root.
-        let cfg = GeckoConfig {
-            semantic_index: sic,
-            ..Default::default()
-        };
-        assert_eq!(
-            model_path(&cfg).unwrap(),
-            PathBuf::from("/opt/preprovisioned/model")
-        );
-    }
-
-    #[test]
-    fn index_path_defaults_derive_but_explicit_overrides() {
-        // Sentinel default derives under the cache root.
-        let sic = SemanticIndexConfig::default();
-        assert_eq!(
-            derive_index_path(Path::new("/cache/gecko"), &sic),
-            PathBuf::from("/cache/gecko/index/gecko.hnsw")
-        );
-        // Explicit path wins over the derived default (keeps A5 temp-path tests working).
-        let sic = SemanticIndexConfig {
-            path: "/tmp/test-abc.hnsw".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(
-            derive_index_path(Path::new("/cache/gecko"), &sic),
-            PathBuf::from("/tmp/test-abc.hnsw")
-        );
-        let cfg = GeckoConfig {
-            semantic_index: sic,
-            ..Default::default()
-        };
-        assert_eq!(
-            index_path(&cfg).unwrap(),
-            PathBuf::from("/tmp/test-abc.hnsw")
-        );
-    }
-
-    /// Load-bearing rule #1, encoded structurally: no runtime asset (model or
-    /// index) can ever resolve inside the repo or `target/`.
-    #[test]
-    fn runtime_assets_never_resolve_inside_repo_or_target() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace root");
-        // A representative cache root outside the repo (as ~/.cache/gecko would be).
-        let cache_root = resolve_cache_dir(None, None, None, Some("/home/gecko-user")).unwrap();
-        assert!(
-            !cache_root.starts_with(repo_root),
-            "cache root must be outside the repo"
-        );
-        let sic = SemanticIndexConfig::default();
-        let model = derive_model_path(&cache_root, &sic);
-        let index = derive_index_path(&cache_root, &sic);
-        for p in [&model, &index] {
-            assert!(
-                !p.starts_with(repo_root),
-                "{p:?} must not be under the repo"
-            );
-            assert!(
-                !p.components().any(|c| c.as_os_str() == "target"),
-                "{p:?} must not be under target/"
-            );
-        }
-    }
+    // (The cache/model/index path-resolution tests live alongside their code in
+    // the `paths` submodule — see `config/paths.rs`.)
 
     #[test]
     fn typedb_defaults_to_orchestrated_endpoint() {

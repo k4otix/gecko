@@ -23,7 +23,7 @@
 //!   so downstream cosine is a plain dot product.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use candle_core::{Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -54,7 +54,10 @@ pub struct CandleEmbedder {
     /// Optional mirror base URL for acquisition (`None` ⇒ HuggingFace).
     source: Option<String>,
     /// The lazily-loaded model+tokenizer, populated on first embed and reused.
-    loaded: Mutex<Option<Loaded>>,
+    /// Held as an `Arc` so a concurrent embed can clone out the handle and run its
+    /// forward pass WITHOUT holding the mutex (the mutex guards only the one-time
+    /// load; the loaded state is immutable and shared read-only thereafter).
+    loaded: Mutex<Option<Arc<Loaded>>>,
 }
 
 /// The loaded state: constructed once on first embed.
@@ -102,7 +105,7 @@ impl CandleEmbedder {
                     &self.model_dir,
                     self.source.as_deref(),
                     false,
-                    &[],
+                    fetch::known_checksums(&self.model_id),
                 )
                 .map_err(|e| {
                     EpistemicError::Embedding(format!(
@@ -155,11 +158,16 @@ impl CandleEmbedder {
     /// Runs the BERT forward pass over `text`, CLS-pools, and L2-normalizes.
     /// Loads the model on first call (lazy), reusing it thereafter.
     fn embed_pooled(&self, text: &str) -> Result<Vec<f32>, EpistemicError> {
-        let mut guard = self.loaded.lock().expect("embedder mutex poisoned");
-        if guard.is_none() {
-            *guard = Some(self.load()?);
-        }
-        let loaded = guard.as_ref().expect("just loaded");
+        // Hold the mutex only for the one-time lazy load, then clone out the shared
+        // handle and DROP the guard — the forward pass below runs lock-free, so
+        // concurrent embeds parallelize instead of serializing on the mutex.
+        let loaded = {
+            let mut guard = self.loaded.lock().expect("embedder mutex poisoned");
+            if guard.is_none() {
+                *guard = Some(Arc::new(self.load()?));
+            }
+            Arc::clone(guard.as_ref().expect("just loaded"))
+        };
 
         let encoding = loaded
             .tokenizer

@@ -31,6 +31,51 @@ pub const DEFAULT_HF_BASE: &str = "https://huggingface.co";
 /// and the model config. (No `pytorch_model.bin` — we require safetensors.)
 pub const REQUIRED_FILES: [&str; 3] = ["config.json", "tokenizer.json", "model.safetensors"];
 
+/// The Tier-3-validated, pinned `bge-large-en-v1.5` revision. This is the SINGLE
+/// SOURCE OF TRUTH for the pinned SHA: `gecko-bin`'s config `default_model_id()`
+/// re-uses this const, and it is kept in lockstep with `MODEL_REVISION` in
+/// `.github/workflows/model-integration.yml` (where it was last validated) —
+/// bumping one without the others is caught by the `model-bump-gate` CI job.
+pub const PINNED_MODEL_REVISION: &str = "d4aa6901d3a41ba39fb536a557fa166f842b0e09";
+
+/// Per-file SHA-256 digests for the pinned `bge-large-en-v1.5` revision, sourced
+/// from HuggingFace at revision [`PINNED_MODEL_REVISION`] (`model.safetensors` via
+/// the git-LFS pointer `oid`; the two small text files by hashing their pinned
+/// content). Content-addressed by the revision, so these hold whether the model is
+/// named with or without the `BAAI/` org prefix. They turn `gecko model fetch`
+/// from best-effort-log into ENFORCED verification for the shipped default model.
+const BGE_LARGE_EN_V15_CHECKSUMS: [(&str, &str); 3] = [
+    (
+        "config.json",
+        "446712fac367857b4b1302762fe1cd7bfa8b3c4b77b4dc5d77c4025407660896",
+    ),
+    (
+        "tokenizer.json",
+        "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+    ),
+    (
+        "model.safetensors",
+        "45e1954914e29bd74080e6c1510165274ff5279421c89f76c418878732f64ae7",
+    ),
+];
+
+/// Returns the pinned per-file SHA-256 digests for `model_id`, or `&[]` when the
+/// revision is not one GECKO pins in-tree (custom / user-supplied models can't be
+/// pinned here, so they fall back to best-effort hash logging). Matching is by the
+/// model *basename* + revision, so both `bge-large-en-v1.5@<sha>` and
+/// `BAAI/bge-large-en-v1.5@<sha>` resolve to the same content digests.
+pub fn known_checksums(model_id: &str) -> &'static [(&'static str, &'static str)] {
+    match parse_model_id(model_id) {
+        Ok((model, revision))
+            if revision == PINNED_MODEL_REVISION
+                && model.rsplit('/').next() == Some("bge-large-en-v1.5") =>
+        {
+            &BGE_LARGE_EN_V15_CHECKSUMS
+        }
+        _ => &[],
+    }
+}
+
 /// Outcome of a fetch: either the cache already had everything, or we downloaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchOutcome {
@@ -140,9 +185,10 @@ pub fn is_cached(dir: &Path) -> bool {
 /// 2. Otherwise download each required file from `source` (mirror) or HuggingFace,
 ///    showing progress, verifying any known checksums, writing atomically.
 ///
-/// `expected` optionally maps filename → expected SHA-256 for enforced
-/// verification; files absent from the map are hashed + logged best-effort (HF
-/// does not expose per-file digests without an extra API round-trip).
+/// `expected` maps filename → expected SHA-256 for ENFORCED verification (a
+/// mismatch aborts the fetch); files absent from the map are hashed + logged
+/// best-effort. Callers pass [`known_checksums`]`(model_id)` so the shipped
+/// default model is verified, and custom models fall back to logging.
 pub fn fetch_model(
     model_id: &str,
     dest_dir: &Path,
@@ -204,17 +250,28 @@ fn download_file(url: &str, dest: &Path) -> Result<()> {
     );
 
     let tmp = dest.with_extension("part");
-    {
+    // Download into the `.part` temp; on ANY failure remove it so a retry never
+    // trips over (or resumes from) a truncated partial file.
+    let download = (|| -> Result<()> {
         let file = std::fs::File::create(&tmp)
             .with_context(|| format!("cannot create {}", tmp.display()))?;
         let mut writer = pb.wrap_write(std::io::BufWriter::new(file));
         let mut reader = resp.into_reader();
         std::io::copy(&mut reader, &mut writer)
             .with_context(|| format!("stream copy failed for {url}"))?;
-    }
+        Ok(())
+    })();
     pb.finish_and_clear();
 
+    if let Err(e) = download {
+        let _ = std::fs::remove_file(&tmp); // best-effort: don't leave an orphaned .part
+        return Err(e);
+    }
+
     std::fs::rename(&tmp, dest)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp); // rename failed → clean up the partial
+        })
         .with_context(|| format!("cannot finalize {} → {}", tmp.display(), dest.display()))?;
     Ok(())
 }
@@ -323,6 +380,26 @@ mod tests {
         // An empty file does not count as cached.
         std::fs::write(tmp.path().join("config.json"), b"").unwrap();
         assert!(!is_cached(tmp.path()));
+    }
+
+    #[test]
+    fn known_checksums_pins_the_default_model_with_or_without_org_prefix() {
+        let pinned = format!("bge-large-en-v1.5@{PINNED_MODEL_REVISION}");
+        assert_eq!(known_checksums(&pinned).len(), 3);
+        // The org-prefixed id resolves to the same content digests.
+        let prefixed = format!("BAAI/bge-large-en-v1.5@{PINNED_MODEL_REVISION}");
+        assert_eq!(known_checksums(&prefixed), known_checksums(&pinned));
+        // Every required file is covered so `fetch_model` verifies (not just logs).
+        for f in REQUIRED_FILES {
+            assert!(
+                known_checksums(&pinned).iter().any(|(name, _)| *name == f),
+                "missing pinned digest for {f}"
+            );
+        }
+        // A different revision (or an unrelated model) is not pinned → best-effort.
+        assert!(known_checksums("bge-large-en-v1.5@deadbeef").is_empty());
+        assert!(known_checksums("some-other-model@abc").is_empty());
+        assert!(known_checksums("not-a-valid-id").is_empty());
     }
 
     #[test]
