@@ -31,6 +31,8 @@ env:
 
 permissions:
   contents: write # required to upload assets to a GitHub Release
+  id-token: write # OIDC token for build-provenance attestation
+  attestations: write # record the provenance attestation
 
 jobs:
   build:
@@ -65,7 +67,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -128,8 +130,22 @@ jobs:
           fi
           mv "$asset" "$GITHUB_WORKSPACE/$asset"
 
+          # Checksum for download verification (shasum is present on both the
+          # macOS and Ubuntu runners). Written next to the asset so a consumer can
+          # `shasum -a 256 -c <asset>.sha256`.
+          ( cd "$GITHUB_WORKSPACE" && shasum -a 256 "$asset" > "$asset.sha256" )
+
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "checksum=$asset.sha256" >> "$GITHUB_OUTPUT"
           echo "Packaged $asset ($(wc -c < "$GITHUB_WORKSPACE/$asset") bytes) containing only the gecko binary."
+          echo "Checksum: $(cat "$GITHUB_WORKSPACE/$asset.sha256")"
+
+      # Cryptographic provenance: attests that this exact artifact was built by
+      # this workflow from this commit (verifiable with `gh attestation verify`).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: ${{ steps.package.outputs.asset }}
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
@@ -142,6 +158,8 @@ jobs:
           # tag-push / release-published paths `inputs.version` is empty, so
           # this falls through to github.ref_name (the pushed tag) unchanged.
           tag_name: ${{ inputs.version || github.ref_name }}
-          files: ${{ steps.package.outputs.asset }}
+          files: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
           fail_on_unmatched_files: true
           draft: false

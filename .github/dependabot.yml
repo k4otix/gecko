@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Rust dependencies. Grouped so a routine bump is one PR, not a swarm.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  # GitHub Actions. Keeps the SHA-pinned actions current (Dependabot updates the
+  # pin and its version comment together).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
