@@ -99,8 +99,17 @@ fn default_embedder() -> String {
 fn default_backend() -> String {
     "hnsw".to_string()
 }
+/// The Tier-3-validated, pinned model revision — the SINGLE SOURCE OF TRUTH
+/// consumed by [`default_model_id`] and the shipped `gecko init` template.
+/// Kept in lockstep with `MODEL_REVISION` in
+/// `.github/workflows/model-integration.yml` (which is where this SHA was
+/// last validated); bumping either one without the other is a bug. A bump
+/// here is caught by the `model-bump-gate` CI job (see `ci.yml`), which
+/// requires a fresh Tier-3 run + the `tier3-validated` label before merge.
+const PINNED_MODEL_REVISION: &str = "d4aa6901d3a41ba39fb536a557fa166f842b0e09";
+
 fn default_model_id() -> String {
-    "bge-large-en-v1.5@<revision>".to_string()
+    format!("bge-large-en-v1.5@{PINNED_MODEL_REVISION}")
 }
 
 impl Default for SemanticIndexConfig {
@@ -342,7 +351,7 @@ embedder = "stub"          # deterministic hash stub; future: "bge-large-en-v1.5
 backend  = "hnsw"          # future drop-in: "typedb-native"
 # The SINGLE SOURCE OF TRUTH for the model. The model directory is DERIVED as
 # cache_dir/models/<model_id>/ (content-addressed) — never hand-configured.
-model_id = "bge-large-en-v1.5@<revision>"
+model_id = "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
 # Never silently pull ~1.3GB; the operator opts in (P2 wires the download).
 auto_fetch = false
 # model_path = "/pre/provisioned/model/dir"   # optional override (air-gapped)
@@ -734,7 +743,10 @@ mod tests {
     #[test]
     fn semantic_index_new_fields_default() {
         let sic = SemanticIndexConfig::default();
-        assert_eq!(sic.model_id, "bge-large-en-v1.5@<revision>");
+        assert_eq!(
+            sic.model_id,
+            "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+        );
         assert!(!sic.auto_fetch, "never silently pull 1.3GB");
         assert!(sic.model_path.is_none());
         assert!(sic.model_source.is_none());
@@ -745,9 +757,39 @@ mod tests {
         let cfg: GeckoConfig = toml::from_str(default_gecko_toml()).unwrap();
         assert!(cfg.extensions.enabled.is_empty());
         assert!(!cfg.semantic_index.enabled);
-        assert_eq!(cfg.semantic_index.model_id, "bge-large-en-v1.5@<revision>");
+        assert_eq!(
+            cfg.semantic_index.model_id,
+            "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+        );
         assert!(!cfg.semantic_index.auto_fetch);
         assert_eq!(cfg.typedb.endpoint, "localhost:1729");
         assert_eq!(cfg.typedb.mode, TypedbMode::Orchestrated);
+    }
+
+    /// Regression guard for the documented first-run golden path: a shipped
+    /// default `model_id` containing the literal `<revision>` placeholder
+    /// makes `gecko model fetch` (and `gecko doctor`'s model check) hard-fail
+    /// against the exact config `gecko init` writes — see FIX 1a of the
+    /// packaging review. Pin both the absence of the placeholder and the
+    /// exact Tier-3-validated SHA so a future edit can't silently
+    /// reintroduce the broken golden path.
+    #[test]
+    fn default_model_id_has_no_unresolved_revision_placeholder() {
+        let id = default_model_id();
+        assert!(
+            !id.contains("<revision>"),
+            "default_model_id() must not ship the unresolved placeholder: {id}"
+        );
+        assert_eq!(
+            id, "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09",
+            "must match the Tier-3-pinned MODEL_REVISION in \
+             .github/workflows/model-integration.yml"
+        );
+        // The `gecko init` template must carry the same pinned SHA, not the
+        // placeholder — it's what a fresh user's gecko.toml actually ships.
+        assert!(
+            default_gecko_toml().contains(&format!("model_id = \"{id}\"")),
+            "gecko init template must embed the same pinned model_id"
+        );
     }
 }

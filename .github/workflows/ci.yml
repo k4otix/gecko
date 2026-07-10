@@ -116,17 +116,12 @@ jobs:
       - name: Run Cargo Audit
         run: cargo audit
 
-      # Advisory only (continue-on-error): the workspace has a pre-existing,
-      # pre-P5 clippy backlog (unrelated collapsible-if / should-implement-trait
-      # lints in a few modules) that would redden every push if this were
-      # blocking. Flip to blocking (drop continue-on-error) once that backlog is
-      # cleaned up — this step exists now so regressions are at least visible.
+      # Gating (P7 cleared the clippy backlog): a regression here now fails the
+      # build, not just shows up in the log.
       - name: Clippy (candle-free)
-        continue-on-error: true
         run: cargo clippy --workspace --exclude js-sandbox --no-default-features -- -D warnings
 
       - name: Clippy (candle-free, cyber)
-        continue-on-error: true
         run: cargo clippy --workspace --exclude js-sandbox --no-default-features --features cyber -- -D warnings
 
       # Structural guard: this job must NEVER compile candle. `--no-default-

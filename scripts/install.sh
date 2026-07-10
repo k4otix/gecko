@@ -5,8 +5,9 @@
 # built by .github/workflows/release.yml (`--release --features
 # real-embedder`). It never downloads the ~1.3GB embedding model or TypeDB —
 # those are runtime assets. After this script finishes, run:
-#   gecko model fetch      # one-time, ~1.3GB
-#   gecko up && gecko sync
+#   gecko up && gecko sync           # records-only, no model needed
+#   gecko model fetch                # opt-in: stage the embedding model to
+#                                     # enable semantic retrieval (~1.3GB)
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/k4otix/gecko/main/scripts/install.sh | sh
@@ -180,8 +181,13 @@ esac
 cat <<'EOF'
 
 Next steps:
-  1. gecko model fetch      # one-time download of the embedding model (~1.3GB)
-  2. gecko up && gecko sync # start the pinned TypeDB and sync a bundle
+  1. gecko up && gecko sync   # start the pinned TypeDB and sync a bundle
+                              # (records-only — no embedding model needed)
+
+Want semantic retrieval too? That's an explicit opt-in:
+  2. gecko model fetch       # one-time download of the embedding model (~1.3GB)
+  3. Set [semantic_index] enabled = true and embedder = "bge-large-en-v1.5"
+     in gecko.toml
 
 See docs/INSTALL.md for the air-gapped / enterprise path (staged model +
 external TypeDB, no runtime downloads).

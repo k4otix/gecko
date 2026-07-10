@@ -40,23 +40,42 @@ Once `gecko` is on your `PATH`:
 # 1. (optional) write a default gecko.toml in the current directory
 gecko init
 
-# 2. One-time download of the embedding model (~1.3GB). Explicit and
-#    opt-in — nothing above silently fetched it.
-gecko model fetch
-
-# 3. Bring up TypeDB. In the default `orchestrated` mode this downloads the
+# 2. Bring up TypeDB. In the default `orchestrated` mode this downloads the
 #    PINNED TypeDB server into the local cache (once) and runs it as a
 #    managed child process — no separate install, no Docker required.
 gecko up
 
-# 4. Sync a knowledge bundle and confirm everything works end to end.
+# 3. Sync a knowledge bundle and confirm everything works end to end.
 gecko sync sample-bundle
 ```
 
-`gecko down` stops the managed TypeDB child when you're done. Both the model
-and the TypeDB server live under the GECKO cache root (`~/.cache/gecko` by
-default; override with `GECKO_CACHE_DIR` or `[cache_dir]` in `gecko.toml`) —
-never inside the binary or the repo.
+This basic path is **records-only**: the default `gecko init` config ships
+with `[semantic_index] enabled = false` (embedder `"stub"`), so nothing above
+touches the ~1.3GB embedding model. `gecko down` stops the managed TypeDB
+child when you're done.
+
+### Opt in to semantic retrieval
+
+Recall over the synced graph falls back to a non-vector path until you
+explicitly enable the embedding-backed index:
+
+```bash
+# One-time download of the embedding model (~1.3GB). Explicit and opt-in —
+# nothing in step 2 above fetches it silently.
+gecko model fetch
+```
+
+Then set, in `gecko.toml`:
+
+```toml
+[semantic_index]
+enabled  = true
+embedder = "bge-large-en-v1.5"
+```
+
+Both the model and the TypeDB server live under the GECKO cache root
+(`~/.cache/gecko` by default; override with `GECKO_CACHE_DIR` or
+`[cache_dir]` in `gecko.toml`) — never inside the binary or the repo.
 
 ## 3. Air-gapped / enterprise install (no runtime downloads)
 

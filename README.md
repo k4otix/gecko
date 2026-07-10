@@ -7,7 +7,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
 [![TypeDB](https://img.shields.io/badge/TypeDB-3.0-blue.svg)](https://typedb.com/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasmtime-654FF0.svg)](https://wasmtime.dev/)
-[![Build Status](https://github.com/k4otix/gecko/actions/workflows/rust.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/rust.yml)
+[![Build Status](https://github.com/k4otix/gecko/actions/workflows/ci.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/ci.yml)
 
 At its core, **GECKO** is a strongly-typed semantic knowledge graph designed to underlie Open Knowledge Framework (OKF) objects. While GECKO acts as a high-performance framework for orchestrating execution and context-aware workflows, its foundational capability is ingesting human-readable documentation bundles and rigorously mapping them into an interconnected, queryable graph of domain knowledge.
 
@@ -70,15 +70,17 @@ separately, on your terms.
 # 1. Install the binary (detects OS/arch, grabs the matching release asset)
 curl -fsSL https://raw.githubusercontent.com/k4otix/gecko/main/scripts/install.sh | sh
 
-# 2. One-time download of the embedding model (~1.3GB) — explicit, never silent
-gecko model fetch
-
-# 3. Bring up the pinned TypeDB (downloaded once, run as a managed child process)
+# 2. Bring up the pinned TypeDB (downloaded once, run as a managed child process)
 gecko up
 
-# 4. Sync a bundle
+# 3. Sync a bundle — records-only by default, no embedding model required
 gecko sync sample-bundle
 ```
+
+That's the whole basic path — it never touches the ~1.3GB embedding model.
+**Semantic retrieval is a separate, explicit opt-in**: run `gecko model
+fetch` to stage the model, then set `[semantic_index] enabled = true` and
+`embedder = "bge-large-en-v1.5"` in `gecko.toml`.
 
 A Homebrew formula template is available at `HomebrewFormula/gecko.rb` for
 maintainers cutting a tap. For the full first-run walkthrough and the

@@ -50,8 +50,14 @@ class Gecko < Formula
     <<~EOS
       gecko is installed, but its runtime assets are NOT bundled:
 
-        gecko model fetch      # one-time download of the embedding model (~1.3GB)
-        gecko up && gecko sync # start the pinned TypeDB and sync a bundle
+        gecko up && gecko sync  # start the pinned TypeDB and sync a bundle
+                                 # (records-only — no embedding model needed)
+
+      Want semantic retrieval too? That's an explicit opt-in:
+
+        gecko model fetch       # one-time download of the embedding model (~1.3GB)
+                                 # then set [semantic_index] enabled = true and
+                                 # embedder = "bge-large-en-v1.5" in gecko.toml
 
       For an air-gapped install, see docs/INSTALL.md in the gecko repo for the
       `external` TypeDB mode + `[semantic_index] model_path` configuration.
