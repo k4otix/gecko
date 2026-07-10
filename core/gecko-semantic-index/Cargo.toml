@@ -36,7 +36,7 @@ hnsw_rs = "0.3"
 
 # Model acquisition (`fetch` module) — compiled ALWAYS (it downloads bytes; it does
 # NOT need candle). Kept light: a blocking HTTP client + a progress bar + hashing.
-ureq = "2"
+ureq = "3"
 indicatif = "0.18"
 sha2 = { workspace = true }
 anyhow = { workspace = true }
