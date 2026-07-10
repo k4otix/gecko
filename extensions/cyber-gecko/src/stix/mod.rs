@@ -42,15 +42,13 @@ fn sco_ioc(type_str: &str, obj: &Value) -> Option<(&'static str, String)> {
         "file" => {
             // One observable carries one (type, value); prefer the strongest hash.
             let hashes = obj.get("hashes")?;
-            if let Some(h) = get_str(hashes, "SHA-256") {
-                ("file-sha256", h)
-            } else if let Some(h) = get_str(hashes, "SHA-1") {
-                ("file-sha1", h)
-            } else if let Some(h) = get_str(hashes, "MD5") {
-                ("file-md5", h)
-            } else {
-                return None;
-            }
+            [
+                ("SHA-256", "file-sha256"),
+                ("SHA-1", "file-sha1"),
+                ("MD5", "file-md5"),
+            ]
+            .into_iter()
+            .find_map(|(algo, ty)| get_str(hashes, algo).map(|h| (ty, h)))?
         }
         _ => return None,
     };
