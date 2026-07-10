@@ -184,7 +184,7 @@ pub async fn dispatch_mem_call(
                 event_time: opt_dt(p, "event_time", ctx.occurred_at),
                 ingest_time: ctx.occurred_at,
             };
-            let id = writer.observe(&ctx, ep).await.map_err(err)?;
+            let id = writer.observe(ctx, ep).await.map_err(err)?;
             Ok(json!({ "id": id.0 }))
         }
         MemHostFn::Derive => {
@@ -204,7 +204,7 @@ pub async fn dispatch_mem_call(
                 .and_then(DerivationMethod::from_str)
                 .unwrap_or(DerivationMethod::LlmSynthesis);
             let id = writer
-                .assert_belief(&ctx, belief, &evidence, method)
+                .assert_belief(ctx, belief, &evidence, method)
                 .await
                 .map_err(err)?;
             Ok(json!({ "id": id.0 }))
@@ -222,14 +222,14 @@ pub async fn dispatch_mem_call(
             };
             let reason = p.get("reason").and_then(Value::as_str).unwrap_or("");
             let id = writer
-                .supersede(&ctx, old, belief, reason)
+                .supersede(ctx, old, belief, reason)
                 .await
                 .map_err(err)?;
             Ok(json!({ "id": id.0 }))
         }
         MemHostFn::Contest => {
             let claims = mem_ids(p, "claims");
-            let anomaly = writer.contest(&ctx, &claims).await.map_err(err)?;
+            let anomaly = writer.contest(ctx, &claims).await.map_err(err)?;
             Ok(json!({ "anomaly": anomaly.0 }))
         }
         // DELIBERATE SCOPE-DEFERRAL (not a bug): `mem.recall` is NOT reachable from a

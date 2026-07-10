@@ -131,18 +131,18 @@ impl HnswIndex {
         let path = path.as_ref().to_path_buf();
         let mut inner = Inner::empty(dim);
 
-        if let Ok(bytes) = std::fs::read(&path) {
-            if let Ok(snap) = serde_json::from_slice::<Snapshot>(&bytes) {
-                if snap.model_id == model_id && snap.dim == dim {
-                    // Warm start: replay in the snapshot's (concept-id-sorted) order.
-                    for e in snap.entries {
-                        inner.insert_entry(e.concept_id, e.meta, e.vector);
-                    }
-                }
-                // else: header mismatch ⇒ stay empty ⇒ rebuild-from-graph.
+        if let Ok(bytes) = std::fs::read(&path)
+            && let Ok(snap) = serde_json::from_slice::<Snapshot>(&bytes)
+            && snap.model_id == model_id
+            && snap.dim == dim
+        {
+            // Warm start: replay in the snapshot's (concept-id-sorted) order.
+            for e in snap.entries {
+                inner.insert_entry(e.concept_id, e.meta, e.vector);
             }
-            // else: corrupt ⇒ stay empty ⇒ rebuild-from-graph.
         }
+        // else: header mismatch ⇒ stay empty ⇒ rebuild-from-graph.
+        // else: corrupt ⇒ stay empty ⇒ rebuild-from-graph.
 
         Ok(Self {
             inner: RwLock::new(inner),
@@ -172,11 +172,11 @@ impl HnswIndex {
         };
         let bytes = serde_json::to_vec(&snap)
             .map_err(|e| EpistemicError::Index(format!("snapshot serialize: {e}")))?;
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| EpistemicError::Index(format!("mkdir index dir: {e}")))?;
-            }
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| EpistemicError::Index(format!("mkdir index dir: {e}")))?;
         }
         let tmp = self.path.with_extension("hnsw.tmp");
         std::fs::write(&tmp, &bytes)

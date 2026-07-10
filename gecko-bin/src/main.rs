@@ -7,10 +7,11 @@
 //! This is the only crate that depends on both gecko-engine AND extensions (design §2).
 
 mod config;
+mod doctor;
 mod orchestrator;
 
 use std::path::PathBuf;
-use std::process;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -139,6 +140,25 @@ enum Commands {
         #[command(subcommand)]
         command: ModelCommands,
     },
+
+    /// Report every precondition (config, cache, TypeDB, model, index, embedder)
+    /// as ✓/⚠/✗ with a remediation for anything not-OK. Exits non-zero iff a hard
+    /// precondition (a `✗`) fails — warnings do not fail it. Runs even with a
+    /// broken/absent gecko.toml (that is reported as the `config` failure).
+    Doctor {
+        /// Emit the results as JSON (for machine consumption).
+        #[arg(long)]
+        json: bool,
+
+        /// Suppress all output; only the exit code is meaningful (used by setup.sh).
+        #[arg(long)]
+        quiet: bool,
+
+        /// Run only a single named check
+        /// (config|cache-dir|typedb|model|index|embedder).
+        #[arg(long)]
+        check: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -160,7 +180,7 @@ enum ModelCommands {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -170,9 +190,19 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    if let Err(e) = run(cli).await {
-        error!("{:#}", e);
-        process::exit(1);
+    // `gecko doctor` owns its own exit code (FAILURE iff a hard precondition fails)
+    // and must run even with a broken/absent gecko.toml — so it short-circuits
+    // BEFORE run()'s strict config load + extension assembly.
+    if let Commands::Doctor { json, quiet, check } = &cli.command {
+        return doctor::run_doctor(&cli, check.as_deref(), *json, *quiet).await;
+    }
+
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!("{:#}", e);
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -241,6 +271,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     let result = match &cli.command {
         Commands::Init | Commands::Up | Commands::Down => unreachable!("handled above"),
+        Commands::Doctor { .. } => unreachable!("handled in main before run()"),
         Commands::SchemaInit { bundle, schema } => {
             let derived = match bundle {
                 Some(path) => Some(

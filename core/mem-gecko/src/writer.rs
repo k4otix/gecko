@@ -189,10 +189,10 @@ impl MemWriter {
                 .and_then(|d| row_to_embeddable(d, Visibility::Private))
             {
                 Some((id, text, meta)) => {
-                    if let Ok(vec) = emb.embed_document(&text) {
-                        if idx.upsert(id, &vec, meta).is_ok() {
-                            self.clear_dirty(&cid);
-                        }
+                    if let Ok(vec) = emb.embed_document(&text)
+                        && idx.upsert(id, &vec, meta).is_ok()
+                    {
+                        self.clear_dirty(&cid);
                     }
                 }
                 None => {
@@ -237,10 +237,10 @@ impl MemWriter {
     /// dirty for background repair and **never** fails the caller (invariant 8: the
     /// graph is the SoR; the index is rebuildable; no new index API).
     fn best_effort_remove(&self, id: ConceptId) {
-        if let (true, Some(idx)) = (self.embedder.is_some(), &self.index) {
-            if idx.remove(id.clone()).is_err() {
-                self.mark_dirty(id);
-            }
+        if let (true, Some(idx)) = (self.embedder.is_some(), &self.index)
+            && idx.remove(id.clone()).is_err()
+        {
+            self.mark_dirty(id);
         }
     }
 
@@ -703,13 +703,13 @@ impl EpistemicWriter for MemWriter {
             Some(e) => e.as_str(),
             None => old_entrenchment.as_deref().unwrap_or("inferred"),
         };
-        if let Some(old_ent) = &old_entrenchment {
-            if tql::entrenchment_rank(new_entrenchment) < tql::entrenchment_rank(old_ent) {
-                return Err(EpistemicError::EntrenchmentViolation(format!(
-                    "a '{new_entrenchment}' belief cannot supersede a more-entrenched \
+        if let Some(old_ent) = &old_entrenchment
+            && tql::entrenchment_rank(new_entrenchment) < tql::entrenchment_rank(old_ent)
+        {
+            return Err(EpistemicError::EntrenchmentViolation(format!(
+                "a '{new_entrenchment}' belief cannot supersede a more-entrenched \
                      '{old_ent}' belief (invariant 7)"
-                )));
-            }
+            )));
         }
         let new_id = mint("mem/bel");
         // AUTHORITATIVE: new belief + supersession lineage + old→superseded commit first.

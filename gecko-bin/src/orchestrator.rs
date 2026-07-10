@@ -434,7 +434,7 @@ pub async fn up(
 /// attach to the readiness error.
 fn cleanup_after_ready_timeout(cache_root: &Path, pid: u32, log: &Path) -> String {
     if stop_process(pid).is_ok() {
-        let _ = fs::remove_file(&pidfile_path(cache_root, PINNED_TYPEDB));
+        let _ = fs::remove_file(pidfile_path(cache_root, PINNED_TYPEDB));
         format!(
             "spawned TypeDB (pid {pid}) never became ready within the timeout; \
              it has been stopped so it is not left orphaned. See the log at {}",

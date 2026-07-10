@@ -137,9 +137,10 @@ impl CandleEmbedder {
 
         // SAFETY: mmap of a read-only weights file we just verified is present.
         let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights.clone()], DTYPE, &device).map_err(
-                |e| EpistemicError::Embedding(format!("cannot mmap {}: {e}", weights.display())),
-            )?
+            VarBuilder::from_mmaped_safetensors(std::slice::from_ref(&weights), DTYPE, &device)
+                .map_err(|e| {
+                    EpistemicError::Embedding(format!("cannot mmap {}: {e}", weights.display()))
+                })?
         };
         let model = BertModel::load(vb, &config)
             .map_err(|e| EpistemicError::Embedding(format!("cannot build BERT model: {e}")))?;

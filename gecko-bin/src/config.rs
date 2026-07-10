@@ -120,27 +120,17 @@ impl Default for SemanticIndexConfig {
 }
 
 /// How GECKO obtains the TypeDB server (plan P1/P3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TypedbMode {
-    /// GECKO downloads/manages the TypeDB server itself (P3 implements this and
-    /// will flip the default here to `Orchestrated`).
+    /// GECKO downloads/manages the TypeDB server itself (P3). This is the
+    /// default (best local UX — `gecko up` manages a pinned TypeDB child).
+    #[default]
     Orchestrated,
     /// TypeDB is brought up via a bundled `docker compose` stack (P3).
     Compose,
-    /// GECKO connects to an externally-managed TypeDB at `endpoint`. This is the
-    /// current behavior and the P1 default.
+    /// GECKO connects to an externally-managed TypeDB at `endpoint`.
     External,
-}
-
-impl Default for TypedbMode {
-    fn default() -> Self {
-        // P3: now that orchestration exists, `Orchestrated` is the default — the
-        // best local UX (`gecko up` manages a pinned TypeDB child process, no
-        // database-install odyssey and no forced Docker). `compose` and
-        // `external` are opt-in alternatives.
-        TypedbMode::Orchestrated
-    }
 }
 
 /// The `[typedb]` table: how to reach (and, from P3, how to run) the TypeDB
@@ -383,7 +373,15 @@ mode = "orchestrated"
 /// functions loaded and their write-paths opened. A `cyber` entry that names a
 /// not-compiled extension is a hard error, so the `#[cfg]` arms below and the
 /// operator's config can never silently disagree.
+// `vec_init_then_push`: mem is pushed (not folded into `vec![..]`) because the
+// later domain-extension pushes are `#[cfg]`-gated — under `--no-default-features`
+// (no `cyber`) nothing else pushes, so a `vec![..]` init would leave `mut` unused.
+#[allow(clippy::vec_init_then_push)]
 pub fn build_extensions(cfg: &GeckoConfig) -> Result<Vec<Box<dyn GeckoExtension>>> {
+    // Initialize-then-push (not `vec![..]`): the later domain-extension pushes are
+    // `#[cfg]`-gated, so under `--no-default-features` (no `cyber`) nothing else
+    // pushes — folding mem into `vec![..]` would then leave `mut` unused. Keeping
+    // the push also keeps mem's registration next to its explanatory log line.
     let mut extensions: Vec<Box<dyn GeckoExtension>> = Vec::new();
 
     // Substrate — always-on, always first (mem types must exist before any
