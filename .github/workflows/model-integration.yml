@@ -2,11 +2,12 @@ name: Model Integration
 
 # Tier 3: the real embedding model, real TypeDB, the actual quality assertions
 # (semantic-relevance ranking, not just shape checks). Deliberately NOT run on
-# every push — nightly + manual only, so the 1.3GB model is fetched at most
-# once and then served from an immutable, revision-keyed cache (plan P5).
+# every push, and NOT on a schedule — manual dispatch only, so the 1.3GB model is
+# fetched only when a human is validating (model bump / release / embedder change)
+# and is then served from an immutable, revision-keyed cache (plan P5). A paths-
+# filtered `pull_request` trigger for the embedder surface is the intended add once
+# the repo is public (external PRs whose local Tier-3 runs can't be trusted).
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch: {}
 
 env:
