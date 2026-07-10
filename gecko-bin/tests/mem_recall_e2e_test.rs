@@ -93,7 +93,28 @@ impl Fixture {
 
     async fn drop_db(&self) {
         let mut router = self.shared.lock().await;
-        router.delete_database(&self.name).await.expect("drop db");
+        // `raw_fetch`'s read transactions close asynchronously when dropped; on a
+        // networked CI TypeDB that close can lag this immediate delete, yielding a
+        // transient "[DBD2] ... database is in use". Retry until the server releases
+        // the transaction. The `Drop` impl (a fresh connection) is the final
+        // fallback and db names are unique, so a leak on persistent failure is
+        // harmless — never fail an otherwise-passing test on cleanup.
+        for attempt in 0..30 {
+            match router.delete_database(&self.name).await {
+                Ok(()) => return,
+                Err(e) if e.to_string().contains("in use") => {
+                    if attempt == 29 {
+                        eprintln!(
+                            "drop_db: '{}' still in use after retries; leaving it to the Drop fallback",
+                            self.name
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => panic!("drop db: {e}"),
+            }
+        }
     }
 }
 
