@@ -1266,3 +1266,98 @@ async fn prediction_lifecycle() {
 
     fx.drop_db().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// One store fans reads out concurrently and serializes writers through the gate:
+// many parallel recalls all succeed, and many parallel writes all commit atomically.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn store_reads_run_concurrently_and_writes_are_gated() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    // Seed a few beliefs so recalls have current-state content to return.
+    let seed = fx.writer(None, None);
+    const N_SEED: usize = 5;
+    for i in 0..N_SEED {
+        seed.assert_belief(
+            &ctx,
+            belief(&format!("seed belief {i}"), "agent-1", 0.7),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .expect("seed commits");
+    }
+
+    // Many concurrent recalls through one shared store must all succeed and see the
+    // committed state — the read path opens independent transactions with no lock.
+    let reader = Arc::new(fx.writer(None, None));
+    let reads: Vec<_> = (0..24)
+        .map(|_| {
+            let r = reader.clone();
+            let c = ctx.clone();
+            tokio::spawn(async move {
+                r.recall(
+                    &c,
+                    RecallQuery::now("seed"),
+                    ContextBudget {
+                        max_chunks: 10,
+                        max_tokens: None,
+                    },
+                )
+                .await
+            })
+        })
+        .collect();
+    for h in reads {
+        let chunks = h.await.expect("read task joins").expect("recall ok");
+        assert_eq!(
+            chunks.len(),
+            N_SEED,
+            "each concurrent recall sees every seed"
+        );
+    }
+
+    // Many concurrent writers through one shared store must all commit. The
+    // single-permit gate serializes them, so none conflict and each persists.
+    let writer = Arc::new(fx.writer(None, None));
+    const N_WRITES: usize = 12;
+    let writes: Vec<_> = (0..N_WRITES)
+        .map(|i| {
+            let w = writer.clone();
+            let c = ctx.clone();
+            tokio::spawn(async move {
+                w.assert_belief(
+                    &c,
+                    belief(&format!("concurrent write {i}"), "agent-2", 0.6),
+                    &[],
+                    DerivationMethod::HumanAssertion,
+                )
+                .await
+            })
+        })
+        .collect();
+    let mut ids = std::collections::HashSet::new();
+    for h in writes {
+        let id = h.await.expect("write task joins").expect("assert commits");
+        ids.insert(id.0);
+    }
+    assert_eq!(
+        ids.len(),
+        N_WRITES,
+        "every concurrent write committed a distinct belief"
+    );
+
+    // All seed + concurrent writes are durably present (no lost updates from overlap).
+    let all = fx
+        .raw_fetch(r#"match $b isa belief, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert_eq!(
+        all.len(),
+        N_SEED + N_WRITES,
+        "all concurrently-written beliefs persisted alongside the seeds"
+    );
+
+    fx.drop_db().await;
+}

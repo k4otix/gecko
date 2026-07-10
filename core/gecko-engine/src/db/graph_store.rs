@@ -14,29 +14,40 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use gecko_extension_api::{EpistemicError, GraphStore, GraphValue, GraphWrite};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
-use crate::db::router::TypeDbRouter;
+use crate::db::router::{GraphHandle, TypeDbRouter};
 
 /// A [`GraphStore`] backed by a shared [`TypeDbRouter`].
 ///
-/// The router is behind an async mutex because its transaction accessors take
-/// `&mut self`; belief-tier writes are sparse (invariant 4) so serialising them
-/// through one connection is not a bottleneck. This also means [`Self::read`]
-/// is serialized behind the same mutex as every write — concurrent recalls queue
-/// up one at a time on this router rather than running in parallel read
-/// transactions. That is intentional here (recall volume is low) but is worth
-/// knowing before reusing this adapter somewhere read-heavy.
+/// Reads open independent transactions and run concurrently; writes are serialized
+/// one-at-a-time through the router's writer gate and each commits atomically, so a
+/// belief-tier write never overlaps another and never blocks a recall. The router
+/// is locked exactly once, lazily, to establish the connection and cache a
+/// [`GraphHandle`]; every query after that bypasses the lock entirely.
 pub struct RouterGraphStore {
     router: Arc<Mutex<TypeDbRouter>>,
+    handle: OnceCell<GraphHandle>,
 }
 
 impl RouterGraphStore {
     /// Wraps a shared router as a graph store.
     pub fn new(router: Arc<Mutex<TypeDbRouter>>) -> Self {
-        Self { router }
+        Self {
+            router,
+            handle: OnceCell::new(),
+        }
+    }
+
+    /// The cached connection handle, connecting and caching it on first use. A
+    /// failed connect is not cached, so a later call retries.
+    async fn handle(&self) -> Result<&GraphHandle, EpistemicError> {
+        self.handle
+            .get_or_try_init(|| async { self.router.lock().await.graph_handle().await })
+            .await
+            .map_err(store_err)
     }
 }
 
@@ -58,8 +69,13 @@ fn store_err<E: std::fmt::Display>(e: E) -> EpistemicError {
 #[async_trait]
 impl GraphStore for RouterGraphStore {
     async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError> {
-        let mut router = self.router.lock().await;
-        let tx = router.begin_write().await.map_err(store_err)?;
+        let wtx = self
+            .handle()
+            .await?
+            .begin_write()
+            .await
+            .map_err(store_err)?;
+        let tx = wtx.transaction();
         for op in ops {
             if op.rows.is_empty() {
                 continue; // no-op, matching the syncer's `run_rows` convention.
@@ -78,7 +94,7 @@ impl GraphStore for RouterGraphStore {
                 .await
                 .map_err(store_err)?;
         }
-        tx.commit().await.map_err(store_err)?;
+        wtx.commit().await.map_err(store_err)?;
         Ok(())
     }
 
@@ -88,8 +104,7 @@ impl GraphStore for RouterGraphStore {
         vars: &[String],
         row: &[GraphValue],
     ) -> Result<Vec<serde_json::Value>, EpistemicError> {
-        let mut router = self.router.lock().await;
-        let tx = router.begin_read().await.map_err(store_err)?;
+        let tx = self.handle().await?.begin_read().await.map_err(store_err)?;
         let answer = if vars.is_empty() {
             tx.query(query).await.map_err(store_err)?
         } else {

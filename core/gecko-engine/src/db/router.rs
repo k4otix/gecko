@@ -4,8 +4,10 @@
 //! targeting via `TlsMode`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 use typedb_driver::{
     Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
@@ -75,11 +77,14 @@ fn to_db_err<E: std::fmt::Display>(ctor: fn(String) -> DbError) -> impl Fn(E) ->
 
 /// TypeDB connection and transaction router.
 ///
-/// Manages TypeDB driver lifecycle,
-/// database creation, schema application, and transaction scoping.
+/// Owns the driver lifecycle (connect, database creation, schema application) and
+/// vends short-lived transactions to callers that hold it exclusively. For the
+/// shared read/write hot path, [`Self::graph_handle`] hands out a cheap, cloneable
+/// [`GraphHandle`] that opens transactions without going through this router again.
 pub struct TypeDbRouter {
     config: DbConfig,
-    driver: Option<TypeDBDriver>,
+    driver: Option<Arc<TypeDBDriver>>,
+    write_gate: Arc<Semaphore>,
 }
 
 impl TypeDbRouter {
@@ -87,6 +92,7 @@ impl TypeDbRouter {
         Self {
             config,
             driver: None,
+            write_gate: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -120,7 +126,7 @@ impl TypeDbRouter {
             .map_err(to_db_err(DbError::Connection))?;
 
         info!(address = %self.config.address, "Connected to TypeDB");
-        self.driver = Some(driver);
+        self.driver = Some(Arc::new(driver));
         Ok(())
     }
 
@@ -132,12 +138,27 @@ impl TypeDbRouter {
         }
     }
 
-    /// Returns a reference to the active driver, connecting if necessary.
-    async fn driver(&mut self) -> Result<&TypeDBDriver, DbError> {
+    /// Returns a shared handle to the active driver, connecting if necessary. The
+    /// clone is cheap — `TypeDBDriver` is an `Arc`-backed handle that multiplexes
+    /// concurrent transactions.
+    async fn driver(&mut self) -> Result<Arc<TypeDBDriver>, DbError> {
         self.connect().await?;
         self.driver
-            .as_ref()
+            .clone()
             .ok_or_else(|| DbError::Connection("Driver not available after connect".into()))
+    }
+
+    /// Connects if necessary and returns a cheap, cloneable [`GraphHandle`] for the
+    /// shared read/write path. The handle opens read transactions concurrently
+    /// (lock-free) and serializes writers through this router's single-permit gate,
+    /// so belief-tier commits stay one-at-a-time and atomic.
+    pub async fn graph_handle(&mut self) -> Result<GraphHandle, DbError> {
+        let driver = self.driver().await?;
+        Ok(GraphHandle {
+            driver,
+            database: self.config.database.clone(),
+            write_gate: self.write_gate.clone(),
+        })
     }
 
     /// Creates the target database if it does not already exist.
@@ -277,5 +298,74 @@ impl TypeDbRouter {
 impl Drop for TypeDbRouter {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+/// A cheap, cloneable handle to an established TypeDB connection.
+///
+/// Opens read transactions lock-free — the driver multiplexes concurrent
+/// transactions and TypeDB gives each reader a consistent snapshot — while write
+/// transactions pass through a shared single-permit gate so belief-tier commits
+/// are serialized (one writer at a time, each batch atomic). Clones share the same
+/// driver and gate; construct one via [`TypeDbRouter::graph_handle`].
+#[derive(Clone)]
+pub struct GraphHandle {
+    driver: Arc<TypeDBDriver>,
+    database: String,
+    write_gate: Arc<Semaphore>,
+}
+
+impl GraphHandle {
+    /// Opens a read transaction. Independent of any other reader or writer.
+    pub async fn begin_read(&self) -> Result<Transaction, DbError> {
+        self.driver
+            .transaction(&self.database, TransactionType::Read)
+            .await
+            .map_err(to_db_err(DbError::Transaction))
+    }
+
+    /// Acquires the single-writer gate, then opens a write transaction. Acquiring
+    /// before opening keeps a queued writer from holding an idle server-side
+    /// transaction. The returned [`WriteTransaction`] holds the permit until it is
+    /// committed or dropped, so writers never overlap.
+    pub async fn begin_write(&self) -> Result<WriteTransaction, DbError> {
+        let permit = self
+            .write_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| DbError::Transaction("write gate closed".to_string()))?;
+        let tx = self
+            .driver
+            .transaction(&self.database, TransactionType::Write)
+            .await
+            .map_err(to_db_err(DbError::Transaction))?;
+        Ok(WriteTransaction {
+            tx,
+            _permit: permit,
+        })
+    }
+}
+
+/// A write transaction bound to the single-writer gate.
+///
+/// Run statements against [`transaction`](Self::transaction), then
+/// [`commit`](Self::commit). The gate permit is released only when this value is
+/// dropped — after the commit completes — so no other writer can start mid-batch.
+pub struct WriteTransaction {
+    tx: Transaction,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl WriteTransaction {
+    /// The underlying transaction, for issuing queries.
+    pub fn transaction(&self) -> &Transaction {
+        &self.tx
+    }
+
+    /// Commits the batch, holding the writer gate until the commit resolves.
+    pub async fn commit(self) -> Result<(), DbError> {
+        let WriteTransaction { tx, _permit } = self;
+        tx.commit().await.map_err(to_db_err(DbError::Transaction))
     }
 }
