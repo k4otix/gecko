@@ -9,9 +9,8 @@ pub mod stix;
 
 use gecko_extension_api::{GeckoExtension, HostImportDef};
 
-/// The cyber-gecko TypeQL schema extending the core `okf-concept` and `okf-link` types.
-///
-/// Design §4.2.
+/// The cyber-gecko TypeQL schema: cyber entities and relations subtyping the
+/// core `concept`, plus the TypeDB functions that back the detect host imports.
 const CYBER_SCHEMA: &str = include_str!("../schema/cyber_schema.tql");
 const CYBER_FUNCTIONS: &str = include_str!("../schema/cyber_functions.tql");
 

@@ -1,8 +1,12 @@
+# TypeDB functions backing the detect host imports. This file is concatenated
+# after cyber_schema.tql under the same `define`, so it may reference every type
+# declared there (and the core mem `belief`/`belief-state`).
+
 # techniques with NO asserted detection claim — the coverage gap list
 fun undetected-techniques() -> { attack-pattern }:
     match
         $t isa attack-pattern;
-        not { ($t) isa technique-detection, links (detection-claim: $b);
+        not { (detected-technique: $t, detection-claim: $b) isa technique-detection;
               $b has belief-state "asserted"; };
     return { $t };
 

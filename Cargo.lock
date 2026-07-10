@@ -1106,6 +1106,7 @@ dependencies = [
 name = "cyber-gecko"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "gecko-engine",
  "gecko-extension-api",
  "serde_json",

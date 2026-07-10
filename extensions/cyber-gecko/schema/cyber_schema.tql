@@ -11,13 +11,16 @@ define
   attribute revoked value boolean;
 
   # ── the cyber record root ──
+  # Concrete (not @abstract): it subtypes the concrete core `concept`, and an
+  # unrecognized STIX type is ingested as a bare cyber-object. attack-id is
+  # globally unique across ATT&CK (techniques T####, groups G####, software
+  # S####, data sources DS####), so it keys the whole hierarchy.
   entity cyber-object sub concept,
       owns stix-id @card(0..1) @unique,
-      owns revoked @card(0..1),
-      plays targets:target;
+      owns attack-id @card(0..1) @unique,
+      owns revoked @card(0..1);
 
   entity attack-pattern sub cyber-object,
-      owns attack-id @card(0..1) @unique,
       owns platform @card(0..),
       owns kill-chain-phase @card(0..),
       plays technique-detection:detected-technique,
@@ -28,16 +31,20 @@ define
 
   entity intrusion-set sub cyber-object,
       plays attributed-to:attributee,
+      plays attributed-to:actor,
+      plays indicates:indicated,
       plays uses:user,
       plays targets:threat-source;
 
   entity threat-actor sub cyber-object,
       plays attributed-to:actor,
+      plays indicates:indicated,
       plays uses:user,
       plays targets:threat-source;
 
   entity campaign sub cyber-object,
       plays attributed-to:attributee,
+      plays indicates:indicated,
       plays uses:user,
       plays targets:threat-source;
 
@@ -45,17 +52,21 @@ define
       owns platform @card(0..),
       plays uses:used,
       plays uses:user,
+      plays mitigates:mitigated,
       plays indicates:indicated;
 
   entity tool sub cyber-object,
       owns platform @card(0..),
       plays uses:used,
+      plays mitigates:mitigated,
       plays indicates:indicated;
 
   entity indicator sub cyber-object,
       owns stix-pattern @card(0..1),
       owns valid-until @card(0..1),
-      plays indicates:indicator-source;
+      plays indicates:indicator-source,
+      plays mitigates:mitigated,
+      plays observed-as:pattern-indicator;
 
   entity observable sub cyber-object,
       owns ioc-value @card(1),
@@ -80,7 +91,6 @@ define
       relates target;
 
   entity course-of-action sub cyber-object,
-      owns attack-id @card(0..1) @unique,
       plays mitigates:mitigation;
 
   relation mitigates,
@@ -92,7 +102,6 @@ define
       relates observable-value;
 
   entity data-source sub cyber-object,
-      owns attack-id @card(0..1) @unique,
       plays evidence-of:evidence-source,
       plays sensor-coverage:covered-source;
 
@@ -117,7 +126,8 @@ define
   entity host-asset sub cyber-object,
       owns hostname @card(0..1),
       owns environment @card(0..1),
-      owns exposure @card(0..1);
+      owns exposure @card(0..1),
+      plays targets:target;
 
   entity sensor sub cyber-object,
       owns sensor-kind @card(0..1),

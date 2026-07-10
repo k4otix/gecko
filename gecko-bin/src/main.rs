@@ -25,7 +25,7 @@ use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::HostImports;
 use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
-use gecko_engine::syncer::bundle::sync_bundle;
+use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
 
 use gecko_extension_api::{
     ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
@@ -343,22 +343,10 @@ async fn run(cli: Cli) -> Result<()> {
                 config.database
             );
 
-            let mut db = TypeDbRouter::new(config);
-            apply_all_schemas(&mut db, &extensions, None)
-                .await
-                .context("Failed to ensure database schema")?;
+            let (mut db, result) = sync_manifest(config, &extensions, &manifest).await?;
+            print_sync_result(&result);
 
-            let result = sync_bundle(&mut db, &manifest)
-                .await
-                .context("Failed to sync bundle")?;
-
-            println!("✓ Sync complete!");
-            println!("  Concepts inserted: {}", result.concepts_inserted);
-            println!("  Concepts updated:  {}", result.concepts_updated);
-            println!("  Concepts skipped:  {}", result.concepts_skipped);
-            println!("  Concepts deleted:  {}", result.concepts_deleted);
-
-            println!("Running cyber_post_sync for typed relations...");
+            println!("Linking {} typed relations...", typed_rels.len());
             let tx = db
                 .begin_write()
                 .await
@@ -662,6 +650,33 @@ async fn cmd_schema_init(
 
 /// Sync a parsed OKF bundle. The bundle's database is ensured (schema applied,
 /// idempotently) so the single-bundle-per-database flow works from one command.
+/// Ensures the database schema and syncs a parsed bundle, returning the open
+/// router (for any extension post-sync step) alongside the sync counts.
+async fn sync_manifest(
+    config: DbConfig,
+    extensions: &[Box<dyn GeckoExtension>],
+    manifest: &OkfBundle,
+) -> Result<(TypeDbRouter, SyncResult)> {
+    let mut db = TypeDbRouter::new(config);
+    apply_all_schemas(&mut db, extensions, None)
+        .await
+        .context("Failed to ensure database schema")?;
+    let result = sync_bundle(&mut db, manifest)
+        .await
+        .context("Failed to sync bundle")?;
+    Ok((db, result))
+}
+
+fn print_sync_result(result: &SyncResult) {
+    println!("✓ Sync complete!");
+    println!("  Concepts inserted: {}", result.concepts_inserted);
+    println!("  Concepts updated:  {}", result.concepts_updated);
+    println!("  Concepts skipped:  {}", result.concepts_skipped);
+    println!("  Concepts deleted:  {}", result.concepts_deleted);
+    println!("  Links attempted:    {}", result.links_attempted);
+    println!("  Citations attempted: {}", result.citations_attempted);
+}
+
 async fn cmd_sync(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
@@ -674,22 +689,8 @@ async fn cmd_sync(
         config.database
     );
 
-    let mut db = TypeDbRouter::new(config);
-    apply_all_schemas(&mut db, extensions, None)
-        .await
-        .context("Failed to ensure database schema")?;
-
-    let result = sync_bundle(&mut db, &manifest)
-        .await
-        .context("Failed to sync bundle")?;
-
-    println!("✓ Sync complete!");
-    println!("  Concepts inserted: {}", result.concepts_inserted);
-    println!("  Concepts updated:  {}", result.concepts_updated);
-    println!("  Concepts skipped:  {}", result.concepts_skipped);
-    println!("  Concepts deleted:  {}", result.concepts_deleted);
-    println!("  Links attempted:    {}", result.links_attempted);
-    println!("  Citations attempted: {}", result.citations_attempted);
+    let (_db, result) = sync_manifest(config, extensions, &manifest).await?;
+    print_sync_result(&result);
 
     Ok(())
 }

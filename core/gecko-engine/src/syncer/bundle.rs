@@ -34,7 +34,7 @@ use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
 use crate::db::router::{DbError, TypeDbRouter};
-use crate::okf::types::{OkfBundle, OkfConcept};
+use crate::okf::types::{OkfBundle, OkfConcept, TypedAttrValue};
 
 /// Results of a bundle sync operation.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -54,6 +54,28 @@ pub struct SyncResult {
 /// parameterized `given` queries and never interpolates values into query text.
 pub fn escape_tql(val: &str) -> String {
     val.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Validates a TypeDB type or attribute label before it is interpolated into
+/// query text. Values always flow through parameterized `given` stages, but a
+/// schema *label* (an entity subtype from a concept's `type_hint`, or a typed
+/// attribute name) is part of the query grammar and cannot be parameterized, so
+/// an extension-supplied label must be constrained to the TypeQL identifier
+/// charset first — otherwise a crafted label would be an injection vector.
+fn validate_schema_label(label: &str) -> Result<(), DbError> {
+    let valid = !label.is_empty()
+        && !label.starts_with(|c: char| c.is_ascii_digit())
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err(DbError::Schema(format!(
+            "invalid schema label {label:?}: must be a non-empty TypeQL identifier \
+             (ASCII alphanumeric, '-' or '_', no leading digit)"
+        )))
+    }
 }
 
 /// Per-concept disposition relative to what is already in the graph, computed by
@@ -197,6 +219,10 @@ fn str_entry(s: &str) -> GivenRowEntry {
 
 fn dt_entry(dt: &DateTime<Utc>) -> GivenRowEntry {
     GivenRowEntry::Value(Value::Datetime(dt.naive_utc()))
+}
+
+fn bool_entry(b: bool) -> GivenRowEntry {
+    GivenRowEntry::Value(Value::Boolean(b))
 }
 
 /// Runs a parameterized `given` write, feeding `rows` as typed input values.
@@ -390,6 +416,7 @@ async fn insert_concept_entities(
     }
 
     for (type_name, type_concepts) in grouped {
+        validate_schema_label(type_name)?;
         let rows: Vec<Vec<GivenRowEntry>> = type_concepts
             .iter()
             .map(|c| vec![str_entry(&c.concept_id)])
@@ -460,6 +487,58 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     // Timestamp (datetime-typed).
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
 
+    // Extension-declared typed attributes (e.g. cyber-gecko's stix-id, ioc-value).
+    attach_typed_attributes(tx, concepts).await?;
+
+    Ok(())
+}
+
+/// Attaches extension-declared [`TypedAttribute`](crate::okf::types::TypedAttribute)s
+/// as real typed `owns`, batched by (entity subtype, attribute name) so each
+/// group is a single query. The `match` binds `$c` to the concept's actual
+/// subtype (its `type_hint`) rather than the generic `concept`, because a typed
+/// attribute is owned by that subtype and TypeDB would reject `has <attr>` on the
+/// too-general `concept` type. Both interpolated labels are extension-supplied,
+/// so each is validated as a TypeQL identifier; values flow through the
+/// parameterized `given` stage.
+async fn attach_typed_attributes(
+    tx: &Transaction,
+    concepts: &[&OkfConcept],
+) -> Result<(), DbError> {
+    // Keyed on (entity subtype, attribute name); value carries the TypeQL value
+    // type and the accumulated rows.
+    type AttrGroup = (&'static str, Vec<Vec<GivenRowEntry>>);
+    let mut groups: HashMap<(&str, &str), AttrGroup> = HashMap::new();
+
+    for c in concepts {
+        if c.typed_attributes.is_empty() {
+            continue;
+        }
+        let type_name = c.type_hint.as_deref().unwrap_or("concept");
+        for attr in &c.typed_attributes {
+            let (val_type, val) = match &attr.value {
+                TypedAttrValue::String(s) => ("string", str_entry(s)),
+                TypedAttrValue::Bool(b) => ("boolean", bool_entry(*b)),
+                TypedAttrValue::Datetime(dt) => ("datetime", dt_entry(dt)),
+            };
+            groups
+                .entry((type_name, attr.name.as_str()))
+                .or_insert((val_type, Vec::new()))
+                .1
+                .push(vec![str_entry(&c.concept_id), val]);
+        }
+    }
+
+    for ((type_name, attr), (val_type, rows)) in groups {
+        validate_schema_label(type_name)?;
+        validate_schema_label(attr)?;
+        let query = format!(
+            "given $id: string, $val: {val_type}; \
+             match $c isa {type_name}, has concept-id $cid; $cid == $id; \
+             insert $c has {attr} == $val;"
+        );
+        run_rows(tx, &query, &["id", "val"], rows).await?;
+    }
     Ok(())
 }
 
@@ -628,7 +707,7 @@ mod tests {
     fn concept(id: &str, hash: &str) -> OkfConcept {
         OkfConcept {
             concept_id: id.to_string(),
-            concept_type: "Doc".to_string(),
+            concept_type: "Note".to_string(),
             type_hint: None,
             title: None,
             description: None,
@@ -638,6 +717,7 @@ mod tests {
             body: String::new(),
             program: None,
             extra_metadata: HashMap::new(),
+            typed_attributes: vec![],
             file_hash: hash.to_string(),
             source_path: format!("{id}.md"),
             consumes: vec![],

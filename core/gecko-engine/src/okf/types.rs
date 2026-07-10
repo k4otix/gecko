@@ -72,6 +72,12 @@ pub struct OkfConcept {
     /// Arbitrary extension frontmatter keys not consumed by the parser.
     pub extra_metadata: HashMap<String, String>,
 
+    /// Schema-typed attributes an extension attaches beyond the core OKF fields.
+    /// Each is persisted as a real typed `owns` on the concept's entity (see
+    /// [`TypedAttribute`]), not folded into the `metadata-json` blob.
+    #[serde(default)]
+    pub typed_attributes: Vec<TypedAttribute>,
+
     /// SHA-256 hash of the raw concept file content.
     pub file_hash: String,
 
@@ -93,6 +99,26 @@ pub struct OkfConcept {
 
     /// Maximum execution time in milliseconds (from frontmatter `timeout-ms`).
     pub timeout_ms: Option<u64>,
+}
+
+/// A single schema-typed attribute an extension attaches to a concept. The
+/// `name` is a fixed schema label defined by the extension's own schema fragment
+/// (validated as a TypeQL identifier before use); the value is written through
+/// the parameterized `given` stage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypedAttribute {
+    pub name: String,
+    pub value: TypedAttrValue,
+}
+
+/// The value of a [`TypedAttribute`], covering the TypeDB value types extensions
+/// currently attach.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypedAttrValue {
+    String(String),
+    Bool(bool),
+    Datetime(DateTime<Utc>),
 }
 
 /// A relative markdown link between two concepts within the bundle.
