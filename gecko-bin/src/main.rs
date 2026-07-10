@@ -7,9 +7,11 @@
 //! This is the only crate that depends on both gecko-engine AND extensions (design §2).
 
 mod config;
+mod doctor;
+mod orchestrator;
 
 use std::path::PathBuf;
-use std::process;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -17,15 +19,23 @@ use futures_util::StreamExt;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::HostImports;
+use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
 use gecko_engine::syncer::bundle::sync_bundle;
 
-use gecko_extension_api::GeckoExtension;
+use gecko_extension_api::{
+    ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
+    RunContext, SandboxCtx, SemanticIndex,
+};
+#[cfg(feature = "real-embedder")]
+use gecko_semantic_index::CandleEmbedder;
+use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
-use crate::config::{GeckoConfig, build_extensions};
+use crate::config::{GeckoConfig, TypedbMode, build_extensions};
 
 #[derive(Parser)]
 #[command(
@@ -34,9 +44,10 @@ use crate::config::{GeckoConfig, build_extensions};
     version
 )]
 struct Cli {
-    /// TypeDB server address
-    #[arg(long, default_value = "localhost:1729", global = true)]
-    address: String,
+    /// TypeDB server address. When unset, `[typedb] endpoint` in gecko.toml is
+    /// used (default `localhost:1729`); passing `--address` overrides the config.
+    #[arg(long, global = true)]
+    address: Option<String>,
 
     /// TypeDB database name. Defaults to the bundle's declared name (from
     /// bundle.json) for `init`/`sync`, otherwise "gecko". One database per bundle.
@@ -69,8 +80,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Write a default gecko.toml if absent (idempotent; never clobbers an
+    /// existing config).
+    Init,
+
+    /// Bring up TypeDB for the configured run mode. In `orchestrated` mode this
+    /// ensures the pinned TypeDB is present, spawns it as a managed child, and
+    /// waits for readiness (idempotent — a no-op if already running). In
+    /// `compose`/`external` mode it prints the path to take (gecko manages
+    /// nothing).
+    Up,
+
+    /// Tear down the managed TypeDB child started by `gecko up` (orchestrated
+    /// mode only). A no-op if nothing is running; other modes print guidance.
+    Down,
+
     /// Initialize the TypeDB schema (core + extensions)
-    Init {
+    SchemaInit {
         /// Optional bundle directory; its bundle.json name selects the database
         bundle: Option<PathBuf>,
 
@@ -108,22 +134,83 @@ enum Commands {
 
     /// List all databases on the server
     Databases,
+
+    /// Manage the embedding model runtime asset (fetch/stage).
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
+
+    /// Report every precondition (config, cache, TypeDB, model, index, embedder)
+    /// as ✓/⚠/✗ with a remediation for anything not-OK. Exits non-zero iff a hard
+    /// precondition (a `✗`) fails — warnings do not fail it. Runs even with a
+    /// broken/absent gecko.toml (that is reported as the `config` failure).
+    Doctor {
+        /// Emit the results as JSON (for machine consumption).
+        #[arg(long)]
+        json: bool,
+
+        /// Suppress all output; only the exit code is meaningful (used by setup.sh).
+        #[arg(long)]
+        quiet: bool,
+
+        /// Run only a single named check
+        /// (config|cache-dir|typedb|model|index|embedder).
+        #[arg(long)]
+        check: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelCommands {
+    /// Download (stage) the embedding model into the runtime cache. Compiled in
+    /// every build (it needs no candle). Idempotent: a second run is a cache-hit
+    /// no-op. Never a silent pull elsewhere — this is the explicit opt-in.
+    Fetch {
+        /// Model id `"<model>@<revision>"` to fetch (overrides `[semantic_index]
+        /// model_id`).
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Destination directory (overrides the derived
+        /// `cache_dir/models/<model_id>/` and `[semantic_index] model_path`).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
-async fn main() {
-    // Initialize tracing
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    // Initialize tracing. Parse the CLI first so `gecko doctor --quiet` can pin the
+    // default log floor to `error`: the TypeDB driver/router emit INFO on the
+    // doctor typedb check, and `--quiet` promises only the exit code is meaningful
+    // (setup.sh depends on it) — so their INFO must not leak to stderr. An explicit
+    // RUST_LOG still wins for anyone who wants the chatter back.
+    let default_filter = match &cli.command {
+        Commands::Doctor { quiet: true, .. } => "error",
+        _ => "info",
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
         .init();
 
-    let cli = Cli::parse();
+    // `gecko doctor` owns its own exit code (FAILURE iff a hard precondition fails)
+    // and must run even with a broken/absent gecko.toml — so it short-circuits
+    // BEFORE run()'s strict config load + extension assembly.
+    if let Commands::Doctor { json, quiet, check } = &cli.command {
+        return doctor::run_doctor(&cli, check.as_deref(), *json, *quiet).await;
+    }
 
-    if let Err(e) = run(cli).await {
-        error!("{:#}", e);
-        process::exit(1);
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!("{:#}", e);
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -137,7 +224,9 @@ fn resolve_db(explicit: &Option<String>, derived: Option<&str>) -> String {
 }
 
 /// Builds a `DbConfig` for the resolved database using the shared connection args.
-fn make_config(cli: &Cli, database: String) -> DbConfig {
+/// The address is resolved by `resolve_address` (CLI `--address` overrides the
+/// `[typedb] endpoint` config).
+fn make_config(cli: &Cli, address: &str, database: String) -> DbConfig {
     let tls = if cli.tls {
         TlsMode::Enabled {
             ca_cert: cli.ca_cert.clone(),
@@ -146,7 +235,7 @@ fn make_config(cli: &Cli, database: String) -> DbConfig {
         TlsMode::Disabled
     };
     DbConfig {
-        address: cli.address.clone(),
+        address: address.to_string(),
         database,
         username: cli.username.clone(),
         password: cli.password.clone(),
@@ -154,16 +243,44 @@ fn make_config(cli: &Cli, database: String) -> DbConfig {
     }
 }
 
+/// Resolves the effective TypeDB address: the CLI `--address` flag wins;
+/// otherwise the `[typedb] endpoint` from config (default `localhost:1729`).
+fn resolve_address(cli: &Cli, cfg: &GeckoConfig) -> String {
+    cli.address
+        .clone()
+        .unwrap_or_else(|| cfg.typedb.endpoint.clone())
+}
+
 async fn run(cli: Cli) -> Result<()> {
+    // `gecko init` writes config and must run WITHOUT assembling extensions or
+    // touching TypeDB — it exists to bring a gecko.toml into being.
+    // Handle this BEFORE loading config so we don't warn about a missing gecko.toml
+    // that this command is about to create.
+    if let Commands::Init = &cli.command {
+        return cmd_init_config(&cli.config);
+    }
+
     // Assemble extensions (design §2: The Assembler Pattern). The runtime config
     // selects which registered extensions are activated; mem is forced-on and
     // registered first so schemas apply in subtyping order. Registration is the
     // gate — only these extensions get functions loaded and write-paths opened.
     let cfg = GeckoConfig::load(&cli.config)?;
-    let extensions = build_extensions(&cfg)?;
 
+    let extensions = build_extensions(&cfg)?;
+    let address = resolve_address(&cli, &cfg);
+
+    // `gecko up`/`down` manage (or point at) the server itself — they route on the
+    // run mode and never assemble a DB connection like the query commands below.
     match &cli.command {
-        Commands::Init { bundle, schema } => {
+        Commands::Up => return cmd_up(&cli, &cfg, &address).await,
+        Commands::Down => return cmd_down(&cfg, &address).await,
+        _ => {}
+    }
+
+    let result = match &cli.command {
+        Commands::Init | Commands::Up | Commands::Down => unreachable!("handled above"),
+        Commands::Doctor { .. } => unreachable!("handled in main before run()"),
+        Commands::SchemaInit { bundle, schema } => {
             let derived = match bundle {
                 Some(path) => Some(
                     gecko_engine::okf::parser::bundle_name(path)
@@ -171,36 +288,221 @@ async fn run(cli: Cli) -> Result<()> {
                 ),
                 None => None,
             };
-            let config = make_config(&cli, resolve_db(&cli.database, derived.as_deref()));
-            cmd_init(config, &extensions, schema.clone()).await
+            let config = make_config(
+                &cli,
+                &address,
+                resolve_db(&cli.database, derived.as_deref()),
+            );
+            cmd_schema_init(config, &extensions, schema.clone()).await
         }
         Commands::Sync { bundle_path } => {
             println!("Parsing bundle at {}...", bundle_path.display());
             let manifest = parse_bundle(bundle_path).context("Failed to parse OKF bundle")?;
-            let config = make_config(&cli, resolve_db(&cli.database, Some(&manifest.bundle_name)));
+            let config = make_config(
+                &cli,
+                &address,
+                resolve_db(&cli.database, Some(&manifest.bundle_name)),
+            );
             cmd_sync(config, &extensions, manifest).await
         }
         Commands::Query { query_str } => {
             cmd_query(
-                make_config(&cli, resolve_db(&cli.database, None)),
+                make_config(&cli, &address, resolve_db(&cli.database, None)),
                 query_str,
             )
             .await
         }
-        Commands::Status => cmd_status(make_config(&cli, resolve_db(&cli.database, None))).await,
+        Commands::Status => {
+            cmd_status(make_config(&cli, &address, resolve_db(&cli.database, None))).await
+        }
         Commands::Run { concept_id } => {
             cmd_run(
-                make_config(&cli, resolve_db(&cli.database, None)),
+                make_config(&cli, &address, resolve_db(&cli.database, None)),
                 &cfg,
                 concept_id,
             )
             .await
         }
-        Commands::Drop { database } => cmd_drop(make_config(&cli, database.clone())).await,
+        Commands::Drop { database } => {
+            cmd_drop(make_config(&cli, &address, database.clone())).await
+        }
         Commands::Databases => {
-            cmd_databases(make_config(&cli, resolve_db(&cli.database, None))).await
+            cmd_databases(make_config(&cli, &address, resolve_db(&cli.database, None))).await
+        }
+        Commands::Model { command } => match command {
+            ModelCommands::Fetch { model, path } => {
+                cmd_model_fetch(&cfg, model.clone(), path.clone())
+            }
+        },
+    };
+
+    // In orchestrated mode, a connection failure almost always means the managed
+    // server was never started — `gecko *` does NOT auto-spawn TypeDB (that is
+    // `gecko up`'s job). Turn the raw driver error into an actionable hint.
+    result.map_err(|e| {
+        if cfg.typedb.mode == TypedbMode::Orchestrated && looks_like_connection_failure(&e) {
+            e.context(format!(
+                "could not reach the orchestrated TypeDB at '{address}' — run `gecko up` first \
+                 to start it (or set `[typedb] mode` to external/compose)"
+            ))
+        } else {
+            e
+        }
+    })
+}
+
+/// Heuristic: does this error chain look like a failure to reach the server (as
+/// opposed to a query/schema error)? Used only to append the `gecko up` hint.
+fn looks_like_connection_failure(e: &anyhow::Error) -> bool {
+    let msg = format!("{e:#}").to_lowercase();
+    msg.contains("connection")
+        || msg.contains("connect")
+        || msg.contains("unable to connect")
+        || msg.contains("transport")
+        || msg.contains("refused")
+}
+
+/// `gecko up` — bring up TypeDB for the configured run mode.
+async fn cmd_up(cli: &Cli, cfg: &GeckoConfig, address: &str) -> Result<()> {
+    match cfg.typedb.mode {
+        TypedbMode::Orchestrated => {
+            let cache_root = config::cache_dir(cfg)?;
+            println!(
+                "Bringing up orchestrated TypeDB {} (endpoint {address})...",
+                orchestrator::PINNED_TYPEDB
+            );
+            match orchestrator::up(&cache_root, address, &cli.username, &cli.password).await? {
+                orchestrator::UpOutcome::AlreadyRunning => {
+                    println!("✓ TypeDB already running at {address} — nothing to do.");
+                }
+                orchestrator::UpOutcome::Started { pid } => {
+                    println!("✓ Started managed TypeDB (pid {pid}) at {address}, ready.");
+                }
+            }
+        }
+        TypedbMode::Compose => {
+            println!(
+                "[typedb] mode = compose: gecko does not manage the Docker stack.\n\
+                 Run:  docker compose up -d\n\
+                 (TypeDB will be available at {address}.)"
+            );
+        }
+        TypedbMode::External => {
+            println!(
+                "[typedb] mode = external: gecko connects to a TypeDB you run yourself.\n\
+                 Start your server and point `[typedb] endpoint` (currently {address}) at it;\n\
+                 gecko will not spawn or manage a process."
+            );
         }
     }
+    Ok(())
+}
+
+/// `gecko down` — tear down TypeDB for the configured run mode.
+async fn cmd_down(cfg: &GeckoConfig, address: &str) -> Result<()> {
+    match cfg.typedb.mode {
+        TypedbMode::Orchestrated => {
+            let cache_root = config::cache_dir(cfg)?;
+            match orchestrator::down(&cache_root)? {
+                orchestrator::DownOutcome::NotRunning => {
+                    println!("No managed TypeDB is running — nothing to stop.");
+                }
+                orchestrator::DownOutcome::Stopped { pid, graceful } => {
+                    if graceful {
+                        println!("✓ Stopped managed TypeDB (pid {pid}).");
+                    } else {
+                        println!("✓ Stopped managed TypeDB (pid {pid}) — needed SIGKILL.");
+                    }
+                }
+            }
+        }
+        TypedbMode::Compose => {
+            println!(
+                "[typedb] mode = compose: gecko does not manage the Docker stack.\n\
+                 Run:  docker compose down"
+            );
+        }
+        TypedbMode::External => {
+            println!(
+                "[typedb] mode = external: gecko never started a server, so there is nothing \
+                 to stop (the server at {address} is yours to manage)."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `gecko model fetch` — stage the embedding model into the runtime cache.
+///
+/// Resolves the target `model_id` (flag > `[semantic_index] model_id`) and the
+/// destination dir (`--path` > `[semantic_index] model_path` > derived
+/// `cache_dir/models/<model_id>/`), then downloads the required files from the
+/// configured source (mirror > HuggingFace) with progress + checksum logging.
+/// Idempotent: a second run is a cache-hit no-op. Load-bearing rule #1: bytes only
+/// ever land in the cache dir, OUTSIDE the build tree.
+fn cmd_model_fetch(
+    cfg: &GeckoConfig,
+    model_flag: Option<String>,
+    path_flag: Option<PathBuf>,
+) -> Result<()> {
+    use gecko_semantic_index::fetch::{self, FetchOutcome};
+
+    let model_id = model_flag.unwrap_or_else(|| cfg.semantic_index.model_id.clone());
+    // Guard against fetching the unresolved placeholder — it can't map to a real
+    // upstream revision.
+    if model_id.contains("<revision>") {
+        anyhow::bail!(
+            "model_id '{model_id}' has an unresolved '<revision>' placeholder; pin a real \
+             revision in gecko.toml ([semantic_index] model_id) or pass --model \
+             '<model>@<revision-hash>'"
+        );
+    }
+
+    // Destination precedence: --path > config model_path > derived under cache root.
+    let override_dir = path_flag
+        .map(|p| p.to_string_lossy().into_owned())
+        .or_else(|| cfg.semantic_index.model_path.clone());
+    let cache_root = config::cache_dir(cfg)?;
+    let dest = fetch::model_dir(&cache_root, &model_id, override_dir.as_deref());
+
+    println!("Fetching model '{model_id}' → {}", dest.display());
+    if let Some(src) = cfg.semantic_index.model_source.as_deref() {
+        println!("Source (mirror): {src}");
+    } else {
+        println!("Source: HuggingFace Hub ({})", fetch::DEFAULT_HF_BASE);
+    }
+
+    let outcome = fetch::fetch_model(
+        &model_id,
+        &dest,
+        cfg.semantic_index.model_source.as_deref(),
+        false,
+        fetch::known_checksums(&model_id),
+    )
+    .context("model fetch failed")?;
+
+    match outcome {
+        FetchOutcome::CacheHit => {
+            println!("✓ Already staged (cache hit) — nothing to do.");
+        }
+        FetchOutcome::Downloaded { files } => {
+            println!("✓ Staged {} files to {}", files.len(), dest.display());
+        }
+    }
+    Ok(())
+}
+
+/// `gecko init` — write a default `gecko.toml` at `path` if absent. Idempotent:
+/// an existing file is NEVER clobbered.
+fn cmd_init_config(path: &std::path::Path) -> Result<()> {
+    if path.exists() {
+        println!("✓ {} already exists — leaving it untouched", path.display());
+        return Ok(());
+    }
+    std::fs::write(path, config::default_gecko_toml())
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    println!("✓ Wrote default config to {}", path.display());
+    Ok(())
 }
 
 /// Delete a database by name.
@@ -267,7 +569,7 @@ async fn apply_all_schemas(
 }
 
 /// Initialize TypeDB with core schema + extension schemas.
-async fn cmd_init(
+async fn cmd_schema_init(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
     custom_schema: Option<PathBuf>,
@@ -383,9 +685,101 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 }
 
 /// Execute a playbook concept in the sandbox.
+/// Builds mem's epistemic writer, wiring the A5 semantic-index accelerator when the
+/// `[semantic_index]` config enables it.
+///
+/// - **Disabled** ⇒ `MemWriter::without_index` (recall falls back to the non-vector
+///   path; no drag — the A4 shape).
+/// - **Enabled** ⇒ concrete `HnswIndex` + stub `Embedder`, rebuilt from the graph
+///   (A5.4) before serving recalls, with retrieval-provenance recording per config
+///   (A5.7). The trait is the swap seam (A5.6): a future `typedb-native` backend
+///   drops in here.
+async fn build_epistemic_writer(
+    store: std::sync::Arc<dyn GraphStore>,
+    cfg: &GeckoConfig,
+) -> Result<std::sync::Arc<dyn EpistemicWriter>> {
+    let sic = &cfg.semantic_index;
+    if !sic.enabled {
+        return Ok(std::sync::Arc::new(mem_gecko::MemWriter::without_index(
+            store,
+        )));
+    }
+    if sic.backend != "hnsw" {
+        anyhow::bail!(
+            "unsupported semantic_index.backend '{}': only 'hnsw' is compiled \
+             (future drop-in: 'typedb-native')",
+            sic.backend
+        );
+    }
+
+    // Embedder selection (plan P2 Deliverable 3): `"stub"` → the deterministic
+    // hash embedder (always compiled); any other value selects the real candle
+    // `CandleEmbedder`, which exists ONLY in a `--features real-embedder` build.
+    // When that feature is absent the real arm is uninstantiable (structural), so
+    // a non-stub config on a stub build is a hard, actionable error.
+    let (embedder, embedder_kind): (std::sync::Arc<dyn Embedder>, &str) = if sic.embedder == "stub"
+    {
+        (std::sync::Arc::new(StubEmbedder::new(384)), "stub")
+    } else {
+        #[cfg(feature = "real-embedder")]
+        {
+            // The model is a runtime asset — resolved to a PATH; loaded lazily on
+            // the first embed (never here, never on a doc-only run).
+            let model_dir = config::model_path(cfg)?;
+            let candle = CandleEmbedder::new(
+                sic.model_id.clone(),
+                model_dir,
+                sic.auto_fetch,
+                sic.model_source.clone(),
+            );
+            (std::sync::Arc::new(candle), "candle")
+        }
+        #[cfg(not(feature = "real-embedder"))]
+        {
+            anyhow::bail!(
+                "semantic_index.embedder '{}' selects the real embedder, which is not \
+                 compiled into this binary (build with `--features real-embedder`); only \
+                 'stub' is available in this build",
+                sic.embedder
+            );
+        }
+    };
+    let dim = embedder.dim();
+
+    // Resolve the effective index path: derived under the cache root by default,
+    // or an explicit `[semantic_index] path` override (P1).
+    let resolved_index_path = config::index_path(cfg)?;
+    let index = std::sync::Arc::new(HnswIndex::open(
+        &resolved_index_path,
+        embedder.model_id(),
+        dim,
+    )?);
+    let index: std::sync::Arc<dyn SemanticIndex> = index;
+
+    let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
+        .with_retrieval_provenance(sic.record_provenance());
+    // A5.4: reconstruct the accelerator from the graph (SoR) before serving recalls.
+    // For the real embedder this stays lazy: an empty/doc-only graph enumerates no
+    // embeddables, so the 1.3GB model is never loaded here.
+    writer.rebuild_index_from_graph().await?;
+    info!(
+        path = %resolved_index_path.display(),
+        embedder = embedder_kind,
+        dim,
+        record_provenance = sic.record_provenance(),
+        "Semantic index enabled (hnsw); rebuilt from graph"
+    );
+    Ok(std::sync::Arc::new(writer))
+}
+
 async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Result<()> {
     println!("Executing playbook: {concept_id}");
 
+    // The epistemic writer needs its own connection to the same database: the
+    // pipeline borrows `db` mutably for the run, while belief-tier writes commit
+    // through this second router (belief writes are sparse — invariant 4 — so a
+    // dedicated serialised connection is not a bottleneck).
+    let writer_config = config.clone();
     let mut db = TypeDbRouter::new(config);
     let tx = db
         .begin_read()
@@ -474,7 +868,24 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
     );
     println!("Running script using engine: {engine_type}...");
 
-    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
+    // Activation (plan A4.2 + A5.5): construct mem's epistemic writer over its own
+    // graph connection, then run each activated extension's
+    // `inject_epistemic_host_fns` hook. mem (forced-on, first) binds the writer into
+    // the sandbox context; other extensions inherit the no-op. When the
+    // `[semantic_index]` accelerator is enabled we build the concrete `HnswIndex` +
+    // stub `Embedder`, rebuild it from the graph (A5.4), and inject them; otherwise
+    // the writer runs with no index (recall falls back, drag-free — the A4 shape).
+    let graph_router =
+        std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
+    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router));
+    let writer: std::sync::Arc<dyn EpistemicWriter> = build_epistemic_writer(store, cfg).await?;
+    let mut sandbox_ctx = SandboxCtx::new();
+    for ext in &cb_extensions {
+        ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
+    }
+
+    // The base bridge dispatches plain host imports over the activated extensions.
+    let base_cb: gecko_engine::sandbox::engine::ExtensionCallback =
         std::sync::Arc::new(move |ext_name, func_name, args| {
             for ext in &cb_extensions {
                 if ext.name() == ext_name {
@@ -483,6 +894,30 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
             }
             Err(format!("Extension '{ext_name}' not found"))
         });
+
+    // If an epistemic extension was activated, wrap the base bridge so mem host fns
+    // (`remember`/`derive`/`supersede`/`contest`) reach the injected writer — each
+    // stamped with a host-minted RunContext (invariant 2: the sandbox cannot forge
+    // or omit `run_id`/`actor`/`source`). The host mints exactly one RunContext per
+    // run, bound to the executing concept (`ExecutableDoc`).
+    let ext_cb: gecko_engine::sandbox::engine::ExtensionCallback =
+        match sandbox_ctx.epistemic_writer() {
+            Some(writer) => {
+                let run_ctx = RunContext::new(
+                    ActorId::new("system"),
+                    ProvenanceSource::ExecutableDoc {
+                        concept_id: ConceptId::new(concept_id),
+                    },
+                    chrono::Utc::now(),
+                );
+                // mem's writer is also a reader, so wire the `mem.recall` reader
+                // bridge from the same object (shared per-run scratch → A5.7). No
+                // guest binding calls it yet — see docs/refactor/KNOWN-LIMITATIONS.md.
+                let reader = writer.clone().as_epistemic_reader();
+                epistemic_extension_callback(run_ctx, writer, reader, base_cb)
+            }
+            None => base_cb,
+        };
 
     // Execute through the pipeline: it owns the state-handle lifecycle (RAII), the
     // shared sandbox pool, and the execution record — no execution logic is

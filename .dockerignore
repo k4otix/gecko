@@ -1,0 +1,36 @@
+# Docker build context excludes. The image builds `gecko` from source INSIDE the
+# container (see Dockerfile), so none of the host build/output/asset trees belong
+# in the context. Without this file, `COPY . .` uploads the entire working tree —
+# dominated by a multi-GB `target/` — as build context (observed: 20GB).
+
+# Rust build artifacts (the big one — rebuilt in-container; never ship host target/)
+target/
+
+# VCS + CI + editor cruft
+.git/
+.github/
+.gitignore
+.githooks/
+**/.DS_Store
+
+# Runtime assets — NEVER in the build tree (load-bearing rule #1). Belt-and-suspenders
+# in case a cache/index/model was ever staged under the repo.
+**/models/
+**/*.safetensors
+**/*.onnx
+**/*.gguf
+**/*.bin
+**/*.hnsw
+.cache/
+
+# SDD scratch ledger (git-ignored) + local scratch
+.superpowers/
+scratchpad/
+
+# Docs / packaging that the build doesn't need
+docs/
+README.md
+HomebrewFormula/
+docker-compose.yml
+Dockerfile
+.dockerignore

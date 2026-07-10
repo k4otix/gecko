@@ -1,0 +1,304 @@
+define
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2 — mem-gecko substrate ontology (additive on core_schema.tql)
+  # ══════════════════════════════════════════════════════════════════
+
+  # ── A2.2 State enums ──────────────────────────────────────────────
+  attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");
+  attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");
+  attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "type-db-function", "external-tool", "human-assertion", "llm-synthesis");
+  attribute entrenchment value string @values("axiom", "user-stated", "tool-derived", "inferred", "llm");
+  attribute stability-tier value string @values("volatile", "provisional", "stable", "canonical");
+  attribute visibility value string @values("private", "team", "shared");
+  attribute justification-status value string @values("in", "out");
+
+  # ── A2.4 Bitemporal + decay attrs ─────────────────────────────────
+  attribute event-time value datetime;
+  attribute ingest-time value datetime;
+  attribute valid-from value datetime;
+  attribute valid-to value datetime;
+  attribute salience value double;
+  attribute base-activation value double;
+  attribute access-count value integer;
+  attribute last-access value datetime;
+  attribute half-life-hours value double;
+
+  # ── misc scalar attrs ─────────────────────────────────────────────
+  attribute confidence value double;
+  attribute corroboration-count value integer;
+  attribute supersession-reason value string;
+  attribute created-at value datetime;
+  attribute computed-at value datetime;
+  attribute condition value string;
+  attribute execution-status value string @values("pending", "active", "suspended", "completed", "failed");
+  attribute deadline value datetime;
+  attribute agent-id value string;
+  attribute origin-kind value string;          # OPEN, adapter-extensible set (invariant 9) — NOT @values
+  attribute run-id value string;
+  attribute tool-name value string;
+  attribute pivot-method value string;
+  attribute calibration-score value double;
+  attribute predicted-probability value double;
+  attribute outcome value string;
+
+  # ── A2.9 population attrs ──────────────────────────────────────────
+  attribute spec-dialect value string;         # (dialect, text) modelled as 2 attrs; structs unimpl in 3.x
+  attribute spec-text value string;            # a stored TypeDB match clause — the DEFINING predicate (SoR)
+  attribute spec-hash value string;
+
+  # ── A2.10 retrieval-provenance attrs ──────────────────────────────
+  attribute retrieval-method value string @values("semantic", "typed", "hybrid");
+  attribute retrieval-provenance value string @values("semantic", "typed", "hybrid", "none");
+  attribute similarity-score value double;
+  attribute was-used value boolean;
+  attribute candidate-count value integer;     # sketch said `long`; 3.x has no long -> integer (64-bit)
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.1 Memory-item hierarchy (four-layer substrate)
+  #   id scheme: concept-id @key inherited from okf-concept (mem/ep|bel/{ulid})
+  # ══════════════════════════════════════════════════════════════════
+  entity memory-item @abstract, sub okf-concept,
+      owns salience @card(0..1),
+      owns base-activation @card(0..1),
+      owns access-count @card(0..1),
+      owns last-access @card(0..1),
+      owns consolidation-state @card(0..1),
+      plays derivation:derived,
+      plays derivation:source,
+      plays evidence:evidenced,
+      plays evidence:evidence-item,
+      plays justification:consequent,
+      plays justification:antecedent,
+      plays support:supporter,
+      plays support:supported,
+      plays attack:attacker,
+      plays attack:attacked,
+      plays supersession:superseded,
+      plays supersession:superseding,
+      plays source-link:memory,
+      plays ownership:owned,
+      plays rests-on:resting,
+      plays rests-on:assumption,
+      plays pivot:from-state,            # A2.8 pivot: a memory-item is the state pivoted from
+      plays pivot:to-state,              # A2.8 pivot: ...and the state pivoted to
+      plays surfaced:item;               # anything surfaced by a retrieval (typically a belief)
+
+  entity episode sub memory-item,
+      owns event-time @card(1),
+      owns ingest-time @card(1),
+      owns half-life-hours @card(0..1),
+      plays prediction-resolution:resolving-episode,
+      plays execution:episode-step,
+      plays tool-invocation:invocation-episode;
+
+  entity belief sub memory-item,
+      owns belief-state @card(1),
+      owns confidence @card(0..1),
+      owns entrenchment @card(0..1),
+      owns valid-from @card(0..1),
+      owns valid-to @card(0..1),
+      owns retrieval-provenance @card(0..1),   # write-once summary flag (A2.10)
+      plays contradiction:claim,
+      plays scoped:scoped-belief,
+      plays prediction-resolution:predicted-belief,
+      plays informs-synthesis:synthesized;
+
+  entity playbook sub memory-item,
+      owns stability-tier @card(0..1),
+      owns corroboration-count @card(0..1);
+
+  entity working-set sub memory-item;
+
+  # episode domain subtype used by retrieval provenance
+  entity execution-episode sub episode,
+      plays informs-synthesis:retrieval;
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.3 Provenance relations (reified)
+  # ══════════════════════════════════════════════════════════════════
+  relation derivation,
+      relates derived,
+      relates source @card(1..),
+      owns derivation-method @card(1),
+      owns confidence @card(0..1);
+
+  relation evidence,                       # n-ary
+      relates evidenced,
+      relates evidence-item @card(1..);
+
+  relation justification,                  # JTMS IN/OUT
+      relates consequent,
+      relates antecedent @card(0..),
+      owns justification-status @card(0..1);
+
+  relation support,
+      relates supporter,
+      relates supported;
+
+  relation attack,
+      relates attacker,
+      relates attacked;
+
+  # A2.3 contradiction -> anomaly hub (claims 2..)
+  entity anomaly sub memory-item,
+      owns condition @card(0..1),
+      plays contradiction:hub;
+
+  relation contradiction,
+      relates hub,
+      relates claim @card(2..);
+
+  # deprecation / supersession
+  relation supersession,
+      relates superseded,
+      relates superseding,
+      owns supersession-reason @card(0..1),
+      owns created-at @card(1);
+
+  # source-link: memory -> origin (1.. in concept|document|code-block|doc-run)
+  relation source-link,
+      relates memory,
+      relates origin @card(1..),
+      owns origin-kind @card(0..1);
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.5 Prospective: intention + goal-hierarchy
+  # ══════════════════════════════════════════════════════════════════
+  entity intention sub memory-item,
+      owns execution-status @card(1),
+      owns deadline @card(0..1),
+      plays goal-hierarchy:parent-goal,
+      plays goal-hierarchy:child-goal;
+
+  relation goal-hierarchy,                 # self-referential on intention
+      relates parent-goal,
+      relates child-goal;
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.6 Anti-context: learned-constraint + contextualizes
+  # ══════════════════════════════════════════════════════════════════
+  entity learned-constraint sub memory-item,
+      owns condition @card(0..1),
+      plays contextualizes:constraint;
+
+  relation contextualizes,                 # constraint -> any concept
+      relates constraint,
+      relates context-target;
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.7 Multi-agent: agent + ownership
+  # ══════════════════════════════════════════════════════════════════
+  entity agent,
+      owns agent-id @key,
+      plays ownership:owner,
+      plays pivot:pivoting-agent;         # A2.8 pivot: the agent that made the investigative move
+
+  relation ownership,
+      relates owned,
+      relates owner @card(1..),
+      owns visibility @card(0..1);
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.8 Cross-cutting primitives (substrate, invariant 5)
+  # ══════════════════════════════════════════════════════════════════
+  relation rests-on,
+      relates resting,
+      relates assumption @card(1..);
+
+  relation pivot,                          # reified n-ary investigative move + calibration
+      relates pivoting-agent,
+      relates from-state,
+      relates to-state,
+      owns pivot-method @card(0..1),
+      owns calibration-score @card(0..1);
+
+  relation prediction-resolution,
+      relates predicted-belief,
+      relates resolving-episode,
+      owns predicted-probability @card(0..1),
+      owns outcome @card(0..1);
+
+  # doc-run provenance
+  entity doc-run,
+      owns run-id @key,
+      owns event-time @card(0..1),
+      plays execution:run,
+      plays source-link:origin;
+
+  relation execution,
+      relates run,
+      relates episode-step;
+
+  relation tool-invocation,
+      relates invocation-episode,
+      owns tool-name @card(0..1);
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.9 Populations & cross-source resolution
+  # ══════════════════════════════════════════════════════════════════
+  entity population,
+      owns spec-dialect @card(0..1),
+      owns spec-text @card(0..1),
+      owns spec-hash @key,                 # dedup cohorts: two beliefs same cohort -> same node
+      plays scoped:population,
+      plays population-member:owning-population;
+
+  relation scoped,                         # belief -> population
+      relates scoped-belief,
+      relates population;
+
+  # MATERIALIZED membership: derived cache of the spec's evaluation
+  relation population-member,
+      relates owning-population,
+      relates member,
+      owns computed-at @card(0..1);        # staleness marker
+
+  # cross-source identity (invariant 9): canonical entity IS a population;
+  # resolution is a reified identity BELIEF (provenance, method, state, supersession)
+  entity resolution sub belief,
+      plays resolves:resolution-belief;
+
+  relation resolves,                       # two source-records -> same entity
+      relates resolution-belief,
+      relates record-a,
+      relates record-b;
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.10 Retrieval provenance (episodic tier, firewalled from derivation)
+  # ══════════════════════════════════════════════════════════════════
+  relation surfaced,                       # reified: what was surfaced + the SEARCH signal
+      relates surfacer,
+      relates item,
+      owns similarity-score @card(0..1),   # cosine; meaningful only for semantic method
+      owns was-used @card(0..1);           # consumed by synthesis vs merely returned
+
+  relation informs-synthesis,              # ties a synthesized belief to the retrieval
+      relates retrieval,
+      relates synthesized;
+
+  # retrieval-event: episodic record that a retrieval happened
+  entity retrieval-event sub execution-episode,
+      owns retrieval-method @card(0..1),
+      owns candidate-count @card(0..1),
+      plays surfaced:surfacer;
+
+  # ══════════════════════════════════════════════════════════════════
+  # Additive role wiring onto core authored/reference tier (records)
+  #   concept & external-resource are the source-record / origin players
+  # ══════════════════════════════════════════════════════════════════
+  # concept is the authored/reference record tier: it is the population member and the
+  # cross-source resolution record. (population-member:member / resolves:record-* are scoped
+  # to `concept` — not external-resource — so typed functions can return a single `{ concept }`
+  # type; external-resource is not a `okf-concept` subtype and would break return-type inference.)
+  # `concept` and `external-resource` are DEFINED in core_schema.tql; mem only ADDS plays roles
+  # (additive `<type> plays <role>;` form — never a root re-declaration of `entity concept`).
+  concept plays source-link:origin,
+      plays contextualizes:context-target,
+      plays population-member:member,
+      plays resolves:record-a,
+      plays resolves:record-b;
+
+  # external-resource participates only as a source-link origin (citation target), never as a
+  # typed-function return player.
+  external-resource plays source-link:origin;

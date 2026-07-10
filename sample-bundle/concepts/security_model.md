@@ -7,6 +7,8 @@ tags: [security, sandbox, architecture]
 
 # Security and Isolation Model
 
+This model constrains how the [GECKO Engine Core](gecko_engine.md) executes untrusted playbooks.
+
 GECKO operates on a principle of least privilege. Playbooks are executed in strictly bounded environments:
 
 1. **WebAssembly Sandboxing**: Playbooks executing via engines like QuickJS are compiled down to WebAssembly. The `WasmExecutor` provides a compute-only WASI environment, guaranteeing complete isolation from the host filesystem, network, and system clock.

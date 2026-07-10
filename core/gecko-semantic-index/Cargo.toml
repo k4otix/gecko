@@ -1,0 +1,57 @@
+[package]
+name = "gecko-semantic-index"
+description = "GECKO in-process semantic retrieval accelerator: an HNSW ANN index + stub embedder implementing the gecko-extension-api SemanticIndex/Embedder traits. A pure, rebuildable bolt-on (invariant 8) — deletable when TypeDB ships native vector search."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# `real-embedder` (NON-default in P2; P4 flips it default-on) compiles the
+# candle-backed `CandleEmbedder` + its heavy ML deps. The default/fast build stays
+# candle-free — only the deterministic `StubEmbedder` is compiled. Load-bearing
+# rule #1 still holds: NO model bytes ever enter cargo's world; the model is a
+# runtime asset resolved by path at first embed.
+real-embedder = [
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:tokenizers",
+    "dep:safetensors",
+]
+
+# `integration-model` (NON-default) is the STRUCTURAL Tier-3 boundary. It implies
+# `real-embedder` and is the ONLY thing that COMPILES the real-model tests
+# (`#[cfg(feature = "integration-model")]`). Without it those tests do not exist,
+# so a Tier-1 build (`--no-default-features`) literally cannot instantiate the real
+# embedder or trigger the ~1.3GB download — the boundary is un-crossable by
+# accident, not policed by review.
+integration-model = ["real-embedder"]
+
+[dependencies]
+gecko-extension-api = { path = "../gecko-extension-api" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hnsw_rs = "0.3"
+
+# Model acquisition (`fetch` module) — compiled ALWAYS (it downloads bytes; it does
+# NOT need candle). Kept light: a blocking HTTP client + a progress bar + hashing.
+ureq = "2"
+indicatif = "0.18"
+sha2 = { workspace = true }
+anyhow = { workspace = true }
+
+# Real embedder deps — behind `real-embedder`, so the default build never compiles
+# candle. `bge-large-en-v1.5` runs in-process (BERT) on CPU.
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+# Pinned to 0.22 to match candle-core 0.11's `^0.22` requirement, so the whole
+# graph resolves to ONE tokenizers version (no 0.22+0.23 duplication). The APIs
+# we use (from_file/encode/get_ids/get_attention_mask) are identical across both.
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+safetensors = { version = "0.8", optional = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+tempfile = "3"

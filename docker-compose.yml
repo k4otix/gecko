@@ -1,0 +1,51 @@
+# GECKO — `compose` run mode (plan P3): the documented Docker escape hatch for
+# people who already live in Docker. Two services — the gecko CLI image and a
+# PINNED TypeDB — so `docker compose up` gives you a working stack without the
+# orchestrated child-process path.
+#
+#   docker compose up -d          # start TypeDB (+ build the gecko image)
+#   docker compose run --rm gecko up            # (external-to-container) no-op
+#   docker compose run --rm gecko schema-init sample-bundle
+#   docker compose run --rm gecko sync sample-bundle
+#   docker compose down           # stop everything (data persists in the volume)
+#
+# Inside the compose network the gecko container reaches TypeDB at `typedb:1729`,
+# so run gecko commands with `--address typedb:1729` (or set `[typedb] endpoint`).
+
+services:
+  typedb:
+    # PINNED — never `:latest`. Matches orchestrated mode's PINNED_TYPEDB (3.12.0),
+    # so both paths run the same server version.
+    image: typedb/typedb:3.12.0
+    container_name: gecko-typedb
+    ports:
+      - "1729:1729"
+    volumes:
+      # TypeDB 3.12 stores databases under /var/lib/typedb/data (arch-independent),
+      # verified against the typedb/typedb:3.12.0 image — a db created here survives
+      # a container restart. (NOT /opt/.../server/data, which the image leaves empty.)
+      - typedb-data:/var/lib/typedb/data
+    restart: unless-stopped
+
+  gecko:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gecko:local
+    depends_on:
+      - typedb
+    # gecko is a CLI, not a long-running service: `docker compose run --rm gecko <cmd>`.
+    # In compose mode `[typedb] mode = "compose"`, so `gecko up`/`down` only print
+    # guidance — TypeDB is managed by this compose file, not by gecko.
+    environment:
+      # The cache root inside the container (models / index / any downloaded TypeDB).
+      GECKO_CACHE_DIR: /var/cache/gecko
+    volumes:
+      - gecko-cache:/var/cache/gecko
+    # Default to talking to the TypeDB service on the compose network.
+    entrypoint: ["gecko", "--address", "typedb:1729"]
+    command: ["status"]
+
+volumes:
+  typedb-data:
+  gecko-cache:

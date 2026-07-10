@@ -1,0 +1,152 @@
+define
+
+  # ══════════════════════════════════════════════════════════════════
+  # A3 — substrate functions (persisted; query-time reasoning)
+  # ══════════════════════════════════════════════════════════════════
+
+  # 1 — is-superseded($b) -> bool
+  fun is-superseded($b: memory-item) -> boolean:
+      match
+          {
+              (superseded: $b, superseding: $newer) isa supersession;
+          } or {
+              $b has belief-state "superseded";
+          } or {
+              $b has belief-state "retracted";
+          };
+      return check;
+
+  # 2 — believed-at($t) -> {belief}  (temporal; index NOT involved)
+  fun believed-at($t: datetime) -> { belief }:
+      match
+          $b isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $t;
+          not { $b has valid-to $vt; $vt <= $t; };
+      return { $b };
+
+  # 3 — derivation-chain($b) -> {memory-item}  (recursive transitive closure)
+  fun derivation-chain($b: memory-item) -> { memory-item }:
+      match
+          {
+              (derived: $b, source: $m) isa derivation;
+          } or {
+              (derived: $b, source: $mid) isa derivation;
+              let $m in derivation-chain($mid);
+          };
+      return { $m };
+
+  # 4 — retrieval-score($m,$now) -> double
+  #   THREE validated 3.12 constraints shape this body:
+  #   (a) CONTINUOUS half-life decay is NOT expressible in pure TQL — datetime-datetime yields a
+  #       duration, but duration/duration, duration->scalar, scalar->duration and ln/log are all
+  #       REJECTED. So the smooth 0.5^(age_hours/half_life) multiplier is applied HOST-SIDE (Rust Reader).
+  #   (b) A DURATION value cannot be used as a filtering comparison predicate: `$age <op> <dur-literal>`
+  #       parses but matches ZERO rows (verified for >,>=,< against a computed OR literal duration).
+  #       Temporal filtering must be done on DATETIME values (datetime comparisons filter correctly).
+  #   (c) A variable assigned ONLY inside `or`-branches is NOT bound at `return`. Keep $score top-level.
+  #   So: consume $now via a datetime comparison (last-access must not be in the future) and return
+  #   the static activation component; recency decay is layered on host-side.
+  fun retrieval-score($m: memory-item, $now: datetime) -> double:
+      match
+          $m has base-activation $ba, has salience $s, has last-access $la;
+          $la <= $now;                                 # datetime comparison (filters correctly); consumes $now
+          let $score = $ba + $s;                       # top-level binding, visible to `return`
+      return first $score;
+
+  # 6 — contradicts($b1,$b2) -> bool
+  fun contradicts($b1: belief, $b2: belief) -> boolean:
+      match
+          $c isa contradiction, links (claim: $b1, claim: $b2);
+          not { $b1 is $b2; };
+      return check;
+
+  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
+  fun blast-radius($r: memory-item) -> { memory-item }:
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              {
+                  (assumption: $r, resting: $mid) isa rests-on;
+              } or {
+                  (source: $r, derived: $mid) isa derivation;
+              };
+              let $m in blast-radius($mid);
+          };
+      return { $m };
+
+  # 5 — gate($n,$agent,$now) -> bool  (composes is-superseded + validity + VISIBILITY)
+  #   A belief passes gate iff it is (a) NOT superseded, (b) within its validity window
+  #   (valid-from <= now, and valid-to absent or > now), AND (c) scope-visible to $agent:
+  #     • visibility "team" or "shared" ⇒ visible regardless of owner;
+  #     • visibility "private" (or absent — the restrictive default) ⇒ $agent must own it.
+  #   Visibility lives on the `ownership` relation (`ownership owns visibility`), so the
+  #   scope test joins through ownership, never the belief entity. The two scope branches
+  #   are a disjunction: a private belief owned by a DIFFERENT agent satisfies neither and
+  #   is gated OUT; a team/shared belief satisfies the first branch for ANY agent.
+  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean:
+      match
+          $n isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $now;
+          not { true == is-superseded($n); };
+          not { $n has valid-to $vt; $vt <= $now; };
+          {
+              $own isa ownership, links (owned: $n);
+              $own has visibility $vis;
+              { $vis == "team"; } or { $vis == "shared"; };
+          } or {
+              $own2 isa ownership, links (owned: $n, owner: $agent);
+          };
+      return check;
+
+  # 8 — select-for-context($agent,$now) -> {belief, double}  (tuple stream)
+  fun select-for-context($agent: agent, $now: datetime) -> { belief, double }:
+      match
+          $b isa belief;
+          true == gate($b, $agent, $now);
+          let $score in retrieval-score($b, $now);
+      return { $b, $score };
+
+  # ── Retrieval-provenance function (A2.10) ─────────────────────────
+  # walks informs-synthesis; MUST NOT be reachable from derivation-chain
+  fun retrieval-provenance-of($b: belief) -> { retrieval-event }:
+      match
+          $r isa retrieval-event;                      # narrow: `retrieval` role is played by execution-episode
+          (retrieval: $r, synthesized: $b) isa informs-synthesis;
+      return { $r };
+
+  # ── Population & resolution functions (A2.9) ──────────────────────
+  # reads the materialized population-member view.
+  #   NOTE: sketch signature was ($pop,$now) but 3.12 rejects unused params ([FRP1]); the
+  #   materialized read does not consume time. The STRICT variant (re-evaluate the stored
+  #   spec-text for a named entity-set) is executed host-side (the spec-text is a runnable
+  #   match clause — validated below), so it does not need a persisted $now-taking function.
+  fun population-members($pop: population) -> { concept }:
+      match
+          (owning-population: $pop, member: $m) isa population-member;
+      return { $m };
+
+  # transitive closure over PROVABLE resolution beliefs; MUST NOT collapse probabilistic
+  #   PROVABLE-ness lives on the resolution belief's `derivation` relation (derivation-method),
+  #   NOT on the belief itself — join through derivation to read the method.
+  fun canonical-entity($rec: concept) -> { concept }:
+      match
+          {
+              $res isa resolution, has belief-state "asserted";
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has belief-state "asserted";
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity($mid);
+          };
+      return { $other };

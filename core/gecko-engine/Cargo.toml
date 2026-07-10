@@ -12,6 +12,7 @@ integration = []  # Gate integration tests requiring live TypeDB
 
 [dependencies]
 gecko-extension-api = { path = "../gecko-extension-api" }
+async-trait = "0.1"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

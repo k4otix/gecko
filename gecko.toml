@@ -8,3 +8,14 @@
 # Domain extensions to activate. The `mem` substrate is always-on and does not
 # need to be listed. Unknown or not-compiled names cause startup to fail.
 enabled = ["cyber"]
+
+# In-process semantic retrieval accelerator (plan A5). A PURE, rebuildable bolt-on
+# (invariant 8) — never a source of truth, deletable when TypeDB ships native
+# vector search. When `enabled = false` (or this table is absent) the substrate
+# runs with no index: recall falls back to the non-vector path, drag-free.
+[semantic_index]
+enabled  = true
+path     = "gecko.hnsw"
+embedder = "stub"          # deterministic hash stub; future: "bge-large-en-v1.5", "api:<provider>"
+backend  = "hnsw"          # future drop-in: "typedb-native"
+record_retrieval_provenance = true   # A5.7; defaults to `enabled` when omitted

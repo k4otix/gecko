@@ -14,13 +14,25 @@ path = "src/main.rs"
 # `mem` is always compiled — it is substrate, not a feature. `cyber` is an
 # optional domain extension a packager can slim out at build time
 # (`--no-default-features`), independent of the runtime `gecko.toml` selection.
-default = ["cyber"]
+default = ["cyber", "real-embedder"]
 cyber = ["dep:cyber-gecko"]
+# Forwards to gecko-semantic-index's `real-embedder`: compiles the candle-backed
+# CandleEmbedder into the binary. DEFAULT-ON (P4) so `cargo build`/`cargo run`/
+# release ship a working embedder. `--no-default-features` drops BOTH `cyber` and
+# `real-embedder` → the candle-free, stub-only fast build. The `gecko model fetch`
+# subcommand is compiled REGARDLESS of this feature.
+real-embedder = ["gecko-semantic-index/real-embedder"]
+# Forwards to gecko-semantic-index's `integration-model` (implies `real-embedder`).
+# NON-default; the ONLY flag that compiles the Tier-3 real-model tests. Defined here
+# too so `cargo test --features integration-model` resolves at the workspace root
+# even though gecko-bin hosts no Tier-3 test itself.
+integration-model = ["gecko-semantic-index/integration-model", "real-embedder"]
 
 [dependencies]
 gecko-engine = { path = "../core/gecko-engine" }
 gecko-extension-api = { path = "../core/gecko-extension-api" }
 mem-gecko = { path = "../core/mem-gecko" }               # substrate — not optional
+gecko-semantic-index = { path = "../core/gecko-semantic-index" }  # A5 accelerator (rip-out surface)
 cyber-gecko = { path = "../extensions/cyber-gecko", optional = true }
 
 tokio = { workspace = true }
@@ -31,9 +43,21 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 futures-util = "0.3.32"
 typedb-driver.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+
+# TypeDB orchestration (`orchestrator` module, plan P3): download + extract the
+# pinned server dist and manage it as a child process. Kept light — a blocking
+# HTTP client (matches gecko-semantic-index) + archive extraction + POSIX signals.
+ureq = "2"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

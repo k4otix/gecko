@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "core/gecko-engine", "core/gecko-extension-api", "core/js-sandbox",
-    "core/mem-gecko",
+    "core/mem-gecko", "core/gecko-semantic-index",
     "extensions/cyber-gecko",
     "gecko-bin",
 ]
@@ -10,6 +10,7 @@ default-members = [
     "core/gecko-engine",
     "core/gecko-extension-api",
     "core/mem-gecko",
+    "core/gecko-semantic-index",
     "extensions/cyber-gecko",
     "gecko-bin",
 ]

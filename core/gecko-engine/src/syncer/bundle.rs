@@ -11,6 +11,18 @@
 //! skipped, changed ones updated **in place** (the entity is preserved so its
 //! containment, hierarchy, incoming links, and any extension-created relations
 //! survive an edit), and orphaned ones garbage-collected.
+//!
+//! # Record-path guardrail (invariants 1, 2 & 8)
+//!
+//! Concepts, documents and OKF links are **records**: observed, authoritative,
+//! uncontested facts. This syncer writes them **directly** through the TypeDB
+//! router. It MUST NOT route through the host-mediated belief-write path, and it
+//! MUST NOT embed or push anything to the semantic retrieval accelerator. A
+//! documentation sync is drag-free: it mints zero provenance/derivation apparatus
+//! and zero accelerator entries. The belief tier — reified, run-id-stamped,
+//! revisable — is populated exclusively by the epistemic writer in `mem-gecko`,
+//! never here. The test `syncer_stays_on_the_record_path` enforces that this
+//! module names none of those belief/accelerator types.
 
 use std::collections::{HashMap, HashSet};
 
@@ -630,6 +642,35 @@ mod tests {
     #[test]
     fn test_escape_tql() {
         assert_eq!(escape_tql(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    /// Invariants 1/2/8 guardrail: the record path must never reach into the
+    /// belief-write path or the semantic accelerator. This module names none of
+    /// those types (the guardrail doc-comment above is worded to avoid them, so
+    /// this is a real check, not a tautology).
+    #[test]
+    fn syncer_stays_on_the_record_path() {
+        // Scan only the production code (everything before this `#[cfg(test)]`
+        // block) so the test's own reference strings don't trip it.
+        let full = include_str!("bundle.rs");
+        let prod = full
+            .split("#[cfg(test)]")
+            .next()
+            .expect("source has a production section");
+        // Assemble the needles at runtime so they don't appear as literals in the
+        // scanned production span.
+        let forbidden = [
+            format!("{}{}", "Epistemic", "Writer"),
+            format!("{}{}", "Epistemic", "Reader"),
+            "Embedder".to_string(),
+            format!("{}{}", "Semantic", "Index"),
+        ];
+        for needle in forbidden {
+            assert!(
+                !prod.contains(&needle),
+                "syncer must not reference `{needle}` — records bypass the belief/accelerator path"
+            );
+        }
     }
 
     #[test]

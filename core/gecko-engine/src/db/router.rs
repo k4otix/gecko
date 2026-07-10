@@ -233,6 +233,19 @@ impl TypeDbRouter {
             .map_err(|e| DbError::Transaction(e.to_string()))
     }
 
+    /// Reads the connected server's version string (e.g. `"3.12.0"`), connecting
+    /// if necessary. A server-level RPC — it does not create, open, or touch any
+    /// database. Used by `gecko doctor`'s `typedb` precondition check to compare
+    /// the live server against the pinned version.
+    pub async fn server_version(&mut self) -> Result<String, DbError> {
+        let driver = self.driver().await?;
+        let version = driver
+            .server_version()
+            .await
+            .map_err(|e| DbError::Connection(e.to_string()))?;
+        Ok(version.version().to_string())
+    }
+
     /// Returns the database name.
     pub fn database(&self) -> &str {
         &self.config.database
