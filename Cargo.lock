@@ -1106,8 +1106,13 @@ dependencies = [
 name = "cyber-gecko"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "gecko-engine",
  "gecko-extension-api",
  "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "typedb-driver",
 ]
 
 [[package]]

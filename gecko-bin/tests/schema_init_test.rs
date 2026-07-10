@@ -63,13 +63,13 @@ async fn test_schema_initialization() {
     #[cfg(feature = "cyber")]
     {
         let answer = tx
-            .query("match $t sub cyber-entity;")
+            .query("match $t sub cyber-object;")
             .await
             .expect("Failed to query cyber type");
         let cyber_rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
         assert!(
             !cyber_rows.is_empty(),
-            "Cyber schema 'cyber-entity' type not found"
+            "Cyber schema 'cyber-object' type not found"
         );
     }
 
