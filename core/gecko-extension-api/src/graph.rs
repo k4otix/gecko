@@ -1,9 +1,8 @@
-//! The neutral graph read/write seam (the A3 generalization of A1's
-//! `BeliefCommitter`).
+//! The neutral graph read/write seam.
 //!
 //! mem-gecko must execute TypeQL against TypeDB, but it must **not** take a hard
-//! production dependency on the whole engine (A0's contract: mem depends only on
-//! `gecko-extension-api` at build time). This module is that firewall: a small
+//! production dependency on the whole engine: mem depends only on
+//! `gecko-extension-api` at build time. This module is that firewall: a small
 //! capability trait whose signatures use **only neutral types** — `&str` query
 //! text, typed [`GraphValue`] params, and `serde_json::Value` row-shaped results.
 //! No `typedb-driver` type ever appears here.

@@ -1,6 +1,6 @@
 //! The real, candle-backed [`Embedder`]: `bge-large-en-v1.5` (BERT, 1024-dim),
 //! run in-process on CPU. Behind the NON-default `real-embedder` feature so the
-//! fast/default build never compiles candle (plan P2 / P4).
+//! fast/default build never compiles candle.
 //!
 //! ## Load-bearing rule #1 — the model is a runtime asset
 //! No weights enter cargo's world: the struct holds only a `model_dir` PATH
@@ -15,7 +15,7 @@
 //! an actionable error pointing at `gecko model fetch` — never a silent 1.3GB
 //! pull; `auto_fetch=true` fetches then loads.
 //!
-//! ## BGE specifics (A5.2)
+//! ## BGE specifics
 //! - Query/document asymmetry is enforced on the trait: [`Embedder::embed_query`]
 //!   prepends the BGE search prefix; [`Embedder::embed_document`] does not; both
 //!   run the same forward pass. [`Embedder::embed`] defaults to the document side.
@@ -31,11 +31,7 @@ use candle_transformers::models::bert::{BertModel, Config as BertConfig, DTYPE};
 use gecko_extension_api::{Embedder, EpistemicError};
 use tokenizers::Tokenizer;
 
-use crate::fetch;
-
-/// The BGE query-side prefix (plan A5.2). Prepended by [`Embedder::embed_query`]
-/// so the query and document embeddings of the same text differ, as BGE requires.
-const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+use crate::{QUERY_PREFIX, fetch, l2_normalize};
 
 /// `bge-large-en-v1.5` output dimensionality.
 const BGE_DIM: usize = 1024;
@@ -86,12 +82,22 @@ impl CandleEmbedder {
     }
 
     /// Whether the model has been loaded yet (for the lazy-load assertion in
-    /// tests: constructing + a doc-only run must leave this `false`).
-    pub fn is_loaded(&self) -> bool {
+    /// tests: constructing + a doc-only run must leave this `false`). `Err` if
+    /// the internal lock is poisoned (a prior panic mid-load), rather than
+    /// panicking itself.
+    pub fn is_loaded(&self) -> Result<bool, EpistemicError> {
+        Ok(self.lock_loaded()?.is_some())
+    }
+
+    /// Locks `self.loaded`, mapping mutex poisoning to an `Err` instead of
+    /// panicking — mirroring how [`HnswIndex`](crate::HnswIndex) treats lock
+    /// poisoning as a caller-visible error rather than an unwind.
+    fn lock_loaded(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<Arc<Loaded>>>, EpistemicError> {
         self.loaded
             .lock()
-            .expect("embedder mutex poisoned")
-            .is_some()
+            .map_err(|_| EpistemicError::Embedding("embedder mutex poisoned".into()))
     }
 
     /// Resolves + verifies the model dir (fetching if allowed), then loads the
@@ -162,7 +168,7 @@ impl CandleEmbedder {
         // handle and DROP the guard — the forward pass below runs lock-free, so
         // concurrent embeds parallelize instead of serializing on the mutex.
         let loaded = {
-            let mut guard = self.loaded.lock().expect("embedder mutex poisoned");
+            let mut guard = self.lock_loaded()?;
             if guard.is_none() {
                 *guard = Some(Arc::new(self.load()?));
             }
@@ -206,20 +212,6 @@ fn query_input(text: &str) -> String {
     format!("{QUERY_PREFIX}{text}")
 }
 
-/// L2-normalizes in place, returning a unit vector (cosine-ready). A degenerate
-/// zero vector is mapped to a fixed unit vector so cosine never sees NaN.
-fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for x in &mut v {
-            *x /= norm;
-        }
-    } else if !v.is_empty() {
-        v[0] = 1.0;
-    }
-    v
-}
-
 impl Embedder for CandleEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
@@ -253,17 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn l2_normalize_yields_unit_vectors() {
-        let v = l2_normalize(vec![3.0, 4.0]);
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-6);
-        // Zero vector → fixed unit vector (NaN-free).
-        let z = l2_normalize(vec![0.0, 0.0, 0.0]);
-        assert_eq!(z[0], 1.0);
-        assert!(z.iter().all(|x| x.is_finite()));
-    }
-
-    #[test]
     fn construction_is_lazy_and_touches_no_files() {
         // A deliberately-nonexistent dir: constructing must NOT load or fetch.
         let e = CandleEmbedder::new(
@@ -272,10 +253,16 @@ mod tests {
             false,
             None,
         );
-        assert!(!e.is_loaded(), "construction must not load the model");
+        assert!(
+            !e.is_loaded().unwrap(),
+            "construction must not load the model"
+        );
         assert_eq!(e.model_id(), "bge-large-en-v1.5@abc");
         assert_eq!(e.dim(), BGE_DIM);
-        assert!(!e.is_loaded(), "querying identity must not load the model");
+        assert!(
+            !e.is_loaded().unwrap(),
+            "querying identity must not load the model"
+        );
     }
 
     #[test]
@@ -293,17 +280,18 @@ mod tests {
             "error should point at `gecko model fetch`, got: {msg}"
         );
         // It must NOT have silently attempted a download / partial load.
-        assert!(!e.is_loaded());
+        assert!(!e.is_loaded().unwrap());
     }
 
     // ── Tier 3 — real-model quality tests ──────────────────────────────────
     //
     // These are COMPILED ONLY under `--features integration-model` (which implies
-    // `real-embedder`). That is the STRUCTURAL boundary from plan P4: without the
-    // feature the code below does not exist, so no default/Tier-1 build can
-    // instantiate the real embedder or pull the ~1.3GB `bge-large-en-v1.5`. They
-    // assert the ONE thing a stub cannot — real semantic behavior — and change only
-    // when the model changes (near-never). They run nightly / on manual dispatch.
+    // `real-embedder`). That is the structural boundary: without the feature the
+    // code below does not exist, so no default/Tier-1 build can instantiate the
+    // real embedder or pull the ~1.3GB `bge-large-en-v1.5`. They assert the ONE
+    // thing a stub cannot — real semantic behavior — and change only when the
+    // model changes (near-never). They run on manual `workflow_dispatch` only
+    // (`model-integration.yml`), never on a schedule or per-push.
     //
     // Each resolves the staged model from `GECKO_SMOKE_MODEL_DIR` and SKIPS (green)
     // when it is unset, so `cargo test --features integration-model` stays green as
@@ -341,13 +329,13 @@ mod tests {
                 return;
             };
             // Lazy: not loaded until the first embed.
-            assert!(!e.is_loaded());
+            assert!(!e.is_loaded().unwrap());
 
             let query = e
                 .embed_query("How do I persist an OAuth access token?")
                 .unwrap();
             assert_eq!(query.len(), 1024, "bge-large is 1024-dim");
-            assert!(e.is_loaded(), "first embed must load the model");
+            assert!(e.is_loaded().unwrap(), "first embed must load the model");
 
             // L2-normalized ⇒ unit norm.
             let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();

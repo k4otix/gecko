@@ -43,13 +43,14 @@ pub struct SyncResult {
     pub concepts_updated: usize,
     pub concepts_skipped: usize,
     pub concepts_deleted: usize,
-    pub links_created: usize,
-    pub citations_created: usize,
+    pub links_attempted: usize,
+    pub citations_attempted: usize,
 }
 
 /// Escapes string literals for safe embedding in TypeQL.
 ///
-/// Retained for the CLI read path; the write path in this module uses
+/// Used by the CLI's concept-fetch read path (`gecko run`), which still
+/// interpolates a concept ID into query text; the write path in this module uses
 /// parameterized `given` queries and never interpolates values into query text.
 pub fn escape_tql(val: &str) -> String {
     val.replace('\\', "\\\\").replace('"', "\\\"")
@@ -74,8 +75,8 @@ pub struct SyncPlan {
 ///
 /// `existing` maps each stored concept-id to its stored `file-hash` (`None` when
 /// a concept exists but has no stored hash — treated as changed so it is
-/// rewritten). This is the real content-hash idempotency check (fixes C1): only
-/// concepts whose hash actually differs are rewritten.
+/// rewritten). This is the content-hash idempotency check: only concepts whose
+/// hash actually differs are rewritten.
 pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<String>>) -> SyncPlan {
     let mut plan = SyncPlan::default();
     let manifest_ids: HashSet<&str> = concepts.iter().map(|c| c.concept_id.as_str()).collect();
@@ -161,8 +162,8 @@ pub async fn sync_bundle(
 
     // 6. Hierarchy, links, citations (idempotent via not-exists guards).
     create_hierarchy(&tx, manifest).await?;
-    let links_created = create_links(&tx, manifest).await?;
-    let citations_created = create_citations(&tx, manifest).await?;
+    let links_attempted = create_links(&tx, manifest).await?;
+    let citations_attempted = create_citations(&tx, manifest).await?;
 
     tx.commit()
         .await
@@ -173,16 +174,16 @@ pub async fn sync_bundle(
         concepts_updated: plan.to_update.len(),
         concepts_skipped: plan.skipped,
         concepts_deleted: plan.to_delete.len(),
-        links_created,
-        citations_created,
+        links_attempted,
+        citations_attempted,
     };
     info!(
         inserted = result.concepts_inserted,
         updated = result.concepts_updated,
         skipped = result.concepts_skipped,
         deleted = result.concepts_deleted,
-        links = result.links_created,
-        citations = result.citations_created,
+        links_attempted = result.links_attempted,
+        citations_attempted = result.citations_attempted,
         "Bundle sync complete"
     );
     Ok(result)
@@ -330,8 +331,9 @@ async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbErro
 /// Clears the file-derived content of changed concepts while preserving the
 /// entity (and thus its containment, hierarchy, incoming links, and any
 /// extension-created relations). Removes every non-key attribute and the
-/// concept's OUTGOING links/citations; all of it is re-attached from the current
-/// file by [`attach_concept_content`] and the relation passes.
+/// concept's OUTGOING links/citations; attributes are re-attached from the
+/// current file by [`attach_concept_content`] and outgoing links/citations are
+/// re-derived by [`create_links`] and [`create_citations`].
 async fn clear_concept_content(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
     if ids.is_empty() {
         return Ok(());

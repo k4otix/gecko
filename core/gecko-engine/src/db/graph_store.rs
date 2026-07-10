@@ -24,7 +24,11 @@ use crate::db::router::TypeDbRouter;
 ///
 /// The router is behind an async mutex because its transaction accessors take
 /// `&mut self`; belief-tier writes are sparse (invariant 4) so serialising them
-/// through one connection is not a bottleneck.
+/// through one connection is not a bottleneck. This also means [`Self::read`]
+/// is serialized behind the same mutex as every write — concurrent recalls queue
+/// up one at a time on this router rather than running in parallel read
+/// transactions. That is intentional here (recall volume is low) but is worth
+/// knowing before reusing this adapter somewhere read-heavy.
 pub struct RouterGraphStore {
     router: Arc<Mutex<TypeDbRouter>>,
 }

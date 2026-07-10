@@ -12,16 +12,16 @@ serde_json.workspace = true
 chrono = { workspace = true }
 async-trait = "0.1"
 ulid = "1"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
-# Live schema-acceptance integration tests (A2 acceptance): reuse the engine's
-# TypeDB router and drive raw parameterized TQL against a throwaway db.
+# Live schema-acceptance integration tests reuse the engine's TypeDB router to
+# drive raw parameterized TQL against a throwaway database.
 gecko-engine = { path = "../gecko-engine" }
-# The concrete A5 accelerator — dev-only, to drive the real HnswIndex through the
-# writer in the A5.4/A5.7 acceptance tests. The load-bearing constraint on mem's
-# production deps is that NONE is gecko-engine (no cycle: the engine owns the driver,
-# mem owns its TQL). serde_json/chrono/async-trait/ulid are also production deps.
+# The concrete HNSW accelerator, used to drive the real index through the writer in
+# the recall/rebuild integration tests. The load-bearing constraint on mem's
+# production deps is that none is gecko-engine (no cycle: the engine owns the driver,
+# mem owns its TQL).
 gecko-semantic-index = { path = "../gecko-semantic-index" }
 typedb-driver = { workspace = true }
-futures-util = "0.3"

@@ -1,4 +1,4 @@
-//! Managed TypeDB child-process orchestration — the `orchestrated` run mode (P3).
+//! Managed TypeDB child-process orchestration — the `orchestrated` run mode.
 //!
 //! `gecko up` (orchestrated) downloads a **hard-pinned** TypeDB server once into
 //! the runtime cache, spawns it as a managed child on the configured port with a
@@ -295,13 +295,14 @@ fn spawn_server(server_bin: &Path, port: u16, data: &Path, log: &Path) -> Result
 
 /// One readiness probe: connect the driver and list databases. A successful
 /// listing is the health signal (the driver exposes no dedicated health RPC).
-async fn probe_once(endpoint: &str, username: &str, password: &str) -> bool {
+/// Uses the caller's TLS mode so a `--tls` endpoint is probed over TLS.
+async fn probe_once(endpoint: &str, username: &str, password: &str, tls: &TlsMode) -> bool {
     let config = DbConfig {
         address: endpoint.to_string(),
         database: "gecko".to_string(),
         username: username.to_string(),
         password: password.to_string(),
-        tls: TlsMode::Disabled,
+        tls: tls.clone(),
     };
     let mut router = TypeDbRouter::new(config);
     router.list_databases().await.is_ok()
@@ -312,11 +313,12 @@ async fn wait_ready(
     endpoint: &str,
     username: &str,
     password: &str,
+    tls: &TlsMode,
     timeout: Duration,
 ) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
-        if probe_once(endpoint, username, password).await {
+        if probe_once(endpoint, username, password, tls).await {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -399,17 +401,25 @@ pub async fn up(
     endpoint: &str,
     username: &str,
     password: &str,
+    tls: TlsMode,
 ) -> Result<UpOutcome> {
     // Idempotency first: if anything is already serving the endpoint (a prior
     // `gecko up`, or an externally-run server on this port), do nothing. This is
     // what `just up` / `setup.sh` rely on, and it means `gecko up` never disturbs
     // a server it did not start.
-    if probe_once(endpoint, username, password).await {
+    if probe_once(endpoint, username, password, &tls).await {
         return Ok(UpOutcome::AlreadyRunning);
     }
 
     let port = port_of(endpoint)?;
-    let server_bin = ensure_present(cache_root, PINNED_TYPEDB)?;
+    // `ensure_present` may download and extract the ~200MB dist (blocking ureq +
+    // archive I/O) — run it off the async runtime so it never stalls other tasks.
+    let server_bin = {
+        let cache_root = cache_root.to_path_buf();
+        tokio::task::spawn_blocking(move || ensure_present(&cache_root, PINNED_TYPEDB))
+            .await
+            .context("TypeDB dist acquisition task panicked")??
+    };
     let data = data_dir(cache_root, PINNED_TYPEDB);
     fs::create_dir_all(&data)
         .with_context(|| format!("cannot create data dir {}", data.display()))?;
@@ -418,10 +428,19 @@ pub async fn up(
     let pid = spawn_server(&server_bin, port, &data, &log)?;
     write_pidfile(&pidfile_path(cache_root, PINNED_TYPEDB), pid)?;
 
-    match wait_ready(endpoint, username, password, READY_TIMEOUT).await {
+    match wait_ready(endpoint, username, password, &tls, READY_TIMEOUT).await {
         Ok(()) => Ok(UpOutcome::Started { pid }),
         Err(e) => {
-            let context = cleanup_after_ready_timeout(cache_root, pid, &log);
+            // Cleanup blocks on SIGTERM → wait → SIGKILL — run it off the runtime.
+            let cache_root = cache_root.to_path_buf();
+            let log = log.clone();
+            let context = tokio::task::spawn_blocking(move || {
+                cleanup_after_ready_timeout(&cache_root, pid, &log)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                format!("spawned TypeDB (pid {pid}) never became ready; cleanup task panicked")
+            });
             Err(e.context(context))
         }
     }
@@ -621,7 +640,7 @@ mod tests {
         assert!(!pf.exists(), "stale pidfile should be cleaned up");
     }
 
-    // ── FIX 1: PID-identity guard ────────────────────────────────────────────
+    // ── PID-identity guard: never signal a recycled/foreign PID ──────────────
 
     #[test]
     #[cfg(unix)]
@@ -651,7 +670,7 @@ mod tests {
         );
     }
 
-    // ── FIX 2: dead-port readiness-timeout test ──────────────────────────────
+    // ── readiness-timeout behavior against a dead port ───────────────────────
 
     #[tokio::test]
     async fn wait_ready_times_out_quickly_against_a_dead_port() {
@@ -666,7 +685,14 @@ mod tests {
         let start = Instant::now();
         // Low, test-only timeout (the injectable `timeout` param on
         // `wait_ready`) so this runs in a couple of seconds, not 60s.
-        let result = wait_ready(&endpoint, "user", "pass", Duration::from_secs(2)).await;
+        let result = wait_ready(
+            &endpoint,
+            "user",
+            "pass",
+            &TlsMode::Disabled,
+            Duration::from_secs(2),
+        )
+        .await;
         let elapsed = start.elapsed();
 
         let err = result.expect_err("probing a dead port must fail, never hang or succeed");
@@ -681,7 +707,7 @@ mod tests {
         );
     }
 
-    // ── FIX 3: don't orphan the child on readiness timeout ───────────────────
+    // ── orphan-prevention on readiness timeout ───────────────────────────────
 
     #[test]
     #[cfg(unix)]

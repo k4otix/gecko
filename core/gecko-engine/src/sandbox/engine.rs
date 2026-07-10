@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::okf::types::ScriptEngine;
 
 // The host-import descriptor is part of the extension contract, so it lives in
-// `gecko-extension-api`. Re-exported here to preserve the
+// `gecko-extension-api`. Re-exported here under the
 // `gecko_engine::sandbox::engine::HostImportDef` path used across the engine.
 pub use gecko_extension_api::HostImportDef;
 

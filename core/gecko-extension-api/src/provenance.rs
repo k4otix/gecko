@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{ActorId, ConceptId, DateTime, MemId, RunId};
 
-/// Per-run correlation state for the retrieval-provenance write path (A5.7).
+/// Per-run correlation state for the retrieval-provenance write path.
 ///
 /// `recall` pushes each retrieval-event id together with the set of **gated
 /// candidate** concept-ids it surfaced; a later `assert_belief` in the *same run*
@@ -58,7 +58,7 @@ pub struct RunContext {
     pub source: ProvenanceSource,
     /// Ingest-time anchor for this run.
     pub occurred_at: DateTime,
-    /// Per-run retrieval-provenance correlation state (A5.7). Interior-mutable and
+    /// Per-run retrieval-provenance correlation state. Interior-mutable and
     /// shared across clones of this context; **never serialized** (it is transient
     /// run bookkeeping, not persisted provenance).
     #[serde(skip)]
@@ -77,8 +77,8 @@ impl RunContext {
         }
     }
 
-    /// Records that retrieval-event `ev` surfaced the given gated `candidates`
-    /// (A5.7). Called by `recall` when retrieval-provenance recording is on.
+    /// Records that retrieval-event `ev` surfaced the given gated `candidates`.
+    /// Called by `recall` when retrieval-provenance recording is on.
     pub fn push_retrieval(&self, ev: MemId, candidates: HashSet<ConceptId>) {
         self.scratch
             .lock()
@@ -87,8 +87,8 @@ impl RunContext {
             .push((ev, candidates));
     }
 
-    /// Correlates this run's recorded retrievals against a belief's `evidence`
-    /// (A5.7). Returns, for each retrieval whose gated candidates intersect the
+    /// Correlates this run's recorded retrievals against a belief's `evidence`.
+    /// Returns, for each retrieval whose gated candidates intersect the
     /// evidence, the retrieval-event id and the overlapping evidence ids.
     pub fn matched_retrievals(&self, evidence: &[MemId]) -> Vec<(MemId, Vec<MemId>)> {
         let scratch = self.scratch.lock().expect("run scratch mutex poisoned");
@@ -96,7 +96,7 @@ impl RunContext {
         for (ev, cands) in &scratch.retrievals {
             let overlap: Vec<MemId> = evidence
                 .iter()
-                .filter(|e| cands.contains(&ConceptId(e.0.clone())))
+                .filter(|e| cands.contains(e.as_str()))
                 .cloned()
                 .collect();
             if !overlap.is_empty() {

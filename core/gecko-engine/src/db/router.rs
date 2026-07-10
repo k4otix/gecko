@@ -64,6 +64,15 @@ impl Default for DbConfig {
     }
 }
 
+/// Builds a `map_err` closure that turns any displayable driver error into the
+/// given [`DbError`] variant via `.to_string()`. Factors out the
+/// `.map_err(|e| DbError::X(e.to_string()))` pattern repeated across this
+/// module's driver calls; `ctor` is one of `DbError`'s tuple-variant
+/// constructors (e.g. `DbError::Connection`).
+fn to_db_err<E: std::fmt::Display>(ctor: fn(String) -> DbError) -> impl Fn(E) -> DbError {
+    move |e| ctor(e.to_string())
+}
+
 /// TypeDB connection and transaction router.
 ///
 /// Manages TypeDB driver lifecycle,
@@ -88,7 +97,7 @@ impl TypeDbRouter {
         }
 
         let addresses = Addresses::try_from_address_str(&self.config.address)
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
 
         let credentials = Credentials::new(&self.config.username, &self.config.password);
 
@@ -97,7 +106,7 @@ impl TypeDbRouter {
             TlsMode::Enabled { ca_cert } => {
                 if let Some(cert_path) = ca_cert {
                     DriverTlsConfig::enabled_with_root_ca(cert_path)
-                        .map_err(|e| DbError::Connection(e.to_string()))?
+                        .map_err(to_db_err(DbError::Connection))?
                 } else {
                     DriverTlsConfig::enabled_with_native_root_ca()
                 }
@@ -108,7 +117,7 @@ impl TypeDbRouter {
 
         let driver = TypeDBDriver::new(addresses, credentials, options)
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
 
         info!(address = %self.config.address, "Connected to TypeDB");
         self.driver = Some(driver);
@@ -140,14 +149,14 @@ impl TypeDbRouter {
             .databases()
             .contains(&db_name)
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
 
         if !exists {
             driver
                 .databases()
                 .create(&db_name)
                 .await
-                .map_err(|e| DbError::Connection(e.to_string()))?;
+                .map_err(to_db_err(DbError::Connection))?;
             info!(database = %db_name, "Created database");
         }
 
@@ -155,23 +164,33 @@ impl TypeDbRouter {
     }
 
     /// Deletes a database by name if it exists (a no-op if it does not).
+    ///
+    /// Refuses to delete the sacrosanct `"gecko"` database — the one real,
+    /// long-lived database this engine ships against. Integration tests target
+    /// their own uniquely-named throwaway databases and must never reach this
+    /// guard.
     pub async fn delete_database(&mut self, name: &str) -> Result<(), DbError> {
+        if name == "gecko" {
+            return Err(DbError::Connection(
+                "refusing to delete the reserved 'gecko' database".to_string(),
+            ));
+        }
         let driver = self.driver().await?;
         let exists = driver
             .databases()
             .contains(name)
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
         if exists {
             let database = driver
                 .databases()
                 .get(name)
                 .await
-                .map_err(|e| DbError::Connection(e.to_string()))?;
+                .map_err(to_db_err(DbError::Connection))?;
             database
                 .delete()
                 .await
-                .map_err(|e| DbError::Connection(e.to_string()))?;
+                .map_err(to_db_err(DbError::Connection))?;
             info!(database = %name, "Deleted database");
         }
         Ok(())
@@ -184,7 +203,7 @@ impl TypeDbRouter {
             .databases()
             .all()
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
         Ok(all.iter().map(|d| d.name().to_string()).collect())
     }
 
@@ -197,15 +216,13 @@ impl TypeDbRouter {
         let tx = driver
             .transaction(&db_name, TransactionType::Schema)
             .await
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(to_db_err(DbError::Schema))?;
 
         tx.query(schema_content)
             .await
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(to_db_err(DbError::Schema))?;
 
-        tx.commit()
-            .await
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+        tx.commit().await.map_err(to_db_err(DbError::Schema))?;
 
         info!(database = %db_name, "Schema applied");
         Ok(())
@@ -219,7 +236,7 @@ impl TypeDbRouter {
         driver
             .transaction(&db_name, TransactionType::Write)
             .await
-            .map_err(|e| DbError::Transaction(e.to_string()))
+            .map_err(to_db_err(DbError::Transaction))
     }
 
     /// Begins a read transaction.
@@ -230,7 +247,7 @@ impl TypeDbRouter {
         driver
             .transaction(&db_name, TransactionType::Read)
             .await
-            .map_err(|e| DbError::Transaction(e.to_string()))
+            .map_err(to_db_err(DbError::Transaction))
     }
 
     /// Reads the connected server's version string (e.g. `"3.12.0"`), connecting
@@ -242,7 +259,7 @@ impl TypeDbRouter {
         let version = driver
             .server_version()
             .await
-            .map_err(|e| DbError::Connection(e.to_string()))?;
+            .map_err(to_db_err(DbError::Connection))?;
         Ok(version.version().to_string())
     }
 

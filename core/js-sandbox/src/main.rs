@@ -37,7 +37,9 @@ const HOST_CALL_CAPACITIES: [usize; 3] = [1024 * 1024, 4 * 1024 * 1024, 16 * 102
 /// - any other `ret < 0` (including a `-5` whose buffer is non-zero, i.e. a genuine
 ///   5-byte error message) → error; `(-ret)` bytes hold the UTF-8 message.
 fn host_call(ext: &str, func: &str, args_json: &Value, context: &mut Context) -> JsResult<JsValue> {
-    let args_str = serde_json::to_string(args_json).unwrap_or_else(|_| "{}".to_string());
+    let args_str = serde_json::to_string(args_json).map_err(|e| {
+        JsNativeError::error().with_message(format!("failed to serialize host call args: {e}"))
+    })?;
 
     for (i, &cap) in HOST_CALL_CAPACITIES.iter().enumerate() {
         // A freshly zeroed buffer each attempt so the overflow sentinel is

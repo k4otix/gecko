@@ -1,4 +1,4 @@
-//! Sandbox → mem host-function surface and run-id auto-binding (plan A1.6).
+//! Sandbox → mem host-function surface and run-id binding.
 //!
 //! Exec-docs call a small set of mem host functions —
 //! `remember`/`recall`/`derive`/`supersede`/`contest` — which the host delegates
@@ -8,17 +8,27 @@
 //! `run_id`/`actor`/`source`. This module implements that binding mechanism and
 //! its forgery resistance.
 //!
-//! Both bridges are host-side wired: the write ops route to [`dispatch_mem_call`]
-//! and `recall` routes to [`dispatch_mem_recall`] (an [`EpistemicReader`], shared
-//! per-run scratch → A5.7). The guest binding that lets exec-doc JS call these via a
-//! `mem.*` global now ships (`core/js-sandbox/src/main.rs`, compiled into the
-//! committed `quickjs.wasm`), and the live end-to-end path — `mem.recall` → later
-//! `mem.derive`, correlated by A5.7 — is proven in
-//! `gecko-bin/tests/mem_recall_e2e_test.rs`.
+//! The write ops route to [`dispatch_mem_call`] and `recall` routes to
+//! [`dispatch_mem_recall`]. The guest reaches these via a `mem.*` global exposed by
+//! the exec-doc JS runtime (`core/js-sandbox/src/main.rs`, compiled into the
+//! committed `quickjs.wasm`); `gecko-bin/tests/mem_recall_e2e_test.rs` exercises the
+//! full `mem.recall` → later `mem.derive` path end to end.
+//!
+//! ## Shared per-run scratch
+//!
+//! The host mints one [`RunContext`] for the whole run and threads the same
+//! reference through every mem call. Its `run_id`/`actor`/`source` are the host's,
+//! un-forgeable by the sandbox (invariant 2), and its `scratch` is shared across
+//! every call in the run. That shared scratch is what lets a `recall` populate
+//! `ctx.scratch.retrievals` and a later `assert_belief` in the same run read it
+//! back, correlating the synthesized belief to the retrieval that informed it
+//! (retrieval-provenance). Both the write bridge and the reader bridge borrow the
+//! same `ctx`, so the correlation holds across the reader→writer boundary.
 //!
 //! [`EpistemicWriter`]: gecko_extension_api::EpistemicWriter
 //! [`EpistemicReader`]: gecko_extension_api::EpistemicReader
 
+use std::future::Future;
 use std::sync::Arc;
 
 use gecko_extension_api::{
@@ -72,7 +82,7 @@ impl MemHostFn {
         })
     }
 
-    /// The full mem host-fn set (for host-import registration).
+    /// The full mem host-fn set (used by the name round-trip test, its only caller).
     pub fn all() -> [MemHostFn; 5] {
         [
             Self::Remember,
@@ -111,7 +121,7 @@ pub struct StampedMemCall {
 
 /// Binds a host-minted [`RunContext`] to a sandbox-supplied call.
 ///
-/// This is the forgery-resistance mechanism (invariant 2 / acceptance bullet 3):
+/// This is the forgery-resistance mechanism (invariant 2):
 /// the returned [`StampedMemCall`] always carries the host's `run_id`, even if
 /// `args` tries to smuggle a different `run_id`/`actor`/`source`. Those keys are
 /// stripped from the payload and replaced by the context's values.
@@ -131,7 +141,7 @@ pub fn bind_mem_call(ctx: &RunContext, func: MemHostFn, mut args: Value) -> Stam
     }
 }
 
-// ── Async writer dispatch + the async→sync sandbox bridge (plan A4.2) ─────────
+// ── Async writer dispatch + the async→sync sandbox bridge ────────────────────
 
 /// Reads a required string field, erroring with the field name if absent/non-string.
 fn req_str(payload: &Value, key: &str) -> Result<String, String> {
@@ -165,17 +175,30 @@ fn opt_dt(payload: &Value, key: &str, default: DateTime) -> DateTime {
         .unwrap_or(default)
 }
 
+/// Builds a [`BeliefDraft`] from the sandbox payload, owned by the run's actor.
+///
+/// Entrenchment is left `None`: a fresh assertion derives it from the method (see
+/// `entrenchment_for`), and a supersede inherits the old belief's tier while the
+/// invariant-7 guard blocks a downgrade. The sandbox never sets it directly.
+fn belief_draft_from_payload(ctx: &RunContext, p: &Value) -> Result<BeliefDraft, String> {
+    Ok(BeliefDraft {
+        text: req_str(p, "text")?,
+        owner: ctx.actor.clone(),
+        visibility: Visibility::Private,
+        confidence: p.get("confidence").and_then(Value::as_f64),
+        entrenchment: None,
+    })
+}
+
 /// Dispatches a host-stamped mem call to the injected [`EpistemicWriter`].
 ///
-/// `ctx` is the **per-run** [`RunContext`] the host minted once for the whole run
-/// (never reconstructed per call) — so its `run_id`/`actor`/`source` are the
-/// host's, un-forgeable by the sandbox (invariant 2), and its `scratch` is shared
-/// across every mem call in the run. That shared scratch is what lets a `recall`
-/// populate `ctx.scratch.retrievals` and a later `assert_belief` in the same run
-/// read it back (A5.7 retrieval-provenance correlation). `call` only supplies the
-/// already-stamped `run_id`/`actor`/`source`/`payload` (see [`bind_mem_call`]); it
-/// must have been stamped from this same `ctx`. `recall` is a *reader* op and is
-/// not reachable through this write bridge (the reader path is wired separately).
+/// `ctx` is the per-run [`RunContext`] the host minted once for the whole run; its
+/// `run_id`/`actor`/`source` are the host's, un-forgeable by the sandbox
+/// (invariant 2). See module docs for the shared-scratch mechanism. `call` only
+/// supplies the already-stamped `run_id`/`actor`/`source`/`payload` (see
+/// [`bind_mem_call`]); it must have been stamped from this same `ctx`. `recall` is a
+/// *reader* op and is not reachable through this write bridge (the reader path is
+/// wired separately).
 pub async fn dispatch_mem_call(
     writer: &Arc<dyn EpistemicWriter>,
     ctx: &RunContext,
@@ -196,15 +219,7 @@ pub async fn dispatch_mem_call(
             Ok(json!({ "id": id.0 }))
         }
         MemHostFn::Derive => {
-            let belief = BeliefDraft {
-                text: req_str(p, "text")?,
-                owner: ctx.actor.clone(),
-                visibility: Visibility::Private,
-                confidence: p.get("confidence").and_then(Value::as_f64),
-                // Entrenchment for a fresh assertion is derived from the method
-                // (see `entrenchment_for`); the sandbox does not set it here.
-                entrenchment: None,
-            };
+            let belief = belief_draft_from_payload(ctx, p)?;
             let evidence = mem_ids(p, "evidence");
             let method = p
                 .get("method")
@@ -219,15 +234,7 @@ pub async fn dispatch_mem_call(
         }
         MemHostFn::Supersede => {
             let old = MemId::new(req_str(p, "old")?);
-            let belief = BeliefDraft {
-                text: req_str(p, "text")?,
-                owner: ctx.actor.clone(),
-                visibility: Visibility::Private,
-                confidence: p.get("confidence").and_then(Value::as_f64),
-                // None ⇒ supersede inherits the old belief's entrenchment tier and
-                // enforces the invariant-7 guard against a downgrade.
-                entrenchment: None,
-            };
+            let belief = belief_draft_from_payload(ctx, p)?;
             let reason = p.get("reason").and_then(Value::as_str).unwrap_or("");
             let id = writer
                 .supersede(ctx, old, belief, reason)
@@ -257,10 +264,8 @@ const DEFAULT_RECALL_MAX_CHUNKS: usize = 8;
 
 /// Dispatches a host-stamped `mem.recall` to the injected [`EpistemicReader`].
 ///
-/// The reader shares the SAME per-run [`RunContext`] as the write bridge, so a
-/// recall stamps its `retrieval-event` into `ctx.scratch` and a later
-/// `assert_belief` in the run reads it back — that shared scratch is the A5.7
-/// retrieval-provenance correlation seam. The sandbox supplies only the query
+/// The reader shares the SAME per-run [`RunContext`] as the write bridge. See module
+/// docs for the shared-scratch mechanism. The sandbox supplies only the query
 /// payload; `run_id`/`actor`/`source` are the host's (already stripped + stamped by
 /// [`bind_mem_call`]). Returns `{ "chunks": [{ id, text, score }, …] }`.
 pub async fn dispatch_mem_recall(
@@ -311,6 +316,18 @@ pub async fn dispatch_mem_recall(
     Ok(json!({ "chunks": chunks }))
 }
 
+/// Drives a mem-bridge future to completion on the ambient multi-thread runtime.
+///
+/// The callback runs inside the wasm executor's async host bridge, so it is already
+/// on a runtime worker; `block_in_place` hands that worker back to the scheduler
+/// while the writer/reader's DB I/O completes, then `block_on` awaits the result.
+fn block_on_bridge<F>(handle: &tokio::runtime::Handle, fut: F) -> Result<Value, String>
+where
+    F: Future<Output = Result<Value, String>>,
+{
+    tokio::task::block_in_place(|| handle.block_on(fut))
+}
+
 /// Builds the sandbox [`ExtensionCallback`] that routes the mem host fns to the
 /// injected [`EpistemicWriter`] — and `mem.recall` to the optional
 /// [`EpistemicReader`] reader bridge when one is wired — falling through to `base`
@@ -352,20 +369,18 @@ pub fn epistemic_extension_callback(
             // Reader op → reader bridge (when wired); everything else → write bridge.
             if func == MemHostFn::Recall {
                 let reader = reader.clone();
-                return tokio::task::block_in_place(|| {
-                    handle.block_on(async {
-                        match reader.as_ref() {
-                            Some(r) => dispatch_mem_recall(r, &ctx, call).await,
-                            None => Err("mem.recall is unavailable: no epistemic \
-                                         reader is wired for this run"
-                                .to_string()),
-                        }
-                    })
+                return block_on_bridge(&handle, async {
+                    match reader.as_ref() {
+                        Some(r) => dispatch_mem_recall(r, &ctx, call).await,
+                        None => Err("mem.recall is unavailable: no epistemic \
+                                     reader is wired for this run"
+                            .to_string()),
+                    }
                 });
             }
             let writer = writer.clone();
-            return tokio::task::block_in_place(|| {
-                handle.block_on(async { dispatch_mem_call(&writer, &ctx, call).await })
+            return block_on_bridge(&handle, async {
+                dispatch_mem_call(&writer, &ctx, call).await
             });
         }
         base(ext_name, func_name, args)

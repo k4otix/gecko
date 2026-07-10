@@ -1,4 +1,4 @@
-//! [`HnswIndex`] — the concrete HNSW retrieval accelerator (plan A5.1), plus the
+//! [`HnswIndex`] — the concrete HNSW retrieval accelerator, plus the
 //! [`NoopIndex`] used when the accelerator is disabled.
 //!
 //! `HnswIndex` wraps an `hnsw_rs` ANN graph over **L2-normalized** vectors under a
@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gecko_extension_api::{ConceptId, EpistemicError, FilterMeta, SemanticIndex, Visibility};
 use hnsw_rs::prelude::{DistCosine, Hnsw, Neighbour};
@@ -106,7 +107,7 @@ impl Inner {
     }
 }
 
-/// A native-Rust HNSW semantic index (plan A5.1).
+/// A native-Rust HNSW semantic index.
 pub struct HnswIndex {
     inner: RwLock<Inner>,
     /// Immutable after construction — the embedder identity the index is bound to.
@@ -114,6 +115,13 @@ pub struct HnswIndex {
     /// hand back a borrow.
     model_id: String,
     path: PathBuf,
+    /// Whether `set_searching_mode(true)` has already been toggled on the current
+    /// `Inner.hnsw`. `hnsw_rs::Hnsw::search` takes `&self`, so once this is set,
+    /// concurrent queries only need a READ lock; only the one-time toggle (which
+    /// needs `&mut self`) takes the WRITE lock. Reset alongside `Inner` (see
+    /// [`reset`](SemanticIndex::reset)) since a freshly built `Hnsw` starts with
+    /// searching mode unset again.
+    searching_mode_set: AtomicBool,
 }
 
 impl HnswIndex {
@@ -124,7 +132,7 @@ impl HnswIndex {
     /// entries are replayed (a warm start). Otherwise — missing file, unreadable /
     /// corrupt snapshot, dimension change, or a **model-id bump** — the index
     /// cold-starts **empty** under the new identity, so [`is_empty`](SemanticIndex::is_empty)
-    /// signals the writer to rebuild from the graph (A5.4). The header is always
+    /// signals the writer to rebuild from the graph. The header is always
     /// adopted from the caller's `model_id`, so [`model_id`](SemanticIndex::model_id)
     /// matches the embedder after a bump.
     pub fn open(path: impl AsRef<Path>, model_id: &str, dim: usize) -> Result<Self> {
@@ -148,6 +156,7 @@ impl HnswIndex {
             inner: RwLock::new(inner),
             model_id: model_id.to_string(),
             path,
+            searching_mode_set: AtomicBool::new(false),
         })
     }
 
@@ -212,6 +221,29 @@ impl SemanticIndex for HnswIndex {
         self.persist(&inner)
     }
 
+    fn upsert_many(&self, items: Vec<(ConceptId, Vec<f32>, FilterMeta)>) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EpistemicError::Index("index lock poisoned".into()))?;
+        for (id, v, meta) in items {
+            if v.len() != inner.dim {
+                return Err(EpistemicError::Index(format!(
+                    "dimension mismatch: index dim {}, vector dim {}",
+                    inner.dim,
+                    v.len()
+                )));
+            }
+            inner.insert_entry(id, meta, v);
+        }
+        // A single persist for the whole batch — this is the whole point: a bulk
+        // load of n vectors costs one snapshot rewrite, not n.
+        self.persist(&inner)
+    }
+
     fn remove(&self, id: ConceptId) -> Result<()> {
         let mut inner = self
             .inner
@@ -225,18 +257,29 @@ impl SemanticIndex for HnswIndex {
     }
 
     fn query(&self, v: &[f32], k: usize, pre: &FilterMeta) -> Result<Vec<(ConceptId, f32)>> {
-        let mut inner = self
+        // `set_searching_mode` needs `&mut self`; `search` only needs `&self`. Flip
+        // the mode exactly once (briefly under the WRITE lock) so every other query
+        // can proceed under a READ lock instead of serializing on one writer.
+        if !self.searching_mode_set.load(Ordering::Acquire) {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|_| EpistemicError::Index("index lock poisoned".into()))?;
+            inner.hnsw.set_searching_mode(true);
+            self.searching_mode_set.store(true, Ordering::Release);
+        }
+
+        let inner = self
             .inner
-            .write()
+            .read()
             .map_err(|_| EpistemicError::Index("index lock poisoned".into()))?;
         if inner.entries.is_empty() || k == 0 {
             return Ok(Vec::new());
         }
         // Over-search to absorb tombstoned ids the ANN graph still returns, capped
-        // at the live point count.
+        // at the total inserted points (includes tombstones, not just live ones).
         let nb_point = inner.hnsw.get_nb_point();
         let knbn = k.saturating_mul(2).max(k).min(nb_point.max(1));
-        inner.hnsw.set_searching_mode(true);
         let neighbours: Vec<Neighbour> = inner.hnsw.search(v, knbn, params::EF_SEARCH);
 
         let mut out: Vec<(ConceptId, f32)> = Vec::new();
@@ -273,6 +316,9 @@ impl SemanticIndex for HnswIndex {
         if let Ok(mut inner) = self.inner.write() {
             let dim = inner.dim;
             *inner = Inner::empty(dim);
+            // The fresh `Hnsw` starts with searching mode unset again, so the next
+            // `query` must re-toggle it.
+            self.searching_mode_set.store(false, Ordering::Relaxed);
             // Persist the now-empty state so a crash mid-rebuild doesn't leave a
             // stale snapshot on disk. Best-effort: ignore a persist error here.
             let _ = self.persist(&inner);
@@ -282,7 +328,7 @@ impl SemanticIndex for HnswIndex {
 
 /// The disabled-accelerator index: every `query` returns empty so `recall` falls
 /// back to the non-vector path, and writes are inert. Provided so the trait seam
-/// stays swappable even with no backend (plan A5.1/A5.5). `gecko-bin` wires the
+/// stays swappable even with no backend. `gecko-bin` wires the
 /// no-index writer directly when the accelerator is off, but this exists for the
 /// contract and for callers that prefer an explicit no-op index.
 #[derive(Default)]

@@ -1,7 +1,7 @@
 //! OKF concept and bundle parsing.
 //!
-//! Reads markdown files with YAML frontmatter, extracts code blocks and links, and resolves relative paths into normalized concept IDs.
-//! extracts typed metadata, and assembles bundles from directory trees.
+//! Reads markdown files with YAML frontmatter, extracts typed metadata, code blocks, and
+//! links, and assembles bundles from directory trees.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -57,12 +57,34 @@ pub fn file_to_concept_id(file_path: &Path, bundle_root: &Path) -> String {
 
     // Strip the .md extension and convert to forward-slash posix path
     let without_ext = relative.with_extension("");
-    without_ext.to_string_lossy().replace('\\', "/")
+    to_posix_string(&without_ext)
+}
+
+/// Converts a path to a forward-slash ("posix") string, regardless of platform.
+fn to_posix_string(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// Computes the SHA-256 hash of a byte slice as a lowercase hex string.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+/// Wraps an I/O error with the path that triggered it.
+fn io_err(path: &Path, source: std::io::Error) -> ParseError {
+    ParseError::Io {
+        path: path.display().to_string(),
+        source,
+    }
 }
 
 /// Returns true if the file matches reserved names (index.md, log.md).
-///
-/// Checks if a file path belongs to a reserved directory or is a dotfile/configuration file.
 pub fn is_reserved_file(file_path: &Path) -> bool {
     if let Some(name) = file_path.file_name() {
         let name_lower = name.to_string_lossy().to_lowercase();
@@ -72,22 +94,10 @@ pub fn is_reserved_file(file_path: &Path) -> bool {
     }
 }
 
-/// Computes SHA-256 hash of a file's raw content.
-///
-/// Computes a SHA256 hash of the raw file content.
+/// Computes the SHA-256 hash of a file's raw content, as a lowercase hex string.
 pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
-    let content = std::fs::read(file_path).map_err(|e| ParseError::Io {
-        path: file_path.display().to_string(),
-        source: e,
-    })?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(&content);
-    let result = hasher.finalize();
-    Ok(result
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>())
+    let content = std::fs::read(file_path).map_err(|e| io_err(file_path, e))?;
+    Ok(sha256_hex(&content))
 }
 
 /// Splits raw file content into YAML frontmatter and markdown body.
@@ -116,24 +126,12 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// Parses an individual OKF concept document.
-///
-/// Parses a markdown file into an `OkfConcept` by extracting frontmatter and links.
+/// Parses a single OKF concept markdown file into an `OkfConcept`, extracting frontmatter,
+/// links, and code.
 pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept, ParseError> {
-    let raw_content = std::fs::read_to_string(file_path).map_err(|e| ParseError::Io {
-        path: file_path.display().to_string(),
-        source: e,
-    })?;
+    let raw_content = std::fs::read_to_string(file_path).map_err(|e| io_err(file_path, e))?;
 
-    let file_hash = {
-        let mut hasher = Sha256::new();
-        hasher.update(raw_content.as_bytes());
-        let result = hasher.finalize();
-        result
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
-    };
+    let file_hash = sha256_hex(raw_content.as_bytes());
 
     let (yaml_str, body) = split_frontmatter(&raw_content);
 
@@ -193,14 +191,10 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
         .collect();
 
     let concept_id = file_to_concept_id(file_path, bundle_root);
-    let source_path = file_path
-        .strip_prefix(bundle_root)
-        .unwrap_or(file_path)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let source_path = to_posix_string(file_path.strip_prefix(bundle_root).unwrap_or(file_path));
 
     // One program per concept: pull only the fences whose language matches the
-    // declared engine and concatenate them in document order (C3 / WS3).
+    // declared engine and concatenate them in document order.
     let program = extract_program(body, engine.as_ref());
 
     Ok(OkfConcept {
@@ -224,16 +218,12 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     })
 }
 
-/// Parses a full directory tree as an OKF Bundle.
-///
-/// Recursively parses a directory bundle to find all OKF concepts.
+/// Recursively parses a directory tree into a complete `OkfBundle`, finding all OKF
+/// concepts.
 pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
     let bundle_root = bundle_root_path
         .canonicalize()
-        .map_err(|e| ParseError::Io {
-            path: bundle_root_path.display().to_string(),
-            source: e,
-        })?;
+        .map_err(|e| io_err(bundle_root_path, e))?;
 
     // Bundle identity/metadata comes from an optional `bundle.json` manifest,
     // falling back to the directory name. This is metadata only — concept IDs are
@@ -268,7 +258,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
         let parent_dir = rel_path.parent();
 
         if let Some(parent) = parent_dir {
-            let parent_str = parent.to_string_lossy().replace('\\', "/");
+            let parent_str = to_posix_string(parent);
 
             if parent_str.is_empty() || parent_str == "." {
                 // Root-level concept
@@ -285,11 +275,11 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
                 // Walk up parent directories to connect the directory hierarchy.
                 let mut current = parent.to_path_buf();
                 while let Some(grandparent) = current.parent() {
-                    let gp_str = grandparent.to_string_lossy().replace('\\', "/");
+                    let gp_str = to_posix_string(grandparent);
                     if gp_str.is_empty() || gp_str == "." {
                         break;
                     }
-                    let child_str = current.to_string_lossy().replace('\\', "/");
+                    let child_str = to_posix_string(&current);
 
                     hierarchy.push(HierarchyEdge {
                         parent_id: gp_str,
@@ -324,10 +314,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
 pub fn bundle_name(bundle_root_path: &Path) -> Result<String, ParseError> {
     let bundle_root = bundle_root_path
         .canonicalize()
-        .map_err(|e| ParseError::Io {
-            path: bundle_root_path.display().to_string(),
-            source: e,
-        })?;
+        .map_err(|e| io_err(bundle_root_path, e))?;
     Ok(read_bundle_manifest(&bundle_root).0)
 }
 
@@ -370,16 +357,10 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
 fn walk_md_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, ParseError> {
     let mut results = Vec::new();
 
-    let entries = std::fs::read_dir(dir).map_err(|e| ParseError::Io {
-        path: dir.display().to_string(),
-        source: e,
-    })?;
+    let entries = std::fs::read_dir(dir).map_err(|e| io_err(dir, e))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| ParseError::Io {
-            path: dir.display().to_string(),
-            source: e,
-        })?;
+        let entry = entry.map_err(|e| io_err(dir, e))?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -631,7 +612,7 @@ def calculate_monthly_revenue():
 
     #[test]
     fn test_parse_concept_program_concatenates_matching_fences() {
-        // Engine-matched extraction (WS3): only fences whose language maps to the
+        // Engine-matched extraction: only fences whose language maps to the
         // declared engine form the program, concatenated in document order; other
         // languages (here python) are treated as prose.
         let dir = tempfile::tempdir().unwrap();

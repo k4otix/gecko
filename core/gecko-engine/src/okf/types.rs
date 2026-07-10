@@ -1,7 +1,7 @@
 //! Core OKF data structures.
 //!
-//! Core data models representing Open Knowledge Format (OKF) concepts, bundles, and relations.
-//! frontmatter fields (consumes, produces, engine, scopes, timeout_ms).
+//! Data models for Open Knowledge Format (OKF) concepts, bundles, and relations, including
+//! GECKO-specific frontmatter fields (consumes, produces, engine, scopes, timeout_ms).
 
 use std::collections::HashMap;
 
@@ -10,10 +10,9 @@ use serde::{Deserialize, Serialize};
 
 /// The scripting engine to use for executing a concept's program.
 ///
-/// GECKO runs *all* synced code as untrusted inside one WebAssembly sandbox
-/// boundary, so QuickJS (JavaScript, via a WASM guest) is the only MVP engine.
-/// Native Rhai was dropped in the all-WASM rewrite; additional engines can return
-/// later as WASM guest artifacts, which is why this stays an enum.
+/// GECKO runs all synced code as untrusted inside one WebAssembly sandbox boundary.
+/// QuickJS (JavaScript, via a WASM guest) is the only supported engine; this stays an
+/// enum so additional WASM-guest engines can be added later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptEngine {
@@ -40,9 +39,7 @@ impl ScriptEngine {
     }
 }
 
-/// A single parsed OKF concept document.
-///
-/// Represents a parsed OKF document with its metadata and extracted content.
+/// A single parsed OKF concept document, with its metadata and extracted content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OkfConcept {
     /// Path-based concept identifier (e.g. "tables/orders").
@@ -94,9 +91,7 @@ pub struct OkfConcept {
     pub timeout_ms: Option<u64>,
 }
 
-/// A relative markdown link from one concept to another.
-///
-/// Represents an internal markdown link between two concepts.
+/// A relative markdown link between two concepts within the bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OkfLink {
     pub source_id: String,
@@ -104,9 +99,7 @@ pub struct OkfLink {
     pub link_text: String,
 }
 
-/// An external markdown citation link.
-///
-/// Represents an external reference or citation found in a concept.
+/// An external citation link (e.g. a URL) found in a concept's body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OkfCitation {
     pub source_id: String,
@@ -114,9 +107,7 @@ pub struct OkfCitation {
     pub link_text: String,
 }
 
-/// Parent-child directory hierarchy edge.
-///
-/// Represents a hierarchical directory structure relationship.
+/// A parent-child directory hierarchy edge.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HierarchyEdge {
     /// Empty string if parent is the root.
@@ -124,9 +115,8 @@ pub struct HierarchyEdge {
     pub child_id: String,
 }
 
-/// Parsed content of a complete OKF bundle.
-///
-/// Represents a collection of OKF concepts, typically parsed from a directory.
+/// The parsed content of a complete OKF bundle: its concepts, links, citations, and
+/// directory hierarchy.
 ///
 /// GECKO is single-bundle-scoped: one bundle maps to one TypeDB database, so
 /// concept IDs are pure OKF bundle-relative paths (e.g. `tables/orders`) with no

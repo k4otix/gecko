@@ -1,4 +1,4 @@
-//! Model acquisition — the `gecko model fetch` machinery (plan P2).
+//! Model acquisition — the `gecko model fetch` machinery.
 //!
 //! This module is **compiled always** and is deliberately candle-free: it only
 //! downloads bytes. It is the SINGLE implementation used by both the
@@ -12,7 +12,7 @@
 //! pins exactly which revision is fetched, so a silent upstream reweight can't
 //! masquerade as the same model.
 //!
-//! ## Acquisition priority (plan P2)
+//! ## Acquisition priority
 //! 1. Present in the dest dir (all required files) → no-op cache hit.
 //! 2. Otherwise download the required files (weights, tokenizer, config) from the
 //!    source — HuggingFace Hub by default, or a configured mirror base URL —
@@ -20,6 +20,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
@@ -178,7 +179,7 @@ pub fn is_cached(dir: &Path) -> bool {
     })
 }
 
-/// Fetches `model_id` into `dest_dir` (plan P2 acquisition priority).
+/// Fetches `model_id` into `dest_dir` (see the acquisition priority above).
 ///
 /// 1. If every required file is already present → [`FetchOutcome::CacheHit`]
 ///    (unless `force`), so a second run is a no-op.
@@ -249,8 +250,14 @@ fn download_file(url: &str, dest: &Path) -> Result<()> {
         .progress_chars("=>-"),
     );
 
-    let tmp = dest.with_extension("part");
-    // Download into the `.part` temp; on ANY failure remove it so a retry never
+    // Unique per invocation (process id + a monotonic counter), not just `dest`'s
+    // basename: two concurrent fetches into the same dest dir (e.g. two processes,
+    // or two threads within one, racing to stage the same model) must not share a
+    // temp path, or one's partial bytes corrupt the other's.
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dest.with_extension(format!("part.{}.{unique}", std::process::id()));
+    // Download into the unique temp; on ANY failure remove it so a retry never
     // trips over (or resumes from) a truncated partial file.
     let download = (|| -> Result<()> {
         let file = std::fs::File::create(&tmp)

@@ -68,9 +68,9 @@ async fn no_drag_sync_creates_records_and_zero_epistemic_apparatus() {
         result.concepts_inserted
     );
     assert!(
-        result.links_created > 0,
+        result.links_attempted > 0,
         "sync must create OKF links, got {}",
-        result.links_created
+        result.links_attempted
     );
 
     // ...and the live graph agrees: concepts + links present.

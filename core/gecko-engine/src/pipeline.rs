@@ -55,8 +55,11 @@ pub struct PipelineResult {
     pub handle_id: Uuid,
     /// The sandbox execution result.
     pub execution: ExecutionResult,
-    /// Whether the execution was recorded (transaction committed).
-    pub committed: bool,
+    /// Whether the execution was successfully recorded/logged by
+    /// [`record_execution`]. This is a logging outcome, not database durability:
+    /// the current `record_execution` only logs, so `true` means the log call
+    /// succeeded, not that anything was committed to TypeDB.
+    pub recorded: bool,
 }
 
 /// Errors during pipeline execution.
@@ -74,7 +77,7 @@ pub enum PipelineError {
 /// 1. Trigger (caller supplies the [`PlaybookRun`])
 /// 2. Handle allocation from the [`StateRegistry`]
 /// 3. Sandbox instantiation + execution in the one WASM boundary
-/// 4. Record the execution (commit/rollback)
+/// 4. Record the execution (logged on success; skipped on failure)
 /// 5. RAII cleanup (automatic when the state handle drops)
 ///
 /// All synced code is untrusted and runs in the WASM sandbox; the run's granted
@@ -108,8 +111,8 @@ pub async fn execute_playbook(
         )
         .await;
 
-    // Step 4: record on success; roll back (record nothing) on failure.
-    let committed = if execution.success {
+    // Step 4: record on success; skip recording on failure.
+    let recorded = if execution.success {
         match record_execution(db, run.concept_id, &execution) {
             Ok(()) => {
                 info!(concept_id = %run.concept_id, "Pipeline: execution recorded");
@@ -124,7 +127,7 @@ pub async fn execute_playbook(
         error!(
             concept_id = %run.concept_id,
             error = execution.error.as_deref().unwrap_or("unknown"),
-            "Pipeline: execution failed, rolling back"
+            "Pipeline: execution failed, not recording"
         );
         false
     };
@@ -133,7 +136,7 @@ pub async fn execute_playbook(
     Ok(PipelineResult {
         handle_id,
         execution,
-        committed,
+        recorded,
     })
 }
 

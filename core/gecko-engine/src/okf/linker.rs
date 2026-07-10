@@ -1,15 +1,17 @@
 //! Link and code block extraction from markdown bodies.
 //!
-//! Link extraction and path resolution.
+//! Extracts markdown links and code fences from concept bodies, and resolves relative
+//! link paths to concept IDs.
 
 use regex::Regex;
 use std::sync::LazyLock;
 
 use super::types::{OkfCitation, OkfLink, ScriptEngine};
 
-/// Matches markdown links `[text](target)`, excluding images `![text](target)`.
+/// Matches markdown links `[text](target)`. Group 1 captures an optional leading `!`
+/// (marking an image link), group 2 the link text, group 3 the target.
 static LINK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[^!])\[([^\]]+)\]\(([^)]+)\)").unwrap());
+    LazyLock::new(|| Regex::new(r"(!?)\[([^\]]+)\]\(([^)]+)\)").unwrap());
 
 /// Matches fenced code blocks, capturing the info-string language tag (group 1)
 /// and the block body (group 2). Extra info-string tokens after the language are
@@ -17,16 +19,18 @@ static LINK_RE: LazyLock<Regex> =
 static CODE_BLOCK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"```(\w*)[^\n]*\n([\s\S]*?)\n```").unwrap());
 
-/// Extracts internal concept links and external citations from a markdown body.
-///
-/// Extracts all markdown links (ignoring image links) and attempts to resolve them.
+/// Extracts internal concept links and external citations from a markdown body, resolving
+/// internal targets relative to the source concept.
 pub fn extract_links(body: &str, source_concept_id: &str) -> (Vec<OkfLink>, Vec<OkfCitation>) {
     let mut links = Vec::new();
     let mut citations = Vec::new();
 
     for cap in LINK_RE.captures_iter(body) {
-        let text = cap[1].trim();
-        let target = cap[2].trim();
+        if &cap[1] == "!" {
+            continue; // image link, not a markdown link
+        }
+        let text = cap[2].trim();
+        let target = cap[3].trim();
 
         if target.starts_with("http://") || target.starts_with("https://") {
             // External citation
@@ -90,9 +94,8 @@ pub fn extract_program(body: &str, engine: Option<&ScriptEngine>) -> Option<Stri
     }
 }
 
-/// Resolves a relative link path to a normalized concept ID.
-///
-/// Resolves a potentially relative path against a source document's namespace.
+/// Resolves a (possibly relative) markdown link target to a normalized concept ID,
+/// relative to the source concept's directory.
 ///
 /// # Example
 /// ```
@@ -202,6 +205,21 @@ And [Config](config.md#section)."#;
         let (links, _) = extract_links(body, "root");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].link_text, "real");
+    }
+
+    #[test]
+    fn adjacent_links_both_extracted() {
+        // Regression test: two links with no separating character between them must
+        // both be extracted, not have the second one swallowed by the first match.
+        let (links, _) = extract_links("[a](a.md)[c](c.md)", "root");
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].target_id, "a");
+        assert_eq!(links[1].target_id, "c");
+
+        // Image links are still skipped even when adjacent to a real link.
+        let (links, _) = extract_links("![img](x.md)[real](y.md)", "root");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_id, "y");
     }
 
     #[test]

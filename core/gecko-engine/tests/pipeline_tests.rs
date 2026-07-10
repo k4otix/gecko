@@ -54,7 +54,7 @@ async fn test_pipeline_executes_program() {
         result.execution.error
     );
     assert_eq!(result.execution.output, serde_json::json!({ "answer": 42 }));
-    assert!(result.committed, "a successful run should be recorded");
+    assert!(result.recorded, "a successful run should be recorded");
 }
 
 #[tokio::test]
@@ -88,5 +88,5 @@ async fn test_pipeline_enforces_scopes() {
     .expect("pipeline returns Ok even when the script fails");
 
     assert!(!result.execution.success, "ungranted host call must fail");
-    assert!(!result.committed, "a failed run must not be recorded");
+    assert!(!result.recorded, "a failed run must not be recorded");
 }
