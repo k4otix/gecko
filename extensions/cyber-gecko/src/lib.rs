@@ -4,6 +4,8 @@
 //!
 //! Provides domain-specific TypeDB schema types (indicators, assets, threat actors)
 //! and host-imported functions for security operations (e.g., host isolation).
+pub mod detect;
+pub mod stix;
 
 use gecko_extension_api::{GeckoExtension, HostImportDef};
 
@@ -11,13 +13,18 @@ use gecko_extension_api::{GeckoExtension, HostImportDef};
 ///
 /// Design §4.2.
 const CYBER_SCHEMA: &str = include_str!("../schema/cyber_schema.tql");
+const CYBER_FUNCTIONS: &str = include_str!("../schema/cyber_functions.tql");
 
 /// Cyber threat intelligence extension.
-pub struct CyberGecko;
+pub struct CyberGecko {
+    schema_string: String,
+}
 
 impl CyberGecko {
     pub fn new() -> Self {
-        Self
+        Self {
+            schema_string: format!("{}\n{}", CYBER_SCHEMA, CYBER_FUNCTIONS),
+        }
     }
 }
 
@@ -39,18 +46,30 @@ impl GeckoExtension for CyberGecko {
     }
 
     fn schema(&self) -> &str {
-        CYBER_SCHEMA
+        &self.schema_string
     }
 
     fn host_imports(&self) -> Vec<HostImportDef> {
         vec![
             HostImportDef {
-                name: "mde_isolate".to_string(),
-                description: "Isolate a host via Microsoft Defender for Endpoint API".to_string(),
+                name: "claim".to_string(),
+                description: "Assert a detection claim".to_string(),
             },
             HostImportDef {
-                name: "sentinel_query".to_string(),
-                description: "Execute a KQL query against Microsoft Sentinel".to_string(),
+                name: "disposition".to_string(),
+                description: "Observe an alert disposition".to_string(),
+            },
+            HostImportDef {
+                name: "coverage_gaps".to_string(),
+                description: "List undetected techniques".to_string(),
+            },
+            HostImportDef {
+                name: "blinded".to_string(),
+                description: "List blinded detections".to_string(),
+            },
+            HostImportDef {
+                name: "precision".to_string(),
+                description: "Calculate detection precision over a window".to_string(),
             },
         ]
     }
@@ -58,36 +77,14 @@ impl GeckoExtension for CyberGecko {
     fn call_import(
         &self,
         name: &str,
-        args: &serde_json::Value,
+        _args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         match name {
-            "mde_isolate" => {
-                let machine_id = args
-                    .get("machine_id")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| "mde_isolate: missing required 'machine_id'".to_string())?;
-                // Mock isolation
-                Ok(serde_json::json!({
-                    "status": "success",
-                    "action": "isolated",
-                    "machine_id": machine_id
-                }))
-            }
-            "sentinel_query" => {
-                let query = args
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| "sentinel_query: missing required 'query'".to_string())?;
-                // Mock query result
-                Ok(serde_json::json!({
-                    "status": "success",
-                    "results": [
-                        {"query": query, "found": true}
-                    ]
-                }))
-            }
+            "claim" => crate::detect::claim(_args),
+            "disposition" => crate::detect::disposition(_args),
+            "coverage_gaps" => crate::detect::coverage_gaps(_args),
+            "blinded" => crate::detect::blinded(_args),
+            "precision" => crate::detect::precision(_args),
             _ => Err(format!("Unknown import: {name}")),
         }
     }

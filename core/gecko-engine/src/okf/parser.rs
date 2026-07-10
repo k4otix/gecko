@@ -200,6 +200,7 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     Ok(OkfConcept {
         concept_id,
         concept_type,
+        type_hint: None,
         title,
         description,
         resource_uri,

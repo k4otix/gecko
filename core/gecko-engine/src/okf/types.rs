@@ -48,6 +48,10 @@ pub struct OkfConcept {
     /// Required OKF concept type (e.g. "Table", "Playbook").
     pub concept_type: String,
 
+    /// Optional specific sub-type to insert as, instead of the generic `concept`.
+    #[serde(default)]
+    pub type_hint: Option<String>,
+
     pub title: Option<String>,
     pub description: Option<String>,
     pub resource_uri: Option<String>,

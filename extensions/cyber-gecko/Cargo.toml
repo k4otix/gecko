@@ -8,4 +8,7 @@ repository.workspace = true
 
 [dependencies]
 gecko-extension-api = { path = "../../core/gecko-extension-api" }
+gecko-engine = { path = "../../core/gecko-engine" }
 serde_json.workspace = true
+sha2 = "0.10"
+typedb-driver = "3.12.0"

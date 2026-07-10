@@ -382,17 +382,23 @@ async fn insert_concept_entities(
     tx: &Transaction,
     concepts: &[&OkfConcept],
 ) -> Result<(), DbError> {
-    let rows: Vec<Vec<GivenRowEntry>> = concepts
-        .iter()
-        .map(|c| vec![str_entry(&c.concept_id)])
-        .collect();
-    run_rows(
-        tx,
-        "given $id: string; insert $c isa concept, has concept-id == $id;",
-        &["id"],
-        rows,
-    )
-    .await
+    use std::collections::HashMap;
+    let mut grouped: HashMap<&str, Vec<&OkfConcept>> = HashMap::new();
+    for c in concepts {
+        let type_name = c.type_hint.as_deref().unwrap_or("concept");
+        grouped.entry(type_name).or_default().push(c);
+    }
+
+    for (type_name, type_concepts) in grouped {
+        let rows: Vec<Vec<GivenRowEntry>> = type_concepts
+            .iter()
+            .map(|c| vec![str_entry(&c.concept_id)])
+            .collect();
+
+        let query = format!("given $id: string; insert $c isa {type_name}, has concept-id == $id;");
+        run_rows(tx, &query, &["id"], rows).await?;
+    }
+    Ok(())
 }
 
 /// Attaches all file-derived content (every attribute) to concepts whose entity
@@ -622,7 +628,8 @@ mod tests {
     fn concept(id: &str, hash: &str) -> OkfConcept {
         OkfConcept {
             concept_id: id.to_string(),
-            concept_type: "Note".to_string(),
+            concept_type: "Doc".to_string(),
+            type_hint: None,
             title: None,
             description: None,
             resource_uri: None,

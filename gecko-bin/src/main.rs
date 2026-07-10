@@ -111,6 +111,13 @@ enum Commands {
         bundle_path: PathBuf,
     },
 
+    #[cfg(feature = "cyber")]
+    /// Parse and sync a STIX 2.1 bundle to TypeDB
+    SyncStix {
+        /// Path to the STIX bundle JSON file
+        bundle_path: PathBuf,
+    },
+
     /// Run an ad-hoc TypeQL read query
     Query {
         /// The TypeQL query string
@@ -314,6 +321,54 @@ async fn run(cli: Cli) -> Result<()> {
                 resolve_db(&cli.database, Some(&manifest.bundle_name)),
             );
             cmd_sync(config, &extensions, manifest).await
+        }
+        #[cfg(feature = "cyber")]
+        Commands::SyncStix { bundle_path } => {
+            let extensions = build_extensions(&cfg)?;
+            println!("Parsing STIX bundle at {}...", bundle_path.display());
+            let bundle_json =
+                std::fs::read_to_string(bundle_path).context("Failed to read STIX JSON")?;
+            let (manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
+                .map_err(|e| anyhow::anyhow!("STIX parse error: {}", e))?;
+            let config = make_config(
+                &cli,
+                &address,
+                resolve_db(&cli.database, Some(&manifest.bundle_name)),
+            );
+
+            println!(
+                "Found {} STIX concepts. Syncing bundle '{}' to database '{}'...",
+                manifest.concepts.len(),
+                manifest.bundle_name,
+                config.database
+            );
+
+            let mut db = TypeDbRouter::new(config);
+            apply_all_schemas(&mut db, &extensions, None)
+                .await
+                .context("Failed to ensure database schema")?;
+
+            let result = sync_bundle(&mut db, &manifest)
+                .await
+                .context("Failed to sync bundle")?;
+
+            println!("✓ Sync complete!");
+            println!("  Concepts inserted: {}", result.concepts_inserted);
+            println!("  Concepts updated:  {}", result.concepts_updated);
+            println!("  Concepts skipped:  {}", result.concepts_skipped);
+            println!("  Concepts deleted:  {}", result.concepts_deleted);
+
+            println!("Running cyber_post_sync for typed relations...");
+            let tx = db
+                .begin_write()
+                .await
+                .context("Failed to begin write transaction")?;
+            cyber_gecko::stix::cyber_post_sync(&tx, &typed_rels)
+                .await
+                .map_err(|e| anyhow::anyhow!("Post sync failed: {}", e))?;
+            tx.commit().await.context("Failed to commit post sync")?;
+
+            Ok(())
         }
         Commands::Query { query_str } => {
             cmd_query(
