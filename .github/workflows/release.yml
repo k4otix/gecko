@@ -43,10 +43,18 @@ jobs:
             os: macos-14
             archive: zip
           - target: x86_64-apple-darwin
-            # GitHub removed free-tier Intel macOS runners (macos-13 and
-            # earlier "macos-latest" were arm64-only after that); the "-large"
-            # labels are the current Intel (x86_64) hosted runners.
-            os: macos-latest-large
+            # Built by CROSS-COMPILING from the FREE arm64 macos-14 runner
+            # (`--target x86_64-apple-darwin`) rather than a PAID Intel
+            # "-large" hosted runner. Validated locally on aarch64-apple-darwin:
+            # `cargo build --target x86_64-apple-darwin --release --features
+            # real-embedder --bin gecko` links candle statically and produces
+            # a working x86_64 Mach-O binary with no extra system deps. The
+            # dtolnay/rust-toolchain step below installs the target via
+            # `targets: ${{ matrix.target }}`, and every job (incl. the native
+            # aarch64 one) already builds with `--target ${{ matrix.target }}`,
+            # so the packaging step reads target/<triple>/release/gecko
+            # uniformly for both native and cross builds.
+            os: macos-14
             archive: zip
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -126,6 +134,14 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
+          # On a manual workflow_dispatch run (no tag/release event), default
+          # to github.ref_name would tag the release after the branch (e.g.
+          # "main") while the asset filename still embeds `inputs.version` —
+          # a mismatched tag/asset pair. Pin the release tag to the same
+          # version used to name the packaged asset above. On the normal
+          # tag-push / release-published paths `inputs.version` is empty, so
+          # this falls through to github.ref_name (the pushed tag) unchanged.
+          tag_name: ${{ inputs.version || github.ref_name }}
           files: ${{ steps.package.outputs.asset }}
           fail_on_unmatched_files: true
           draft: false

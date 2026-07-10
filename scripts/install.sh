@@ -131,12 +131,44 @@ if [ -z "$bin_path" ]; then
 fi
 
 dest="$install_dir/gecko"
-if ! cp "$bin_path" "$dest" 2>/dev/null; then
-    echo "install.sh: no write access to $install_dir — retrying with sudo" >&2
-    sudo cp "$bin_path" "$dest"
-    sudo chmod +x "$dest"
-else
+if cp "$bin_path" "$dest" 2>/dev/null; then
     chmod +x "$dest"
+else
+    fallback_dir="$HOME/.local/bin"
+    if [ "$install_dir" = "$fallback_dir" ]; then
+        echo "install.sh: no write access to $install_dir (already the user-writable fallback) — aborting" >&2
+        exit 1
+    fi
+
+    reply="n"
+    if [ -t 0 ] && [ -t 1 ]; then
+        # Interactive session: ask before touching anything with sudo.
+        echo "install.sh: no write access to $install_dir" >&2
+        printf 'install.sh: use sudo to install gecko there? [y/N] ' >&2
+        read -r reply || reply="n"
+    else
+        # Non-interactive (e.g. `curl | sh`): never invoke sudo here — it
+        # would either hang waiting for a password with no TTY attached, or
+        # silently elevate privileges with no one able to confirm. Fall
+        # back to a user-writable directory instead.
+        echo "install.sh: no write access to $install_dir; non-interactive session, skipping sudo" >&2
+    fi
+
+    case "$reply" in
+        [Yy]*)
+            echo "install.sh: installing to $install_dir with sudo" >&2
+            sudo cp "$bin_path" "$dest"
+            sudo chmod +x "$dest"
+            ;;
+        *)
+            install_dir="$fallback_dir"
+            mkdir -p "$install_dir"
+            dest="$install_dir/gecko"
+            echo "install.sh: installing to $install_dir instead (user-writable, no sudo needed)" >&2
+            cp "$bin_path" "$dest"
+            chmod +x "$dest"
+            ;;
+    esac
 fi
 
 echo "install.sh: installed gecko $version ($target) to $dest"
