@@ -1,0 +1,127 @@
+name: Model Integration
+
+# Tier 3: the real embedding model, real TypeDB, the actual quality assertions
+# (semantic-relevance ranking, not just shape checks). Deliberately NOT run on
+# every push — nightly + manual only, so the 1.3GB model is fetched at most
+# once and then served from an immutable, revision-keyed cache (plan P5).
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  MODEL_ID: bge-large-en-v1.5
+  # IMMUTABLE pinned revision — a HuggingFace commit SHA, NEVER `main` (plan P2
+  # note: `@main` is a moving target and defeats the cache key). Resolved
+  # 2026-07-09 via `curl https://huggingface.co/api/models/BAAI/bge-large-en-v1.5`
+  # (the `sha` field). Bumping this value is the ONLY sanctioned way to move to
+  # a new model revision, and per plan P5 requires a manual run of this
+  # workflow (workflow_dispatch) to go green BEFORE the bump is merged — see
+  # the `model-bump-gate` job in ci.yml, which fails a PR touching this value
+  # unless it carries the `tier3-validated` label.
+  MODEL_REVISION: d4aa6901d3a41ba39fb536a557fa166f842b0e09
+  # Optional mirror (plan P2): prefer this over HuggingFace to avoid
+  # rate-limit/uptime flakiness on the nightly job. Unset ⇒ fetch from HF
+  # directly. Wire a `MODEL_MIRROR_URL` repo/environment secret to use one.
+
+jobs:
+  tier3:
+    name: Tier 3 (real model + real TypeDB)
+    runs-on: ubuntu-latest
+
+    services:
+      typedb:
+        image: typedb/typedb:3.12.0
+        ports:
+          - 1729:1729
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install nextest
+        uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2
+        with:
+          tool: nextest
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # The crux (plan P5): key the cache on the IMMUTABLE revision, not on
+      # `main` or a date. Steady state (revision unchanged) is a cache
+      # restore — no re-download — even on the nightly cadence. The key only
+      # changes when MODEL_REVISION is deliberately bumped, invalidating the
+      # cache exactly once.
+      - name: Cache the model (keyed on the immutable revision)
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/gecko/models
+          key: model-${{ env.MODEL_ID }}-${{ env.MODEL_REVISION }}
+
+      # Optional mirror wiring: only materializes a gecko.toml override when the
+      # secret is configured; otherwise `gecko model fetch` falls back to
+      # HuggingFace directly (fetch.rs's DEFAULT_HF_BASE).
+      - name: Configure model mirror (optional)
+        if: ${{ env.MODEL_MIRROR_URL != '' }}
+        env:
+          MODEL_MIRROR_URL: ${{ secrets.MODEL_MIRROR_URL }}
+        run: |
+          set -euo pipefail
+          {
+            echo "[semantic_index]"
+            echo "model_source = \"$MODEL_MIRROR_URL\""
+          } >> gecko.toml
+
+      # Stage the model into the cache dir. Idempotent (fetch.rs::is_cached) —
+      # a cache hit above makes this a no-op; a cache miss downloads the
+      # 1.3GB once. `gecko model fetch` is candle-free itself (fetch.rs has no
+      # candle dependency), so this step is cheap even before Tier-3 compiles.
+      - name: Stage the model (gecko model fetch)
+        run: |
+          cargo run --quiet --bin gecko -- model fetch --model "${MODEL_ID}@${MODEL_REVISION}"
+
+      # Guard (plan P5 concern): the Tier-3 tests resolve GECKO_SMOKE_MODEL_DIR
+      # and SILENTLY SKIP-GREEN when it's unset or the model isn't actually
+      # there — acceptable for a default `cargo test --features
+      # integration-model` compile+contract check, but NOT acceptable here.
+      # Fail the job loudly instead of false-passing if staging didn't work.
+      - name: Verify the staged model, and point tests at it
+        run: |
+          set -euo pipefail
+          DIR="$HOME/.cache/gecko/models/${MODEL_ID}@${MODEL_REVISION}"
+          if [ ! -f "$DIR/model.safetensors" ] || [ ! -f "$DIR/tokenizer.json" ] || [ ! -f "$DIR/config.json" ]; then
+            echo "::error::Expected a fully staged model at $DIR (config.json, tokenizer.json, model.safetensors)."
+            echo "::error::The fetch/cache step did not populate it — Tier-3 would silently skip-pass. Failing instead."
+            exit 1
+          fi
+          echo "GECKO_SMOKE_MODEL_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "OK: staged model found at $DIR"
+
+      # `--success-output final` prints captured stdout/stderr for PASSING
+      # tests too (nextest defaults to only showing failures), so the guard
+      # below can see the tests' own "unset — skipping" canary if it fires.
+      - name: Run Tier-3 (real embedder + real TypeDB)
+        run: |
+          set -euo pipefail
+          cargo nextest run --workspace --exclude js-sandbox --features integration-model --success-output final 2>&1 | tee tier3-output.log
+
+      # Second layer of the same guard: even with the model staged and
+      # GECKO_SMOKE_MODEL_DIR set, defensively fail if any real-model test
+      # still reports it skipped (e.g. a staged-but-unloadable model) rather
+      # than let it pass green having asserted nothing.
+      - name: Guard — a skipped Tier-3 assertion must fail this job
+        run: |
+          set -euo pipefail
+          if grep -q -- "— skipping" tier3-output.log; then
+            echo "::error::A Tier-3 real-model test reported GECKO_SMOKE_MODEL_DIR unset and skipped."
+            echo "::error::That must never happen in this nightly/manual job — failing instead of false-passing."
+            grep -- "— skipping" tier3-output.log
+            exit 1
+          fi
+          echo "OK: no Tier-3 test skipped."

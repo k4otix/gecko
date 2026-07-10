@@ -31,6 +31,9 @@ macro_rules! kebab_enum {
             }
 
             /// Parses the canonical kebab-case string. `None` on an unknown value.
+            // Intentionally an inherent method, not `std::str::FromStr` (no `Err`
+            // type is warranted — unknown values are just `None`).
+            #[allow(clippy::should_implement_trait)]
             pub fn from_str(s: &str) -> Option<Self> {
                 match s {
                     $( $s => Some(Self::$variant), )+

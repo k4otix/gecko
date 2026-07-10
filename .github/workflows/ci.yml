@@ -1,0 +1,145 @@
+name: CI
+
+# Tier 1 (lib/bins, serviceless) + Tier 2 (real TypeDB service, stub embedder).
+# Runs on every push/PR to main. MUST stay candle-free and model-free: the
+# per-push job never compiles candle and never touches ~/.cache/gecko/models
+# (plan P5). The 1.3GB real-model path lives ONLY in model-integration.yml.
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Plan P5's one accepted tradeoff, enforced: a change to the pinned embedding
+  # model (model_id in gecko-bin/src/config.rs, or MODEL_REVISION in
+  # model-integration.yml) is NOT validated by this per-push job (it never runs
+  # the real model). It requires a manual Tier-3 run
+  # (workflow_dispatch on model-integration.yml) BEFORE merge — this job fails
+  # loudly on a detected bump unless the PR carries the `tier3-validated` label,
+  # so the rule is explicit and hard to bypass silently. To be load-bearing this
+  # job must be added as a required status check in branch protection.
+  model-bump-gate:
+    name: Model revision bump gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          fetch-depth: 0
+
+      - name: Detect a model_id / MODEL_REVISION change
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          CHANGED="$(
+            { git diff "$BASE_SHA" "$HEAD_SHA" -- gecko-bin/src/config.rs \
+                | grep -E '^[+-].*(default_model_id|model_id\s*[:=])' || true; }
+            { git diff "$BASE_SHA" "$HEAD_SHA" -- .github/workflows/model-integration.yml \
+                | grep -E '^[+-].*MODEL_REVISION' || true; }
+          )"
+          if [ -n "$CHANGED" ]; then
+            echo "Detected a model_id/MODEL_REVISION change:"
+            echo "$CHANGED"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require the tier3-validated label before merging a model bump
+        if: steps.diff.outputs.bumped == 'true' && !contains(github.event.pull_request.labels.*.name, 'tier3-validated')
+        run: |
+          echo "::error::This PR changes the pinned embedding model (model_id / MODEL_REVISION)."
+          echo "::error::Rule (plan P5): a model_id/MODEL_REVISION bump requires a manual Tier-3"
+          echo "::error::run (workflow_dispatch on .github/workflows/model-integration.yml) BEFORE"
+          echo "::error::merge — otherwise a model regression is caught by nightly, not this PR."
+          echo "::error::After Tier-3 is green, add the 'tier3-validated' label to unblock this check."
+          exit 1
+
+  build-and-test:
+    name: Build + test (Tier 1+2, candle-free, cyber-on)
+    runs-on: ubuntu-latest
+
+    # Pinned (not :latest) so the per-push job is reproducible; the runner
+    # caches this layer across runs.
+    services:
+      typedb:
+        image: typedb/typedb:3.12.0
+        ports:
+          - 1729:1729
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Install nextest and cargo-audit
+        uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2
+        with:
+          tool: nextest,cargo-audit
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Cargo Audit
+        run: cargo audit
+
+      # Advisory only (continue-on-error): the workspace has a pre-existing,
+      # pre-P5 clippy backlog (unrelated collapsible-if / should-implement-trait
+      # lints in a few modules) that would redden every push if this were
+      # blocking. Flip to blocking (drop continue-on-error) once that backlog is
+      # cleaned up — this step exists now so regressions are at least visible.
+      - name: Clippy (candle-free)
+        continue-on-error: true
+        run: cargo clippy --workspace --exclude js-sandbox --no-default-features -- -D warnings
+
+      - name: Clippy (candle-free, cyber)
+        continue-on-error: true
+        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --features cyber -- -D warnings
+
+      # Structural guard: this job must NEVER compile candle. `--no-default-
+      # features` drops `real-embedder` (default-on since P4), so candle should
+      # not appear anywhere in this dependency graph. Fail loudly if it does —
+      # that would mean the per-push job silently started paying the candle
+      # compile cost (and, via auto_fetch, could reach for the 1.3GB model).
+      - name: Guard — no candle in the candle-free build
+        run: |
+          set -euo pipefail
+          if cargo tree --workspace --exclude js-sandbox --no-default-features | grep -qi candle; then
+            echo "::error::candle appears in the --no-default-features dependency tree — the per-push job must stay candle-free (plan P4/P5)."
+            exit 1
+          fi
+          echo "OK: no candle in the --no-default-features tree."
+
+      # ONE candle-free command covers Tier 1 (--lib/--bins, serviceless) + Tier
+      # 2 (tests/, against the real TypeDB service above, stub embedder) +
+      # the cyber-entity schema-init assertion (needs `--features cyber`).
+      # `real-embedder` is OFF here (no-default-features), so this never
+      # compiles candle and never touches ~/.cache/gecko/models.
+      - name: Test (Tier 1 + Tier 2, candle-free, cyber-on)
+        run: cargo nextest run --workspace --exclude js-sandbox --no-default-features --features cyber
+
+      # Sanity check: the model-free per-push job must never have populated the
+      # runtime model cache. The compiled feature boundary (P4) guarantees this
+      # structurally; this step just makes it observable in the logs.
+      - name: Guard — no model cache materialized
+        run: |
+          set -euo pipefail
+          DIR="$HOME/.cache/gecko/models"
+          if [ -d "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
+            echo "::error::$DIR is non-empty — the candle-free per-push job must never populate the model cache."
+            exit 1
+          fi
+          echo "OK: no model cache directory materialized."
