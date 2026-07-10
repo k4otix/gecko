@@ -154,3 +154,15 @@ define
       relates detection-claim;
   concept plays technique-detection:detecting-logic;
   belief plays technique-detection:detection-claim;
+
+  # An analyst disposition of an alert: the verdict, the detecting logic it
+  # judges, and the mem belief carrying the judgment. `precision` counts these
+  # over a time window (the belief supplies the timestamp).
+  attribute detection-verdict value string @values("true-positive", "false-positive", "benign-true");
+
+  relation alert-disposition,
+      owns detection-verdict @card(1),
+      relates dispositioned-logic,
+      relates disposition-belief;
+  concept plays alert-disposition:dispositioned-logic;
+  belief plays alert-disposition:disposition-belief;

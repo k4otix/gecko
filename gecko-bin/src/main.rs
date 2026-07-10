@@ -962,7 +962,7 @@ async fn build_host_bridge(
 ) -> Result<gecko_engine::sandbox::engine::ExtensionCallback> {
     let graph_router =
         std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
-    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router));
+    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router.clone()));
     let writer: std::sync::Arc<dyn EpistemicWriter> = build_epistemic_writer(store, cfg).await?;
 
     // mem (forced-on, first) binds the writer into the sandbox context; other
@@ -971,6 +971,11 @@ async fn build_host_bridge(
     for ext in &extensions {
         ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
     }
+
+    // Whether the cyber extension is activated for this run (its detect host
+    // imports get a dedicated graph/writer bridge below).
+    #[cfg(feature = "cyber")]
+    let cyber_active = extensions.iter().any(|e| e.name() == "cyber-gecko");
 
     // The base bridge dispatches plain host imports over the activated extensions.
     let base_cb: gecko_engine::sandbox::engine::ExtensionCallback =
@@ -1000,7 +1005,22 @@ async fn build_host_bridge(
             // from the same object (shared per-run scratch). See
             // docs/refactor/KNOWN-LIMITATIONS.md.
             let reader = writer.clone().as_epistemic_reader();
-            epistemic_extension_callback(run_ctx, writer, reader, base_cb)
+            let mem_cb =
+                epistemic_extension_callback(run_ctx.clone(), writer.clone(), reader, base_cb);
+
+            // cyber's detect host imports reach the graph and belief-write path
+            // through their own bridge, wrapping mem's so a non-detect call falls
+            // through to it (and then to the base dispatcher).
+            #[cfg(feature = "cyber")]
+            let mem_cb = if cyber_active {
+                let cyber_store: std::sync::Arc<dyn GraphStore> =
+                    std::sync::Arc::new(RouterGraphStore::new(graph_router));
+                cyber_gecko::detect::cyber_extension_callback(cyber_store, writer, run_ctx, mem_cb)
+            } else {
+                mem_cb
+            };
+
+            mem_cb
         }
         None => base_cb,
     };

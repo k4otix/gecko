@@ -73,18 +73,17 @@ impl GeckoExtension for CyberGecko {
         ]
     }
 
+    /// The detect imports need graph + belief-write access, which the plain
+    /// synchronous `call_import` seam cannot provide. They are dispatched through
+    /// the run-time host bridge ([`crate::detect::cyber_extension_callback`])
+    /// instead, so reaching this path means the bridge was not wired.
     fn call_import(
         &self,
         name: &str,
         _args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        match name {
-            "claim" => crate::detect::claim(_args),
-            "disposition" => crate::detect::disposition(_args),
-            "coverage_gaps" => crate::detect::coverage_gaps(_args),
-            "blinded" => crate::detect::blinded(_args),
-            "precision" => crate::detect::precision(_args),
-            _ => Err(format!("Unknown import: {name}")),
-        }
+        Err(format!(
+            "cyber-gecko import '{name}' requires the detect host bridge, which is not wired for this run"
+        ))
     }
 }
