@@ -287,54 +287,158 @@ mod tests {
         assert!(!e.is_loaded());
     }
 
-    /// End-to-end real-weights smoke test (Tier-3-ish): validates the BERT forward
-    /// pass, CLS pooling, L2-normalization, and the BGE query prefix against the
-    /// actual ~1.3GB `bge-large-en-v1.5`. `#[ignore]`d so it NEVER runs on the
-    /// fast/default path — opt in with the model staged and its dir in
-    /// `GECKO_SMOKE_MODEL_DIR`:
-    ///
-    /// ```text
-    /// gecko model fetch --model "BAAI/bge-large-en-v1.5@main"
-    /// GECKO_SMOKE_MODEL_DIR=<cache>/models/BAAI/bge-large-en-v1.5@main \
-    ///   cargo test -p gecko-semantic-index --features real-embedder -- --ignored real_weights
-    /// ```
-    #[test]
-    #[ignore = "requires the real ~1.3GB bge-large-en-v1.5; set GECKO_SMOKE_MODEL_DIR"]
-    fn real_weights_smoke_embed() {
-        let Ok(dir) = std::env::var("GECKO_SMOKE_MODEL_DIR") else {
-            eprintln!("GECKO_SMOKE_MODEL_DIR unset — skipping real-weights smoke test");
-            return;
-        };
-        let e = CandleEmbedder::new("bge-large-en-v1.5@main", dir, false, None);
-        // Lazy: not loaded until the first embed.
-        assert!(!e.is_loaded());
+    // ── Tier 3 — real-model quality tests ──────────────────────────────────
+    //
+    // These are COMPILED ONLY under `--features integration-model` (which implies
+    // `real-embedder`). That is the STRUCTURAL boundary from plan P4: without the
+    // feature the code below does not exist, so no default/Tier-1 build can
+    // instantiate the real embedder or pull the ~1.3GB `bge-large-en-v1.5`. They
+    // assert the ONE thing a stub cannot — real semantic behavior — and change only
+    // when the model changes (near-never). They run nightly / on manual dispatch.
+    //
+    // Each resolves the staged model from `GECKO_SMOKE_MODEL_DIR` and SKIPS (green)
+    // when it is unset, so `cargo test --features integration-model` stays green as
+    // a compile+contract check even where the 1.3GB model is not on disk. In the
+    // Tier-3 CI job the model is fetched/cached and that env var points at it, so
+    // the assertions actually execute.
+    #[cfg(feature = "integration-model")]
+    mod integration_model {
+        use super::*;
 
-        let query = e
-            .embed_query("How do I persist an OAuth access token?")
-            .unwrap();
-        assert_eq!(query.len(), 1024, "bge-large is 1024-dim");
-        assert!(e.is_loaded(), "first embed must load the model");
+        /// Cosine of two L2-normalized vectors is a plain dot product.
+        fn cos(a: &[f32], b: &[f32]) -> f32 {
+            a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()
+        }
 
-        // L2-normalized ⇒ unit norm.
-        let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-3, "expected unit norm, got {norm}");
+        /// Builds an embedder over the staged real model, or `None` (skip) when
+        /// `GECKO_SMOKE_MODEL_DIR` is unset. `auto_fetch=false` so a skip never
+        /// silently triggers a 1.3GB download.
+        fn staged_embedder() -> Option<CandleEmbedder> {
+            let dir = std::env::var("GECKO_SMOKE_MODEL_DIR").ok()?;
+            Some(CandleEmbedder::new(
+                "bge-large-en-v1.5@main",
+                dir,
+                false,
+                None,
+            ))
+        }
 
-        let related = e
-            .embed_document(
-                "Securely store the OAuth token so it can be reused for later API calls.",
-            )
-            .unwrap();
-        let unrelated = e
-            .embed_document("The croissants at the Paris bakery were warm and buttery.")
-            .unwrap();
+        /// Real-weights smoke: exercises the BERT forward pass, CLS pooling,
+        /// L2-normalization, lazy load, and the BGE query prefix end-to-end.
+        #[test]
+        fn real_weights_smoke_embed() {
+            let Some(e) = staged_embedder() else {
+                eprintln!("GECKO_SMOKE_MODEL_DIR unset — skipping real-weights smoke test");
+                return;
+            };
+            // Lazy: not loaded until the first embed.
+            assert!(!e.is_loaded());
 
-        let cos = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
-        let sim_related = cos(&query, &related);
-        let sim_unrelated = cos(&query, &unrelated);
-        assert!(
-            sim_related > sim_unrelated,
-            "semantically related text ({sim_related:.4}) must score above unrelated \
-             ({sim_unrelated:.4})"
-        );
+            let query = e
+                .embed_query("How do I persist an OAuth access token?")
+                .unwrap();
+            assert_eq!(query.len(), 1024, "bge-large is 1024-dim");
+            assert!(e.is_loaded(), "first embed must load the model");
+
+            // L2-normalized ⇒ unit norm.
+            let norm: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-3, "expected unit norm, got {norm}");
+        }
+
+        /// The plan's canonical semantic-relevance claim: a query about OAuth
+        /// persistence must rank the topically-related document above an unrelated
+        /// one under cosine.
+        #[test]
+        fn related_doc_outranks_unrelated() {
+            let Some(e) = staged_embedder() else {
+                eprintln!("GECKO_SMOKE_MODEL_DIR unset — skipping semantic-relevance test");
+                return;
+            };
+            let query = e
+                .embed_query("How do I persist an OAuth access token?")
+                .unwrap();
+            let related = e
+                .embed_document(
+                    "Securely store the OAuth token so it can be reused for later API calls.",
+                )
+                .unwrap();
+            let unrelated = e
+                .embed_document("The croissants at the Paris bakery were warm and buttery.")
+                .unwrap();
+
+            let sim_related = cos(&query, &related);
+            let sim_unrelated = cos(&query, &unrelated);
+            assert!(
+                sim_related > sim_unrelated,
+                "related text ({sim_related:.4}) must score above unrelated \
+                 ({sim_unrelated:.4})"
+            );
+        }
+
+        /// Nearest-neighbour ranking over a small corpus: the consent-grant
+        /// detection — not an unrelated cyber concept — must be the top hit for the
+        /// OAuth-persistence query (the plan's worked example).
+        #[test]
+        fn query_surfaces_the_semantically_nearest_concept() {
+            let Some(e) = staged_embedder() else {
+                eprintln!("GECKO_SMOKE_MODEL_DIR unset — skipping nearest-concept test");
+                return;
+            };
+            let query = e
+                .embed_query("persisting OAuth consent so the token survives across sessions")
+                .unwrap();
+
+            let corpus = [
+                (
+                    "consent-grant",
+                    "Detects when an OAuth consent grant persists a refresh token for long-lived access.",
+                ),
+                (
+                    "smb-lateral-movement",
+                    "Detects lateral movement between hosts over SMB using stolen credentials.",
+                ),
+                (
+                    "dns-exfiltration",
+                    "Detects data exfiltration encoded into DNS queries to an attacker domain.",
+                ),
+            ];
+
+            let scored: Vec<(&str, f32)> = corpus
+                .iter()
+                .map(|(id, text)| (*id, cos(&query, &e.embed_document(text).unwrap())))
+                .collect();
+
+            let top = scored
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap()
+                .0;
+            assert_eq!(
+                top, "consent-grant",
+                "OAuth-persistence query should surface the consent-grant concept; scores: {scored:?}"
+            );
+        }
+
+        /// The BGE query/document asymmetry is real at the weights level: the same
+        /// text embedded as a query vs. a document differs (the prefix changes the
+        /// forward pass), yet both remain unit-norm 1024-dim vectors.
+        #[test]
+        fn query_and_document_embeddings_differ() {
+            let Some(e) = staged_embedder() else {
+                eprintln!("GECKO_SMOKE_MODEL_DIR unset — skipping query/document asymmetry test");
+                return;
+            };
+            let text = "rotate the signing key on a fixed schedule";
+            let as_query = e.embed_query(text).unwrap();
+            let as_doc = e.embed_document(text).unwrap();
+            assert_eq!(as_query.len(), 1024);
+            assert_eq!(as_doc.len(), 1024);
+            // Very high but not identical — the prefix perturbs, it doesn't replace.
+            let sim = cos(&as_query, &as_doc);
+            assert!(
+                sim < 0.9999,
+                "query/document embeddings of the same text must differ (cos={sim:.6})"
+            );
+        }
     }
 }

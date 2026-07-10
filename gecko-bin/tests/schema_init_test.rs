@@ -1,3 +1,10 @@
+// This integration test asserts the `cyber` domain schema (`cyber-entity`) is
+// applied, so it is compiled ONLY when the `cyber` feature is on. The canonical
+// candle-free Tier-2 command (`cargo test --test '*' --no-default-features`) drops
+// `cyber`, so this binary compiles empty and passes there; a `--features cyber`
+// (or default) run exercises it.
+#![cfg(feature = "cyber")]
+
 use futures_util::StreamExt;
 
 use cyber_gecko::CyberGecko;

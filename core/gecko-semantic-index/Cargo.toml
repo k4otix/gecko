@@ -20,6 +20,14 @@ real-embedder = [
     "dep:safetensors",
 ]
 
+# `integration-model` (NON-default) is the STRUCTURAL Tier-3 boundary. It implies
+# `real-embedder` and is the ONLY thing that COMPILES the real-model tests
+# (`#[cfg(feature = "integration-model")]`). Without it those tests do not exist,
+# so a Tier-1 build (`--no-default-features`) literally cannot instantiate the real
+# embedder or trigger the ~1.3GB download — the boundary is un-crossable by
+# accident, not policed by review.
+integration-model = ["real-embedder"]
+
 [dependencies]
 gecko-extension-api = { path = "../gecko-extension-api" }
 serde = { workspace = true }

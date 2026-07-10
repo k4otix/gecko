@@ -14,12 +14,19 @@ path = "src/main.rs"
 # `mem` is always compiled — it is substrate, not a feature. `cyber` is an
 # optional domain extension a packager can slim out at build time
 # (`--no-default-features`), independent of the runtime `gecko.toml` selection.
-default = ["cyber"]
+default = ["cyber", "real-embedder"]
 cyber = ["dep:cyber-gecko"]
 # Forwards to gecko-semantic-index's `real-embedder`: compiles the candle-backed
-# CandleEmbedder into the binary. NON-default in P2 (P4 flips it default-on). The
-# `gecko model fetch` subcommand is compiled REGARDLESS of this feature.
+# CandleEmbedder into the binary. DEFAULT-ON (P4) so `cargo build`/`cargo run`/
+# release ship a working embedder. `--no-default-features` drops BOTH `cyber` and
+# `real-embedder` → the candle-free, stub-only fast build. The `gecko model fetch`
+# subcommand is compiled REGARDLESS of this feature.
 real-embedder = ["gecko-semantic-index/real-embedder"]
+# Forwards to gecko-semantic-index's `integration-model` (implies `real-embedder`).
+# NON-default; the ONLY flag that compiles the Tier-3 real-model tests. Defined here
+# too so `cargo test --features integration-model` resolves at the workspace root
+# even though gecko-bin hosts no Tier-3 test itself.
+integration-model = ["gecko-semantic-index/integration-model", "real-embedder"]
 
 [dependencies]
 gecko-engine = { path = "../core/gecko-engine" }
