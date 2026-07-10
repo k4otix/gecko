@@ -1,9 +1,9 @@
-//! A5.7 live end-to-end: the guest `mem.*` surface (Task B) driven through the
-//! REAL wasm sandbox against live TypeDB (`localhost:1729`, admin/password).
+//! Live end-to-end: the guest `mem.*` surface driven through the REAL wasm
+//! sandbox against live TypeDB (`localhost:1729`, admin/password).
 //!
 //! This is the first exercise of the guest namespace against a live DB. A real
 //! guest JS program calls `mem.recall`, maps the surfaced chunk ids into
-//! `mem.derive`, and we assert the A5.7 retrieval-provenance correlation actually
+//! `mem.derive`, and we assert the retrieval-provenance correlation actually
 //! fired in the graph: the synthesized belief carries `retrieval-provenance =
 //! "semantic"`, an `informs-synthesis` edge ties it to the minted
 //! `retrieval-event`, and the `surfaced` link over the recalled evidence is
@@ -179,9 +179,9 @@ fn run_callback(run_ctx: RunContext, writer: Arc<dyn EpistemicWriter>) -> Extens
     epistemic_extension_callback(run_ctx, writer, reader, base)
 }
 
-// ── Positive: live A5.7 retrieval-provenance correlation through the sandbox ──
+// ── Positive: live retrieval-provenance correlation through the sandbox ──────
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recall_then_derive_records_a5_7_correlation() {
+async fn recall_then_derive_records_correlation() {
     let fx = Fixture::new().await;
     let (mem_writer, index_path) = provenance_writer(&fx);
 
@@ -241,7 +241,7 @@ async fn recall_then_derive_records_a5_7_correlation() {
         .as_str()
         .expect("mem.derive returned the synthesized belief id to JS");
 
-    // A5.7 graph state — exactly one semantic retrieval-event was minted.
+    // Graph state — exactly one semantic retrieval-event was minted.
     let events = fx
         .raw_fetch(r#"match $re isa retrieval-event, has retrieval-method $m; fetch { "m": $m };"#)
         .await;

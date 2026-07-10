@@ -1,4 +1,4 @@
-//! P3 acceptance — `gecko up`/`gecko down` run-mode routing, driven through the
+//! `gecko up`/`gecko down` run-mode routing, driven through the
 //! real `gecko` binary (`CARGO_BIN_EXE_gecko`).
 //!
 //! These cover the paths that are SAFE to run anywhere and never spawn or
@@ -10,8 +10,8 @@
 //!     a 100MB download) when no server is reachable, e.g. on a bare CI runner.
 //!
 //! The full orchestrated download+spawn on a throwaway non-1729 port is validated
-//! out-of-band (see the P3 report) — it is deliberately not baked into the
-//! per-push suite, which must not pull the TypeDB dist.
+//! out-of-band — it is deliberately not baked into the per-push suite, which must
+//! not pull the TypeDB dist.
 
 use std::io::Write;
 use std::net::TcpStream;

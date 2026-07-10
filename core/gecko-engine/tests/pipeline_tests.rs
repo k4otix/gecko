@@ -1,4 +1,4 @@
-//! Pipeline integration tests (C4/WS4).
+//! Pipeline integration tests.
 //!
 //! These exercise `execute_playbook` end-to-end through the real WASM sandbox.
 //! The pipeline's record hook is log-only for now, so it never opens a TypeDB

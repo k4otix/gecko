@@ -1,9 +1,9 @@
-//! A4 acceptance #1 — the **no-drag proof** (the thesis's load-bearing regression
-//! guard) + the A4.3 sparse-overlay guardrails.
+//! The **no-drag proof** (a load-bearing regression guard), plus the
+//! sparse-overlay guardrails on the record tier.
 //!
 //! With `enabled=[]` (the mem substrate forced-on, no domain), a plain
 //! `gecko sync sample-bundle` runs the **record path** (the syncer) — which bypasses
-//! [`EpistemicWriter`] and the semantic index entirely (invariant 1/2, A1.4). The
+//! [`EpistemicWriter`] and the semantic index entirely (invariant 1/2). The
 //! proof: core concepts + OKF links ARE created, while **zero** `belief` /
 //! `derivation` / `source-link` instances and **zero** index upserts appear. Plain
 //! documentation → DB is drag-free.
@@ -101,7 +101,7 @@ async fn no_drag_sync_creates_records_and_zero_epistemic_apparatus() {
     // observable consequence of that bypass.
 }
 
-// ── A4.3 sparse-overlay guardrails (schema lint) ─────────────────────────────
+// ── Sparse-overlay guardrails (schema lint) ──────────────────────────────────
 
 /// The belief-tier attributes a record-tier type must never own.
 const BELIEF_ATTRS: &[&str] = &[
@@ -187,12 +187,13 @@ fn record_tier_owns_no_belief_apparatus_and_plays_no_bearer_role() {
 
 #[test]
 fn retention_scaffold_present_in_schema() {
-    // A4.3 retention hooks are scaffold-only (the daemon is A6). Confirm the
-    // consolidation-state lifecycle the future daemon transitions through is present.
+    // Retention hooks are scaffold-only (the consolidation daemon does not exist
+    // yet). Confirm the consolidation-state lifecycle the future daemon
+    // transitions through is present.
     let schema = mem_gecko::MemGecko::new().schema().to_string();
     assert!(
         schema.contains("consolidation-state"),
-        "consolidation-state lifecycle attribute must be present for A6"
+        "consolidation-state lifecycle attribute must be present"
     );
     for state in ["raw", "candidate", "consolidated", "archived", "tombstoned"] {
         assert!(

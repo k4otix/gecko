@@ -1,8 +1,9 @@
-//! A2 schema-level acceptance tests (live TypeDB 3.12).
+//! Schema-level acceptance tests (live TypeDB 3.12).
 //!
-//! These prove the finalized mem-gecko substrate schema at the SCHEMA level by
+//! These prove the mem-gecko substrate schema at the SCHEMA level by
 //! driving raw parameterized TQL against a live server (`localhost:1729`,
-//! admin/password) — they do NOT exercise the Rust `EpistemicWriter` (that is A3).
+//! admin/password) — they do NOT exercise the Rust `EpistemicWriter` (see
+//! `writer_reader_integration.rs` for those tests).
 //!
 //! Each test provisions its own throwaway database (unique name), applies the core
 //! schema then the mem substrate schema (types + functions, one `define`), inserts a
@@ -398,7 +399,7 @@ async fn same_spec_hash_shares_one_population() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// A6 Acceptance: the consolidation-state machine (with tombstone semantics) is in
+// Acceptance: the consolidation-state machine (with tombstone semantics) is in
 // the APPLIED schema — an episode can be marked "tombstoned" and read back, and an
 // illegal state is rejected by @values. This is the state-machine-present acceptance.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -475,7 +476,7 @@ async fn illegal_enum_value_rejected() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Carry-forward fix: the `pivot` substrate primitive is now instantiable
+// Acceptance: the `pivot` substrate primitive is instantiable
 // (agent + two memory-item states) and reads back.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
