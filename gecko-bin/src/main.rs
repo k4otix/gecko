@@ -910,7 +910,11 @@ async fn cmd_run(config: DbConfig, cfg: &GeckoConfig, concept_id: &str) -> Resul
                     },
                     chrono::Utc::now(),
                 );
-                epistemic_extension_callback(run_ctx, writer, base_cb)
+                // mem's writer is also a reader, so wire the `mem.recall` reader
+                // bridge from the same object (shared per-run scratch → A5.7). No
+                // guest binding calls it yet — see docs/refactor/KNOWN-LIMITATIONS.md.
+                let reader = writer.clone().as_epistemic_reader();
+                epistemic_extension_callback(run_ctx, writer, reader, base_cb)
             }
             None => base_cb,
         };

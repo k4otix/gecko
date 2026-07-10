@@ -6,7 +6,13 @@
 //! (invariant 2) is that the **host** binds the run's [`RunContext`]: sandbox code
 //! supplies only the payload args and **cannot** supply or override the
 //! `run_id`/`actor`/`source`. This module implements that binding mechanism and
-//! its forgery resistance; the live-writer delegation bodies land in A2.
+//! its forgery resistance.
+//!
+//! Both bridges are host-side wired: the write ops route to [`dispatch_mem_call`]
+//! and `recall` routes to [`dispatch_mem_recall`] (an [`EpistemicReader`], shared
+//! per-run scratch → A5.7). What is still missing for a live `gecko run` is the
+//! QuickJS-**guest** binding that lets exec-doc JS actually call `mem.recall` and
+//! receive the chunk array — see `docs/refactor/KNOWN-LIMITATIONS.md`.
 //!
 //! [`EpistemicWriter`]: gecko_extension_api::EpistemicWriter
 //! [`EpistemicReader`]: gecko_extension_api::EpistemicReader
@@ -14,8 +20,8 @@
 use std::sync::Arc;
 
 use gecko_extension_api::{
-    ActorId, BeliefDraft, DateTime, DerivationMethod, EpisodeDraft, EpistemicWriter, MemId,
-    ProvenanceSource, RunContext, RunId, Visibility,
+    ActorId, BeliefDraft, ContextBudget, DateTime, DerivationMethod, EpisodeDraft, EpistemicReader,
+    EpistemicWriter, MemId, ProvenanceSource, RecallQuery, RunContext, RunId, Visibility,
 };
 use serde_json::{Value, json};
 
@@ -232,13 +238,10 @@ pub async fn dispatch_mem_call(
             let anomaly = writer.contest(ctx, &claims).await.map_err(err)?;
             Ok(json!({ "anomaly": anomaly.0 }))
         }
-        // DELIBERATE SCOPE-DEFERRAL (not a bug): `mem.recall` is NOT reachable from a
-        // sandboxed `gecko run`. The reader path (async reader bridge + the QuickJS-guest
-        // FFI binding) is intentionally out of scope for this refactor — no in-tree guest
-        // binding exists — so A5.7 retrieval-provenance correlation is exercised only from
-        // mem-gecko's own library tests, never a live run. See
-        // docs/refactor/KNOWN-LIMITATIONS.md. Do NOT wire the reader bridge here to
-        // "fix" this rejection; that is tracked, deferred work.
+        // `mem.recall` is a *reader* op: it is dispatched through the separate
+        // reader bridge ([`dispatch_mem_recall`]), which the callback routes to when
+        // an [`EpistemicReader`] is wired. It is deliberately unreachable on THIS
+        // write bridge — a writer has no reader — so a direct call here is an error.
         MemHostFn::Recall => Err(
             "mem.recall is a reader operation and is not exposed on the epistemic write bridge"
                 .to_string(),
@@ -246,9 +249,71 @@ pub async fn dispatch_mem_call(
     }
 }
 
+/// The default number of chunks a `mem.recall` returns when the sandbox omits an
+/// explicit `max_chunks`.
+const DEFAULT_RECALL_MAX_CHUNKS: usize = 8;
+
+/// Dispatches a host-stamped `mem.recall` to the injected [`EpistemicReader`].
+///
+/// The reader shares the SAME per-run [`RunContext`] as the write bridge, so a
+/// recall stamps its `retrieval-event` into `ctx.scratch` and a later
+/// `assert_belief` in the run reads it back — that shared scratch is the A5.7
+/// retrieval-provenance correlation seam. The sandbox supplies only the query
+/// payload; `run_id`/`actor`/`source` are the host's (already stripped + stamped by
+/// [`bind_mem_call`]). Returns `{ "chunks": [{ id, text, score }, …] }`.
+pub async fn dispatch_mem_recall(
+    reader: &Arc<dyn EpistemicReader>,
+    ctx: &RunContext,
+    call: StampedMemCall,
+) -> Result<Value, String> {
+    let p = &call.payload;
+
+    let text = req_str(p, "text")?;
+
+    // `as_of`, when present, MUST be a valid RFC3339 timestamp — a malformed value
+    // is an error, never a silent fall-through to present-state recall.
+    let as_of = match p.get("as_of") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| "mem.recall 'as_of' must be an RFC3339 string".to_string())?;
+            let dt = chrono::DateTime::parse_from_rfc3339(s)
+                .map_err(|e| format!("mem.recall 'as_of' is not valid RFC3339: {e}"))?;
+            Some(dt.with_timezone(&chrono::Utc))
+        }
+    };
+
+    let budget = ContextBudget {
+        max_chunks: p
+            .get("max_chunks")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize)
+            .unwrap_or(DEFAULT_RECALL_MAX_CHUNKS),
+        max_tokens: p
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize),
+    };
+
+    let query = RecallQuery { text, as_of };
+    let chunks = reader
+        .recall(ctx, query, budget)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let chunks: Vec<Value> = chunks
+        .into_iter()
+        .map(|c| json!({ "id": c.id.0, "text": c.text, "score": c.score }))
+        .collect();
+    Ok(json!({ "chunks": chunks }))
+}
+
 /// Builds the sandbox [`ExtensionCallback`] that routes the mem host fns to the
-/// injected [`EpistemicWriter`], falling through to `base` for every other
-/// extension call.
+/// injected [`EpistemicWriter`] — and `mem.recall` to the optional
+/// [`EpistemicReader`] reader bridge when one is wired — falling through to `base`
+/// for every other extension call. When `reader` is `None`, `mem.recall` returns an
+/// unavailable error (the writer alone cannot read).
 ///
 /// This is the async→sync integration seam: the sandbox host-call bridge is a
 /// **synchronous** [`ExtensionCallback`], but [`EpistemicWriter`] is **async**. A mem
@@ -261,6 +326,7 @@ pub async fn dispatch_mem_call(
 pub fn epistemic_extension_callback(
     ctx: RunContext,
     writer: Arc<dyn EpistemicWriter>,
+    reader: Option<Arc<dyn EpistemicReader>>,
     base: ExtensionCallback,
 ) -> ExtensionCallback {
     let handle = tokio::runtime::Handle::current();
@@ -280,8 +346,22 @@ pub fn epistemic_extension_callback(
             && let Some(func) = MemHostFn::from_name(func_name)
         {
             let call = bind_mem_call(&ctx, func, args);
-            let writer = writer.clone();
             let handle = handle.clone();
+            // Reader op → reader bridge (when wired); everything else → write bridge.
+            if func == MemHostFn::Recall {
+                let reader = reader.clone();
+                return tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        match reader.as_ref() {
+                            Some(r) => dispatch_mem_recall(r, &ctx, call).await,
+                            None => Err("mem.recall is unavailable: no epistemic \
+                                         reader is wired for this run"
+                                .to_string()),
+                        }
+                    })
+                });
+            }
+            let writer = writer.clone();
             return tokio::task::block_in_place(|| {
                 handle.block_on(async { dispatch_mem_call(&writer, &ctx, call).await })
             });
@@ -357,5 +437,161 @@ mod tests {
         let call = bind_mem_call(&ctx, MemHostFn::Recall, json!("a bare string query"));
         assert_eq!(call.run_id, ctx.run_id);
         assert_eq!(call.payload, json!("a bare string query"));
+    }
+
+    // ── Reader bridge (mem.recall) ──────────────────────────────────────────
+
+    use gecko_extension_api::{BeliefQuery, Chunk, EpistemicError, EpistemicReader};
+
+    /// A recording mock reader: captures the last `(query, budget)` it was asked
+    /// for and returns a fixed chunk list, so the tests can assert the payload →
+    /// `RecallQuery`/`ContextBudget` parse and the chunk → JSON serialization.
+    struct MockReader {
+        last: std::sync::Mutex<Option<(RecallQuery, ContextBudget)>>,
+        chunks: Vec<Chunk>,
+    }
+
+    #[async_trait::async_trait]
+    impl EpistemicReader for MockReader {
+        async fn recall(
+            &self,
+            _ctx: &RunContext,
+            q: RecallQuery,
+            budget: ContextBudget,
+        ) -> std::result::Result<Vec<Chunk>, EpistemicError> {
+            *self.last.lock().unwrap() = Some((q, budget));
+            Ok(self.chunks.clone())
+        }
+        async fn derivation_chain(
+            &self,
+            _b: MemId,
+        ) -> std::result::Result<Vec<MemId>, EpistemicError> {
+            Ok(vec![])
+        }
+        async fn believed_at(
+            &self,
+            _at: DateTime,
+            _q: BeliefQuery,
+        ) -> std::result::Result<Vec<MemId>, EpistemicError> {
+            Ok(vec![])
+        }
+        async fn blast_radius(
+            &self,
+            _retracted: MemId,
+        ) -> std::result::Result<Vec<MemId>, EpistemicError> {
+            Ok(vec![])
+        }
+    }
+
+    fn reader_with(chunks: Vec<Chunk>) -> Arc<MockReader> {
+        Arc::new(MockReader {
+            last: std::sync::Mutex::new(None),
+            chunks,
+        })
+    }
+
+    /// Runs a recall against the mock, returning both the dispatched JSON and the
+    /// `(query, budget)` the reader actually received.
+    async fn run_recall(
+        mock: &Arc<MockReader>,
+        ctx: &RunContext,
+        payload: Value,
+    ) -> Result<Value, String> {
+        let reader: Arc<dyn EpistemicReader> = mock.clone();
+        let call = bind_mem_call(ctx, MemHostFn::Recall, payload);
+        dispatch_mem_recall(&reader, ctx, call).await
+    }
+
+    fn captured(mock: &Arc<MockReader>) -> (RecallQuery, ContextBudget) {
+        mock.last
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("reader was called")
+    }
+
+    #[tokio::test]
+    async fn recall_parses_query_budget_and_serializes_chunks() {
+        let ctx = host_ctx();
+        let mock = reader_with(vec![
+            Chunk {
+                id: MemId::new("mem/ep/a"),
+                text: "first".to_string(),
+                score: 0.9,
+            },
+            Chunk {
+                id: MemId::new("mem/ep/b"),
+                text: "second".to_string(),
+                score: 0.5,
+            },
+        ]);
+        let out = run_recall(
+            &mock,
+            &ctx,
+            json!({ "text": "oauth persistence", "max_chunks": 3 }),
+        )
+        .await
+        .unwrap();
+
+        // The query text + budget reached the reader; as_of absent ⇒ present-state.
+        let (q, budget) = captured(&mock);
+        assert_eq!(q.text, "oauth persistence");
+        assert!(q.as_of.is_none());
+        assert_eq!(budget.max_chunks, 3);
+
+        // The chunks serialize to the documented shape.
+        let chunks = out.get("chunks").and_then(Value::as_array).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].get("id").unwrap(), "mem/ep/a");
+        assert_eq!(chunks[0].get("text").unwrap(), "first");
+        assert_eq!(chunks[1].get("id").unwrap(), "mem/ep/b");
+    }
+
+    #[tokio::test]
+    async fn recall_defaults_max_chunks_when_omitted() {
+        let ctx = host_ctx();
+        let mock = reader_with(vec![]);
+        run_recall(&mock, &ctx, json!({ "text": "q" }))
+            .await
+            .unwrap();
+        let (_q, budget) = captured(&mock);
+        assert_eq!(budget.max_chunks, DEFAULT_RECALL_MAX_CHUNKS);
+    }
+
+    #[tokio::test]
+    async fn recall_requires_text_and_rejects_malformed_as_of() {
+        let ctx = host_ctx();
+        let mock = reader_with(vec![]);
+
+        // Missing 'text' → error naming the field.
+        let err = run_recall(&mock, &ctx, json!({ "max_chunks": 2 }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("text"), "got: {err}");
+
+        // Malformed 'as_of' is an error, never a silent present-state fall-through.
+        let err = run_recall(
+            &mock,
+            &ctx,
+            json!({ "text": "q", "as_of": "not-a-timestamp" }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("as_of"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn recall_accepts_a_valid_as_of_timestamp() {
+        let ctx = host_ctx();
+        let mock = reader_with(vec![]);
+        run_recall(
+            &mock,
+            &ctx,
+            json!({ "text": "q", "as_of": "2026-01-02T03:04:05Z" }),
+        )
+        .await
+        .unwrap();
+        let (q, _budget) = captured(&mock);
+        assert!(q.as_of.is_some(), "valid RFC3339 as_of must route as-of-T");
     }
 }

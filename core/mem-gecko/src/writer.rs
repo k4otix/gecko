@@ -774,6 +774,13 @@ impl EpistemicWriter for MemWriter {
             .write(&tql::resolve_prediction_ops(ctx, &b, &ep_id, oc))
             .await
     }
+
+    /// `MemWriter` is both writer and [`EpistemicReader`], so hand it back as one:
+    /// this is what lets the host wire the sandbox `mem.recall` reader bridge from
+    /// the same object (and share the per-run scratch for A5.7 correlation).
+    fn as_epistemic_reader(self: Arc<Self>) -> Option<Arc<dyn EpistemicReader>> {
+        Some(self)
+    }
 }
 
 #[async_trait]

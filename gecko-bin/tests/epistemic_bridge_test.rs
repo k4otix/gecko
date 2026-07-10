@@ -190,7 +190,9 @@ async fn mem_host_fn_through_bridge_is_run_stamped_and_ignores_forged_run_id() {
 
     // Build the SAME bridge cmd_run wires into the pipeline.
     let base: ExtensionCallback = Arc::new(|_e, _f, _a| Err("base: no such extension".to_string()));
-    let cb = epistemic_extension_callback(run_ctx, ctx.epistemic_writer().unwrap(), base);
+    let writer = ctx.epistemic_writer().unwrap();
+    let reader = writer.clone().as_epistemic_reader();
+    let cb = epistemic_extension_callback(run_ctx, writer, reader, base);
 
     // Invoke it exactly as the wasm host bridge would — including a smuggled run_id.
     let out = cb(

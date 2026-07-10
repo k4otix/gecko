@@ -7,6 +7,8 @@
 //! contract — graph-coupled bodies land in mem in A2/A3, and may return
 //! [`EpistemicError::NotYetImplemented`] until then.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -221,6 +223,15 @@ pub trait EpistemicWriter: Send + Sync {
 
     /// Resolves a previously recorded prediction on `b`.
     async fn resolve_prediction(&self, ctx: &RunContext, b: MemId, outcome: Outcome) -> Result<()>;
+
+    /// If this writer is ALSO an [`EpistemicReader`] (mem's `MemWriter` is), returns
+    /// it as one so the host can wire the sandbox **reader** bridge (`mem.recall`)
+    /// from the same object and the same shared per-run scratch — this is what lets
+    /// a recall and a later `assert_belief` in one run correlate (A5.7). Write-only
+    /// writers keep the default `None`, and `mem.recall` stays unavailable for them.
+    fn as_epistemic_reader(self: Arc<Self>) -> Option<Arc<dyn EpistemicReader>> {
+        None
+    }
 }
 
 /// The read side of the epistemic substrate.
