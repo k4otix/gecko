@@ -3,36 +3,46 @@
 Short, load-bearing caveats so nothing in this branch is described as shipped
 end-to-end when it is not.
 
-## `mem.recall` host-bridge exists, but the QuickJS-guest binding does not
+## `mem.*` sandbox namespace — RESOLVED (recall proven end-to-end)
 
-**Status: implemented + tested at the library level; the host-side reader bridge is
-now wired and unit-tested; the guest binding that lets exec-doc JS call it is still
-missing, so it is NOT yet reachable end-to-end from a live `gecko run`.**
+**Status: shipped end-to-end.** The guest binding landed, so the full `mem.*`
+surface (`recall`/`remember`/`derive`/`supersede`/`contest`) is now callable from
+exec-doc JS in a live `gecko run`, and A5.7 retrieval-provenance correlation is
+proven through the real sandbox against live TypeDB.
 
 - `EpistemicReader::recall` (present-state, index-seeded, and as-of-T paths) and the
   A5.7 retrieval-provenance write path (`retrieval-event` stamping +
-  `informs-synthesis` correlation on a later `assert_belief`) are fully implemented in
-  `core/mem-gecko` and covered by that crate's own tests
-  (`writer_reader_integration`, `semantic_index_integration`).
-- **The host-side reader bridge is now wired** (`core/gecko-engine/src/sandbox/mem_host.rs`):
+  `informs-synthesis` correlation on a later `assert_belief`) are implemented in
+  `core/mem-gecko` and covered by that crate's tests (`writer_reader_integration`,
+  `semantic_index_integration`).
+- The host reader bridge (`core/gecko-engine/src/sandbox/mem_host.rs`):
   `dispatch_mem_recall` binds the host `RunContext`, parses the payload into a
   `RecallQuery`/`ContextBudget`, calls the injected `EpistemicReader`, and serializes
-  the chunks to JSON; `epistemic_extension_callback` routes `MemHostFn::Recall` to it
-  through the same async→sync bridge and the SAME per-run scratch as the writer (so
-  A5.7 correlation would fire in a live run). `MemWriter` is handed over as the reader
-  via `EpistemicWriter::as_epistemic_reader`. Covered by the `recall_*` unit tests in
-  `mem_host.rs`.
-- **What is still missing:** the QuickJS-**guest** FFI binding — the `mem.recall(...)`
-  function exposed *inside* the sandbox that lets exec-doc JS call it and receive the
-  returned chunk array. No in-tree guest binding exists, so although the host bridge is
-  reachable and tested, nothing in a live `gecko run` calls it yet.
-- Consequence: **A5.7 retrieval-provenance correlation still runs only in mem-gecko's
-  library tests and the host-bridge unit tests, never yet in a live run.** Do not
-  describe `mem.recall` as shipped end-to-end until the guest binding lands.
+  the chunks; `epistemic_extension_callback` routes `MemHostFn::Recall` to it through
+  the same async→sync bridge and the SAME per-run scratch as the writer. `MemWriter`
+  is handed over as the reader via `EpistemicWriter::as_epistemic_reader`.
+- **The guest binding now exists** (`core/js-sandbox/src/main.rs`, compiled into the
+  committed `core/gecko-engine/src/sandbox/quickjs.wasm`): a `mem` global exposes the
+  five functions, each marshalling the exact payload the host parses and (for
+  `recall`) unwrapping the `{ chunks }` envelope to hand JS the array directly. Every
+  call is S3 default-deny gated on the concept's granted `mem:<fn>` scope.
+- **Proven live:** `gecko-bin/tests/mem_recall_e2e_test.rs` drives a real guest
+  program (`mem.recall(...)` → `mem.derive(..., chunks.map(c => c.id))`) through
+  `WasmExecutor` against live TypeDB and asserts the synthesized belief carries
+  `retrieval-provenance = "semantic"`, an `informs-synthesis` edge, and a `surfaced`
+  link with `was-used = true` — the first end-to-end demonstration of A5.7. A
+  negative test proves an un-scoped `mem.recall` is S3-denied before any host
+  dispatch. A worked example ships at `sample-bundle/playbooks/mem_recall_demo.md`.
 
-**Deferred work (planned separately):** the QuickJS-guest binding for `mem.recall`
-(return-value FFI surface) + an end-to-end `gecko run` test that recalls and then
-asserts, proving live A5.7 correlation.
+**Residual caveats (not blocking):**
+- The guest reads a host reply into a grow-and-retry buffer capped at 16 MiB; a
+  single `mem.recall` returning more than that throws a clear "response exceeded
+  16 MiB" error rather than truncating. A host-reported required-size ABI would let
+  the guest size the buffer exactly — a noted follow-up, not needed for current
+  recall sizes.
+- The guest is a prebuilt binary kept out of CI; after editing
+  `core/js-sandbox/src/main.rs` you must `just build-guest` and re-commit the wasm
+  (see `docs/refactor/guest-wasm.md`).
 
 ## Consolidation ("dreaming") daemon is a scaffold
 

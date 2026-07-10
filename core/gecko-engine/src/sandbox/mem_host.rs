@@ -10,9 +10,11 @@
 //!
 //! Both bridges are host-side wired: the write ops route to [`dispatch_mem_call`]
 //! and `recall` routes to [`dispatch_mem_recall`] (an [`EpistemicReader`], shared
-//! per-run scratch → A5.7). What is still missing for a live `gecko run` is the
-//! QuickJS-**guest** binding that lets exec-doc JS actually call `mem.recall` and
-//! receive the chunk array — see `docs/refactor/KNOWN-LIMITATIONS.md`.
+//! per-run scratch → A5.7). The guest binding that lets exec-doc JS call these via a
+//! `mem.*` global now ships (`core/js-sandbox/src/main.rs`, compiled into the
+//! committed `quickjs.wasm`), and the live end-to-end path — `mem.recall` → later
+//! `mem.derive`, correlated by A5.7 — is proven in
+//! `gecko-bin/tests/mem_recall_e2e_test.rs`.
 //!
 //! [`EpistemicWriter`]: gecko_extension_api::EpistemicWriter
 //! [`EpistemicReader`]: gecko_extension_api::EpistemicReader
