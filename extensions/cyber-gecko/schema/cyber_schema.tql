@@ -1,25 +1,168 @@
 define
-
-  # Cyber-specific attributes
+  # ── identity / natural-key attrs (feed invariant-9 resolution) ──
+  attribute stix-id value string;
   attribute ioc-value value string;
-  attribute confidence-score value double;
+  attribute ioc-type value string @values("ipv4", "ipv6", "domain", "url", "file-sha256", "file-sha1", "file-md5", "email-addr", "mutex", "registry-key");
+  attribute attack-id value string;
+  attribute platform value string;
+  attribute kill-chain-phase value string;
+  attribute stix-pattern value string;
+  attribute valid-until value datetime;
+  attribute revoked value boolean;
+
+  # ── the cyber record root ──
+  # Concrete (not @abstract): it subtypes the concrete core `concept`, and an
+  # unrecognized STIX type is ingested as a bare cyber-object. attack-id is
+  # globally unique across ATT&CK (techniques T####, groups G####, software
+  # S####, data sources DS####), so it keys the whole hierarchy.
+  entity cyber-object sub concept,
+      owns stix-id @card(0..1) @unique,
+      owns attack-id @card(0..1) @unique,
+      owns revoked @card(0..1);
+
+  entity attack-pattern sub cyber-object,
+      owns platform @card(0..),
+      owns kill-chain-phase @card(0..),
+      plays technique-detection:detected-technique,
+      plays requires-evidence:technique,
+      plays mitigates:mitigated,
+      plays indicates:indicated,
+      plays uses:used;
+
+  entity intrusion-set sub cyber-object,
+      plays attributed-to:attributee,
+      plays attributed-to:actor,
+      plays indicates:indicated,
+      plays uses:user,
+      plays targets:threat-source;
+
+  entity threat-actor sub cyber-object,
+      plays attributed-to:actor,
+      plays indicates:indicated,
+      plays uses:user,
+      plays targets:threat-source;
+
+  entity campaign sub cyber-object,
+      plays attributed-to:attributee,
+      plays indicates:indicated,
+      plays uses:user,
+      plays targets:threat-source;
+
+  entity malware sub cyber-object,
+      owns platform @card(0..),
+      plays uses:used,
+      plays uses:user,
+      plays mitigates:mitigated,
+      plays indicates:indicated;
+
+  entity tool sub cyber-object,
+      owns platform @card(0..),
+      plays uses:used,
+      plays mitigates:mitigated,
+      plays indicates:indicated;
+
+  entity indicator sub cyber-object,
+      owns stix-pattern @card(0..1),
+      owns valid-until @card(0..1),
+      plays indicates:indicator-source,
+      plays mitigates:mitigated,
+      plays observed-as:pattern-indicator;
+
+  entity observable sub cyber-object,
+      owns ioc-value @card(1),
+      owns ioc-type @card(1),
+      plays observed-as:observable-value,
+      plays sighting-of:sighted-observable;
+
+  relation indicates,
+      relates indicator-source,
+      relates indicated;
+
+  relation uses,
+      relates user,
+      relates used;
+
+  relation attributed-to,
+      relates attributee,
+      relates actor;
+
+  relation targets,
+      relates threat-source,
+      relates target;
+
+  entity course-of-action sub cyber-object,
+      plays mitigates:mitigation;
+
+  relation mitigates,
+      relates mitigation,
+      relates mitigated;
+
+  relation observed-as,
+      relates pattern-indicator,
+      relates observable-value;
+
+  entity data-source sub cyber-object,
+      plays evidence-of:evidence-source,
+      plays sensor-coverage:covered-source;
+
+  entity data-component sub cyber-object,
+      plays evidence-of:evidence-component,
+      plays requires-evidence:required,
+      plays sensor-coverage:covered-component;
+
+  relation evidence-of,
+      relates evidence-component,
+      relates evidence-source;
+
+  relation requires-evidence,
+      relates technique,
+      relates required;
+
   attribute hostname value string;
-  attribute severity value string;
-  attribute status value string;
+  attribute environment value string @values("prod", "staging", "dev", "test");
+  attribute exposure value string @values("internet-facing", "internal", "isolated");
+  attribute sensor-kind value string;
 
-  # Cyber entity types (inherit from core okf-concept)
-  entity cyber-entity sub okf-concept;
+  entity host-asset sub cyber-object,
+      owns hostname @card(0..1),
+      owns environment @card(0..1),
+      owns exposure @card(0..1),
+      plays targets:target;
 
-  entity indicator sub cyber-entity,
-    owns ioc-value @card(0..1),
-    owns confidence-score @card(0..1);
+  entity sensor sub cyber-object,
+      owns sensor-kind @card(0..1),
+      plays sensor-coverage:covering-sensor;
 
-  entity asset sub cyber-entity,
-    owns hostname @card(0..1);
+  relation sensor-coverage,
+      relates covering-sensor,
+      relates covered-source,
+      relates covered-component @card(0..),
+      relates coverage-scope @card(0..1);
+  population plays sensor-coverage:coverage-scope;
 
-  entity threat-actor sub cyber-entity;
+  entity sighting sub execution-episode,
+      owns ioc-value @card(0..1),
+      plays sighting-of:sighting-instance;
 
-  # Cyber relation types (inherit from core okf-link)
-  relation attributed-to sub okf-link;
+  relation sighting-of,
+      relates sighting-instance,
+      relates sighted-observable;
 
-  relation targets sub okf-link;
+  relation technique-detection,
+      relates detecting-logic,
+      relates detected-technique,
+      relates detection-claim;
+  concept plays technique-detection:detecting-logic;
+  belief plays technique-detection:detection-claim;
+
+  # An analyst disposition of an alert: the verdict, the detecting logic it
+  # judges, and the mem belief carrying the judgment. `precision` counts these
+  # over a time window (the belief supplies the timestamp).
+  attribute detection-verdict value string @values("true-positive", "false-positive", "benign-true");
+
+  relation alert-disposition,
+      owns detection-verdict @card(1),
+      relates dispositioned-logic,
+      relates disposition-belief;
+  concept plays alert-disposition:dispositioned-logic;
+  belief plays alert-disposition:disposition-belief;

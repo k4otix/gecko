@@ -40,7 +40,9 @@ JavaScript playbooks run in a **Boa** JS engine compiled to `wasm32-wasip1`, che
 
 ## Architecture (the parts that span files)
 
-**Assembler pattern.** One binary statically composes the core engine with domain extensions at *compile time* (`GeckoExtension` trait in `core/gecko-extension-api`). `gecko.toml`'s `[extensions] enabled` selects which are *activated* at runtime — registration is the gate for loading host functions and opening write-paths. The `mem` substrate is forced-on and not listed.
+**Assembler pattern.** One binary statically composes the core engine with domain extensions at *compile time* (`GeckoExtension` trait in `core/gecko-extension-api`). `gecko.toml`'s `[extensions] enabled` selects which are *activated* at runtime — registration is the gate for loading host functions and opening write-paths. The `mem` substrate is forced-on and not listed. **The extension-authoring contract — the two host-import seams (`call_import` vs. the host bridge), the schema-fragment rules, and typed-attribute persistence — is `extensions/README.md`.**
+
+**Host-import seams.** A host import that needs only its arguments uses the synchronous `GeckoExtension::call_import`. An import that needs the graph, the belief-write path, or run identity cannot use `call_import` (it has none of those) — it is serviced by a **host bridge**: a wrapper around the sandbox `ExtensionCallback`, composed in `build_host_bridge` (`gecko-bin/src/main.rs`), that captures a `GraphStore`/`EpistemicWriter`/`RunContext` and drives the async work sync→async (`block_in_place` + `block_on`, multi-thread runtime). Reference bridges: mem's `epistemic_extension_callback` and cyber's `cyber_extension_callback`. Bridges compose (each wraps the previous); the S3 scope gate runs before any of them.
 
 **Lifecycle** (`gecko-bin/src/main.rs` → `core/gecko-engine/src/pipeline.rs`): parse OKF bundle → idempotent TypeDB sync (content-hashed, parameterized writes) → retrieve a concept's code block → execute in the sandbox. GECKO is **single-bundle-scoped** (one bundle per database); concept IDs are bundle-relative (e.g. `playbooks/hello_js`).
 

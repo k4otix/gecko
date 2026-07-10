@@ -25,7 +25,7 @@ use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
 use gecko_engine::sandbox::engine::HostImports;
 use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
-use gecko_engine::syncer::bundle::sync_bundle;
+use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
 
 use gecko_extension_api::{
     ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
@@ -108,6 +108,13 @@ enum Commands {
     /// Parse and sync an OKF bundle to TypeDB
     Sync {
         /// Path to the OKF bundle directory
+        bundle_path: PathBuf,
+    },
+
+    #[cfg(feature = "cyber")]
+    /// Parse and sync a STIX 2.1 bundle to TypeDB
+    SyncStix {
+        /// Path to the STIX bundle JSON file
         bundle_path: PathBuf,
     },
 
@@ -314,6 +321,42 @@ async fn run(cli: Cli) -> Result<()> {
                 resolve_db(&cli.database, Some(&manifest.bundle_name)),
             );
             cmd_sync(config, &extensions, manifest).await
+        }
+        #[cfg(feature = "cyber")]
+        Commands::SyncStix { bundle_path } => {
+            let extensions = build_extensions(&cfg)?;
+            println!("Parsing STIX bundle at {}...", bundle_path.display());
+            let bundle_json =
+                std::fs::read_to_string(bundle_path).context("Failed to read STIX JSON")?;
+            let (manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
+                .map_err(|e| anyhow::anyhow!("STIX parse error: {}", e))?;
+            let config = make_config(
+                &cli,
+                &address,
+                resolve_db(&cli.database, Some(&manifest.bundle_name)),
+            );
+
+            println!(
+                "Found {} STIX concepts. Syncing bundle '{}' to database '{}'...",
+                manifest.concepts.len(),
+                manifest.bundle_name,
+                config.database
+            );
+
+            let (mut db, result) = sync_manifest(config, &extensions, &manifest).await?;
+            print_sync_result(&result);
+
+            println!("Linking {} typed relations...", typed_rels.len());
+            let tx = db
+                .begin_write()
+                .await
+                .context("Failed to begin write transaction")?;
+            cyber_gecko::stix::cyber_post_sync(&tx, &typed_rels)
+                .await
+                .map_err(|e| anyhow::anyhow!("Post sync failed: {}", e))?;
+            tx.commit().await.context("Failed to commit post sync")?;
+
+            Ok(())
         }
         Commands::Query { query_str } => {
             cmd_query(
@@ -607,6 +650,33 @@ async fn cmd_schema_init(
 
 /// Sync a parsed OKF bundle. The bundle's database is ensured (schema applied,
 /// idempotently) so the single-bundle-per-database flow works from one command.
+/// Ensures the database schema and syncs a parsed bundle, returning the open
+/// router (for any extension post-sync step) alongside the sync counts.
+async fn sync_manifest(
+    config: DbConfig,
+    extensions: &[Box<dyn GeckoExtension>],
+    manifest: &OkfBundle,
+) -> Result<(TypeDbRouter, SyncResult)> {
+    let mut db = TypeDbRouter::new(config);
+    apply_all_schemas(&mut db, extensions, None)
+        .await
+        .context("Failed to ensure database schema")?;
+    let result = sync_bundle(&mut db, manifest)
+        .await
+        .context("Failed to sync bundle")?;
+    Ok((db, result))
+}
+
+fn print_sync_result(result: &SyncResult) {
+    println!("✓ Sync complete!");
+    println!("  Concepts inserted: {}", result.concepts_inserted);
+    println!("  Concepts updated:  {}", result.concepts_updated);
+    println!("  Concepts skipped:  {}", result.concepts_skipped);
+    println!("  Concepts deleted:  {}", result.concepts_deleted);
+    println!("  Links attempted:    {}", result.links_attempted);
+    println!("  Citations attempted: {}", result.citations_attempted);
+}
+
 async fn cmd_sync(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
@@ -619,22 +689,8 @@ async fn cmd_sync(
         config.database
     );
 
-    let mut db = TypeDbRouter::new(config);
-    apply_all_schemas(&mut db, extensions, None)
-        .await
-        .context("Failed to ensure database schema")?;
-
-    let result = sync_bundle(&mut db, &manifest)
-        .await
-        .context("Failed to sync bundle")?;
-
-    println!("✓ Sync complete!");
-    println!("  Concepts inserted: {}", result.concepts_inserted);
-    println!("  Concepts updated:  {}", result.concepts_updated);
-    println!("  Concepts skipped:  {}", result.concepts_skipped);
-    println!("  Concepts deleted:  {}", result.concepts_deleted);
-    println!("  Links attempted:    {}", result.links_attempted);
-    println!("  Citations attempted: {}", result.citations_attempted);
+    let (_db, result) = sync_manifest(config, extensions, &manifest).await?;
+    print_sync_result(&result);
 
     Ok(())
 }
@@ -906,7 +962,7 @@ async fn build_host_bridge(
 ) -> Result<gecko_engine::sandbox::engine::ExtensionCallback> {
     let graph_router =
         std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
-    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router));
+    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router.clone()));
     let writer: std::sync::Arc<dyn EpistemicWriter> = build_epistemic_writer(store, cfg).await?;
 
     // mem (forced-on, first) binds the writer into the sandbox context; other
@@ -915,6 +971,11 @@ async fn build_host_bridge(
     for ext in &extensions {
         ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
     }
+
+    // Whether the cyber extension is activated for this run (its detect host
+    // imports get a dedicated graph/writer bridge below).
+    #[cfg(feature = "cyber")]
+    let cyber_active = extensions.iter().any(|e| e.name() == "cyber-gecko");
 
     // The base bridge dispatches plain host imports over the activated extensions.
     let base_cb: gecko_engine::sandbox::engine::ExtensionCallback =
@@ -944,7 +1005,22 @@ async fn build_host_bridge(
             // from the same object (shared per-run scratch). See
             // docs/refactor/KNOWN-LIMITATIONS.md.
             let reader = writer.clone().as_epistemic_reader();
-            epistemic_extension_callback(run_ctx, writer, reader, base_cb)
+            let mem_cb =
+                epistemic_extension_callback(run_ctx.clone(), writer.clone(), reader, base_cb);
+
+            // cyber's detect host imports reach the graph and belief-write path
+            // through their own bridge, wrapping mem's so a non-detect call falls
+            // through to it (and then to the base dispatcher).
+            #[cfg(feature = "cyber")]
+            let mem_cb = if cyber_active {
+                let cyber_store: std::sync::Arc<dyn GraphStore> =
+                    std::sync::Arc::new(RouterGraphStore::new(graph_router));
+                cyber_gecko::detect::cyber_extension_callback(cyber_store, writer, run_ctx, mem_cb)
+            } else {
+                mem_cb
+            };
+
+            mem_cb
         }
         None => base_cb,
     };
