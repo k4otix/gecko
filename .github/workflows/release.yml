@@ -1,0 +1,131 @@
+name: Release
+
+# Per-platform GitHub Release binaries (plan P6). Each target builds `cargo
+# build --release --features real-embedder --bin gecko` — the WORKING candle
+# embedder ships inside the binary — but this NEVER downloads the 1.3GB
+# embedding model: candle is a compile-time dependency, the model is a
+# runtime asset staged separately via `gecko model fetch` (P2) on first use.
+# TypeDB is likewise never bundled: `orchestrated` mode (P3) fetches the
+# pinned server into the local cache on first `gecko up`. The packaged
+# artifact therefore contains ONLY the `gecko` binary and is tens of MB
+# (candle links in statically, but no model bytes are ever written into the
+# build tree or the release archive) — no strip/upx tricks, just the normal
+# `--release` profile already configured in the workspace Cargo.toml.
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version string to embed in asset filenames (e.g. "v0.1.0"). Only
+          needed for a manual run that isn't triggered by a tag/release;
+          defaults to the triggering ref name.
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write # required to upload assets to a GitHub Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: zip
+          - target: x86_64-apple-darwin
+            # GitHub removed free-tier Intel macOS runners (macos-13 and
+            # earlier "macos-latest" were arm64-only after that); the "-large"
+            # labels are the current Intel (x86_64) hosted runners.
+            os: macos-latest-large
+            archive: zip
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # Excludes js-sandbox to match the CI build boundary (plan P5); packages
+      # only the `gecko` binary (`--bin gecko`). `real-embedder` compiles
+      # candle into the binary so the shipped release has a WORKING embedder
+      # out of the box — it does not touch the model cache or fetch anything.
+      - name: Build release binary (real-embedder; compiles candle, fetches no model)
+        run: cargo build --release --features real-embedder --bin gecko --target ${{ matrix.target }}
+
+      # Package ONLY the gecko binary — never the model (~1.3GB, fetched at
+      # runtime via `gecko model fetch`) and never TypeDB (fetched at runtime
+      # by `gecko up` in orchestrated mode). The resulting archive is tens of
+      # MB: candle statically linked, zero model bytes.
+      - name: Package (binary only — no model, no TypeDB)
+        id: package
+        shell: bash
+        env:
+          # Piped through env (not interpolated directly into the script) —
+          # this is workflow_dispatch operator input, but never trust
+          # untyped strings inside a `run:` block regardless of trigger.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME:-dev}}"
+          name="gecko-${version}-${{ matrix.target }}"
+          bin_dir="target/${{ matrix.target }}/release"
+
+          stage_root="$RUNNER_TEMP/stage"
+          stage_dir="$stage_root/$name"
+          mkdir -p "$stage_dir"
+          cp "$bin_dir/gecko" "$stage_dir/gecko"
+          chmod +x "$stage_dir/gecko"
+
+          # Sanity guard: fail loudly rather than silently ship an oversized
+          # (possibly model-contaminated) asset. A real-embedder release
+          # binary is expected to be well under 500MB; the 1.3GB model would
+          # blow past this immediately if it were ever accidentally staged
+          # alongside the binary.
+          size_bytes=$(wc -c < "$stage_dir/gecko")
+          max_bytes=$((500 * 1024 * 1024))
+          if [ "$size_bytes" -gt "$max_bytes" ]; then
+            echo "::error::gecko binary is ${size_bytes} bytes — exceeds the ${max_bytes} byte sanity ceiling. Refusing to package (possible model contamination)."
+            exit 1
+          fi
+
+          cd "$stage_root"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            asset="$name.zip"
+            zip -r "$asset" "$name"
+          else
+            asset="$name.tar.gz"
+            tar -czf "$asset" "$name"
+          fi
+          mv "$asset" "$GITHUB_WORKSPACE/$asset"
+
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "Packaged $asset ($(wc -c < "$GITHUB_WORKSPACE/$asset") bytes) containing only the gecko binary."
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          files: ${{ steps.package.outputs.asset }}
+          fail_on_unmatched_files: true
+          draft: false

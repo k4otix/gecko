@@ -58,6 +58,33 @@ cargo install --path gecko-bin
 
 *(Alternatively, you can run commands directly using `cargo run -p gecko-bin -- <command>`)*
 
+### Installation / First run (pre-built binaries)
+
+For most users, a pre-built per-platform binary from [GitHub
+Releases](https://github.com/k4otix/gecko/releases) is faster than compiling
+from source. **The download is small (tens of MB): neither the ~1.3GB
+embedding model nor TypeDB is ever bundled** — both are runtime assets fetched
+separately, on your terms.
+
+```bash
+# 1. Install the binary (detects OS/arch, grabs the matching release asset)
+curl -fsSL https://raw.githubusercontent.com/k4otix/gecko/main/scripts/install.sh | sh
+
+# 2. One-time download of the embedding model (~1.3GB) — explicit, never silent
+gecko model fetch
+
+# 3. Bring up the pinned TypeDB (downloaded once, run as a managed child process)
+gecko up
+
+# 4. Sync a bundle
+gecko sync sample-bundle
+```
+
+A Homebrew formula template is available at `HomebrewFormula/gecko.rb` for
+maintainers cutting a tap. For the full first-run walkthrough and the
+**air-gapped / enterprise path** (pre-staged model + external TypeDB, zero
+runtime downloads), see [`docs/INSTALL.md`](docs/INSTALL.md).
+
 ### Usage
 
 The `gecko` CLI tool manages the full lifecycle of the knowledge graph and playbook execution. We have provided a `sample-bundle` to test the functionality.
