@@ -5,7 +5,12 @@ name: CI
 # per-push job never compiles candle and never touches ~/.cache/gecko/models
 # (plan P5). The 1.3GB real-model path lives ONLY in model-integration.yml.
 on:
-  pull_request: {}
+  # `labeled` is included so applying the `tier3-validated` label re-runs the
+  # model-bump-gate and can actually flip it green (the gate reads the label from
+  # the PR event payload; without this, a label added after the fact is never seen
+  # until the next push).
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
 
