@@ -1,13 +1,12 @@
-// Applies the `cyber` extension schema alongside core+mem, so it is compiled ONLY
-// when the `cyber` feature is on. The canonical candle-free Tier-2 command
-// (`cargo test --test '*' --no-default-features`) drops `cyber`, so this binary
-// compiles empty and passes there; a `--features cyber` (or default) run runs it.
-#![cfg(feature = "cyber")]
-
+// Exercises bundle-sync insert/skip/update/delete-citation coverage against
+// core+mem schema only — no cyber-specific schema or types are touched, so this
+// test runs on every push, including the candle-free Tier-2 command
+// (`cargo test --test '*' --no-default-features`).
 use futures_util::StreamExt;
 use std::fs;
 use tempfile::TempDir;
 
+#[cfg(feature = "cyber")]
 use cyber_gecko::CyberGecko;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
@@ -48,8 +47,10 @@ async fn test_bundle_sync() {
         .await
         .expect("Failed to apply core schema");
 
-    let extensions: Vec<Box<dyn GeckoExtension>> =
-        vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
+    #[allow(unused_mut)]
+    let mut extensions: Vec<Box<dyn GeckoExtension>> = vec![Box::new(MemGecko::new())];
+    #[cfg(feature = "cyber")]
+    extensions.push(Box::new(CyberGecko::new()));
 
     for ext in extensions {
         let schema = ext.schema();

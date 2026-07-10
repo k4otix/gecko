@@ -1,12 +1,10 @@
-// This integration test asserts the `cyber` domain schema (`cyber-entity`) is
-// applied, so it is compiled ONLY when the `cyber` feature is on. The canonical
-// candle-free Tier-2 command (`cargo test --test '*' --no-default-features`) drops
-// `cyber`, so this binary compiles empty and passes there; a `--features cyber`
-// (or default) run exercises it.
-#![cfg(feature = "cyber")]
-
+// Verifies core + mem schema initialization on every push, including the
+// candle-free Tier-2 command (`cargo test --test '*' --no-default-features`).
+// Only the `cyber-entity` assertion is gated behind the `cyber` feature, since
+// that type only exists when the `cyber` extension is compiled in.
 use futures_util::StreamExt;
 
+#[cfg(feature = "cyber")]
 use cyber_gecko::CyberGecko;
 use gecko_engine::extension::GeckoExtension;
 use mem_gecko::MemGecko;
@@ -30,8 +28,10 @@ async fn test_schema_initialization() {
         .expect("Failed to apply core schema");
 
     // 3. Assemble extensions
-    let extensions: Vec<Box<dyn GeckoExtension>> =
-        vec![Box::new(CyberGecko::new()), Box::new(MemGecko::new())];
+    #[allow(unused_mut)]
+    let mut extensions: Vec<Box<dyn GeckoExtension>> = vec![Box::new(MemGecko::new())];
+    #[cfg(feature = "cyber")]
+    extensions.push(Box::new(CyberGecko::new()));
 
     // 4. Apply extension schemas
     for ext in extensions {
@@ -58,16 +58,20 @@ async fn test_schema_initialization() {
     let rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
     assert!(!rows.is_empty(), "Core schema 'concept' type not found");
 
-    // Check for a cyber extension type
-    let answer = tx
-        .query("match $t sub cyber-entity;")
-        .await
-        .expect("Failed to query cyber type");
-    let cyber_rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
-    assert!(
-        !cyber_rows.is_empty(),
-        "Cyber schema 'cyber-entity' type not found"
-    );
+    // Check for a cyber extension type (only when the `cyber` feature compiled
+    // the extension in and its schema was applied above).
+    #[cfg(feature = "cyber")]
+    {
+        let answer = tx
+            .query("match $t sub cyber-entity;")
+            .await
+            .expect("Failed to query cyber type");
+        let cyber_rows: Vec<_> = answer.into_rows().collect::<Vec<_>>().await;
+        assert!(
+            !cyber_rows.is_empty(),
+            "Cyber schema 'cyber-entity' type not found"
+        );
+    }
 
     // Check for a mem extension type
     let answer = tx
