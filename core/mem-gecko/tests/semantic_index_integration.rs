@@ -473,7 +473,7 @@ async fn retrieval_provenance_links_synthesized_belief() {
         .assert_belief(
             &ctx,
             belief("host is compromised via smb", "agent-1", 0.7),
-            &[evidence.clone()],
+            std::slice::from_ref(&evidence),
             DerivationMethod::LlmSynthesis,
         )
         .await

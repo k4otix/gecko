@@ -275,7 +275,7 @@ async fn provenance_stamp_roundtrips_run_id_and_source() {
         .assert_belief(
             &ctx,
             belief("the host is compromised", "agent-1", 0.8),
-            &[ep_id.clone()],
+            std::slice::from_ref(&ep_id),
             DerivationMethod::LlmSynthesis,
         )
         .await
@@ -323,7 +323,7 @@ async fn derivation_chain_never_touches_the_retrieval_ledger() {
         .assert_belief(
             &ctx,
             belief("synthesized claim", "agent-1", 0.6),
-            &[ev.clone()],
+            std::slice::from_ref(&ev),
             DerivationMethod::LlmSynthesis,
         )
         .await
@@ -385,13 +385,15 @@ async fn blast_radius_propagates_transitively() {
         )
         .await
         .unwrap();
-    w.rests_on(&ctx, b.clone(), &[a.clone()]).await.unwrap();
+    w.rests_on(&ctx, b.clone(), std::slice::from_ref(&a))
+        .await
+        .unwrap();
     // b2 is derived FROM b (b is its evidence/source).
     let b2 = w
         .assert_belief(
             &ctx,
             belief("downstream belief", "agent-1", 0.5),
-            &[b.clone()],
+            std::slice::from_ref(&b),
             DerivationMethod::TypeJoin,
         )
         .await
