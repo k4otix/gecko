@@ -27,6 +27,16 @@ build:
 build-release:
     cargo build --release --features real-embedder
 
+# regenerate the checked-in sandbox guest wasm (Boa JS engine) from core/js-sandbox.
+# The guest is intentionally OUTSIDE CI (never rebuilt there); run this by hand after
+# editing core/js-sandbox/src/main.rs, then commit the updated binary. Goal is a
+# working guest (existing guest tests green), not a bit-identical rebuild.
+build-guest:
+    rustup target add wasm32-wasip1
+    cargo build -p js-sandbox --target wasm32-wasip1 --release
+    cp target/wasm32-wasip1/release/js-sandbox.wasm core/gecko-engine/src/sandbox/quickjs.wasm
+    @echo "regenerated core/gecko-engine/src/sandbox/quickjs.wasm — run the guest tests, then commit it"
+
 # ---------- test tiers ----------
 
 # Tier 1 — fast, serviceless, stub embedder. No candle, no model, no network.
