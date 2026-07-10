@@ -12,7 +12,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  MODEL_ID: bge-large-en-v1.5
+  # Full HuggingFace repo id INCLUDING the org — the fetch resolves
+  # `huggingface.co/{MODEL_ID}/resolve/{MODEL_REVISION}/...`, and the bare
+  # `bge-large-en-v1.5` (no org) 401s. Kept in lockstep with `default_model_id()`.
+  MODEL_ID: BAAI/bge-large-en-v1.5
   # IMMUTABLE pinned revision — a HuggingFace commit SHA, NEVER `main` (plan P2
   # note: `@main` is a moving target and defeats the cache key). Resolved
   # 2026-07-09 via `curl https://huggingface.co/api/models/BAAI/bge-large-en-v1.5`

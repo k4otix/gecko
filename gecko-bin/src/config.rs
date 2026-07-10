@@ -107,7 +107,10 @@ fn default_backend() -> String {
 // `tier3-validated` label before merge.
 
 fn default_model_id() -> String {
-    format!("bge-large-en-v1.5@{PINNED_MODEL_REVISION}")
+    // The HuggingFace org prefix is REQUIRED: the fetch builds
+    // `huggingface.co/{model}/resolve/{revision}/...`, and the bare
+    // `bge-large-en-v1.5` path 401s — the canonical repo is `BAAI/bge-large-en-v1.5`.
+    format!("BAAI/bge-large-en-v1.5@{PINNED_MODEL_REVISION}")
 }
 
 impl Default for SemanticIndexConfig {
@@ -258,7 +261,7 @@ embedder = "stub"          # deterministic hash stub; future: "bge-large-en-v1.5
 backend  = "hnsw"          # future drop-in: "typedb-native"
 # The SINGLE SOURCE OF TRUTH for the model. The model directory is DERIVED as
 # cache_dir/models/<model_id>/ (content-addressed) — never hand-configured.
-model_id = "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+model_id = "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
 # Never silently pull ~1.3GB; the operator opts in (P2 wires the download).
 auto_fetch = false
 # model_path = "/pre/provisioned/model/dir"   # optional override (air-gapped)
@@ -431,7 +434,7 @@ mod tests {
             "enabled = true\n",
             "embedder = \"stub\"\n",
             "backend = \"hnsw\"\n",
-            "model_id = \"bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09\"\n",
+            "model_id = \"BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09\"\n",
             "model_source = \"https://mirror.example/models\"\n",
         );
         let cfg: GeckoConfig = toml::from_str(rendered)
@@ -442,7 +445,7 @@ mod tests {
         assert!(cfg.semantic_index.enabled);
         assert_eq!(
             cfg.semantic_index.model_id,
-            "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+            "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
         );
         assert_eq!(
             cfg.semantic_index.model_source.as_deref(),
@@ -516,7 +519,7 @@ mod tests {
         let sic = SemanticIndexConfig::default();
         assert_eq!(
             sic.model_id,
-            "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+            "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
         );
         assert!(!sic.auto_fetch, "never silently pull 1.3GB");
         assert!(sic.model_path.is_none());
@@ -530,7 +533,7 @@ mod tests {
         assert!(!cfg.semantic_index.enabled);
         assert_eq!(
             cfg.semantic_index.model_id,
-            "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+            "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
         );
         assert!(!cfg.semantic_index.auto_fetch);
         assert_eq!(cfg.typedb.endpoint, "localhost:1729");
@@ -552,7 +555,7 @@ mod tests {
             "default_model_id() must not ship the unresolved placeholder: {id}"
         );
         assert_eq!(
-            id, "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09",
+            id, "BAAI/bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09",
             "must match the Tier-3-pinned MODEL_REVISION in \
              .github/workflows/model-integration.yml"
         );
