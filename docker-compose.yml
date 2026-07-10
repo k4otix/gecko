@@ -21,7 +21,10 @@ services:
     ports:
       - "1729:1729"
     volumes:
-      - typedb-data:/opt/typedb-all-linux-x86_64/server/data
+      # TypeDB 3.12 stores databases under /var/lib/typedb/data (arch-independent),
+      # verified against the typedb/typedb:3.12.0 image — a db created here survives
+      # a container restart. (NOT /opt/.../server/data, which the image leaves empty.)
+      - typedb-data:/var/lib/typedb/data
     restart: unless-stopped
 
   gecko:
