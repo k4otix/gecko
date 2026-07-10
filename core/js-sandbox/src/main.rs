@@ -191,7 +191,7 @@ fn mem_derive(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     host_call("mem", "derive", &Value::Object(payload), context)
 }
 
-/// `mem.supersede(old, text, reason?)` → `{ old, text, reason? }`.
+/// `mem.supersede(old, text, reason?, opts?)` → `{ old, text, reason?, confidence? }`.
 fn mem_supersede(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let old = require_str_arg(args, 0, "old")?;
     let text = require_str_arg(args, 1, "text")?;
@@ -201,6 +201,13 @@ fn mem_supersede(_this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
 
     if let Some(reason) = args.get(2).and_then(JsValue::as_string) {
         payload.insert("reason".to_string(), json!(reason.to_std_string_escaped()));
+    }
+
+    // Optional `{ confidence }` — the host's supersede arm reads it, mirroring derive.
+    if let Some(opts) = opt_arg_json(args, 3, context)
+        && let Some(n) = opts.get("confidence").and_then(Value::as_f64)
+    {
+        payload.insert("confidence".to_string(), json!(n));
     }
 
     host_call("mem", "supersede", &Value::Object(payload), context)
@@ -317,7 +324,7 @@ fn main() {
         .function(
             NativeFunction::from_fn_ptr(mem_supersede),
             js_string!("supersede"),
-            3,
+            4,
         )
         .function(
             NativeFunction::from_fn_ptr(mem_contest),
