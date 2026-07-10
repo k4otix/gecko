@@ -37,9 +37,15 @@ proven through the real sandbox against live TypeDB.
 **Residual caveats (not blocking):**
 - The guest reads a host reply into a grow-and-retry buffer capped at 16 MiB; a
   single `mem.recall` returning more than that throws a clear "response exceeded
-  16 MiB" error rather than truncating. A host-reported required-size ABI would let
-  the guest size the buffer exactly — a noted follow-up, not needed for current
-  recall sizes.
+  16 MiB" error rather than truncating. **Caveat on the retry:** the host runs the
+  extension callback to completion *before* it discovers the reply overflowed the
+  buffer, so a retry re-runs the callback. For `mem.recall` that is effectful (it
+  mints a `retrieval-event`), so a reply exceeding the 1 MiB first tier would record
+  a *duplicate* retrieval-event on the retry — muddying A5.7 for that one recall.
+  Low reachability today (recall replies are small; the write ops return tiny `{id}`
+  payloads that never overflow), but the proper fix is a **host-reported
+  required-size ABI**: on overflow the host returns the needed size (without
+  re-running the callback) so the guest allocates exactly once. Tracked follow-up.
 - The guest is a prebuilt binary kept out of CI; after editing
   `core/js-sandbox/src/main.rs` you must `just build-guest` and re-commit the wasm
   (see `docs/refactor/guest-wasm.md`).
