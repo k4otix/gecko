@@ -20,6 +20,8 @@ use ulid::Ulid;
 
 use gecko_extension_api::GeckoExtension;
 
+mod common;
+
 /// Core schema (records tier) that the mem substrate extends additively.
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
@@ -46,10 +48,7 @@ async fn fresh_db() -> (TypeDbRouter, String) {
 }
 
 async fn drop_db(mut router: TypeDbRouter, name: &str) {
-    router
-        .delete_database(name)
-        .await
-        .expect("throwaway db drops");
+    common::drop_db_with_retry(&mut router, name).await;
 }
 
 /// Runs a write transaction, returning `Ok(())` on commit or the server error text.

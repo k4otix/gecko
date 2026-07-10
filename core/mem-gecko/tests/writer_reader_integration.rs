@@ -25,6 +25,8 @@ use gecko_extension_api::{
 use mem_gecko::MemWriter;
 use ulid::Ulid;
 
+mod common;
+
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
 /// A test harness: a shared router (schema applied) + the mem writer over it.
@@ -92,7 +94,7 @@ impl Fixture {
 
     async fn drop_db(&self) {
         let mut router = self.shared.lock().await;
-        router.delete_database(&self.name).await.expect("drop db");
+        common::drop_db_with_retry(&mut router, &self.name).await;
     }
 }
 
