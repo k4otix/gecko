@@ -8,6 +8,7 @@
 [![TypeDB](https://img.shields.io/badge/TypeDB-3.12-blue.svg)](https://typedb.com/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasmtime-654FF0.svg)](https://wasmtime.dev/)
 [![Build Status](https://github.com/k4otix/gecko/actions/workflows/ci.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 At its core, **GECKO** is a strongly-typed semantic knowledge graph designed to underlie Open Knowledge Framework (OKF) objects. While GECKO acts as a high-performance framework for orchestrating execution and context-aware workflows, its foundational capability is ingesting human-readable documentation bundles and rigorously mapping them into an interconnected, queryable graph of domain knowledge.
 
@@ -184,4 +185,10 @@ CI (`ci.yml`) runs the candle-free, model-free suite against a TypeDB 3.12 servi
 
 ## Contributing
 
-Contributions to the core engine or new domain extensions are welcome. When developing new extensions, adhere strictly to the `GeckoExtension` trait (in `core/gecko-extension-api`) and avoid breaking changes to the core TypeQL schema hierarchy. If you change the WASM JS guest (`core/js-sandbox/src/main.rs`), rebuild and commit the guest binary with `just build-guest`.
+GECKO is a solo hobby and research project, maintained in spare time — support is **best-effort** and there are no guarantees on review or merge timelines. That said, bug reports and small, focused pull requests are welcome. For larger changes, please open an issue to discuss the idea first. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full details, and [`CLAUDE.md`](CLAUDE.md) for the code conventions.
+
+When developing new extensions, adhere strictly to the `GeckoExtension` trait (in `core/gecko-extension-api`) and avoid breaking changes to the core TypeQL schema hierarchy. If you change the WASM JS guest (`core/js-sandbox/src/main.rs`), rebuild and commit the guest binary with `just build-guest`.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Unless you explicitly state otherwise, any contribution you submit for inclusion in GECKO shall be licensed as above, without any additional terms or conditions.
