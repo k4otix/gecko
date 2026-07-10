@@ -492,6 +492,48 @@ mod tests {
         assert_eq!(names(&exts), vec!["mem-gecko"]);
     }
 
+    /// Regression test for the P5 review fix: `model-integration.yml`'s
+    /// "Configure model mirror" step used to `>> gecko.toml` a second
+    /// `[semantic_index]` table onto the ALREADY-committed `gecko.toml`
+    /// (which ships its own `[semantic_index]` table), producing a duplicate
+    /// TOML table that fails to parse. The fix writes a standalone config
+    /// (never appended to the committed file) — this is the exact template
+    /// the workflow generates, asserting it parses as a single, complete,
+    /// valid document with the mirror wired up via `model_source`.
+    #[test]
+    fn ci_mirror_config_template_parses_without_duplicate_table() {
+        let rendered = concat!(
+            "[extensions]\n",
+            "enabled = [\"cyber\"]\n",
+            "\n",
+            "[typedb]\n",
+            "endpoint = \"localhost:1729\"\n",
+            "mode = \"external\"\n",
+            "\n",
+            "[semantic_index]\n",
+            "enabled = true\n",
+            "path = \"gecko.hnsw\"\n",
+            "embedder = \"stub\"\n",
+            "backend = \"hnsw\"\n",
+            "model_id = \"bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09\"\n",
+            "model_source = \"https://mirror.example/models\"\n",
+        );
+        let cfg: GeckoConfig = toml::from_str(rendered)
+            .expect("standalone mirror config must parse cleanly (no duplicate table)");
+        assert_eq!(cfg.extensions.enabled, vec!["cyber".to_string()]);
+        assert_eq!(cfg.typedb.endpoint, "localhost:1729");
+        assert_eq!(cfg.typedb.mode, TypedbMode::External);
+        assert!(cfg.semantic_index.enabled);
+        assert_eq!(
+            cfg.semantic_index.model_id,
+            "bge-large-en-v1.5@d4aa6901d3a41ba39fb536a557fa166f842b0e09"
+        );
+        assert_eq!(
+            cfg.semantic_index.model_source.as_deref(),
+            Some("https://mirror.example/models")
+        );
+    }
+
     fn expect_err(cfg: &GeckoConfig) -> String {
         match build_extensions(cfg) {
             Ok(_) => panic!("expected build_extensions to error"),

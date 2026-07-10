@@ -24,6 +24,11 @@ env:
   # Optional mirror (plan P2): prefer this over HuggingFace to avoid
   # rate-limit/uptime flakiness on the nightly job. Unset ⇒ fetch from HF
   # directly. Wire a `MODEL_MIRROR_URL` repo/environment secret to use one.
+  # Hoisted to JOB level (not step-level) deliberately: a step's `if:` cannot
+  # see env vars assigned in that same step's own `env:` block — only
+  # job/workflow-level env is visible to a step's `if:` condition. Assigning it
+  # here is what makes `if: ${{ env.MODEL_MIRROR_URL != '' }}` below actually work.
+  MODEL_MIRROR_URL: ${{ secrets.MODEL_MIRROR_URL }}
 
 jobs:
   tier3:
@@ -64,27 +69,62 @@ jobs:
           path: ~/.cache/gecko/models
           key: model-${{ env.MODEL_ID }}-${{ env.MODEL_REVISION }}
 
-      # Optional mirror wiring: only materializes a gecko.toml override when the
-      # secret is configured; otherwise `gecko model fetch` falls back to
-      # HuggingFace directly (fetch.rs's DEFAULT_HF_BASE).
+      # Optional mirror wiring: only materializes a STANDALONE config override
+      # when the secret is configured; otherwise `gecko model fetch` falls back
+      # to HuggingFace directly (fetch.rs's DEFAULT_HF_BASE) using the
+      # committed gecko.toml as-is.
+      #
+      # Deliberately NOT appended to the committed gecko.toml: that file
+      # already ships a `[semantic_index]` table (repo root gecko.toml), and
+      # TOML rejects a second `[semantic_index]` table in the same document —
+      # `>> gecko.toml` here would corrupt it into an unparseable file. Instead
+      # write a COMPLETE, standalone config to $RUNNER_TEMP and point `gecko
+      # --config` at it, leaving the committed gecko.toml untouched.
       - name: Configure model mirror (optional)
+        id: mirror-config
         if: ${{ env.MODEL_MIRROR_URL != '' }}
-        env:
-          MODEL_MIRROR_URL: ${{ secrets.MODEL_MIRROR_URL }}
         run: |
           set -euo pipefail
-          {
-            echo "[semantic_index]"
-            echo "model_source = \"$MODEL_MIRROR_URL\""
-          } >> gecko.toml
+          CONFIG_PATH="$RUNNER_TEMP/gecko.ci.toml"
+          cat > "$CONFIG_PATH" <<EOF
+          [extensions]
+          enabled = ["cyber"]
+
+          [typedb]
+          endpoint = "localhost:1729"
+          mode = "external"
+
+          [semantic_index]
+          enabled = true
+          path = "gecko.hnsw"
+          embedder = "stub"
+          backend = "hnsw"
+          model_id = "${MODEL_ID}@${MODEL_REVISION}"
+          model_source = "${MODEL_MIRROR_URL}"
+          EOF
+          echo "config_path=$CONFIG_PATH" >> "$GITHUB_OUTPUT"
+          echo "Wrote standalone mirror config to $CONFIG_PATH:"
+          cat "$CONFIG_PATH"
 
       # Stage the model into the cache dir. Idempotent (fetch.rs::is_cached) —
       # a cache hit above makes this a no-op; a cache miss downloads the
       # 1.3GB once. `gecko model fetch` is candle-free itself (fetch.rs has no
       # candle dependency), so this step is cheap even before Tier-3 compiles.
+      # Uses the standalone mirror config (above) only when the mirror secret
+      # produced one; otherwise runs with the default (committed) gecko.toml,
+      # which has no `model_source` set and so fetches from HuggingFace.
       - name: Stage the model (gecko model fetch)
+        env:
+          MIRROR_CONFIG: ${{ steps.mirror-config.outputs.config_path }}
         run: |
-          cargo run --quiet --bin gecko -- model fetch --model "${MODEL_ID}@${MODEL_REVISION}"
+          set -euo pipefail
+          if [ -n "${MIRROR_CONFIG:-}" ]; then
+            echo "Using mirror config: $MIRROR_CONFIG"
+            cargo run --quiet --bin gecko -- --config "$MIRROR_CONFIG" model fetch --model "${MODEL_ID}@${MODEL_REVISION}"
+          else
+            echo "No mirror configured — using default gecko.toml (HuggingFace fetch path)."
+            cargo run --quiet --bin gecko -- model fetch --model "${MODEL_ID}@${MODEL_REVISION}"
+          fi
 
       # Guard (plan P5 concern): the Tier-3 tests resolve GECKO_SMOKE_MODEL_DIR
       # and SILENTLY SKIP-GREEN when it's unset or the model isn't actually

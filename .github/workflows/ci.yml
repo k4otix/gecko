@@ -37,12 +37,32 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          CHANGED="$(
-            { git diff "$BASE_SHA" "$HEAD_SHA" -- gecko-bin/src/config.rs \
-                | grep -E '^[+-].*(default_model_id|model_id\s*[:=])' || true; }
-            { git diff "$BASE_SHA" "$HEAD_SHA" -- .github/workflows/model-integration.yml \
-                | grep -E '^[+-].*MODEL_REVISION' || true; }
-          )"
+          CONFIG_DIFF="$(git diff -U10 "$BASE_SHA" "$HEAD_SHA" -- gecko-bin/src/config.rs || true)"
+          WORKFLOW_DIFF="$(git diff "$BASE_SHA" "$HEAD_SHA" -- .github/workflows/model-integration.yml || true)"
+
+          # Token-adjacency hits: direct references to model_id / default_model_id.
+          CONFIG_TOKEN_HITS="$(printf '%s\n' "$CONFIG_DIFF" | grep -E '^[+-].*(default_model_id|model_id\s*[:=])' || true)"
+          # Literal-model hits: a bump can slip through the token check above by
+          # touching only the pinned `"bge-large-en-v1.5@<revision>"` literal
+          # returned by default_model_id() (e.g. its body changes but the line
+          # itself doesn't mention `model_id`) — catch that string directly.
+          CONFIG_LITERAL_HITS="$(printf '%s\n' "$CONFIG_DIFF" | grep -E '^[+-].*bge-large-en-v1\.5@' || true)"
+          # Function-region hits: any changed line inside a diff hunk whose
+          # context includes `fn default_model_id`, so an edit anywhere in that
+          # function's body can't slip through by avoiding every recognized token.
+          CONFIG_FN_REGION_HITS="$(printf '%s\n' "$CONFIG_DIFF" | awk '
+            /^@@/ { hunk = $0 "\n"; in_hunk = 1; has_fn = 0; next }
+            in_hunk { hunk = hunk $0 "\n" }
+            in_hunk && /fn default_model_id/ { has_fn = 1 }
+            /^(diff|--- |\+\+\+ )/ { if (in_hunk && has_fn) print hunk; in_hunk = 0 }
+            END { if (in_hunk && has_fn) print hunk }
+          ' || true)"
+
+          # Workflow side: the pinned MODEL_REVISION/MODEL_ID env values, or the
+          # literal model string wherever it appears (e.g. in a comment example).
+          WORKFLOW_HITS="$(printf '%s\n' "$WORKFLOW_DIFF" | grep -E '^[+-].*(MODEL_REVISION|MODEL_ID\s*:|bge-large-en-v1\.5@)' || true)"
+
+          CHANGED="$(printf '%s\n%s\n%s\n%s\n' "$CONFIG_TOKEN_HITS" "$CONFIG_LITERAL_HITS" "$CONFIG_FN_REGION_HITS" "$WORKFLOW_HITS" | sed '/^$/d')"
           if [ -n "$CHANGED" ]; then
             echo "Detected a model_id/MODEL_REVISION change:"
             echo "$CHANGED"
