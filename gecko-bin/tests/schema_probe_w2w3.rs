@@ -52,6 +52,32 @@ const W2_PRECEDENCE: &str = include_str!("probes/w2_precedence.tql");
 /// (`out-entrenches`). Applied as a Mode-A delta on top of the composed schema.
 const W2_DISPOSITION: &str = include_str!("probes/w2_disposition.tql");
 
+/// Candidate **C3-b1** — `redefine fun blast-radius` with the param widened from
+/// `memory-item` to `okf-concept` so a population *member* (a `concept`, sibling of
+/// `memory-item`) type-checks as the retractee. Adds a population-traversal branch.
+const W3_BLAST_B1: &str = include_str!("probes/w3_blast_radius_b1.tql");
+
+/// Candidate **C3-b2** — a NEW companion `cohort-blast-radius($member: concept)`
+/// function (additive `define`, no param widening); the union with `blast-radius` is
+/// host-side.
+const W3_BLAST_B2: &str = include_str!("probes/w3_blast_radius_b2.tql");
+
+/// Candidate **C3-b3** — `redefine fun blast-radius` keeping the `memory-item` param,
+/// adding a `resolves`→`population-member`→`scoped` entry branch so retracting the
+/// identity belief that binds a member undermines the cohort.
+const W3_BLAST_B3: &str = include_str!("probes/w3_blast_radius_b3.tql");
+
+/// Candidate **C4a** — the bitemporal membership window: `population-member owns
+/// valid-from, owns valid-to` (additive on the existing relation, alongside
+/// `computed-at`).
+const W3_POPULATION_WINDOW: &str = include_str!("probes/w3_population_window.tql");
+
+/// Candidate **C4b** — the as-of-t functions `population-members-at($pop, $t)` and
+/// the recursive `canonical-entity-at($rec, $t)`, both reading membership/identity
+/// through per-branch validity-window predicates. Requires the window delta first
+/// (`population-members-at` reads `population-member`'s `valid-from`/`valid-to`).
+const W3_ASOF_FUNCTIONS: &str = include_str!("probes/w3_asof_functions.tql");
+
 /// Applies the composed production schema as THREE separate schema transactions in
 /// registration order — core, then mem (always-on substrate), then cyber — exactly
 /// as the Assembler's `apply_all_schemas` composes them at `SchemaInit` time.
@@ -121,6 +147,23 @@ async fn read_col(db: &TestDb, query: &str, col: &str) -> Vec<String> {
 /// column) and collects the string values, sorted for deterministic assertions.
 async fn read_concept_ids(db: &TestDb, query: &str) -> Vec<String> {
     read_col(db, query, "cid").await
+}
+
+/// Counts the rows a `select` returns without inspecting the column values — used when
+/// the selected column is a datetime (which `read_col`'s `try_get_string` cannot
+/// stringify), e.g. reading back `valid-from`/`valid-to`/`computed-at`.
+async fn count_rows(db: &TestDb, query: &str) -> usize {
+    let mut router = db.router();
+    let tx = router.begin_read().await.expect("read tx");
+    let answer = tx.query(query).await.expect("read query");
+    assert!(answer.is_row_stream(), "select returns a row stream");
+    let mut rows = answer.into_rows();
+    let mut n = 0usize;
+    while let Some(item) = rows.next().await {
+        item.expect("row stream item");
+        n += 1;
+    }
+    n
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -943,5 +986,696 @@ async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
     assert_eq!(
         tie, None,
         "a total tie on all four keys must be contested (no winner); got {tie:?}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W3 — blast-radius fix (C3: b1/b2/b3) + as-of-t populations / canonical (C4)
+//
+// The T2 baseline drives blast-radius from an assumption A with NO path to the
+// cohort; these fix probes drive from the MEMBER concept C1, the only node reaching
+// the cohort belief B through population-member → scoped. b1's whole point is
+// widening the param so blast-radius(C1: concept) type-checks — concept and
+// memory-item are SIBLINGS under okf-concept, the central type-inference risk.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// **P-BR-1 (C3-b1)** — does the widened-param `redefine` type-check, and does it
+/// admit a `concept` (population member) argument?
+///
+/// b1 widens `blast-radius`'s param `memory-item` → `okf-concept` so a member concept
+/// C1 (sibling of `memory-item`) can be the retractee. Per-branch role narrowing
+/// (`rests-on:assumption`/`derivation:source` want a `memory-item`;
+/// `population-member:member` wants a `concept`) is the central type-inference risk.
+/// The probe records the DEFINITE outcome: a rejected redefine is the verdict pushing
+/// toward b2; an accepted one must make `blast-radius(C1)` return the cohort belief B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_br_1_b1_widened_param_type_checks() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+
+    let redefine_result = apply_delta(&db, W3_BLAST_B1).await;
+
+    match redefine_result {
+        Err(e) => {
+            // Verdict branch: b1's supertype-param + sibling-narrowing redefine is
+            // rejected — the type-inference risk realized, pushing the fix toward b2.
+            let msg = format!("{e:?}");
+            eprintln!("P-BR-1 b1 redefine REJECTED: {msg}");
+            assert!(
+                matches!(e, DbError::Schema(_)),
+                "b1 rejection must be a schema/type error (DbError::Schema); got {msg}"
+            );
+        }
+        Ok(()) => {
+            // Viability branch: b1 defined — prove it admits a concept argument and
+            // sweeps the cohort belief B when driven from the member C1.
+            eprintln!("P-BR-1 b1 redefine ACCEPTED");
+            insert(
+                &db,
+                r#"insert
+                     $p isa population, has spec-hash "br1/pop/P";
+                     $c1 isa concept, has concept-id "br1/c1";
+                     $b isa belief, has concept-id "br1/B", has belief-state "asserted";
+                     scoped (scoped-belief: $b, population: $p);
+                     population-member (owning-population: $p, member: $c1);"#,
+            )
+            .await;
+
+            let reachable = read_concept_ids(
+                &db,
+                r#"match
+                     $c1 isa concept, has concept-id "br1/c1";
+                     let $m in blast-radius($c1);
+                     $m has concept-id $cid;
+                   select $cid;"#,
+            )
+            .await;
+            assert_eq!(
+                reachable,
+                vec!["br1/B".to_string()],
+                "b1 blast-radius(C1) must sweep the cohort belief B; got {reachable:?}"
+            );
+        }
+    }
+}
+
+/// **P-BR-2 (C3-b1)** — recursion through the new population branch: a scoped belief
+/// feeds back into `blast-radius`.
+///
+/// Only meaningful if b1 defines. Fixture: member C1 of population P, belief B scoped
+/// to P, and belief D `rests-on` B. b1 should sweep B (direct population branch) AND D
+/// (recursion: the scoped belief B re-enters `blast-radius`, whose `rests-on` branch
+/// reaches D). If b1 does not define, the verdict is recorded as "recursion
+/// untestable — b1 not viable".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_br_2_b1_recursion_through_scoped_belief() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+
+    match apply_delta(&db, W3_BLAST_B1).await {
+        Err(e) => {
+            eprintln!("P-BR-2 b1 redefine REJECTED (recursion untestable): {e:?}");
+            assert!(
+                matches!(e, DbError::Schema(_)),
+                "b1 rejection must be a schema/type error; got {e:?}"
+            );
+        }
+        Ok(()) => {
+            // C1 → member → P → scoped → B (the scoped belief), and D rests-on B.
+            insert(
+                &db,
+                r#"insert
+                     $p isa population, has spec-hash "br2/pop/P";
+                     $c1 isa concept, has concept-id "br2/c1";
+                     $b isa belief, has concept-id "br2/B", has belief-state "asserted";
+                     $d isa belief, has concept-id "br2/D", has belief-state "asserted";
+                     scoped (scoped-belief: $b, population: $p);
+                     population-member (owning-population: $p, member: $c1);
+                     rests-on (resting: $d, assumption: $b);"#,
+            )
+            .await;
+
+            let reachable = read_concept_ids(
+                &db,
+                r#"match
+                     $c1 isa concept, has concept-id "br2/c1";
+                     let $m in blast-radius($c1);
+                     $m has concept-id $cid;
+                   select $cid;"#,
+            )
+            .await;
+            assert_eq!(
+                reachable,
+                vec!["br2/B".to_string(), "br2/D".to_string()],
+                "b1 blast-radius(C1) must sweep B (direct) AND D (recursion via the scoped belief); got {reachable:?}"
+            );
+        }
+    }
+}
+
+/// **P-BR-3 (C3-b2)** — the companion `cohort-blast-radius($member: concept)` returns
+/// the cohort belief B on the T2 fixture, no param widening.
+///
+/// b2 is additive (`define`, not `redefine`); the union with `blast-radius` is
+/// host-side. Driven from member C1 it must return B directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_br_3_b2_companion_returns_cohort_belief() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_BLAST_B2)
+        .await
+        .expect("candidate C3-b2 (cohort-blast-radius) defines clean as a delta");
+
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "br3/pop/P";
+             $c1 isa concept, has concept-id "br3/c1";
+             $b isa belief, has concept-id "br3/B", has belief-state "asserted";
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1);"#,
+    )
+    .await;
+
+    let reachable = read_concept_ids(
+        &db,
+        r#"match
+             $c1 isa concept, has concept-id "br3/c1";
+             let $b in cohort-blast-radius($c1);
+             $b has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        reachable,
+        vec!["br3/B".to_string()],
+        "cohort-blast-radius(C1) must return the cohort belief B; got {reachable:?}"
+    );
+}
+
+/// **P-BR-4 (C3-b3)** — the resolution-entry branch returns the cohort belief when
+/// the binding resolution belief is the retractee.
+///
+/// b3 keeps the `memory-item` param and adds a `resolves`→`population-member`→`scoped`
+/// branch. Retracting the identity belief RES that binds member C1 must undermine the
+/// belief B scoped to C1's population.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_br_4_b3_resolution_entry_returns_cohort_belief() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_BLAST_B3)
+        .await
+        .expect("candidate C3-b3 (resolution-entry redefine) applies as a schema tx");
+
+    // RES resolves (record-a: C1, record-b: C2); C1 is a member of P; B is scoped to P.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "br4/pop/P";
+             $c1 isa concept, has concept-id "br4/c1";
+             $c2 isa concept, has concept-id "br4/c2";
+             $b isa belief, has concept-id "br4/B", has belief-state "asserted";
+             $res isa resolution, has concept-id "br4/RES", has belief-state "asserted";
+             resolves (resolution-belief: $res, record-a: $c1, record-b: $c2);
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1);"#,
+    )
+    .await;
+
+    let reachable = read_concept_ids(
+        &db,
+        r#"match
+             $res isa resolution, has concept-id "br4/RES";
+             let $m in blast-radius($res);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        reachable,
+        vec!["br4/B".to_string()],
+        "b3 blast-radius(RES) must return the cohort belief B via the resolves entry; got {reachable:?}"
+    );
+}
+
+/// **P-BR-5** — `redefine fun blast-radius` is accepted as a schema transaction on a
+/// DB where the function already exists, and the new body actually takes effect.
+///
+/// Uses b3 (the `memory-item`-param redefine, whose types are unambiguous) to isolate
+/// the redefine MECHANISM from b1's param-widening question. The new body must be in
+/// force: `blast-radius(RES)` (a `resolves` entry) returns the cohort belief, which
+/// the original (rests-on ∪ derivation only) body could never reach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_br_5_redefine_blast_radius_accepted() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+
+    // The original blast-radius is present (defined by the mem substrate schema);
+    // redefining it must be accepted as a schema transaction.
+    apply_delta(&db, W3_BLAST_B3)
+        .await
+        .expect("redefine fun blast-radius must be accepted on a DB where the fun exists");
+
+    // Prove the redefined body is in force (not a silent old body): the resolves
+    // entry branch — absent from the original — now reaches the cohort belief.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "br5/pop/P";
+             $c1 isa concept, has concept-id "br5/c1";
+             $c2 isa concept, has concept-id "br5/c2";
+             $b isa belief, has concept-id "br5/B", has belief-state "asserted";
+             $res isa resolution, has concept-id "br5/RES", has belief-state "asserted";
+             resolves (resolution-belief: $res, record-a: $c1, record-b: $c2);
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1);"#,
+    )
+    .await;
+
+    let reachable = read_concept_ids(
+        &db,
+        r#"match
+             $res isa resolution, has concept-id "br5/RES";
+             let $m in blast-radius($res);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        reachable,
+        vec!["br5/B".to_string()],
+        "the redefined blast-radius body must be in force (reaches B via resolves); got {reachable:?}"
+    );
+}
+
+/// **P-BR-6** — the T2×T5 seam: windowed blast propagation. Probes BOTH branches of
+/// the §3.1 decision so the verdict is definite regardless of the A/B lean.
+///
+/// Fixture: member C1 with a CLOSED `population-member` window [t₀, t₁); cohort belief
+/// B scoped to P and valid from t₀. Then:
+///   - Present-state (b2 `cohort-blast-radius`, window-blind): reaches B even though
+///     C1 has left the cohort — the row still exists — so present-state traversal is
+///     OVER-broad as-of-now.
+///   - Window-respecting entry (`population-members-at(P, t)`): reaches B for
+///     t ∈ [t₀, t₁) (C1 was a member) and EXCLUDES it for t ≥ t₁ (C1 left) — the
+///     as-of-t-correct behavior. This discrimination is only expressible WITH the
+///     window, which is the evidence for §3.1 → (A) as-of-t variants.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_br_6_windowed_blast_propagation_seam() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_BLAST_B2)
+        .await
+        .expect("b2 companion defines");
+    apply_delta(&db, W3_POPULATION_WINDOW)
+        .await
+        .expect("population-member window defines");
+    apply_delta(&db, W3_ASOF_FUNCTIONS)
+        .await
+        .expect("as-of-t functions define");
+
+    // C1 was a member of P only during [2026-01-01, 2026-04-01); B is scoped to P.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "br6/pop/P";
+             $c1 isa concept, has concept-id "br6/c1";
+             $b isa belief, has concept-id "br6/B", has belief-state "asserted",
+                 has valid-from 2026-01-01T00:00:00;
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;"#,
+    )
+    .await;
+
+    // Present-state traversal (b2) is window-BLIND: the row still exists, so B is swept
+    // even though C1's window is closed — over-broad as-of-now.
+    let present = read_concept_ids(
+        &db,
+        r#"match
+             $c1 isa concept, has concept-id "br6/c1";
+             let $b in cohort-blast-radius($c1);
+             $b has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        present,
+        vec!["br6/B".to_string()],
+        "present-state cohort-blast-radius is window-blind and still sweeps B; got {present:?}"
+    );
+
+    // Window-respecting entry at t ∈ [t₀, t₁): C1 was a member → B is in the windowed blast.
+    let in_window = read_concept_ids(
+        &db,
+        r#"match
+             $p isa population, has spec-hash "br6/pop/P";
+             let $m in population-members-at($p, 2026-02-01T00:00:00);
+             $m has concept-id "br6/c1";
+             (scoped-belief: $b, population: $p) isa scoped;
+             $b has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        in_window,
+        vec!["br6/B".to_string()],
+        "a window-respecting blast at t in [t0,t1) must reach B (C1 was a member); got {in_window:?}"
+    );
+
+    // Window-respecting entry at t ≥ t₁: C1 has left → the windowed blast excludes B.
+    let after_window = read_concept_ids(
+        &db,
+        r#"match
+             $p isa population, has spec-hash "br6/pop/P";
+             let $m in population-members-at($p, 2026-05-01T00:00:00);
+             $m has concept-id "br6/c1";
+             (scoped-belief: $b, population: $p) isa scoped;
+             $b has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert!(
+        after_window.is_empty(),
+        "a window-respecting blast at t >= t1 must exclude B (C1 left the cohort); got {after_window:?}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W3 — population window (C4a) + as-of-t functions (C4b)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// **P-PM-1 (C4a)** — the bitemporal window `owns valid-from, owns valid-to` is
+/// additive onto the existing `population-member` relation and coexists with
+/// `computed-at`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 population-window probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_pm_1_window_owns_additive_coexists_with_computed_at() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_POPULATION_WINDOW)
+        .await
+        .expect("candidate C4a (population-member window) applies clean as a delta");
+
+    // One membership row carries valid-from, valid-to AND computed-at together.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "pm1/pop/P";
+             $c1 isa concept, has concept-id "pm1/c1";
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-01-01T00:00:00,
+                 has valid-to 2026-04-01T00:00:00,
+                 has computed-at 2026-01-01T00:00:00;"#,
+    )
+    .await;
+
+    // All three temporal attrs read back off the same relation instance.
+    let vf = count_rows(
+        &db,
+        r#"match
+             $pm isa population-member, links (member: $c1);
+             $c1 has concept-id "pm1/c1";
+             $pm has valid-from $x;
+           select $x;"#,
+    )
+    .await;
+    let vt = count_rows(
+        &db,
+        r#"match
+             $pm isa population-member, links (member: $c1);
+             $c1 has concept-id "pm1/c1";
+             $pm has valid-to $x;
+           select $x;"#,
+    )
+    .await;
+    let ca = count_rows(
+        &db,
+        r#"match
+             $pm isa population-member, links (member: $c1);
+             $c1 has concept-id "pm1/c1";
+             $pm has computed-at $x;
+           select $x;"#,
+    )
+    .await;
+    assert_eq!(vf, 1, "valid-from reads back; got {vf}");
+    assert_eq!(vt, 1, "valid-to reads back; got {vt}");
+    assert_eq!(
+        ca, 1,
+        "computed-at still coexists on the same row; got {ca}"
+    );
+}
+
+/// **P-PM-2 (C4a)** — two `population-member` instances for the SAME (pop, member)
+/// with different windows (a left-and-rejoined member) coexist as distinct rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 population-window probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_pm_2_two_windowed_epochs_coexist() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_POPULATION_WINDOW)
+        .await
+        .expect("population-member window defines");
+
+    // C1 was a member during [t0,t1), left, then rejoined at t2 — two epoch rows.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "pm2/pop/P";
+             $c1 isa concept, has concept-id "pm2/c1";
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-06-01T00:00:00;"#,
+    )
+    .await;
+
+    // Both epoch windows are present on distinct instances linking the same (P, C1);
+    // valid-from is @card(0..1), so two rows imply two distinct membership instances.
+    let epochs = count_rows(
+        &db,
+        r#"match
+             $pm isa population-member, links (owning-population: $p, member: $c1);
+             $c1 has concept-id "pm2/c1";
+             $pm has valid-from $x;
+           select $x;"#,
+    )
+    .await;
+    assert_eq!(
+        epochs, 2,
+        "two distinct windowed membership epochs for (P, C1) must coexist; got {epochs}"
+    );
+}
+
+/// **P-PM-3 (C4b)** — `population-members-at` (relation-var `has` + negation over
+/// relation attrs inside a persisted fn) defines and answers, consuming `$t` (FRP1).
+///
+/// Fixture: C1 open-ended from t₀, C2 closed at t₁. The function must return {C1, C2}
+/// for a t in [t₀, t₁) and {C1} for a t ≥ t₁ — different answers for different `$t`
+/// proving the parameter is genuinely consumed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 as-of-t probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_pm_3_population_members_at_consumes_time() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_POPULATION_WINDOW)
+        .await
+        .expect("population-member window defines");
+    apply_delta(&db, W3_ASOF_FUNCTIONS)
+        .await
+        .expect("candidate C4b (as-of-t functions) applies clean as a delta");
+
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "pm3/pop/P";
+             $c1 isa concept, has concept-id "pm3/c1";
+             $c2 isa concept, has concept-id "pm3/c2";
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-01-01T00:00:00;
+             population-member (owning-population: $p, member: $c2),
+                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;"#,
+    )
+    .await;
+
+    let at_feb = read_concept_ids(
+        &db,
+        r#"match
+             $p isa population, has spec-hash "pm3/pop/P";
+             let $m in population-members-at($p, 2026-02-01T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        at_feb,
+        vec!["pm3/c1".to_string(), "pm3/c2".to_string()],
+        "at t in [t0,t1) both members are live; got {at_feb:?}"
+    );
+
+    let at_may = read_concept_ids(
+        &db,
+        r#"match
+             $p isa population, has spec-hash "pm3/pop/P";
+             let $m in population-members-at($p, 2026-05-01T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        at_may,
+        vec!["pm3/c1".to_string()],
+        "at t >= t1 only C1 remains (C2's window closed); got {at_may:?}"
+    );
+}
+
+/// **P-CE-1 (C4b)** — the recursive `canonical-entity-at` with per-branch window
+/// predicates returns the epoch-correct closure on a two-epoch fixture.
+///
+/// RES1 resolves (C1, C2) valid from t₀; RES2 resolves (C2, C3) valid from a LATER t₂.
+/// As of t₁ ∈ [t₀, t₂) only RES1 is valid → the closure of C1 excludes C3; as of
+/// t₃ ≥ t₂ both are valid → the closure includes C3. Identity as-of-t is read off the
+/// resolution's validity window, never its (mutable) belief-state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 as-of-t probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_ce_1_canonical_entity_at_epoch_closure() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_POPULATION_WINDOW)
+        .await
+        .expect("population-member window defines");
+    apply_delta(&db, W3_ASOF_FUNCTIONS)
+        .await
+        .expect("as-of-t functions define");
+
+    // Two epochs of provable identity: RES1(C1,C2) from t0; RES2(C2,C3) from t2.
+    insert(
+        &db,
+        r#"insert
+             $c1 isa concept, has concept-id "ce1/c1";
+             $c2 isa concept, has concept-id "ce1/c2";
+             $c3 isa concept, has concept-id "ce1/c3";
+             $src isa belief, has concept-id "ce1/src", has belief-state "asserted";
+             $res1 isa resolution, has concept-id "ce1/RES1", has belief-state "asserted",
+                 has valid-from 2026-01-01T00:00:00;
+             $res2 isa resolution, has concept-id "ce1/RES2", has belief-state "asserted",
+                 has valid-from 2026-06-01T00:00:00;
+             resolves (resolution-belief: $res1, record-a: $c1, record-b: $c2);
+             resolves (resolution-belief: $res2, record-a: $c2, record-b: $c3);
+             derivation (derived: $res1, source: $src), has derivation-method "type-join";
+             derivation (derived: $res2, source: $src), has derivation-method "type-join";"#,
+    )
+    .await;
+
+    // As of t1 (only RES1 valid): C3 is NOT yet in C1's identity closure.
+    let at_t1 = read_concept_ids(
+        &db,
+        r#"match
+             $c1 isa concept, has concept-id "ce1/c1";
+             let $m in canonical-entity-at($c1, 2026-03-01T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    eprintln!("P-CE-1 canonical-entity-at(C1, t1) = {at_t1:?}");
+    // The symmetric resolves closure includes C1 itself (via the record-a/record-b
+    // back-edge); the epoch-load-bearing fact is that C3 is absent as of t1.
+    assert_eq!(
+        at_t1,
+        vec!["ce1/c1".to_string(), "ce1/c2".to_string()],
+        "as of t1 (only RES1 valid) the closure of C1 is {{C1, C2}} — C3 absent; got {at_t1:?}"
+    );
+
+    // As of t3 (both valid): C3 enters the closure via the recursive branch.
+    let at_t3 = read_concept_ids(
+        &db,
+        r#"match
+             $c1 isa concept, has concept-id "ce1/c1";
+             let $m in canonical-entity-at($c1, 2026-08-01T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    eprintln!("P-CE-1 canonical-entity-at(C1, t3) = {at_t3:?}");
+    assert_eq!(
+        at_t3,
+        vec![
+            "ce1/c1".to_string(),
+            "ce1/c2".to_string(),
+            "ce1/c3".to_string()
+        ],
+        "as of t3 (both epochs valid) the closure of C1 grows to {{C1, C2, C3}}; got {at_t3:?}"
+    );
+}
+
+/// **P-T5-FIX** — the W3 acceptance shape: on the T5 fixture, `believed-at(t)` and
+/// `population-members-at(P, t)` are both as-of-t and AGREE (the belief believed at t₀
+/// is reconstructed against the t₀ cohort, not today's).
+///
+/// The T5 baseline showed the bug: `believed-at(t0)` = {B} while the time-blind
+/// `population-members(P)` = {C1, C2} (today's cohort). With the window, at t₀ only C1
+/// was a member (C2 joined later), so `population-members-at(P, t0)` = {C1} — the
+/// as-of-t0 belief view and membership view are mutually consistent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W3 as-of-t acceptance probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_t5_fix_believed_at_and_members_at_agree() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+    apply_delta(&db, W3_POPULATION_WINDOW)
+        .await
+        .expect("population-member window defines");
+    apply_delta(&db, W3_ASOF_FUNCTIONS)
+        .await
+        .expect("as-of-t functions define");
+
+    // B scoped to P, valid from t0. C1 a member from t0; C2 joined at today.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "t5fix/pop/P";
+             $b isa belief, has concept-id "t5fix/B", has belief-state "asserted",
+                 has valid-from 2026-01-01T00:00:00;
+             $c1 isa concept, has concept-id "t5fix/c1";
+             $c2 isa concept, has concept-id "t5fix/c2";
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-01-01T00:00:00, has computed-at 2026-01-01T00:00:00;
+             population-member (owning-population: $p, member: $c2),
+                 has valid-from 2026-07-11T00:00:00, has computed-at 2026-07-11T00:00:00;"#,
+    )
+    .await;
+
+    // believed-at(t0) is temporal: it sees the belief valid at t0.
+    let believed = read_concept_ids(
+        &db,
+        r#"match
+             let $bel in believed-at(2026-01-01T00:00:00);
+             $bel has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        believed,
+        vec!["t5fix/B".to_string()],
+        "believed-at(t0) must return B only; got {believed:?}"
+    );
+
+    // population-members-at(P, t0) is NOW time-aware: only C1 was a member at t0.
+    let members_t0 = read_concept_ids(
+        &db,
+        r#"match
+             $p isa population, has spec-hash "t5fix/pop/P";
+             let $m in population-members-at($p, 2026-01-01T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        members_t0,
+        vec!["t5fix/c1".to_string()],
+        "population-members-at(P, t0) must return the t0 cohort {{C1}}, agreeing with believed-at(t0); got {members_t0:?}"
+    );
+
+    // Sanity: as of today the cohort has grown to {C1, C2} — the fix is time-varying,
+    // not a constant, so the t0 agreement above is a genuine as-of-t result.
+    let members_now = read_concept_ids(
+        &db,
+        r#"match
+             $p isa population, has spec-hash "t5fix/pop/P";
+             let $m in population-members-at($p, 2026-07-11T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        members_now,
+        vec!["t5fix/c1".to_string(), "t5fix/c2".to_string()],
+        "population-members-at(P, today) must return the full cohort {{C1, C2}}; got {members_now:?}"
     );
 }

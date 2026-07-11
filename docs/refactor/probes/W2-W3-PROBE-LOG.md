@@ -188,3 +188,213 @@ Task-0 baselines (must stay green): **P-BASE-T2** and **P-BASE-T5** — both sti
    at commit; it does NOT bar a hand-written anchor. The co-mint procedural guarantee
    (SPEC-W2-W3 §2.2) is enforced by the sanctioned writer seam (SPEC-W5 §3.2), not the
    schema.
+
+---
+
+# W3 batch — as-of-t populations/canonical + cohort-belief blast radius
+
+Resolves conflict-report **T2** (blast-radius misses cohort beliefs) and **T5**
+(populations ignore time), and closes SPEC-W2-W3 **§3.1** (as-of-t A vs B) and **§3.4**
+(blast-radius entry points).
+
+Candidate files probed this batch (`gecko-bin/tests/probes/`):
+- **C3-b1** `w3_blast_radius_b1.tql` — `redefine fun blast-radius($r: okf-concept)`,
+  param widened `memory-item`→`okf-concept` + a `population-member`→`scoped` branch.
+- **C3-b2** `w3_blast_radius_b2.tql` — a NEW additive companion
+  `cohort-blast-radius($member: concept) -> { belief }` (no widening; host-side union).
+- **C3-b3** `w3_blast_radius_b3.tql` — `redefine fun blast-radius($r: memory-item)`
+  keeping the param, adding a `resolves`→`population-member`→`scoped` entry branch.
+- **C4a** `w3_population_window.tql` — `population-member owns valid-from, owns valid-to`.
+- **C4b** `w3_asof_functions.tql` — `population-members-at($pop, $t)` +
+  recursive `canonical-entity-at($rec, $t)` (per-branch validity-window predicates).
+
+> **The T2 baseline drives from assumption A (no path to the cohort); the fix probes
+> drive from the MEMBER concept C1** — the only node reaching the cohort belief B via
+> `population-member`→`scoped`. b1's point is that `blast-radius(C1: concept)`
+> type-check when `concept` and `memory-item` are SIBLINGS under `okf-concept`.
+
+## W3 batch — verdict summary (11/11)
+
+| Probe | Candidate | Expected | Observed | Verdict |
+|---|---|---|---|---|
+| P-BR-1 | b1 `w3_blast_radius_b1.tql` | open — decides b1 vs b2 | **redefine ACCEPTED**; `blast-radius(C1: concept)` type-checks and returns B | **RESOLVED — b1 VIABLE** |
+| P-BR-2 | b1 `w3_blast_radius_b1.tql` | open | recursion through scoped belief: `blast-radius(C1)` = {B, D} | **RESOLVED — recursion works** |
+| P-BR-3 | b2 `w3_blast_radius_b2.tql` | pass | `cohort-blast-radius(C1)` = {B} on the T2 fixture | **CONFIRMED** |
+| P-BR-4 | b3 `w3_blast_radius_b3.tql` | open | `blast-radius(RES)` = {B} via the `resolves` entry | **RESOLVED — b3 works** |
+| P-BR-5 | b3 (redefine) | open — §1.4 posture | `redefine fun blast-radius` accepted; redefined body in force | **RESOLVED — redefine works** |
+| P-BR-6 | b2 + C4a + C4b | open — contingent on §3.1 | present-state b2 window-BLIND (returns B); windowed entry discriminates (B for t∈[t₀,t₁), ∅ for t≥t₁) | **RESOLVED — §3.1 → (A)** |
+| P-PM-1 | C4a `w3_population_window.tql` | pass | window `owns` additive; valid-from/valid-to/computed-at coexist on one row | **CONFIRMED** |
+| P-PM-2 | C4a `w3_population_window.tql` | open | two windowed epoch rows for the same (P, C1) coexist (2 instances) | **RESOLVED — coexist** |
+| P-PM-3 | C4b `w3_asof_functions.tql` | pass | `population-members-at(P, feb)`={C1,C2}, `(P, may)`={C1} — `$t` consumed (FRP1 ok) | **CONFIRMED** |
+| P-CE-1 | C4b `w3_asof_functions.tql` | open | `canonical-entity-at(C1, t₁)`={C1,C2}; `(C1, t₃)`={C1,C2,C3} — epoch-correct closure | **RESOLVED — epoch-correct** |
+| P-T5-FIX | all W3 deltas | pass | `believed-at(t₀)`={B} ∥ `population-members-at(P, t₀)`={C1}; today={C1,C2} | **CONFIRMED** |
+
+Task-0 baselines (must stay green): **P-BASE-T2** and **P-BASE-T5** — both still pass.
+Full run: **21 passed; 0 failed** (2 baselines + 8 W2 + 11 W3), `--test-threads=1`.
+
+## §3.1 decision evidence: (A) as-of-t variants — SUPPORTED
+
+- The bitemporal window is **cheap and clean**: `owns valid-from/valid-to` is additive
+  and coexists with `computed-at` (P-PM-1); left-and-rejoined epochs coexist as distinct
+  rows (P-PM-2).
+- The as-of-t functions are **fully expressible and answer correctly**:
+  `population-members-at` genuinely consumes `$t` (P-PM-3, FRP1 ok); the recursive
+  `canonical-entity-at` returns the epoch-correct identity closure off validity windows
+  (P-CE-1); and the acceptance shape holds — `believed-at(t)` and
+  `population-members-at(P, t)` agree as-of-t (P-T5-FIX).
+- **Option B (present-state only) is silently wrong as-of-t.** P-BR-6 shows a present-state
+  traversal (`cohort-blast-radius`) is window-BLIND: it sweeps a cohort belief B even for a
+  member C1 whose window has *closed* (the materialized row still exists). Only a
+  window-respecting entry (`population-members-at(P, t)`) discriminates — reaching B for
+  t∈[t₀,t₁) and excluding it for t≥t₁. Without the window the blast-radius fix can ship
+  present-state-correct and silently wrong as-of-t.
+
+→ **§3.1 leans (A) as-of-t variants.** Existing no-`$t` functions remain the documented
+present-state fast path.
+
+## §3.4 blast-radius entry: b1/b2/b3 all VIABLE — spec author's design choice
+
+The central type-inference risk **did not materialize**: TypeDB 3.12 accepts b1's
+`redefine fun blast-radius($r: okf-concept)` with per-branch role narrowing across the
+`memory-item`/`concept` siblings, and `blast-radius(C1: concept)` type-checks and returns
+the cohort belief (P-BR-1). All three sub-options reach a working verdict:
+
+- **b1 (widened param):** single entry point; **backward-compatible** (existing
+  `memory-item` callers still type-check — `memory-item ⊂ okf-concept`); recursion through
+  the scoped belief works (P-BR-2). Widens the public contract to any `okf-concept`
+  (`concept` + all `memory-item` subtypes; `external-resource` is NOT an `okf-concept`, so
+  it is not admitted). Requires a `redefine` migration (see the later P-REDEF probe for the
+  production define-path posture).
+- **b2 (companion):** additive `define`, no redefine, cleanest separation; the union with
+  `blast-radius` is two host-side calls (P-BR-3).
+- **b3 (resolution entry):** keeps the `memory-item` param; models "retract the *identity
+  belief* that binds the member" rather than "retract the member concept" (P-BR-4). Also a
+  `redefine`, so **mutually exclusive with b1**.
+
+Because b1 and b3 both `redefine blast-radius`, they cannot coexist as written — but their
+branches are compatible: a single `redefine fun blast-radius($r: okf-concept)` could carry
+BOTH the `population-member` branch (b1, member-concept entry) AND the `resolves` branch
+(b3, resolution-belief entry), since `okf-concept` admits `concept` *and* `resolution`
+(`resolution sub belief sub memory-item sub okf-concept`). Offered as a synthesis for the
+spec author; probed separately here per R9 fidelity.
+
+---
+
+## Per-probe detail (W3)
+
+### P-BR-1 — b1 widened param type-checks (decides b1 vs b2)
+- **Delta:** composed schema, then `redefine fun blast-radius($r: okf-concept)` (b1).
+- **Ground state:** population P, member concept C1, belief B scoped to P (driven from C1).
+- **Observed:** the `redefine` is **ACCEPTED** (no type-inference error). `blast-radius(C1)`
+  where C1 `isa concept` returns `{br1/B}` — the widened `okf-concept` param admits a
+  `concept` argument and the per-branch narrowing (`rests-on:assumption`/`derivation:source`
+  → `memory-item`; `population-member:member` → `concept`) type-checks.
+- **Verdict:** RESOLVED — **b1 is VIABLE.** The sibling-narrowing risk did not materialize.
+
+### P-BR-2 — b1 recursion through the scoped belief
+- **Delta:** b1. **Ground state:** C1 member of P; B scoped to P; D `rests-on` B.
+- **Observed:** `blast-radius(C1)` = `{br2/B, br2/D}` — B via the direct population branch,
+  D via recursion (the scoped belief B re-enters `blast-radius`, whose `rests-on` branch
+  reaches D).
+- **Verdict:** RESOLVED — recursion feeds back through the population branch correctly.
+
+### P-BR-3 — b2 companion returns the cohort belief
+- **Delta:** b2 (`define fun cohort-blast-radius($member: concept)`).
+- **Observed:** `cohort-blast-radius(C1)` = `{br3/B}` on the T2 fixture.
+- **Verdict:** CONFIRMED — the additive companion resolves T2 without widening `blast-radius`.
+
+### P-BR-4 — b3 resolution-entry returns the cohort belief
+- **Delta:** b3. **Ground state:** RES `resolves (record-a: C1, record-b: C2)`; C1 member of
+  P; B scoped to P.
+- **Observed:** `blast-radius(RES)` = `{br4/B}` — retracting the identity belief RES that
+  binds C1 undermines the cohort belief B via `resolves`→`population-member`→`scoped`.
+- **Verdict:** RESOLVED — b3's `resolves` entry branch works.
+- **Note for spec author:** the branch as given (brief snippet) matches only
+  `record-a: $c`; a production version should also match `record-b` (as `canonical-entity`
+  does) so a member bound via either record fires the blast.
+
+### P-BR-5 — redefine fun blast-radius accepted, body in force
+- **Delta:** b3 applied as a `redefine` on a DB where `blast-radius` already exists.
+- **Observed:** the schema transaction is **accepted**; the redefined body is genuinely in
+  force — `blast-radius(RES)` reaches B via the new `resolves` branch, which the original
+  (rests-on ∪ derivation only) body could never reach.
+- **Verdict:** RESOLVED — `redefine fun` works and replaces the body (no silent old body).
+  (The production define-path migration posture is the separate later probe P-REDEF.)
+
+### P-BR-6 — windowed blast propagation (the T2×T5 seam)
+- **Delta:** b2 + C4a + C4b. **Ground state:** member C1 with a CLOSED window
+  [2026-01-01, 2026-04-01); belief B scoped to P, valid-from 2026-01-01.
+- **Observed (both branches):**
+  - Present-state `cohort-blast-radius(C1)` = `{br6/B}` — **window-blind**: the closed-window
+    row still exists, so B is swept even though C1 has left the cohort (over-broad as-of-now).
+  - Window-respecting `population-members-at(P, 2026-02-01)` contains C1 → windowed blast
+    reaches B (t∈[t₀,t₁)); `population-members-at(P, 2026-05-01)` excludes C1 → windowed
+    blast is empty (t≥t₁).
+- **Verdict:** RESOLVED — the window-respecting entry gives the as-of-correct blast; the
+  present-state entry is silently window-blind. **This is the concrete evidence for §3.1 → (A).**
+
+### P-PM-1 — window owns additive, coexists with computed-at
+- **Delta:** C4a. **Observed:** the delta defines clean; one `population-member` row carries
+  `valid-from`, `valid-to` AND `computed-at` (each reads back once). Two meanings coexist:
+  `computed-at` = cache-row freshness; `valid-from`/`valid-to` = when membership held.
+- **Verdict:** CONFIRMED.
+
+### P-PM-2 — two windowed epochs coexist
+- **Delta:** C4a. **Ground state:** two `population-member` instances for the same (P, C1) —
+  window [t₀,t₁) then a rejoin window from t₂.
+- **Observed:** both rows coexist as distinct instances (2 `valid-from` rows;
+  `valid-from` is `@card(0..1)`, so two rows ⇒ two instances). A left-and-rejoined member
+  is representable as two windowed epoch rows.
+- **Verdict:** RESOLVED — distinct windowed epochs coexist (no dedup collapse).
+
+### P-PM-3 — population-members-at consumes $t (FRP1 ok)
+- **Delta:** C4a + C4b. **Ground state:** C1 open-ended from t₀; C2 closed at t₁.
+- **Observed:** `population-members-at(P, 2026-02-01)` = {C1, C2}; `(P, 2026-05-01)` = {C1}.
+  Different answers for different `$t` prove the parameter is genuinely consumed; the
+  relation-variable `has` + negation-over-relation-attrs body defines cleanly.
+- **Verdict:** CONFIRMED.
+
+### P-CE-1 — canonical-entity-at epoch closure
+- **Delta:** C4a + C4b. **Ground state:** RES1 `resolves (C1, C2)` valid-from t₀; RES2
+  `resolves (C2, C3)` valid-from a LATER t₂; each a provable (`type-join`) resolution.
+- **Observed:** `canonical-entity-at(C1, 2026-03-01)` = `{C1, C2}` (only RES1 valid — C3
+  absent); `canonical-entity-at(C1, 2026-08-01)` = `{C1, C2, C3}` (both epochs valid — C3
+  enters via recursion). The closure is read off the resolution's validity **window**, never
+  its (mutable) belief-state, mirroring `believed-at`.
+- **Verdict:** RESOLVED — the recursive as-of closure is epoch-correct.
+- **Note:** the symmetric `resolves` closure includes the input C1 itself (the
+  `record-a`/`record-b` back-edge) — a pre-existing property of `canonical-entity`, not new
+  to the as-of variant; the epoch-load-bearing fact is C3's absence at t₁ / presence at t₃.
+
+### P-T5-FIX — believed-at and members-at agree as-of-t (the W3 acceptance shape)
+- **Delta:** all W3 deltas. **Ground state:** B scoped to P, valid-from t₀; C1 a member from
+  t₀; C2 joined today.
+- **Observed:** `believed-at(2026-01-01)` = {B}; `population-members-at(P, 2026-01-01)` =
+  {C1} (the t₀ cohort — C2 not yet a member); `population-members-at(P, 2026-07-11)` =
+  {C1, C2} (today's full cohort). The as-of-t₀ belief view and membership view are mutually
+  consistent — B is reconstructed against the t₀ cohort, not today's (the T5 bug: the
+  time-blind `population-members(P)` = {C1, C2} at all times).
+- **Verdict:** CONFIRMED — the fix is time-varying, so the t₀ agreement is a genuine
+  as-of-t result, not a constant.
+
+---
+
+## Notes carried to the spec (W3)
+
+1. **b1 type-checks — the sibling-narrowing risk did not materialize.** TypeDB 3.12 accepts
+   a function param typed at a supertype (`okf-concept`) whose branches narrow it to
+   incompatible subtypes (`memory-item` vs `concept`), and admits a `concept` argument.
+   §3.4 is a design choice among three *working* shapes, not a forced fallback.
+2. **§3.1 → (A) as-of-t variants** is empirically supported: windows are cheap, the as-of
+   functions are expressible and correct, and present-state traversal is silently
+   window-blind (P-BR-6). Keep the existing no-`$t` functions as the present-state fast path.
+3. **The as-of semantics read off validity windows, never belief-state.** `canonical-entity-at`
+   drops the `belief-state "asserted"` filter that `canonical-entity` carries and gates on
+   `valid-from`/`valid-to` instead — belief-state mutates on supersession, so a resolution
+   valid *at* t but superseded *by now* must still count as-of-t (mirrors `believed-at`).
+4. **b1/b3 are mutually exclusive (both `redefine blast-radius`), but their branches
+   compose** into one `redefine fun blast-radius($r: okf-concept)` carrying both the
+   population-member and the `resolves` branch (§3.4 synthesis) — probed separately per R9.
+5. **W3 requires `redefine fun` for b1/b3.** P-BR-5 proves the mechanism at the schema-tx
+   level (body replaced, in force). The production define-path migration posture is owed to
+   the later P-REDEF probe / SPEC-W2-W3 §1.4.
