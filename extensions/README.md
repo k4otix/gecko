@@ -46,6 +46,23 @@ build the extension only inside the CLI arms that use it — a typo in
   as a `metadata-json` blob. Populate `OkfConcept.typed_attributes` (a
   `Vec<TypedAttribute>`); the syncer writes each as a real typed attribute on the
   entity's subtype. See cyber-gecko's STIX adapter.
+- **Document every type, role, and function with `@doc`.** These strings live in the
+  graph and are readable at runtime (`get_doc`, `get_relates_doc`), so a client — or
+  an agent introspecting the live schema — can discover what your ontology means. It
+  is **never inherited**, so a subtype and each `as`-renamed role needs its own. The
+  string goes right after the label/return-type: `entity foo @doc("…"), owns …`,
+  `relates bar @card(1..) @doc("…")`, `fun f() -> { foo } @doc("…"):`. On an
+  **attribute** it must precede `value`, separated by a comma:
+  `attribute foo @doc("…"), value string @values("a","b");`. Keep it to one accurate,
+  greenfield sentence (no plan/epic tags). Attribute-level `@doc` is currently left to
+  the source `#` comments; type/role/function coverage is the convention.
+- **`@meta("key","value")` (client-readable schema metadata) is deliberately unused.**
+  It only pays off when an *unknown-at-compile-time* client reads the schema; GECKO
+  composes its schema at compile time and its current clients never introspect it. Two
+  concrete candidates are parked for when a runtime schema-introspection consumer (an
+  LLM agent reasoning over the live graph is the expected first one) lands: tagging
+  cyber types with their STIX/ATT&CK origin, and tagging types with their invariant
+  number / source-of-truth-vs-rebuildable classification.
 
 ## Host-import seams: which one to use
 

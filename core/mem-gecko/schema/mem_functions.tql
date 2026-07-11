@@ -5,7 +5,7 @@ define
   # ══════════════════════════════════════════════════════════════════
 
   # 1 — is-superseded($b) -> bool
-  fun is-superseded($b: memory-item) -> boolean:
+  fun is-superseded($b: memory-item) -> boolean @doc("True if the memory item has been superseded or retracted — either a supersession edge points at it, or its belief-state is 'superseded'/'retracted'."):
       match
           {
               (superseded: $b, superseding: $newer) isa supersession;
@@ -17,7 +17,7 @@ define
       return check;
 
   # 2 — believed-at($t) -> {belief}  (temporal; index NOT involved)
-  fun believed-at($t: datetime) -> { belief }:
+  fun believed-at($t: datetime) -> { belief } @doc("Returns the beliefs asserted and within their validity window as of time $t (valid-from <= $t and no valid-to on or before $t)."):
       match
           $b isa belief, has belief-state "asserted", has valid-from $vf;
           $vf <= $t;
@@ -25,7 +25,7 @@ define
       return { $b };
 
   # 3 — derivation-chain($b) -> {memory-item}  (recursive transitive closure)
-  fun derivation-chain($b: memory-item) -> { memory-item }:
+  fun derivation-chain($b: memory-item) -> { memory-item } @doc("Recursive transitive closure of the sources $b was derived from, following derivation edges to their roots."):
       match
           {
               (derived: $b, source: $m) isa derivation;
@@ -46,7 +46,7 @@ define
   #   (c) A variable assigned ONLY inside `or`-branches is NOT bound at `return`. Keep $score top-level.
   #   So: consume $now via a datetime comparison (last-access must not be in the future) and return
   #   the static activation component; recency decay is layered on host-side.
-  fun retrieval-score($m: memory-item, $now: datetime) -> double:
+  fun retrieval-score($m: memory-item, $now: datetime) -> double @doc("The static activation component of a memory item's recall score (base-activation + salience); continuous half-life recency decay is applied host-side."):
       match
           $m has base-activation $ba, has salience $s, has last-access $la;
           $la <= $now;                                 # datetime comparison (filters correctly); consumes $now
@@ -54,14 +54,14 @@ define
       return first $score;
 
   # 6 — contradicts($b1,$b2) -> bool
-  fun contradicts($b1: belief, $b2: belief) -> boolean:
+  fun contradicts($b1: belief, $b2: belief) -> boolean @doc("True if two distinct beliefs are both claims of the same contradiction."):
       match
           $c isa contradiction, links (claim: $b1, claim: $b2);
           not { $b1 is $b2; };
       return check;
 
   # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
-  fun blast-radius($r: memory-item) -> { memory-item }:
+  fun blast-radius($r: memory-item) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all items reachable through rests-on assumption and derivation source edges."):
       match
           {
               (assumption: $r, resting: $m) isa rests-on;
@@ -86,7 +86,7 @@ define
   #   scope test joins through ownership, never the belief entity. The two scope branches
   #   are a disjunction: a private belief owned by a DIFFERENT agent satisfies neither and
   #   is gated OUT; a team/shared belief satisfies the first branch for ANY agent.
-  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean:
+  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean @doc("Access predicate for a belief: true iff it is asserted, not superseded, within its validity window at $now, and visible to $agent (team/shared, or private and owned by $agent)."):
       match
           $n isa belief, has belief-state "asserted", has valid-from $vf;
           $vf <= $now;
@@ -102,7 +102,7 @@ define
       return check;
 
   # 8 — select-for-context($agent,$now) -> {belief, double}  (tuple stream)
-  fun select-for-context($agent: agent, $now: datetime) -> { belief, double }:
+  fun select-for-context($agent: agent, $now: datetime) -> { belief, double } @doc("Returns each belief visible to $agent at $now paired with its retrieval score; the gated, scored candidate set for context assembly."):
       match
           $b isa belief;
           true == gate($b, $agent, $now);
@@ -111,7 +111,7 @@ define
 
   # ── Retrieval-provenance function (A2.10) ─────────────────────────
   # walks informs-synthesis; MUST NOT be reachable from derivation-chain
-  fun retrieval-provenance-of($b: belief) -> { retrieval-event }:
+  fun retrieval-provenance-of($b: belief) -> { retrieval-event } @doc("The retrieval events that informed the synthesis of belief $b; walks informs-synthesis and never crosses into the logical derivation chain."):
       match
           $r isa retrieval-event;                      # narrow: `retrieval` role is played by execution-episode
           (retrieval: $r, synthesized: $b) isa informs-synthesis;
@@ -123,7 +123,7 @@ define
   #   materialized read does not consume time. The STRICT variant (re-evaluate the stored
   #   spec-text for a named entity-set) is executed host-side (the spec-text is a runnable
   #   match clause — validated below), so it does not need a persisted $now-taking function.
-  fun population-members($pop: population) -> { concept }:
+  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to; the strict re-evaluation of spec-text runs host-side."):
       match
           (owning-population: $pop, member: $m) isa population-member;
       return { $m };
@@ -131,7 +131,7 @@ define
   # transitive closure over PROVABLE resolution beliefs; MUST NOT collapse probabilistic
   #   PROVABLE-ness lives on the resolution belief's `derivation` relation (derivation-method),
   #   NOT on the belief itself — join through derivation to read the method.
-  fun canonical-entity($rec: concept) -> { concept }:
+  fun canonical-entity($rec: concept) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec, following only provable (type-join/cardinality/functional-dependency) resolution beliefs."):
       match
           {
               $res isa resolution, has belief-state "asserted";
