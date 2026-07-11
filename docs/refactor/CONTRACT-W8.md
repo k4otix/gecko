@@ -18,18 +18,18 @@ This contract **proposes constraints; it never overrides** `INVARIANTS.md` or
 (§1/§8 invariant numbers, `OP-` numbers, `T8`), never edited.
 
 The daemon described in `core/mem-gecko/src/consolidation.rs` — the
-`ConsolidationDaemon` trait's ten job methods plus the real no-op `tick` and
+`ConsolidationDaemon` trait's eleven job methods plus the real no-op `tick` and
 `NoopConsolidationDaemon` — is, under this contract, **just another belief-writer
 bound by the W5 monopoly** (`CONFLICT-REPORT.md` Headline; work items W5/W5a/W5b).
 It gets no privileged internal path to the graph. Every constraint in §1 binds
-the eventual implementation of the ten stubbed jobs; none is satisfied by
+the eventual implementation of the eleven stubbed jobs; none is satisfied by
 anything shipped today (confirmed in §2/§2a below), and satisfying none of them
 requires shipping anything today — that is the point of ratifying a contract
 before the daemon is written (`CONFLICT-REPORT.md` T8: "the maximal
 expensive-to-get-wrong-later case").
 
 **Accuracy check performed against the live code** (see §2a footnote): `tick`
-and `NoopConsolidationDaemon` are real, callable no-ops; all ten job methods
+and `NoopConsolidationDaemon` are real, callable no-ops; all eleven job methods
 (`dedup_content_hash`, `discover_typed_join_links`, `synthesize_links_llm`,
 `contradiction_sweep`, `decay_archive_tombstone`, `summarize_archived_provenance`,
 `ttl_prune_record_tier`, `rollup_high_volume_episodes`,
@@ -71,7 +71,7 @@ never a blend:
   `derivation-chain()` (`mem_functions.tql:28-36`) must never be able to reach
   a similarity-scored edge from a daemon-synthesized belief — this is the same
   read-side proof `derivation_chain_never_touches_the_retrieval_ledger`
-  (`gecko-bin/tests/writer_reader_integration.rs`, cited T1) already holds for
+  (`core/mem-gecko/tests/writer_reader_integration.rs`, cited T1) already holds for
   the shipped read path; the daemon's write side must not be the thing that
   breaks it.
 
@@ -108,10 +108,10 @@ never a blend:
 
 > **Verbatim (`CONFLICT-REPORT.md` T8, constraint 3):** "A daemon-synthesized
 > belief is `llm`-class entrenchment (rank 0) → by the T3 guard it can **never
-> supersede** a human/tool belief. But the T3 guard lives in `MemWriter`, not
-> the schema (Headline), and cyber already writes some belief-tier state raw —
-> so 'the daemon has no privileged write path bypassing the entrenchment
-> guard' is only enforceable if the daemon is *held to* the monopoly.
+> supersede** a human/tool belief. **But the T3 guard lives in `MemWriter`, not
+> the schema (Headline), and cyber already writes some belief-tier state raw**
+> — so "the daemon has no privileged write path bypassing the entrenchment
+> guard" is only enforceable if the daemon is *held to* the monopoly.
 > **Constraint (make it enforceable, not aspirational):** the daemon must
 > **write through `EpistemicWriter`, never raw `graph.write`** — every
 > consolidation belief/merge/tombstone goes through the same run-stamped,
@@ -169,18 +169,26 @@ never a blend:
 > §2 for the full write-surface breakdown and §4 for the cross-reference to
 > where each gap is owed.
 
+*Reconciliation with §2:* the NOTE's "write an anomaly hub" is **illustrative**
+of the raw-TQL temptation, not one of the actual owed gaps — anomaly-hub
+minting already **EXISTS** via `EpistemicWriter::contest` (§2), so the daemon's
+`contradiction_sweep` needs no new method. The two genuine
+owed-new-sanctioned-method gaps are (i) recording similarity on a
+`surfaced`/`informs-synthesis` edge for an offline pairwise scan and (ii) the
+lifecycle `consolidation-state` transitions — both itemized in §2.
+
 ---
 
 ## §2 — Required write-surface inventory
 
-Every write one of the ten stubbed jobs needs, classified **exists** /
+Every write one of the eleven stubbed jobs needs, classified **exists** /
 **owed-by-W5b** / **owed-new-sanctioned-method** / **not belief-tier (N/A)**.
 
 | Write needed | Used by | Status | Evidence |
 |---|---|---|---|
 | Mint a belief + **provable** derivation (`type-join`/`cardinality`/`functional-dependency`, confidence 1.0 permitted) | `discover_typed_join_links` | **EXISTS** | `EpistemicWriter::assert_belief` (`epistemic.rs:197-203`) |
 | Mint a belief + **probabilistic** derivation (`llm-synthesis`, confidence < 1.0, entrenchment `llm`/rank 0) | `synthesize_links_llm` | **EXISTS** (belief-mint half only — see next row) | `assert_belief` with `DerivationMethod::LlmSynthesis` |
-| Record a similarity score on a `surfaced`/`informs-synthesis` edge for a pair found by an **offline batch scan** (not an interactive `recall`) | `synthesize_links_llm` (the CF-1 firewall half) | **OWED — new sanctioned method** | today `surfaced`/`informs-synthesis` are written **only** by the private `record_retrieval` (`writer.rs:493`), called solely from the interactive `recall`/`recall_as_of` paths (`writer.rs:613-614`) and correlated at `assert_belief` time via `ctx.matched_retrievals` (`writer.rs:773-790`); no public method mints this edge for a daemon-driven, non-recall comparison |
+| Record a similarity score on a `surfaced`/`informs-synthesis` edge for a pair found by an **offline batch scan** (not an interactive `recall`) | `synthesize_links_llm` (the CF-1 firewall half) | **OWED — new sanctioned method** | the two edges are written by two different private paths, neither reachable by an offline daemon: the `surfaced` edge is minted by the private `record_retrieval` (`writer.rs:493`), called **only** from `recall_indexed` (`writer.rs:614`); the `informs-synthesis` edge is minted **inside `assert_belief`** (`writer.rs:779`), gated on `record_retrieval_provenance` and correlated to the run's prior retrievals via `ctx.matched_retrievals` (`writer.rs:777`). Both are welded to the interactive recall→assert flow of a single run; **no public method mints either edge for a daemon-driven, non-recall pairwise comparison** |
 | Tombstone a content-hash-identical episode + best-effort de-vector | `dedup_content_hash` | **EXISTS** | `MemWriter::dedup_episodes` (`writer.rs:442`) |
 | Mint an anomaly hub over ≥2 claims | `contradiction_sweep` | **EXISTS** | `EpistemicWriter::contest` (`epistemic.rs:215`; impl `writer.rs:844`) |
 | Read: which `retrieval-event`s are safe to tombstone | `ttl_prune_record_tier` | **EXISTS** (read only) | `MemWriter::retrieval_events_safe_to_tombstone` (`writer.rs:479`) |
@@ -188,7 +196,7 @@ Every write one of the ten stubbed jobs needs, classified **exists** /
 | Collapse a belief's/episode's provenance detail into a summary while the write-once `retrieval-provenance` flag (`mem_types.tql:101`) and the row itself persist | `summarize_archived_provenance`, `collapse_superseded_provenance` | **OWED — new sanctioned method** | no summarization/collapse writer exists on `EpistemicWriter` or `MemWriter` today |
 | Aggregate high-volume episodes into a rollup entity | `rollup_high_volume_episodes` | **OWED — new sanctioned method** | no rollup/aggregate writer exists today |
 | Materialize / invalidate a `blast-radius` cache entry for an assumption | `precompute_blast_radius`, `invalidate_blast_radius` | **N/A — not a belief-tier write** | this is cache materialization over an already-derived computation (inv 8's "derived, rebuildable" pattern, the same posture as `SemanticIndex`), not a new belief — CF-3's `EpistemicWriter`-only clause governs belief-tier writes; the cache is out of that scope in the same way the index is, but still inherits invariant 8's failure-tolerance discipline (a cache-materialization failure must never fail the authoritative graph op) |
-| Any **new belief-tier relation type** beyond the seven already on `EpistemicWriter` (`observe`/`assert_belief`/`supersede`/`contest`/`rests_on`/`record_prediction`/`resolve_prediction`) that a future daemon job might need | none of the ten shipped jobs strictly requires one today; flagged for any job added later | **OWED-BY-W5b** | W5b's proposed `BeliefEdgeDecl` seam (`CONFLICT-REPORT.md` W5b) is the intended generic mechanism; it does not exist yet (confirmed: zero repo hits for `BeliefEdgeDecl`). Until it lands, a new relation type needs its own bespoke, individually-reviewed `EpistemicWriter` method — the same way `assert_belief`/`supersede`/`contest` were each added one at a time |
+| Any **new belief-tier relation type** beyond the seven already on `EpistemicWriter` (`observe`/`assert_belief`/`supersede`/`contest`/`rests_on`/`record_prediction`/`resolve_prediction`) that a future daemon job might need | none of the eleven shipped jobs strictly requires one today; flagged for any job added later | **OWED-BY-W5b** | W5b's proposed `BeliefEdgeDecl` seam (`CONFLICT-REPORT.md` W5b) is the intended generic mechanism; it does not exist yet (confirmed: zero repo hits for `BeliefEdgeDecl`). Until it lands, a new relation type needs its own bespoke, individually-reviewed `EpistemicWriter` method — the same way `assert_belief`/`supersede`/`contest` were each added one at a time |
 
 **Reading the table against CF-1/CF-2/CF-3:** the two rows marked **owed** for
 CF-1 (similarity-on-surfaced) and the lifecycle/summarization rows for CF-2 are
@@ -215,10 +223,11 @@ drift found**; every anchor below matches the brief exactly.
 | `rollup_high_volume_episodes` (`consolidation.rs:141`) | CF-2 | aggregates retain the episodic axis |
 | `precompute_blast_radius` (`consolidation.rs:158`) / `invalidate_blast_radius` (`consolidation.rs:166`) | inv 8, W3 | cache derived, graph SoR; invalidation triggers include membership-epoch changes once W3 ships |
 
-**Anchor-verification footnote.** All eleven line numbers above were
-re-derived by `grep -n` against `core/mem-gecko/src/consolidation.rs` on
-branch `conflict_resolution` at the time of writing and match the task
-brief's anchors exactly (`tick:65`, `dedup_content_hash:76`,
+**Anchor-verification footnote.** All twelve line numbers above (the real
+no-op `tick` plus the eleven stubbed job methods) were re-derived by `grep -n`
+against `core/mem-gecko/src/consolidation.rs` on branch `conflict_resolution`
+at the time of writing and match the task brief's anchors exactly (`tick:65`,
+`dedup_content_hash:76`,
 `discover_typed_join_links:85`, `synthesize_links_llm:95`,
 `contradiction_sweep:103`, `decay_archive_tombstone:112`,
 `summarize_archived_provenance:120`, `ttl_prune_record_tier:133`,
@@ -305,7 +314,7 @@ Explicitly out of scope — implementation freedom, not silence:
 - **Scheduling and cadence** of `tick` (cron, continuous, triggered-on-write).
 - **Batching strategy** within a tick (per-pair vs whole-graph passes; how much
   of the graph one `tick` covers).
-- **Ordering among the ten jobs** (e.g. whether `dedup_content_hash` must run
+- **Ordering among the eleven jobs** (e.g. whether `dedup_content_hash` must run
   before `discover_typed_join_links` in the same tick).
 - **The concrete shape** of the owed writer methods identified in §2 (the
   gap is named; the method signature, its schema-fragment implications if
@@ -337,7 +346,7 @@ Explicitly out of scope — implementation freedom, not silence:
 - **Proposes no schema change:** confirmed — no `.tql` file is touched by this
   document or its authoring.
 - **Proposes no code:** confirmed — no `.rs` file is touched;
-  `core/mem-gecko/src/consolidation.rs` stays exactly as read in §2a, all ten
+  `core/mem-gecko/src/consolidation.rs` stays exactly as read in §2a, all eleven
   jobs still `NotYetImplemented`.
 - **Verbatim + delta discipline:** each of CF-1/CF-2/CF-3 quotes
   `CONFLICT-REPORT.md` T8's numbered constraint verbatim, then states only an
