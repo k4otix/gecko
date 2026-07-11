@@ -1,0 +1,20 @@
+redefine
+  fun blast-radius($r: memory-item) -> { memory-item }:
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              (resolution-belief: $r, record-a: $c) isa resolves;
+              (owning-population: $pop, member: $c) isa population-member;
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              {
+                  (assumption: $r, resting: $mid) isa rests-on;
+              } or {
+                  (source: $r, derived: $mid) isa derivation;
+              };
+              let $m in blast-radius($mid);
+          };
+      return { $m };

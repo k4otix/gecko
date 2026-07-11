@@ -1,0 +1,2 @@
+define
+  population-member owns valid-from @card(0..1), owns valid-to @card(0..1);
