@@ -31,6 +31,8 @@
 //! runtime the TypeDB driver expects.
 #![cfg(feature = "cyber")]
 
+use std::collections::{BTreeSet, HashMap, HashSet};
+
 use chrono::NaiveDateTime;
 use cyber_gecko::CyberGecko;
 use futures_util::StreamExt;
@@ -1905,5 +1907,181 @@ async fn p_comp_folded_schema_define_clean_and_delivers() {
         contradicting,
         vec!["comp/c/E".to_string()],
         "(c) the shipped divergence-exception must be a live contradiction claim (contradicts(E,BP)=true); got {contradicting:?}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// W5 — the monopoly-surface ratchet (P-W5-1)
+//
+// SPEC-W5 §1.1 makes the belief-edge (memory-item-substrate) write surface
+// INTROSPECTION-DERIVED, not a hand list: a relation is on the surface iff it owns
+// at least one role played EXCLUSIVELY by `memory-item` subtypes. An introspected
+// surface catches a new belief-edge relation the instant its schema lands — cyber's
+// `technique-detection`/`alert-disposition` (the raw-`graph.write` breach at
+// `extensions/cyber-gecko/src/detect/mod.rs:142,196`) today, and W2's
+// `divergence-precedence` the day W2 lands — whereas INVARIANTS §8.4's hand-list
+// misses `divergence-precedence` (and even omits `resolves`/`scoped`).
+//
+// This probe lives on `conflict_resolution`, whose `apply_composed_schema` reads the
+// UNFOLDED mem schema — so `divergence-precedence` is absent until the W2 candidate
+// delta is applied, which is what makes the ratchet observable.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Introspects the composed schema and returns the **belief-edge relation surface**:
+/// every relation owning at least one role played EXCLUSIVELY by `memory-item`
+/// subtypes. This is the introspection-derived monopoly surface SPEC-W5 §1.1 makes
+/// authoritative — no hand-maintained list, so a newly-landed belief-edge relation is
+/// caught with no test edit.
+///
+/// The query is exactly the §1.1 recipe: `$t sub memory-item; $t plays $r` yields the
+/// candidate roles; the full player set of each role (`$t plays $r; $rel relates $r`)
+/// decides exclusivity host-side; the owning **relation** label is decoded from
+/// `label($rel)`. A relation qualifies on ≥1 exclusive role even if its other roles
+/// admit records — `divergence-precedence` is caught via `belief plays :prevailing` /
+/// `:overridden` though its `exception-scope` role is played by the record-tier
+/// `concept`; `resolves`/`scoped` are caught via their belief role though `record-*` /
+/// `population` are record/cache tier.
+async fn belief_edge_surface(db: &TestDb) -> BTreeSet<String> {
+    // 1. The memory-item subtype closure (reflexive: `sub` includes `memory-item`).
+    let mi_subtypes: HashSet<String> = read_col(
+        db,
+        r#"match $t sub memory-item; let $l = label($t); select $l;"#,
+        "l",
+    )
+    .await
+    .into_iter()
+    .collect();
+
+    // 2. Every (player-type, role, owning-relation) triple in the schema. Roles are
+    //    grouped by their (globally-unique) scoped label; the relation is read
+    //    directly off `$rel relates $r`, never string-split from the role label.
+    let mut router = db.router();
+    let tx = router.begin_read().await.expect("read tx");
+    let answer = tx
+        .query(
+            r#"match
+                 $t plays $r;
+                 $rel relates $r;
+                 let $tl = label($t);
+                 let $rl = label($r);
+                 let $reln = label($rel);
+               select $tl, $rl, $reln;"#,
+        )
+        .await
+        .expect("introspection query");
+    assert!(answer.is_row_stream(), "introspection returns a row stream");
+    let mut rows = answer.into_rows();
+    // scoped-role-label -> (owning-relation-label, set of player type labels)
+    let mut role_players: HashMap<String, (String, HashSet<String>)> = HashMap::new();
+    while let Some(item) = rows.next().await {
+        let row = item.expect("introspection row");
+        let get = |c: &str| {
+            row.get(c)
+                .expect("column present")
+                .expect("column bound")
+                .try_get_string()
+                .expect("label is a string")
+                .to_string()
+        };
+        let (player, role, relation) = (get("tl"), get("rl"), get("reln"));
+        let entry = role_players
+            .entry(role)
+            .or_insert_with(|| (relation, HashSet::new()));
+        entry.1.insert(player);
+    }
+
+    // 3. A relation is on the surface iff some role it owns is played by at least one
+    //    type and ONLY by memory-item subtypes.
+    let mut surface = BTreeSet::new();
+    for (_role, (relation, players)) in role_players {
+        if !players.is_empty() && players.iter().all(|p| mi_subtypes.contains(p)) {
+            surface.insert(relation);
+        }
+    }
+    surface
+}
+
+/// **P-W5-1** — the live monopoly-surface ratchet (SPEC-W5 §1.1 / §2.3).
+///
+/// Derives the belief-edge relation surface by introspection (`belief_edge_surface`)
+/// instead of a hand list, then turns the ratchet: on the unfolded mem schema this
+/// branch composes, the surface must already include cyber's `technique-detection`
+/// and `alert-disposition` — the raw-`graph.write` breach W5b must route through the
+/// sanctioned seam — and must NOT yet include W2's `divergence-precedence`. Applying
+/// the W2 candidate delta (`w2_precedence.tql`) makes `divergence-precedence` appear
+/// in the surface with NO edit to this test — catching it the instant W2 lands,
+/// whereas INVARIANTS §8.4's hand-list would miss it.
+///
+/// Runs in ISOLATION on `conflict_resolution`: the folded-schema probes in this file
+/// are EXPECTED to fail here (the shipped mem schema is unfolded), so run only:
+///
+/// ```text
+/// cargo test --test schema_probe_w2w3 --no-default-features --features cyber p_w5_1 \
+///     -- --ignored --test-threads=1
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "W5 monopoly-surface ratchet; run p_w5_1 in ISOLATION with a live TypeDB — --ignored --test-threads=1"]
+async fn p_w5_1_introspection_ratchet_catches_divergence_precedence() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+
+    // Without W2: the surface is derived from core + unfolded-mem + cyber.
+    let before = belief_edge_surface(&db).await;
+    eprintln!("P-W5-1 surface (core+mem+cyber, no W2) = {before:?}");
+
+    // The cyber belief-referencing relations ARE on the surface without a hand list —
+    // the raw-graph.write breach (detect/mod.rs:142,196) is caught by introspection.
+    assert!(
+        before.contains("technique-detection"),
+        "surface must include cyber's technique-detection (belief plays :detection-claim); got {before:?}"
+    );
+    assert!(
+        before.contains("alert-disposition"),
+        "surface must include cyber's alert-disposition (belief plays :disposition-belief); got {before:?}"
+    );
+    // Introspection also catches the core belief-tier relations INVARIANTS §8.4's
+    // hand-list omits (`resolves`, `scoped`) alongside the ones it names.
+    for expected in [
+        "derivation",
+        "supersession",
+        "surfaced",
+        "informs-synthesis",
+        "resolves",
+        "scoped",
+    ] {
+        assert!(
+            before.contains(expected),
+            "surface must include the belief-tier relation `{expected}`; got {before:?}"
+        );
+    }
+    // Before W2 lands, `divergence-precedence` does not exist in the composed schema.
+    assert!(
+        !before.contains("divergence-precedence"),
+        "divergence-precedence must be ABSENT before the W2 delta (unfolded mem schema); got {before:?}"
+    );
+
+    // Turn the ratchet: apply the W2 divergence-exception candidate (w2_precedence.tql).
+    apply_delta(&db, W2_PRECEDENCE)
+        .await
+        .expect("candidate C1 (w2_precedence) applies clean as a delta");
+
+    let after = belief_edge_surface(&db).await;
+    eprintln!("P-W5-1 surface (+ W2 precedence delta) = {after:?}");
+
+    // The introspection-derived surface now catches `divergence-precedence` with NO
+    // edit to this test — the live ratchet. It qualifies via `belief plays :prevailing`
+    // / `:overridden` even though its `exception-scope` role is played by `concept`.
+    assert!(
+        after.contains("divergence-precedence"),
+        "the W2 delta must make divergence-precedence appear in the surface (the ratchet); got {after:?}"
+    );
+    // The cyber relations remain — the introspected surface only ever grows.
+    assert!(
+        after.contains("technique-detection") && after.contains("alert-disposition"),
+        "the cyber belief-referencing relations must remain on the surface after W2; got {after:?}"
+    );
+    assert!(
+        after.is_superset(&before),
+        "the introspected surface must only GROW on the W2 delta; before={before:?} after={after:?}"
     );
 }

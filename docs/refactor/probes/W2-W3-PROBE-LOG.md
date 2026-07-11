@@ -523,3 +523,69 @@ existing Mode-A probes then `apply_delta(...)` the same candidates on top. Obser
    `blast-radius($r)` (`writer.rs:947`); `memory-item ⊂ okf-concept`, so the widened param
    needs no Rust call-site change. The mem-gecko unit test asserting the fn signature was
    updated to the widened `okf-concept` param + the two new as-of fns.
+
+---
+
+# W5 batch — the monopoly-surface ratchet (P-W5-1)
+
+Feeds SPEC-W5 §1.1 (introspection-derived belief-edge surface) and §2.3 (the ratchet).
+Unlike the W2/W3 probes, this one runs on `conflict_resolution` with the **UNFOLDED** mem
+schema (`apply_composed_schema` reads the shipped, non-folded `mem_types.tql`), so
+`divergence-precedence` is absent until the W2 candidate delta is applied — which is what
+makes the ratchet observable in a single run.
+
+> **Run in ISOLATION.** The folded-schema probes in this file (P-COMP, P-REDEF, P-PM-3,
+> P-CE-1, P-T5-FIX, P-BR-6) are EXPECTED to fail on `conflict_resolution` (they assume the
+> Mode-B fold). P-W5-1 is the only probe that goes green here:
+> ```text
+> cargo test --test schema_probe_w2w3 --no-default-features --features cyber p_w5_1 \
+>     -- --ignored --test-threads=1
+> ```
+
+## Verdict summary (1/1)
+
+| Probe | Candidate | Expected | Observed | Verdict |
+|---|---|---|---|---|
+| P-W5-1 | introspection-derived surface + `w2_precedence.tql` delta | pass — surface catches cyber's edges, gains `divergence-precedence` only after the W2 delta | before: 23 relations incl. `technique-detection`/`alert-disposition`, NO `divergence-precedence`; after the delta: 24, `divergence-precedence` added | **CONFIRMED** |
+
+## P-W5-1 — the introspection ratchet catches `divergence-precedence` on the W2 delta
+
+- **Method.** The belief-edge surface is derived by schema introspection, never a hand
+  list: the memory-item subtype closure comes from `match $t sub memory-item; let $l =
+  label($t);`; every `(player-type, role, owning-relation)` triple from `match $t plays $r;
+  $rel relates $r;` (the relation label decoded host-side via `label($rel)`, never
+  string-split from the role); a relation is on the surface iff it owns **≥1 role played by
+  at least one type and ONLY by memory-item subtypes**. A relation qualifies on one
+  exclusive role even if its other roles admit records — `technique-detection` via `belief
+  plays :detection-claim` (its `detecting-logic`/`detected-technique` roles are record-tier),
+  `divergence-precedence` via `belief plays :prevailing`/`:overridden` (its `exception-scope`
+  is `concept`), `resolves`/`scoped` via their belief role (`record-*`/`population` are
+  record/cache tier).
+- **Observed surface (core + unfolded-mem + cyber, no W2), 23 relations:**
+  ```
+  {alert-disposition, attack, contextualizes, contradiction, derivation, evidence,
+   execution, goal-hierarchy, informs-synthesis, justification, ownership, pivot,
+   prediction-resolution, resolves, rests-on, scoped, sighting-of, source-link,
+   supersession, support, surfaced, technique-detection, tool-invocation}
+  ```
+  `technique-detection` and `alert-disposition` (the raw-`graph.write` breach at
+  `extensions/cyber-gecko/src/detect/mod.rs:142,196`) are present; `divergence-precedence`
+  is absent. The surface is BROADER than INVARIANTS §8.4's enumeration — it also catches
+  `resolves`, `scoped` (which §8.4 omits) and the substrate edges `contextualizes`,
+  `execution`, `goal-hierarchy`, `tool-invocation`, plus cyber's episodic `sighting-of`
+  (played by `sighting sub execution-episode sub … sub memory-item`). Each is a genuine
+  memory-item-substrate write, so catching it is correct, not over-broad.
+- **The ratchet turn.** `apply_delta(&db, W2_PRECEDENCE)` (the `w2_precedence.tql`
+  candidate) lands `divergence-exception sub belief` + `divergence-precedence` with `belief
+  plays :prevailing`/`:overridden`. Re-introspecting (memory-item closure re-read, so the
+  new `divergence-exception` subtype is included) yields **24 relations** — identical to
+  before plus `divergence-precedence`.
+- **Assertions (all green):** before → contains `technique-detection`, `alert-disposition`,
+  `derivation`, `supersession`, `surfaced`, `informs-synthesis`, `resolves`, `scoped`; does
+  NOT contain `divergence-precedence`. After → contains `divergence-precedence`; still
+  contains the cyber relations; `after ⊇ before` (the surface only grows).
+- **Verdict:** CONFIRMED. An introspection-derived monopoly surface catches
+  `divergence-precedence` the instant W2 lands, with **no test edit and no hand-list
+  update** — whereas INVARIANTS §8.4's hand-list would silently miss it. This is the live
+  evidence for SPEC-W5 §1.1 (the introspected surface is authoritative over §8.4's
+  enumeration) and §2.3 (the ratchet).
