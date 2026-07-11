@@ -312,6 +312,22 @@ async fn p_prec_1_belief_anchored_shape_define_clean() {
         vec!["prec1/E".to_string()],
         "the exception belief must anchor a readable divergence-precedence; got {anchored:?}"
     );
+
+    // The exception-scope role binds the scoped member — read it back too (not just
+    // proven by the insert committing).
+    let scoped_member = read_concept_ids(
+        &db,
+        r#"match
+             (exception-belief: $e, exception-scope: $c) isa divergence-precedence;
+             $c has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        scoped_member,
+        vec!["prec1/c1".to_string()],
+        "the exception-scope role must bind the scoped member C1; got {scoped_member:?}"
+    );
 }
 
 /// **P-PREC-2** — full T4 population-vs-instance ground state; the population
@@ -383,6 +399,23 @@ async fn p_prec_2_member_scoped_exception_leaves_population_asserted() {
         disposition,
         vec!["prec2/E".to_string()],
         "disposition-of(BI) must surface the exception belief E; got {disposition:?}"
+    );
+
+    // Member-scoping is real per-member: E is scoped to the SPECIFIC member C1 (not
+    // C2), so the override applies to C1 alone while BP stays asserted for C2.
+    let scope_of_e = read_concept_ids(
+        &db,
+        r#"match
+             $e isa belief, has concept-id "prec2/E";
+             (exception-belief: $e, exception-scope: $c) isa divergence-precedence;
+             $c has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        scope_of_e,
+        vec!["prec2/c1".to_string()],
+        "the exception E must be scoped to the specific member C1, not C2; got {scope_of_e:?}"
     );
 }
 
@@ -571,14 +604,20 @@ async fn p_prec_5_anchorless_precedence_fails_at_commit() {
         "the insert statement itself must be accepted — @card(1) validates at commit, not insert"
     );
 
-    // The cardinality violation surfaces at commit.
-    let commit_result = tx.commit().await;
+    // The cardinality violation surfaces at commit (the insert above is accepted —
+    // that insert-ok/commit-err timing is the novel claim).
+    let commit_err = tx
+        .commit()
+        .await
+        .expect_err("committing an anchor-less divergence-precedence must fail at commit");
+    // Pin the SPECIFIC exception-belief @card(1) violation, not any commit failure.
+    let msg = format!("{commit_err:?}");
+    eprintln!("P-PREC-5 commit error: {msg}");
     assert!(
-        commit_result.is_err(),
-        "committing an anchor-less divergence-precedence must fail on exception-belief @card(1)"
+        msg.contains("exception-belief") || msg.contains("@card") || msg.contains("CNT5"),
+        "the commit must fail specifically on the exception-belief @card(1) violation \
+         (expected 'exception-belief'/'@card'/'[CNT5]' in the error); got: {msg}"
     );
-    // Observed error captured for the probe log.
-    eprintln!("P-PREC-5 commit error: {:?}", commit_result.err());
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -702,48 +741,59 @@ async fn p_disp_2_pure_tql_winner_is_inexpressible() {
 
     let define_result = apply_delta(&db, DIVERGENCE_WINNER_FN).await;
 
-    let correctly_ranked = if let Err(ref e) = define_result {
-        // Branch 1: the ranker is rejected at define — the winner cannot be bound
-        // conditionally. This is the inexpressibility verdict.
-        eprintln!("P-DISP-2 define REJECTED: {e:?}");
-        false
-    } else {
-        // Branch 2: the ranker defines; call it on a fixture where A clearly wins
-        // (human-assertion beats llm-synthesis on the first key). If the or-branch
-        // binding is lost, the call returns zero rows.
-        insert(
-            &db,
-            r#"insert
-                 $src isa belief, has concept-id "disp2/src", has belief-state "asserted";
-                 $a isa belief, has concept-id "disp2/A", has belief-state "asserted",
-                     has confidence 0.9, has entrenchment "user-stated";
-                 $b isa belief, has concept-id "disp2/B", has belief-state "asserted",
-                     has confidence 0.2, has entrenchment "llm";
-                 derivation (derived: $a, source: $src), has derivation-method "human-assertion";
-                 derivation (derived: $b, source: $src), has derivation-method "llm-synthesis";"#,
-        )
-        .await;
+    match define_result {
+        Err(e) => {
+            // Branch 1 (observed): the ranker is rejected at define — a concept
+            // variable bound only inside or-branches (`$winner is $a`) is unbound.
+            // Pin the SPECIFIC unbound-variable rejection, not merely "some error":
+            // a future schema change must not keep this green while no longer
+            // certifying the inexpressibility this probe exists to prove.
+            let msg = e.to_string();
+            eprintln!("P-DISP-2 define REJECTED: {msg}");
+            assert!(
+                msg.contains("winner") || msg.contains("REP25"),
+                "the define must be rejected specifically for the unbound or-branch-bound \
+                 winner (expected 'winner'/'[REP25]' in the error); got: {msg}"
+            );
+        }
+        Ok(()) => {
+            // Branch 2: the ranker defines; call it on a fixture where A clearly wins
+            // (human-assertion beats llm-synthesis on the first key). If the or-branch
+            // binding is lost, the call returns the wrong/empty result — it must NOT
+            // correctly return the single winner {A}.
+            insert(
+                &db,
+                r#"insert
+                     $src isa belief, has concept-id "disp2/src", has belief-state "asserted";
+                     $a isa belief, has concept-id "disp2/A", has belief-state "asserted",
+                         has confidence 0.9, has entrenchment "user-stated";
+                     $b isa belief, has concept-id "disp2/B", has belief-state "asserted",
+                         has confidence 0.2, has entrenchment "llm";
+                     derivation (derived: $a, source: $src), has derivation-method "human-assertion";
+                     derivation (derived: $b, source: $src), has derivation-method "llm-synthesis";"#,
+            )
+            .await;
 
-        let winners = read_concept_ids(
-            &db,
-            r#"match
-                 $a isa belief, has concept-id "disp2/A";
-                 $b isa belief, has concept-id "disp2/B";
-                 let $w in divergence-winner($a, $b);
-                 $w has concept-id $cid;
-               select $cid;"#,
-        )
-        .await;
-        eprintln!("P-DISP-2 define ACCEPTED; divergence-winner(A,B) = {winners:?}");
-        winners == vec!["disp2/A".to_string()]
-    };
-
-    assert!(
-        !correctly_ranked,
-        "the pure-TQL divergence-winner must NOT correctly return the single winner \
-         — the or-branch-bound winner is unbound at return (g1 finding #2), forcing \
-         the host-side ranking split"
-    );
+            let winners = read_concept_ids(
+                &db,
+                r#"match
+                     $a isa belief, has concept-id "disp2/A";
+                     $b isa belief, has concept-id "disp2/B";
+                     let $w in divergence-winner($a, $b);
+                     $w has concept-id $cid;
+                   select $cid;"#,
+            )
+            .await;
+            eprintln!("P-DISP-2 define ACCEPTED; divergence-winner(A,B) = {winners:?}");
+            assert_ne!(
+                winners,
+                vec!["disp2/A".to_string()],
+                "the pure-TQL divergence-winner must NOT correctly return the single \
+                 winner — the or-branch-bound winner is unbound at return (g1 finding #2), \
+                 forcing the host-side ranking split"
+            );
+        }
+    }
 }
 
 /// The 4-key evidence a host-side ranker reads for a divergent belief. The ranking

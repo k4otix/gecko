@@ -44,11 +44,13 @@ Task-0 baselines (must stay green): **P-BASE-T2** and **P-BASE-T5** — both sti
   the composed core→mem→cyber schema.
 - **Ground state:** a full `divergence-precedence` instance — exception belief E
   dispositions instance BI over population belief BP, scoped to member C1.
-- **Observed:** the delta applies with no define error; the instance inserts and
-  `(exception-belief:$e, prevailing:$bi, overridden:$bp)` reads back `{prec1/E}`.
+- **Observed:** the delta applies with no define error; the instance inserts,
+  `(exception-belief:$e, prevailing:$bi, overridden:$bp)` reads back `{prec1/E}`, and
+  the `exception-scope` role reads back `{prec1/c1}` (the scoped member).
 - **Verdict:** CONFIRMED. `divergence-exception sub belief` + the 4-role relation is
-  well-formed AND instantiable. Additive `belief plays …:prevailing/:overridden` and
-  `concept plays …:exception-scope` in a delta transaction are accepted.
+  well-formed AND instantiable, including the `exception-scope` role. Additive `belief
+  plays …:prevailing/:overridden` and `concept plays …:exception-scope` in a delta
+  transaction are accepted.
 
 ### P-PREC-2 — member-scoped exception leaves the population belief asserted (R3)
 - **Delta:** C1 + a probe read-back function `disposition-of($inst: belief) ->
@@ -57,11 +59,12 @@ Task-0 baselines (must stay green): **P-BASE-T2** and **P-BASE-T5** — both sti
   to P; instance belief BI diverges for C1; exception belief E dispositions BI over BP,
   `exception-scope: C1`.
 - **Observed:** `BP.belief-state == "asserted"` (unchanged — no supersession of BP);
-  `disposition-of(BI)` → `{prec2/E}`.
+  `disposition-of(BI)` → `{prec2/E}`; E's `exception-scope` binds the SPECIFIC member
+  `{prec2/c1}` (not C2).
 - **Verdict:** CONFIRMED. Member-scoping lives on the exception (which carries the
   scope), never on `supersession` — so overriding BP for C1 leaves it asserted for the
-  rest of the cohort. Closes risk R3. A function taking `($inst: belief)` reads the
-  disposition back.
+  rest of the cohort. The scope is real per-member (E scopes to C1 alone). Closes risk
+  R3. A function taking `($inst: belief)` reads the disposition back.
 
 ### P-PREC-3 — the reified exception is a contradiction claim (closes T4 problem 3)
 - **Delta:** C1.
@@ -105,6 +108,9 @@ Task-0 baselines (must stay green): **P-BASE-T2** and **P-BASE-T5** — both sti
   forbidden bare-edge override) is structurally rejected. The *procedural* residue —
   that the anchor was minted by the sanctioned writer, not hand-written — is owed to
   SPEC-W5 §3.2 (the schema cannot enforce it).
+- **Regression guard:** the probe asserts the insert-ok/commit-err timing AND that the
+  commit error string contains `exception-belief`/`@card`/`CNT5` — pinning the specific
+  `@card(1)` `exception-belief` violation, not any commit failure.
 
 ### P-DISP-1 — nested-disjunction `return check` predicate answers correctly
 - **Delta:** C2 `w2_disposition.tql`.
@@ -142,6 +148,11 @@ Task-0 baselines (must stay green): **P-BASE-T2** and **P-BASE-T5** — both sti
   `[REP25]` unbound-variable error at define time. Either way the design signal is
   identical and load-bearing: **the 4-key winner cannot be selected in pure TQL**; the
   disposition ranking is host-assembled. C2 stays entrenchment-*predicate*-only.
+- **Regression guard:** the probe asserts the define-error string contains
+  `winner`/`REP25` (Branch 1) — pinning the specific unbound-variable rejection, not
+  merely "some error" — and, should a future TypeDB accept the define instead, asserts
+  the call does NOT correctly return the single winner (Branch 2). Either way it stays
+  a live certification of the inexpressibility.
 
 ### P-DISP-3 — host-side ranking reproduces §8.2 dispositions
 - **Delta:** C2.
