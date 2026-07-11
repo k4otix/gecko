@@ -235,7 +235,7 @@ fn download(url: &str, dest: &Path) -> Result<()> {
     let resp = ureq::get(url)
         .call()
         .with_context(|| format!("HTTP GET {url} failed"))?;
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     let mut file =
         fs::File::create(dest).with_context(|| format!("cannot create {}", dest.display()))?;
     std::io::copy(&mut reader, &mut file).context("write of downloaded dist failed")?;
