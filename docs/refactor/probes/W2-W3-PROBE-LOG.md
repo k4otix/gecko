@@ -217,8 +217,8 @@ Candidate files probed this batch (`gecko-bin/tests/probes/`):
 
 | Probe | Candidate | Expected | Observed | Verdict |
 |---|---|---|---|---|
-| P-BR-1 | b1 `w3_blast_radius_b1.tql` | open — decides b1 vs b2 | **redefine ACCEPTED**; `blast-radius(C1: concept)` type-checks and returns B | **RESOLVED — b1 VIABLE** |
-| P-BR-2 | b1 `w3_blast_radius_b1.tql` | open | recursion through scoped belief: `blast-radius(C1)` = {B, D} | **RESOLVED — recursion works** |
+| P-BR-1 | b1 `w3_blast_radius_b1.tql` | open — decides b1 vs b2 | redefine **ASSERTED accepted** (`.expect`); `blast-radius(C1: concept)` returns {B} (exact) | **RESOLVED — b1 accepted (asserted): `okf-concept` sibling narrowing admitted; blast-radius(member) reaches cohort belief** |
+| P-BR-2 | b1 `w3_blast_radius_b1.tql` | open | redefine **ASSERTED accepted**; recursion through scoped belief: `blast-radius(C1)` = {B, D} | **RESOLVED — b1 accepted (asserted): recursion via the population branch works** |
 | P-BR-3 | b2 `w3_blast_radius_b2.tql` | pass | `cohort-blast-radius(C1)` = {B} on the T2 fixture | **CONFIRMED** |
 | P-BR-4 | b3 `w3_blast_radius_b3.tql` | open | `blast-radius(RES)` = {B} via the `resolves` entry | **RESOLVED — b3 works** |
 | P-BR-5 | b3 (redefine) | open — §1.4 posture | `redefine fun blast-radius` accepted; redefined body in force | **RESOLVED — redefine works** |
@@ -285,18 +285,27 @@ spec author; probed separately here per R9 fidelity.
 ### P-BR-1 — b1 widened param type-checks (decides b1 vs b2)
 - **Delta:** composed schema, then `redefine fun blast-radius($r: okf-concept)` (b1).
 - **Ground state:** population P, member concept C1, belief B scoped to P (driven from C1).
-- **Observed:** the `redefine` is **ACCEPTED** (no type-inference error). `blast-radius(C1)`
+- **Observed:** the `redefine` is **accepted** (no type-inference error). `blast-radius(C1)`
   where C1 `isa concept` returns `{br1/B}` — the widened `okf-concept` param admits a
   `concept` argument and the per-branch narrowing (`rests-on:assumption`/`derivation:source`
   → `memory-item`; `population-member:member` → `concept`) type-checks.
-- **Verdict:** RESOLVED — **b1 is VIABLE.** The sibling-narrowing risk did not materialize.
+- **Verdict:** RESOLVED — **b1 accepted (asserted): `okf-concept` sibling narrowing admitted;
+  blast-radius(member) reaches cohort belief.** The sibling-narrowing risk did not materialize.
+- **Assertion (evidentiary):** the probe ASSERTS acceptance —
+  `apply_delta(w3_blast_radius_b1).expect("b1 okf-concept redefine accepted by TypeDB 3.12")`
+  — so a rejection FAILS the test, then asserts the exact set `{br1/B}`. (An `Err`-tolerant
+  match could not certify acceptance: `apply_schema` collapses every failure to
+  `DbError::Schema`, so the spec-cited [P-BR-1] viability claim is now assertion-backed, not
+  log-backed.)
 
 ### P-BR-2 — b1 recursion through the scoped belief
 - **Delta:** b1. **Ground state:** C1 member of P; B scoped to P; D `rests-on` B.
 - **Observed:** `blast-radius(C1)` = `{br2/B, br2/D}` — B via the direct population branch,
   D via recursion (the scoped belief B re-enters `blast-radius`, whose `rests-on` branch
   reaches D).
-- **Verdict:** RESOLVED — recursion feeds back through the population branch correctly.
+- **Verdict:** RESOLVED — **b1 accepted (asserted): recursion via the population branch
+  works.** The redefine is asserted accepted (same evidentiary reason as P-BR-1), then the
+  recursion result is asserted exact.
 
 ### P-BR-3 — b2 companion returns the cohort belief
 - **Delta:** b2 (`define fun cohort-blast-radius($member: concept)`).

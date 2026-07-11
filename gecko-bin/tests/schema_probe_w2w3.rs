@@ -999,120 +999,103 @@ async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
 // memory-item are SIBLINGS under okf-concept, the central type-inference risk.
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// **P-BR-1 (C3-b1)** — does the widened-param `redefine` type-check, and does it
-/// admit a `concept` (population member) argument?
+/// **P-BR-1 (C3-b1)** — the widened-param `redefine` type-checks AND admits a
+/// `concept` (population member) argument.
 ///
 /// b1 widens `blast-radius`'s param `memory-item` → `okf-concept` so a member concept
 /// C1 (sibling of `memory-item`) can be the retractee. Per-branch role narrowing
 /// (`rests-on:assumption`/`derivation:source` want a `memory-item`;
-/// `population-member:member` wants a `concept`) is the central type-inference risk.
-/// The probe records the DEFINITE outcome: a rejected redefine is the verdict pushing
-/// toward b2; an accepted one must make `blast-radius(C1)` return the cohort belief B.
+/// `population-member:member` wants a `concept`) is the central type-inference risk —
+/// and TypeDB 3.12 admits it. The redefine is ASSERTED to be accepted (a rejection
+/// fails the test, not merely logged: `apply_schema` collapses every failure to
+/// `DbError::Schema`, so an `Err`-tolerant match could not certify acceptance), then
+/// `blast-radius(C1: concept)` must return the cohort belief B (exact set). This is
+/// the assertion-backed evidence that b1's cross-sibling widening is viable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_br_1_b1_widened_param_type_checks() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
-    let redefine_result = apply_delta(&db, W3_BLAST_B1).await;
+    // The `okf-concept`-widened redefine with per-branch sibling narrowing is accepted
+    // by TypeDB 3.12 — a rejection here is a hard test failure, not an open verdict.
+    apply_delta(&db, W3_BLAST_B1)
+        .await
+        .expect("b1 okf-concept redefine accepted by TypeDB 3.12");
 
-    match redefine_result {
-        Err(e) => {
-            // Verdict branch: b1's supertype-param + sibling-narrowing redefine is
-            // rejected — the type-inference risk realized, pushing the fix toward b2.
-            let msg = format!("{e:?}");
-            eprintln!("P-BR-1 b1 redefine REJECTED: {msg}");
-            assert!(
-                matches!(e, DbError::Schema(_)),
-                "b1 rejection must be a schema/type error (DbError::Schema); got {msg}"
-            );
-        }
-        Ok(()) => {
-            // Viability branch: b1 defined — prove it admits a concept argument and
-            // sweeps the cohort belief B when driven from the member C1.
-            eprintln!("P-BR-1 b1 redefine ACCEPTED");
-            insert(
-                &db,
-                r#"insert
-                     $p isa population, has spec-hash "br1/pop/P";
-                     $c1 isa concept, has concept-id "br1/c1";
-                     $b isa belief, has concept-id "br1/B", has belief-state "asserted";
-                     scoped (scoped-belief: $b, population: $p);
-                     population-member (owning-population: $p, member: $c1);"#,
-            )
-            .await;
+    // b1 admits a `concept` argument and sweeps the cohort belief B from the member C1.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "br1/pop/P";
+             $c1 isa concept, has concept-id "br1/c1";
+             $b isa belief, has concept-id "br1/B", has belief-state "asserted";
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1);"#,
+    )
+    .await;
 
-            let reachable = read_concept_ids(
-                &db,
-                r#"match
-                     $c1 isa concept, has concept-id "br1/c1";
-                     let $m in blast-radius($c1);
-                     $m has concept-id $cid;
-                   select $cid;"#,
-            )
-            .await;
-            assert_eq!(
-                reachable,
-                vec!["br1/B".to_string()],
-                "b1 blast-radius(C1) must sweep the cohort belief B; got {reachable:?}"
-            );
-        }
-    }
+    let reachable = read_concept_ids(
+        &db,
+        r#"match
+             $c1 isa concept, has concept-id "br1/c1";
+             let $m in blast-radius($c1);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        reachable,
+        vec!["br1/B".to_string()],
+        "b1 blast-radius(C1: concept) must sweep the cohort belief B; got {reachable:?}"
+    );
 }
 
 /// **P-BR-2 (C3-b1)** — recursion through the new population branch: a scoped belief
 /// feeds back into `blast-radius`.
 ///
-/// Only meaningful if b1 defines. Fixture: member C1 of population P, belief B scoped
-/// to P, and belief D `rests-on` B. b1 should sweep B (direct population branch) AND D
-/// (recursion: the scoped belief B re-enters `blast-radius`, whose `rests-on` branch
-/// reaches D). If b1 does not define, the verdict is recorded as "recursion
-/// untestable — b1 not viable".
+/// The b1 redefine is ASSERTED accepted (same evidentiary reason as P-BR-1), then
+/// recursion is proven. Fixture: member C1 of population P, belief B scoped to P, and
+/// belief D `rests-on` B. b1 sweeps B (direct population branch) AND D (recursion: the
+/// scoped belief B re-enters `blast-radius`, whose `rests-on` branch reaches D).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_br_2_b1_recursion_through_scoped_belief() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
-    match apply_delta(&db, W3_BLAST_B1).await {
-        Err(e) => {
-            eprintln!("P-BR-2 b1 redefine REJECTED (recursion untestable): {e:?}");
-            assert!(
-                matches!(e, DbError::Schema(_)),
-                "b1 rejection must be a schema/type error; got {e:?}"
-            );
-        }
-        Ok(()) => {
-            // C1 → member → P → scoped → B (the scoped belief), and D rests-on B.
-            insert(
-                &db,
-                r#"insert
-                     $p isa population, has spec-hash "br2/pop/P";
-                     $c1 isa concept, has concept-id "br2/c1";
-                     $b isa belief, has concept-id "br2/B", has belief-state "asserted";
-                     $d isa belief, has concept-id "br2/D", has belief-state "asserted";
-                     scoped (scoped-belief: $b, population: $p);
-                     population-member (owning-population: $p, member: $c1);
-                     rests-on (resting: $d, assumption: $b);"#,
-            )
-            .await;
+    apply_delta(&db, W3_BLAST_B1)
+        .await
+        .expect("b1 okf-concept redefine accepted by TypeDB 3.12");
 
-            let reachable = read_concept_ids(
-                &db,
-                r#"match
-                     $c1 isa concept, has concept-id "br2/c1";
-                     let $m in blast-radius($c1);
-                     $m has concept-id $cid;
-                   select $cid;"#,
-            )
-            .await;
-            assert_eq!(
-                reachable,
-                vec!["br2/B".to_string(), "br2/D".to_string()],
-                "b1 blast-radius(C1) must sweep B (direct) AND D (recursion via the scoped belief); got {reachable:?}"
-            );
-        }
-    }
+    // C1 → member → P → scoped → B (the scoped belief), and D rests-on B.
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "br2/pop/P";
+             $c1 isa concept, has concept-id "br2/c1";
+             $b isa belief, has concept-id "br2/B", has belief-state "asserted";
+             $d isa belief, has concept-id "br2/D", has belief-state "asserted";
+             scoped (scoped-belief: $b, population: $p);
+             population-member (owning-population: $p, member: $c1);
+             rests-on (resting: $d, assumption: $b);"#,
+    )
+    .await;
+
+    let reachable = read_concept_ids(
+        &db,
+        r#"match
+             $c1 isa concept, has concept-id "br2/c1";
+             let $m in blast-radius($c1);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        reachable,
+        vec!["br2/B".to_string(), "br2/D".to_string()],
+        "b1 blast-radius(C1) must sweep B (direct) AND D (recursion via the scoped belief); got {reachable:?}"
+    );
 }
 
 /// **P-BR-3 (C3-b2)** — the companion `cohort-blast-radius($member: concept)` returns
