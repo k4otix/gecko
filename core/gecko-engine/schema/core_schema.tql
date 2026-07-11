@@ -20,36 +20,36 @@ define
 
   # ── Abstract base types (design §4.1) ───────────────────────
   # Extensions inherit from these via `sub` to add domain-specific types.
-  entity okf-concept @abstract,
+  entity okf-concept @abstract @doc("Abstract base for every ingested OKF concept; carries the path-based concept-id key inherited by all concept subtypes."),
     owns concept-id @key,
     owns title @card(0..1),
     owns timestamp @card(0..1);
 
-  relation okf-link @abstract,
-    relates source,
-    relates target;
+  relation okf-link @abstract @doc("Abstract base for a directed link between two OKF concepts."),
+    relates source @doc("The concept the link originates from."),
+    relates target @doc("The concept the link points to.");
 
   # ── Relation types ───────────────────────────────────────────
-  relation containment,
-    relates container,
-    relates member;
+  relation containment @doc("Groups the concepts of a bundle under the bundle that owns them."),
+    relates container @doc("The bundle that contains the members."),
+    relates member @doc("A concept belonging to the containing bundle.");
 
-  relation hierarchy,
-    relates parent,
-    relates child;
+  relation hierarchy @doc("Structural parent/child nesting between two concepts."),
+    relates parent @doc("The enclosing concept."),
+    relates child @doc("The nested concept.");
 
-  relation concept-link sub okf-link,
+  relation concept-link sub okf-link @doc("A concept-to-concept reference (a markdown link between documents), with optional display text."),
     owns link-text @card(0..1);
 
-  relation citation sub okf-link,
-    relates citing-concept as source,
-    relates cited-resource as target,
+  relation citation sub okf-link @doc("A concept's citation of an external resource, resolved from a markdown link to an absolute URL."),
+    relates citing-concept as source @doc("The concept making the citation."),
+    relates cited-resource as target @doc("The external resource being cited."),
     owns link-text @card(0..1);
 
   # ── Concrete operational types ──────────────────────────────
   # Single-bundle-scoped: one bundle per database, keyed on its declared name
   # (from bundle.json). bundle-path is machine-local provenance, not identity.
-  entity bundle,
+  entity bundle @doc("The single OKF documentation bundle ingested into this database, keyed by its declared name; bundle-path is machine-local provenance, not identity."),
     owns bundle-name @key,
     owns bundle-path @card(0..1),
     owns title @card(0..1),
@@ -60,7 +60,7 @@ define
   attribute engine value string;           # execution engine for code-blocks
   attribute scope value string;            # granted host-capability scope, e.g. "cyber-gecko:isolate"
 
-  entity concept sub okf-concept,
+  entity concept sub okf-concept @doc("An ingested OKF document node: its markdown body, extracted code blocks, tags, and the engine and host-capability scopes that gate code-block execution."),
     owns concept-type @card(0..1),
     owns description @card(0..1),
     owns resource-uri @card(0..1),
@@ -79,6 +79,6 @@ define
     plays okf-link:target,
     plays citation:citing-concept;
 
-  entity external-resource,
+  entity external-resource @doc("An external citation target addressed by absolute URL; the cited endpoint of a citation."),
     owns target-url @key,
     plays citation:cited-resource;

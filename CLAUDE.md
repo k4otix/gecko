@@ -83,3 +83,5 @@ Hold new code to these — they encode recurring pitfalls specific to this codeb
 **Observability tells the truth.** Idempotent syncs use `not { … }` guards, so counts are *attempted*, not *created* (`SyncResult.links_attempted`/`citations_attempted`); don't relabel an attempt count as a mutation count. Stream loops (`while let Some(Ok(row)) = …`) must handle `Some(Err(e))` explicitly — silently ending on error truncates results or masks a real DB failure as "not found".
 
 **All TQL is parameterized** — values go through `Params`, never string interpolation (injection-safe). `tql.rs` owns the schema-specific query text.
+
+**Schema types self-document with `@doc`.** Every entity, relation, role, and function in a `.tql` schema carries a one-sentence, greenfield `@doc("…")` — these strings live in the graph and are read at runtime by clients/agents introspecting it. `@doc` is never inherited, so each subtype and `as`-renamed role needs its own. Placement and the parked `@meta` decision are in `extensions/README.md`.

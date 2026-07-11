@@ -15,12 +15,12 @@ define
   # unrecognized STIX type is ingested as a bare cyber-object. attack-id is
   # globally unique across ATT&CK (techniques T####, groups G####, software
   # S####, data sources DS####), so it keys the whole hierarchy.
-  entity cyber-object sub concept,
+  entity cyber-object sub concept @doc("Root of the cyber knowledge graph: any STIX/ATT&CK object, keyed by its globally-unique ATT&CK id and carrying its STIX id and revoked flag."),
       owns stix-id @card(0..1) @unique,
       owns attack-id @card(0..1) @unique,
       owns revoked @card(0..1);
 
-  entity attack-pattern sub cyber-object,
+  entity attack-pattern sub cyber-object @doc("An ATT&CK technique (STIX attack-pattern): an adversary behavior, with its platforms and kill-chain phases."),
       owns platform @card(0..),
       owns kill-chain-phase @card(0..),
       plays technique-detection:detected-technique,
@@ -29,129 +29,129 @@ define
       plays indicates:indicated,
       plays uses:used;
 
-  entity intrusion-set sub cyber-object,
+  entity intrusion-set sub cyber-object @doc("An ATT&CK group (STIX intrusion-set): a tracked set of adversary activity attributed to a common actor."),
       plays attributed-to:attributee,
       plays attributed-to:actor,
       plays indicates:indicated,
       plays uses:user,
       plays targets:threat-source;
 
-  entity threat-actor sub cyber-object,
+  entity threat-actor sub cyber-object @doc("A STIX threat-actor: an individual or organization believed to operate with malicious intent."),
       plays attributed-to:actor,
       plays indicates:indicated,
       plays uses:user,
       plays targets:threat-source;
 
-  entity campaign sub cyber-object,
+  entity campaign sub cyber-object @doc("A STIX campaign: a grouping of adversary behavior over a period against a set of targets."),
       plays attributed-to:attributee,
       plays indicates:indicated,
       plays uses:user,
       plays targets:threat-source;
 
-  entity malware sub cyber-object,
+  entity malware sub cyber-object @doc("An ATT&CK/STIX malware: malicious software used by adversaries, with the platforms it runs on."),
       owns platform @card(0..),
       plays uses:used,
       plays uses:user,
       plays mitigates:mitigated,
       plays indicates:indicated;
 
-  entity tool sub cyber-object,
+  entity tool sub cyber-object @doc("An ATT&CK/STIX tool: legitimate software that adversaries may repurpose, with the platforms it runs on."),
       owns platform @card(0..),
       plays uses:used,
       plays mitigates:mitigated,
       plays indicates:indicated;
 
-  entity indicator sub cyber-object,
+  entity indicator sub cyber-object @doc("A STIX indicator: a detection pattern (with an optional expiry) that signals suspected malicious activity when matched."),
       owns stix-pattern @card(0..1),
       owns valid-until @card(0..1),
       plays indicates:indicator-source,
       plays mitigates:mitigated,
       plays observed-as:pattern-indicator;
 
-  entity observable sub cyber-object,
+  entity observable sub cyber-object @doc("A STIX cyber-observable (SCO): a concrete artifact such as an IP, domain, URL, file hash, or email, normalized as a typed IOC value."),
       owns ioc-value @card(1),
       owns ioc-type @card(1),
       plays observed-as:observable-value,
       plays sighting-of:sighted-observable;
 
-  relation indicates,
-      relates indicator-source,
-      relates indicated;
+  relation indicates @doc("A STIX 'indicates' relationship: an indicator points to the adversary object it signals."),
+      relates indicator-source @doc("The indicator doing the signalling."),
+      relates indicated @doc("The adversary object the indicator points to.");
 
-  relation uses,
-      relates user,
-      relates used;
+  relation uses @doc("A STIX 'uses' relationship: an adversary employs a technique, malware, or tool."),
+      relates user @doc("The adversary object that does the using."),
+      relates used @doc("The technique, malware, or tool being used.");
 
-  relation attributed-to,
-      relates attributee,
-      relates actor;
+  relation attributed-to @doc("A STIX 'attributed-to' relationship: activity is attributed to an actor."),
+      relates attributee @doc("The activity (campaign or intrusion-set) being attributed."),
+      relates actor @doc("The actor the activity is attributed to.");
 
-  relation targets,
-      relates threat-source,
-      relates target;
+  relation targets @doc("A STIX 'targets' relationship: an adversary object aims at a target asset."),
+      relates threat-source @doc("The adversary object doing the targeting."),
+      relates target @doc("The asset being targeted.");
 
-  entity course-of-action sub cyber-object,
+  entity course-of-action sub cyber-object @doc("An ATT&CK mitigation (STIX course-of-action): a defensive measure that reduces a technique's effectiveness."),
       plays mitigates:mitigation;
 
-  relation mitigates,
-      relates mitigation,
-      relates mitigated;
+  relation mitigates @doc("A STIX 'mitigates' relationship: a course-of-action reduces the risk of an adversary object."),
+      relates mitigation @doc("The course-of-action providing the mitigation."),
+      relates mitigated @doc("The adversary object being mitigated.");
 
-  relation observed-as,
-      relates pattern-indicator,
-      relates observable-value;
+  relation observed-as @doc("Links an indicator's pattern to the concrete observable that instantiates it."),
+      relates pattern-indicator @doc("The indicator whose pattern was observed."),
+      relates observable-value @doc("The concrete observable matching the pattern.");
 
-  entity data-source sub cyber-object,
+  entity data-source sub cyber-object @doc("An ATT&CK data source: a category of telemetry (e.g. Process, Network Traffic) from which technique detection can draw evidence."),
       plays evidence-of:evidence-source,
       plays sensor-coverage:covered-source;
 
-  entity data-component sub cyber-object,
+  entity data-component sub cyber-object @doc("An ATT&CK data component: a specific facet of a data source (e.g. Process Creation) that a technique's detection requires as evidence."),
       plays evidence-of:evidence-component,
       plays requires-evidence:required,
       plays sensor-coverage:covered-component;
 
-  relation evidence-of,
-      relates evidence-component,
-      relates evidence-source;
+  relation evidence-of @doc("Ties a data component to the data source it is a facet of."),
+      relates evidence-component @doc("The data component (the specific facet)."),
+      relates evidence-source @doc("The data source the component belongs to.");
 
-  relation requires-evidence,
-      relates technique,
-      relates required;
+  relation requires-evidence @doc("Records that detecting a technique requires a given data component as evidence."),
+      relates technique @doc("The technique whose detection needs the evidence."),
+      relates required @doc("The data component required to detect it.");
 
   attribute hostname value string;
   attribute environment value string @values("prod", "staging", "dev", "test");
   attribute exposure value string @values("internet-facing", "internal", "isolated");
   attribute sensor-kind value string;
 
-  entity host-asset sub cyber-object,
+  entity host-asset sub cyber-object @doc("A defended host in the environment, with its hostname, deployment environment, and network exposure; the asset an adversary may target."),
       owns hostname @card(0..1),
       owns environment @card(0..1),
       owns exposure @card(0..1),
       plays targets:target;
 
-  entity sensor sub cyber-object,
+  entity sensor sub cyber-object @doc("A deployed telemetry sensor whose coverage of data sources and components determines what detection evidence is available."),
       owns sensor-kind @card(0..1),
       plays sensor-coverage:covering-sensor;
 
-  relation sensor-coverage,
-      relates covering-sensor,
-      relates covered-source,
-      relates covered-component @card(0..),
-      relates coverage-scope @card(0..1);
+  relation sensor-coverage @doc("Records that a sensor covers a data source (and optionally specific components), optionally scoped to a population of assets."),
+      relates covering-sensor @doc("The sensor providing the coverage."),
+      relates covered-source @doc("The data source the sensor covers."),
+      relates covered-component @card(0..) @doc("A specific data component the sensor covers."),
+      relates coverage-scope @card(0..1) @doc("The population of assets the coverage is scoped to.");
   population plays sensor-coverage:coverage-scope;
 
-  entity sighting sub execution-episode,
+  entity sighting sub execution-episode @doc("An episodic observation that a given IOC was seen; a concrete sighting of an observable."),
       owns ioc-value @card(0..1),
       plays sighting-of:sighting-instance;
 
-  relation sighting-of,
-      relates sighting-instance,
-      relates sighted-observable;
+  relation sighting-of @doc("Ties a sighting episode to the observable that was sighted."),
+      relates sighting-instance @doc("The sighting episode."),
+      relates sighted-observable @doc("The observable that was sighted.");
 
-  relation technique-detection,
-      relates detecting-logic,
-      relates detected-technique,
-      relates detection-claim;
+  relation technique-detection @doc("Asserts, via a mem belief, that a piece of detecting logic covers an ATT&CK technique; the join the coverage-gap functions read."),
+      relates detecting-logic @doc("The concept holding the detection logic."),
+      relates detected-technique @doc("The ATT&CK technique the logic detects."),
+      relates detection-claim @doc("The mem belief carrying and provenancing the detection claim.");
   concept plays technique-detection:detecting-logic;
   belief plays technique-detection:detection-claim;
 
@@ -160,9 +160,9 @@ define
   # over a time window (the belief supplies the timestamp).
   attribute detection-verdict value string @values("true-positive", "false-positive", "benign-true");
 
-  relation alert-disposition,
+  relation alert-disposition @doc("An analyst's verdict on an alert: the detecting logic being judged and the mem belief carrying the judgment; counted by the precision function over a time window."),
       owns detection-verdict @card(1),
-      relates dispositioned-logic,
-      relates disposition-belief;
+      relates dispositioned-logic @doc("The detecting logic whose alert is being dispositioned."),
+      relates disposition-belief @doc("The mem belief carrying the disposition verdict and its timestamp.");
   concept plays alert-disposition:dispositioned-logic;
   belief plays alert-disposition:disposition-belief;

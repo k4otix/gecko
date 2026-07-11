@@ -3,7 +3,7 @@
 # declared there (and the core mem `belief`/`belief-state`).
 
 # techniques with NO asserted detection claim — the coverage gap list
-fun undetected-techniques() -> { attack-pattern }:
+fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: ATT&CK techniques with no asserted detection claim against them."):
     match
         $t isa attack-pattern;
         not { (detected-technique: $t, detection-claim: $b) isa technique-detection;
@@ -11,7 +11,7 @@ fun undetected-techniques() -> { attack-pattern }:
     return { $t };
 
 # detections whose required evidence has NO covering sensor — blinded logic
-fun blinded-detections() -> { concept }:
+fun blinded-detections() -> { concept } @doc("Detecting logic that is blinded: its technique's required evidence has no covering sensor, so the asserted detection cannot actually fire."):
     match
         (detecting-logic: $d, detected-technique: $t, detection-claim: $b) isa technique-detection;
         $b has belief-state "asserted";
