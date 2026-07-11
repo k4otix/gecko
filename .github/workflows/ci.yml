@@ -173,3 +173,27 @@ jobs:
             exit 1
           fi
           echo "OK: no model cache directory materialized."
+
+  # Compile-checks the candle-backed real-embedder surface, which the candle-free
+  # build-and-test job never builds. Without this, a dependency bump that only
+  # affects the `real-embedder` path (candle, tokenizers) would pass CI green
+  # having compiled none of it. This is a `cargo check` (no run, no TypeDB, and no
+  # model download — the model is a runtime asset), so it stays fast.
+  real-embedder-check:
+    name: Compile check (real-embedder, candle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: real-embedder
+
+      - name: cargo check (real-embedder)
+        run: cargo check --workspace --exclude js-sandbox --features real-embedder --locked
