@@ -206,14 +206,15 @@ mod tests {
     #[test]
     fn test_schema_contains_key_functions() {
         let schema: &str = &MEM_SCHEMA;
-        // Substrate functions by signature (load-bearing surface).
-        assert!(schema.contains("fun is-superseded($b: memory-item) -> boolean:"));
-        assert!(schema.contains("fun believed-at($t: datetime) -> { belief }:"));
-        assert!(schema.contains("fun derivation-chain($b: memory-item) -> { memory-item }:"));
-        assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }:"));
+        // Substrate functions by signature (load-bearing surface). Matched through
+        // the return type only, so an appended `@doc("…")` before the `:` is fine.
+        assert!(schema.contains("fun is-superseded($b: memory-item) -> boolean"));
+        assert!(schema.contains("fun believed-at($t: datetime) -> { belief }"));
+        assert!(schema.contains("fun derivation-chain($b: memory-item) -> { memory-item }"));
+        assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }"));
         // Population / resolution functions.
-        assert!(schema.contains("fun population-members($pop: population) -> { concept }:"));
-        assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }:"));
+        assert!(schema.contains("fun population-members($pop: population) -> { concept }"));
+        assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }"));
     }
 
     #[test]
