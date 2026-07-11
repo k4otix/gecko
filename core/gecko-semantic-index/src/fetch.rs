@@ -237,7 +237,9 @@ fn download_file(url: &str, dest: &Path) -> Result<()> {
         .with_context(|| format!("HTTP GET failed for {url}"))?;
 
     let total: u64 = resp
-        .header("Content-Length")
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
@@ -263,7 +265,7 @@ fn download_file(url: &str, dest: &Path) -> Result<()> {
         let file = std::fs::File::create(&tmp)
             .with_context(|| format!("cannot create {}", tmp.display()))?;
         let mut writer = pb.wrap_write(std::io::BufWriter::new(file));
-        let mut reader = resp.into_reader();
+        let mut reader = resp.into_body().into_reader();
         std::io::copy(&mut reader, &mut writer)
             .with_context(|| format!("stream copy failed for {url}"))?;
         Ok(())

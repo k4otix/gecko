@@ -51,10 +51,10 @@ uuid = { workspace = true, features = ["v4"] }
 # TypeDB orchestration (`orchestrator` module, plan P3): download + extract the
 # pinned server dist and manage it as a child process. Kept light — a blocking
 # HTTP client (matches gecko-semantic-index) + archive extraction + POSIX signals.
-ureq = "2"
+ureq = "3"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
