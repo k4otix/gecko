@@ -263,19 +263,20 @@ its check.
 
 ### To SPEC-W5 (the monopoly harness)
 
-`docs/refactor/SPEC-W5.md` does not exist yet at the time of writing this
-contract (it is sequenced to be **ratified after W2+W3**, per the
-spec-production plan). This is expected — the dependency is flagged here, not
-resolved by borrowing its content.
+`docs/refactor/SPEC-W5.md` is drafted on this branch (sequenced to be
+**ratified after W2+W3**, per the spec-production plan), so this contract's
+forward-references now resolve into existing text rather than a guess.
 
-`docs/refactor/SPEC-W2-W3.md` (already drafted) forward-cites the same not-yet-written
-document at **§3.6**: "§2.2's co-mint procedural residue and §3.5's writer
-allowlist are *enforced* by **SPEC-W5 §3.2** / W5a-W5b; SPEC-W2-W3 only states
-the obligations." This contract makes the identical forward-reference for the
-same reason: **SPEC-W5 §3.2** is where the daemon's writes must be folded into
-W5a's asserted belief-tier population once SPEC-W5 lands. Re-confirm this
-anchor when SPEC-W5 is actually drafted — §3.2 is a forward-guess inherited
-from SPEC-W2-W3, not a citation into existing text.
+`docs/refactor/SPEC-W2-W3.md` §3.6 hands the same obligations onward: "§2.2's
+co-mint procedural residue and §3.5's writer allowlist are *enforced* by
+**SPEC-W5 §3.2** / W5a-W5b; SPEC-W2-W3 only states the obligations." SPEC-W5 §3.2
+now confirms that ownership — the `BeliefEdgeDecl` seam is the sanctioned
+relation-writer the daemon's belief-edge and lifecycle writes must go
+**through**, and SPEC-W5 §3.4 reciprocates by folding daemon runs into the W5a
+monopoly harness. The *binding* of the daemon as just-another-belief-writer is
+W5a's monopoly enumeration (SPEC-W5 §2.2's dynamic half), which counts every
+belief-tier write against `MemWriter`; §3.2 is the seam those writes travel, not
+the enumerator.
 
 When implemented, the daemon "joins the monopoly harness" in exactly the sense
 any other belief-writer does: the fix for the Headline's finding is one

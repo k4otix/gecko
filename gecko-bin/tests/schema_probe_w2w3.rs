@@ -27,6 +27,13 @@
 //!     -- --ignored --test-threads=1
 //! ```
 //!
+//! Schema note: on `conflict_resolution` the mem schema is UNFOLDED, so only the
+//! T2/T5 baselines, the Mode-A delta probes, and `p_w5_1` (which toggles W2 via a
+//! delta on the unfolded base) pass here. The Mode-B probes — `p_comp`, `p_redef`,
+//! and the as-of probes (`p_pm_3`, `p_ce_1`, `p_t5_fix`, `p_br_6`) — assume the
+//! folded schema that lives on `probe/w2w3-schema`, and fail against this branch's
+//! unfolded schema by design; they graduate once the W2/W3 fold lands post-ratification.
+//!
 //! Gated on `cyber` (the rig composes the cyber schema) and needs the multi-thread
 //! runtime the TypeDB driver expects.
 #![cfg(feature = "cyber")]
