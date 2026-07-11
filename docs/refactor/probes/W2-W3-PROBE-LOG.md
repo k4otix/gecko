@@ -407,3 +407,119 @@ spec author; probed separately here per R9 fidelity.
 5. **W3 requires `redefine fun` for b1/b3.** P-BR-5 proves the mechanism at the schema-tx
    level (body replaced, in force). The production define-path migration posture is owed to
    the later P-REDEF probe / SPEC-W2-W3 §1.4.
+
+---
+
+# Mode B — the folded shipped shape (P-COMP + P-REDEF)
+
+Step 3 of Task 2: the DECIDED winners are folded into the actual mem-gecko schema
+source (`core/mem-gecko/schema/mem_types.tql` / `mem_functions.tql`, on the probe
+branch only), then the merged shipped shape is proven define-clean (P-COMP) and the
+migration posture is settled (P-REDEF), with the entire probe suite green. A spec is
+not ratifiable until Mode B is green.
+
+## What was folded (and where)
+
+Into **`mem_types.tql`**:
+- **C1** (verbatim, each type/role with its greenfield `@doc`): `entity
+  divergence-exception sub belief`; the 4-role `relation divergence-precedence`
+  (`exception-belief @card(1)`, `prevailing`, `overridden`, `exception-scope @card(0..1)`);
+  and the `plays` wiring (`divergence-exception plays …:exception-belief`; `belief plays
+  …:prevailing` / `:overridden`; `concept plays …:exception-scope`). Added as its own
+  "Divergence resolution" section after the resolution/resolves block.
+- **population-member window**: `owns valid-from @card(0..1), owns valid-to @card(0..1)`
+  added to the existing `population-member` relation (alongside `computed-at`).
+
+Into **`mem_functions.tql`**:
+- **b1 blast-radius**: the current `blast-radius` body REPLACED with b1 — param widened
+  `memory-item` → `okf-concept` and a `population-member`→`scoped` branch added to BOTH the
+  base disjunction AND the recursion branch. `@doc` kept and made accurate for the new
+  cohort branch; the `# 7 —` header updated to name the added traversal.
+- **as-of-t variants ADDED**: `population-members-at($pop, $t)` and the recursive
+  `canonical-entity-at($rec, $t)` (per-branch validity-window predicates). The present-state
+  `population-members` / `canonical-entity` were KEPT as the §3.1 present-state fast path.
+
+**Not folded** (per the coordinator decision): C2 `out-entrenches` (scaffolding, §2.3 — no
+persisted fn consumes it), b2 `cohort-blast-radius` (b1 is the §3.4 winner), b3 (a
+probe-only alternative; the `resolves` branch is a closure-task decision).
+
+The strip-`define` assembly (`core/mem-gecko/src/lib.rs:32-38`) is intact: the fold added
+no second `define` keyword; the mem-gecko unit tests (`test_schema_is_single_define_block`
+and the key-function/hierarchy checks — the last updated for the widened `blast-radius`
+signature and the two new as-of fns) stay green (19 passed).
+
+## Verdict summary (23/23 — full suite green)
+
+| Probe | Delta | Expected | Observed | Verdict |
+|---|---|---|---|---|
+| P-COMP | Mode B (no delta) | pass — composition define-clean; shipped shape delivers | core→folded-mem→cyber applies clean; `blast-radius(member)`→{B}; `believed-at(t₀)`∥`population-members-at(P,t₀)` agree; `divergence-exception` inserts + is a live `contradiction:claim` | **CONFIRMED** |
+| P-REDEF | Mode B (production `define` path) | open — decides §1.4 | `define` of an existing fun (changed OR identical body) refused with **`[FUN5]` already exists**; the pre-existing body stays in force | **RESOLVED — `redefine` required; bare re-`define` is a hard error** |
+
+Full run: **23 passed; 0 failed** (2 baselines + 8 W2 + 11 W3 + P-COMP + P-REDEF),
+`--no-default-features --features cyber -- --ignored --test-threads=1`.
+
+The two Task-0 baselines stay green post-fold, as expected: **P-BASE-T2** drives
+`blast-radius` from a non-member belief (b1's population branch never fires — the retractee
+is not a `population-member:member`, so the set is still `{D}`), and **P-BASE-T5** tests the
+unchanged present-state `population-members`. Neither was modified.
+
+## §1.4 migration posture — DECIDED by P-REDEF
+
+**Verdict: a persisted function is `[FUN5]`-immutable under `define`.** Re-applying a
+function definition through the production `define` path (`apply_all_schemas` →
+`apply_schema` → one `define` schema tx) on a DB where the function already exists is
+**refused outright** — for a CHANGED body and for a byte-IDENTICAL one alike. Verbatim:
+
+```
+[FUN5] A function with name 'blast-radius' already exists
+Caused: [DEX30] An error occurred by defining the function
+Caused: [QEX2] Failed to execute define query.
+Caused: [TSV10] Aborting transaction due to failed schema query.
+```
+
+(and the identical form for `population-members-at`). The pre-existing body is untouched
+by the failed tx (`blast-radius(A)` still `{redef/M}` after rejection — no silent
+old-body-kept-Ok, no accept-and-replace). Consequences for §1.4:
+- **Types/owns/relations vs functions diverge.** `define` of an identical entity / `owns` /
+  relation is an idempotent no-op (P-PREC-1..5, P-PM-1/2 re-apply C1 and the window as
+  deltas on the folded schema and pass). `define` of an *existing function* is NOT
+  idempotent — it is a hard `[FUN5]`.
+- **First-ever mutation of a shipped persisted function requires `redefine fun`** (or a
+  fresh database), never a bare re-`define`. `apply_all_schemas` as written would `[FUN5]`
+  on re-init of an existing DB if a shipped fn's body changed. SPEC-W2-W3 §1.4 must state
+  this and owe the migration mechanism (a `redefine`-emitting path, or documented drop/
+  recreate) to the implementation task; W3's b1 `blast-radius` body-change is precisely
+  such a first-ever mutation (P-BR-5 proves `redefine fun` is the working mechanism).
+
+## The fold-vs-delta interaction (how it was resolved)
+
+After the fold, `apply_composed_schema` already contains every folded construct; the
+existing Mode-A probes then `apply_delta(...)` the same candidates on top. Observed:
+- **Idempotent (no change needed):** re-`define` of the identical C1 types + `plays`
+  (P-PREC-1..5) and the identical `population-member` window `owns` (P-PM-1/2) are no-ops;
+  `redefine fun blast-radius` to the identical folded b1 (P-BR-1/2) and to b2/b3 in an
+  isolated throwaway DB (P-BR-3/4/5) all pass unchanged.
+- **The crux — 4 probes collided:** `apply_delta(w3_asof_functions.tql)` = `define fun
+  population-members-at` / `canonical-entity-at`, now already folded ⇒ `[FUN5] already
+  exists` (P-BR-6, P-PM-3, P-CE-1, P-T5-FIX failed on first Mode-B run — verbatim above).
+- **Resolution (no probe weakened):** those four now rely on the composed (shipped) schema
+  for the as-of functions — the redundant folded delta is dropped, and each probe exercises
+  the SHIPPED `population-members-at` / `canonical-entity-at` directly (strictly stronger for
+  Mode B). Every behavioral assertion is byte-identical to Mode A; only the redundant
+  self-collision was removed. b2 (`cohort-blast-radius`, deliberately unfolded) stays a real
+  delta in P-BR-6. The `[FUN5]`-on-identical-`define` finding itself is now pinned in the
+  committed suite by P-REDEF's second assertion (re-applying the folded `w3_asof_functions.tql`
+  verbatim ⇒ `[FUN5]`), so the crux is documented empirically, not just narratively.
+
+## Notes carried to the spec (Mode B)
+
+1. **P-COMP is the ratifiability gate.** The merged shipped shape composes define-clean
+   through the real strip-`define` assembly (core → folded-mem → cyber) and delivers all
+   three acceptance shapes (T2 cohort blast, T5 as-of agreement, W2 reified-exception
+   contradiction claim) from the shipped functions/types with NO delta.
+2. **§1.4:** persisted functions are `[FUN5]`-immutable under `define`; ship a `redefine`
+   migration path. Types remain `define`-idempotent — the two are not the same mechanism.
+3. **b1 backward-compat holds in production.** The writer binds `$r isa memory-item` before
+   `blast-radius($r)` (`writer.rs:947`); `memory-item ⊂ okf-concept`, so the widened param
+   needs no Rust call-site change. The mem-gecko unit test asserting the fn signature was
+   updated to the widened `okf-concept` param + the two new as-of fns.

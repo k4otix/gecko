@@ -1253,15 +1253,13 @@ async fn p_br_5_redefine_blast_radius_accepted() {
 async fn p_br_6_windowed_blast_propagation_seam() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
+    // The population-member window and the as-of-t functions are FOLDED into the shipped
+    // mem schema (Mode B): `apply_composed_schema` already provides them, so re-applying
+    // them as a delta would be refused ([FUN5] already-exists — see P-REDEF). Only b2
+    // (cohort-blast-radius) stays a genuine delta — it is deliberately NOT folded.
     apply_delta(&db, W3_BLAST_B2)
         .await
         .expect("b2 companion defines");
-    apply_delta(&db, W3_POPULATION_WINDOW)
-        .await
-        .expect("population-member window defines");
-    apply_delta(&db, W3_ASOF_FUNCTIONS)
-        .await
-        .expect("as-of-t functions define");
 
     // C1 was a member of P only during [2026-01-01, 2026-04-01); B is scoped to P.
     insert(
@@ -1446,13 +1444,11 @@ async fn p_pm_2_two_windowed_epochs_coexist() {
 #[ignore = "W3 as-of-t probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_pm_3_population_members_at_consumes_time() {
     let db = TestDb::new("probe_w2w3");
+    // The population-member window and the as-of-t functions (C4a + C4b) are FOLDED into
+    // the shipped mem schema (Mode B); `apply_composed_schema` provides them, so this
+    // probe exercises the SHIPPED `population-members-at` directly — re-applying the
+    // folded delta would be refused ([FUN5] already-exists; see P-REDEF).
     apply_composed_schema(&db).await;
-    apply_delta(&db, W3_POPULATION_WINDOW)
-        .await
-        .expect("population-member window defines");
-    apply_delta(&db, W3_ASOF_FUNCTIONS)
-        .await
-        .expect("candidate C4b (as-of-t functions) applies clean as a delta");
 
     insert(
         &db,
@@ -1509,13 +1505,10 @@ async fn p_pm_3_population_members_at_consumes_time() {
 #[ignore = "W3 as-of-t probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_ce_1_canonical_entity_at_epoch_closure() {
     let db = TestDb::new("probe_w2w3");
+    // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
+    // as-of-t functions, so this probe reads the SHIPPED `canonical-entity-at` — the
+    // folded delta cannot be re-applied ([FUN5] already-exists; see P-REDEF).
     apply_composed_schema(&db).await;
-    apply_delta(&db, W3_POPULATION_WINDOW)
-        .await
-        .expect("population-member window defines");
-    apply_delta(&db, W3_ASOF_FUNCTIONS)
-        .await
-        .expect("as-of-t functions define");
 
     // Two epochs of provable identity: RES1(C1,C2) from t0; RES2(C2,C3) from t2.
     insert(
@@ -1589,13 +1582,10 @@ async fn p_ce_1_canonical_entity_at_epoch_closure() {
 #[ignore = "W3 as-of-t acceptance probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_t5_fix_believed_at_and_members_at_agree() {
     let db = TestDb::new("probe_w2w3");
+    // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
+    // as-of-t functions, so the acceptance shape is proven against the SHIPPED schema
+    // with no delta — the folded delta cannot be re-applied ([FUN5]; see P-REDEF).
     apply_composed_schema(&db).await;
-    apply_delta(&db, W3_POPULATION_WINDOW)
-        .await
-        .expect("population-member window defines");
-    apply_delta(&db, W3_ASOF_FUNCTIONS)
-        .await
-        .expect("as-of-t functions define");
 
     // B scoped to P, valid from t0. C1 a member from t0; C2 joined at today.
     insert(
@@ -1660,5 +1650,260 @@ async fn p_t5_fix_believed_at_and_members_at_agree() {
         members_now,
         vec!["t5fix/c1".to_string(), "t5fix/c2".to_string()],
         "population-members-at(P, today) must return the full cohort {{C1, C2}}; got {members_now:?}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Mode B — the folded shipped shape: composition (P-COMP) + migration posture (P-REDEF)
+//
+// After the Mode-B fold, `apply_composed_schema` reads the mem schema files that now
+// ALREADY carry the winning candidates (divergence-exception + divergence-precedence,
+// the population-member window, the b1 blast-radius body, and the as-of-t functions).
+// These two probes validate the SHIPPED shape directly — no Mode-A delta on top.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A blast-radius body that changed from the folded (b1) one: the derivation branch
+/// ONLY (no rests-on branch, no population branch, no recursion). Applied through the
+/// production `define` path (`apply_schema`) to probe the migration posture — if it
+/// takes effect, `blast-radius` over a rests-on fixture returns empty; if the folded
+/// body stays, it returns the resting item.
+const REDEF_CHANGED_BLAST: &str = r#"define
+  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Changed body (derivation branch only) — P-REDEF migration probe."):
+      match
+          (source: $r, derived: $m) isa derivation;
+      return { $m };
+"#;
+
+/// **P-REDEF** — the §1.4 migration posture: what the production `define` path does when
+/// a persisted function's body changes on a DB where it already exists.
+///
+/// From the FOLDED composed schema (`blast-radius` is already the b1 body), re-apply a
+/// CHANGED `blast-radius` body through `apply_schema` — a plain `define fun`, exactly as
+/// `apply_all_schemas` re-runs the shipped schema on an existing database. The observed
+/// outcome (error → `redefine` required / silent old body / accept-and-replace) is the
+/// evidence SPEC-W2-W3 §1.4 must state. The verbatim result is printed for the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Mode-B migration-posture probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_redef_define_path_migration_posture() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+
+    // Production define path: re-apply the CHANGED body as its own schema transaction.
+    let define_result = apply_delta(&db, REDEF_CHANGED_BLAST).await;
+    eprintln!("P-REDEF: production `define` of an already-defined fun -> {define_result:?}");
+
+    // A rests-on-only fixture: the folded b1 body reaches M (rests-on branch); the
+    // changed derivation-only body would NOT (M rests on A, no derivation edge).
+    insert(
+        &db,
+        r#"insert
+             $a isa belief, has concept-id "redef/A", has belief-state "asserted";
+             $m isa belief, has concept-id "redef/M", has belief-state "asserted";
+             rests-on (resting: $m, assumption: $a);"#,
+    )
+    .await;
+
+    let reachable = read_concept_ids(
+        &db,
+        r#"match
+             $a isa belief, has concept-id "redef/A";
+             let $x in blast-radius($a);
+             $x has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    eprintln!("P-REDEF: blast-radius(A) after the define attempt = {reachable:?}");
+
+    match define_result {
+        Err(e) => {
+            // The production `define` path REJECTS a changed body on an existing fun —
+            // the migration posture is: mutating a shipped fun needs `redefine` (or a
+            // fresh DB), never a bare re-`define`. Pin that this is a schema error.
+            let msg = format!("{e:?}");
+            eprintln!("P-REDEF: define REJECTED, verbatim = {msg}");
+            // Pin the SPECIFIC already-defined-function rejection, not any schema error:
+            // the migration posture rests on `define`-of-existing being refused outright.
+            assert!(
+                matches!(e, DbError::Schema(_))
+                    && (msg.contains("FUN5") || msg.contains("already exists")),
+                "a re-define of an existing fun must be refused with [FUN5]/'already exists'; got {msg}"
+            );
+            // The pre-existing (folded b1) body is untouched: it still reaches M via rests-on.
+            assert_eq!(
+                reachable,
+                vec!["redef/M".to_string()],
+                "after a rejected re-define the folded b1 body must remain in force (reaches M via rests-on); got {reachable:?}"
+            );
+        }
+        Ok(()) => {
+            // The production `define` path accepted the re-define. Distinguish
+            // accept-and-replace (changed body in force: empty) from silent-old-body
+            // (folded body in force: {M}). Either way, record which for §1.4.
+            if reachable.is_empty() {
+                eprintln!(
+                    "P-REDEF: define ACCEPTED and REPLACED — changed body in force (empty result)."
+                );
+            } else {
+                eprintln!(
+                    "P-REDEF: define ACCEPTED but SILENTLY kept the old body — blast-radius(A) = {reachable:?}"
+                );
+            }
+            panic!(
+                "P-REDEF observed the production `define` path ACCEPT a re-define \
+                 (result Ok); expected a rejection requiring `redefine`. reachable={reachable:?}"
+            );
+        }
+    }
+
+    // The fold-vs-delta crux: TypeDB does NOT treat `define fun` as idempotent the way it
+    // treats types/owns/relations. Re-applying the folded as-of functions VERBATIM (byte
+    // -identical to what the shipped schema already defines) is STILL refused with [FUN5]
+    // — which is exactly why the now-folded Mode-A as-of probes must read the composed
+    // schema instead of re-applying their delta.
+    let identical = apply_delta(&db, W3_ASOF_FUNCTIONS).await;
+    let msg2 = format!("{identical:?}");
+    eprintln!("P-REDEF: identical re-define of the folded as-of functions -> {msg2}");
+    assert!(
+        matches!(identical, Err(DbError::Schema(_)))
+            && (msg2.contains("FUN5") || msg2.contains("already exists")),
+        "an identical re-define of an existing fun must ALSO be refused with [FUN5]/'already exists' \
+         (define-of-existing-fun is not idempotent); got {msg2}"
+    );
+}
+
+/// **P-COMP** — the full core → folded-mem → cyber composition is define-clean, and the
+/// SHIPPED (folded) schema delivers the W2/W3 acceptance behavior with NO Mode-A delta.
+///
+/// `apply_composed_schema` applies core, then the folded mem substrate (strip-`define`
+/// assembly intact), then cyber, each `.expect`-ing a clean apply — a define collision
+/// would panic there. On the composed schema, with no delta, the three acceptance
+/// shapes hold from the shipped functions/types alone:
+///   (a) `blast-radius(<member concept>)` sweeps the cohort belief (T2 fix, b1 folded);
+///   (b) `believed-at(t)` and `population-members-at(P, t)` agree as-of-t (T5 fix);
+///   (c) a `divergence-exception` inserts and can be a `contradiction:claim` (W2, C1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Mode-B composition probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+async fn p_comp_folded_schema_define_clean_and_delivers() {
+    let db = TestDb::new("probe_w2w3");
+    // Define-clean: each of core/mem/cyber `.expect`s a clean apply inside this helper;
+    // a folded-in define collision (or a broken strip-define assembly) panics here.
+    apply_composed_schema(&db).await;
+
+    // (a) T2 fix from the SHIPPED b1 body: blast-radius(member concept) sweeps the cohort
+    //     belief with no delta. Population Pa, member Ca1, belief Ba scoped to Pa.
+    insert(
+        &db,
+        r#"insert
+             $pa isa population, has spec-hash "comp/pop/A";
+             $ca1 isa concept, has concept-id "comp/a/c1";
+             $ba isa belief, has concept-id "comp/a/B", has belief-state "asserted";
+             scoped (scoped-belief: $ba, population: $pa);
+             population-member (owning-population: $pa, member: $ca1);"#,
+    )
+    .await;
+    let cohort_blast = read_concept_ids(
+        &db,
+        r#"match
+             $ca1 isa concept, has concept-id "comp/a/c1";
+             let $m in blast-radius($ca1);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        cohort_blast,
+        vec!["comp/a/B".to_string()],
+        "(a) shipped blast-radius(member) must sweep the cohort belief; got {cohort_blast:?}"
+    );
+
+    // (b) T5 fix from the SHIPPED window + as-of-t fn: believed-at(t0) and
+    //     population-members-at(Pb, t0) agree. Belief Bb scoped to Pb valid-from t0
+    //     (the ONLY belief with a valid-from, so believed-at(t0) = {Bb}); member Cb1
+    //     from t0, Cb2 from today.
+    insert(
+        &db,
+        r#"insert
+             $pb isa population, has spec-hash "comp/pop/B";
+             $bb isa belief, has concept-id "comp/b/B", has belief-state "asserted",
+                 has valid-from 2026-01-01T00:00:00;
+             $cb1 isa concept, has concept-id "comp/b/c1";
+             $cb2 isa concept, has concept-id "comp/b/c2";
+             scoped (scoped-belief: $bb, population: $pb);
+             population-member (owning-population: $pb, member: $cb1),
+                 has valid-from 2026-01-01T00:00:00;
+             population-member (owning-population: $pb, member: $cb2),
+                 has valid-from 2026-07-11T00:00:00;"#,
+    )
+    .await;
+    let believed = read_concept_ids(
+        &db,
+        r#"match
+             let $bel in believed-at(2026-01-01T00:00:00);
+             $bel has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        believed,
+        vec!["comp/b/B".to_string()],
+        "(b) believed-at(t0) must return Bb only; got {believed:?}"
+    );
+    let members_t0 = read_concept_ids(
+        &db,
+        r#"match
+             $pb isa population, has spec-hash "comp/pop/B";
+             let $m in population-members-at($pb, 2026-01-01T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        members_t0,
+        vec!["comp/b/c1".to_string()],
+        "(b) population-members-at(Pb, t0) must return the t0 cohort {{Cb1}}, agreeing with believed-at(t0); got {members_t0:?}"
+    );
+    let members_now = read_concept_ids(
+        &db,
+        r#"match
+             $pb isa population, has spec-hash "comp/pop/B";
+             let $m in population-members-at($pb, 2026-07-11T00:00:00);
+             $m has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        members_now,
+        vec!["comp/b/c1".to_string(), "comp/b/c2".to_string()],
+        "(b) population-members-at(Pb, today) must grow to {{Cb1, Cb2}} — the fix is time-varying; got {members_now:?}"
+    );
+
+    // (c) W2 from the SHIPPED C1 types: a divergence-exception inserts and plays
+    //     contradiction:claim (inherited via `sub belief`), and contradicts() holds.
+    insert(
+        &db,
+        r#"insert
+             $hub isa anomaly, has concept-id "comp/c/hub";
+             $bp isa belief, has concept-id "comp/c/BP", has belief-state "asserted";
+             $bi isa belief, has concept-id "comp/c/BI", has belief-state "asserted";
+             $e isa divergence-exception, has concept-id "comp/c/E",
+                 has belief-state "asserted", has entrenchment "tool-derived";
+             divergence-precedence (exception-belief: $e, prevailing: $bi, overridden: $bp);
+             contradiction (hub: $hub, claim: $bp, claim: $e);"#,
+    )
+    .await;
+    let contradicting = read_concept_ids(
+        &db,
+        r#"match
+             $e isa belief, has concept-id "comp/c/E";
+             $bp isa belief, has concept-id "comp/c/BP";
+             true == contradicts($e, $bp);
+             $e has concept-id $cid;
+           select $cid;"#,
+    )
+    .await;
+    assert_eq!(
+        contradicting,
+        vec!["comp/c/E".to_string()],
+        "(c) the shipped divergence-exception must be a live contradiction claim (contradicts(E,BP)=true); got {contradicting:?}"
     );
 }
