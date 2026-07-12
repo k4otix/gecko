@@ -13,19 +13,21 @@
 - **① W5b `BeliefEdgeDecl` seam** — unblocks every sanctioned belief-edge/relation write (cyber
   migration, the divergence-exception co-mint writer, all of W8's owed writer methods, the
   `sighting-of` writer, and W5a going green).
-- **② The W2/W3 schema fold** — the ratified constructs are probe-proven only on
-  `probe/w2w3-schema`; **unbuilt on `conflict_resolution`**. Folding them unblocks the W2/W3
-  writers, the disposition engine, and the windowed-blast fn.
+- **② The W2/W3 schema fold** — **✅ LANDED @`319f808`**. The C1 constructs, the
+  `population-member` window, b1 `blast-radius`, and the two as-of fns are folded onto
+  `conflict_resolution` byte-identical to the P-COMP-green shape (159 serviceless tests green;
+  live Tier-2 apply proven by P-COMP). This unblocks the W2/W3 writers (#8–#10), the disposition
+  engine (#10), and the windowed-blast fn (#6).
 
 ## Ledger A — constructs & methods (named, unbuilt)
 
 | # | Item | Owning doc | Type | Blocked on |
 |---|---|---|---|---|
 | 1 | `BeliefEdgeDecl` registry / sanctioned relation-writer seam | SPEC-W5 §3.2 | writer + registry | — (**keystone ①**) |
-| 2 | C1 divergence constructs (`divergence-exception` entity, `divergence-precedence` relation + 4 roles) | SPEC-W2-W3 §2.1/§2.2 | schema | fold ② (designed, on probe branch) |
-| 3 | `population-member` bitemporal window (`valid-from`/`valid-to`) | SPEC-W2-W3 §3.2 | schema | fold ② |
-| 4 | `blast-radius` b1 redefine (widened `okf-concept` param) | SPEC-W2-W3 §3.4 | fn (TQL) | §1.4 migration path (#11) |
-| 5 | `population-members-at` / `canonical-entity-at` as-of fns | SPEC-W2-W3 §3.3 | fn (TQL) | window (#3) |
+| 2 | C1 divergence constructs (`divergence-exception` entity, `divergence-precedence` relation + 4 roles) | SPEC-W2-W3 §2.1/§2.2 | schema | ✅ **LANDED** @`319f808` |
+| 3 | `population-member` bitemporal window (`valid-from`/`valid-to`) | SPEC-W2-W3 §3.2 | schema | ✅ **LANDED** @`319f808` |
+| 4 | `blast-radius` b1 redefine (widened `okf-concept` param) | SPEC-W2-W3 §3.4 | fn (TQL) | ✅ **LANDED** @`319f808` (fresh-init; #11 redefine still owed for already-initialized DBs) |
+| 5 | `population-members-at` / `canonical-entity-at` as-of fns | SPEC-W2-W3 §3.3 | fn (TQL) | ✅ **LANDED** @`319f808` |
 | 6 | **Windowed-blast traversal fn** (gates `population-member` branch on the window) | SPEC-W2-W3 §3.4/§5 **OWED** | fn (TQL) | window (#3) + b1 (#4); proven only compositionally (P-BR-6) |
 | 7 | **b3 synthesis** (fold `resolves` branch into b1; match record-a **and** record-b) | SPEC-W2-W3 §3.4/§5 **OWED-opt** | fn (TQL) | needs own green probe (R9) + recursion decision (#24) |
 | 8 | resolution / divergence-exception writer (co-mint belief+relation) | SPEC-W2-W3 §0/§2.2 | writer | seam ① + C1 (#2) |
@@ -72,7 +74,7 @@ Three fronts have no blocker today:
 - **② W2/W3 schema fold onto `conflict_resolution`** (pure make-real, no design risk; unblocks all of W2/W3).
 - **cyber-gecko C1/C2** (separate domain track; see the parallel-front note below).
 
-**Chosen: build ② first** (make-real; unblocks the W2/W3 writers + disposition engine + windowed-blast fn). Hold ① and cyber-gecko C1/C2 as the parallel / next fronts.
+**Chosen: build ② first** — **✅ schema fold LANDED @`319f808`** (make-real; unblocks the W2/W3 writers + disposition engine + windowed-blast fn). Next fronts now open: the W2/W3 writers (#8–#10) and the windowed-blast fn (#6), plus ① the seam and cyber-gecko C1/C2 as parallel tracks.
 
 ## Parallel front — cyber-gecko C1/C2/C3 (separate domain track)
 
