@@ -54,7 +54,7 @@
 | `belief_edge_decl_registry_writes_run_stamped` | SPEC-W5 §5.5 | seam ① |
 | `divergence_precedence_write_requires_cominted_anchor` | SPEC-W5 §5.6 | #13 |
 | `cyber_detect_test` stays green across migration | SPEC-W5 §5.7 | #12 |
-| W2/W3 §5 graduated acceptance suite (P-PREC-*, P-PM-*, P-BR-1/2, P-CE-1, P-T5-FIX, P-REDEF, P-DISP-3) | SPEC-W2-W3 §5 | graduate 1:1 with #2–#6 |
+| W2/W3 §5 graduated acceptance suite (P-PREC-*, P-PM-*, P-BR-1/2, P-CE-1, P-T5-FIX, P-REDEF, P-DISP-*) | SPEC-W2-W3 §5 | ✅ **LANDED @`09467b9`** — 19 acceptance tests run by default / CI's TypeDB job; 5 probes stay `#[ignore]` (non-shipped b2/b3/C2/windowed). Writer-level assertions (co-mint, contested-hub) still owed with #8/#10/#13 |
 | CONTRACT-W8 §3 seven checks (rows 1–7, incl. `daemon_is_enumerated_by_the_monopoly_test`) | CONTRACT-W8 §3 | each with its job (#20); row 5 also needs W5a |
 
 ## Ledger C — owed decisions (not constructs)
@@ -74,7 +74,7 @@ Three fronts have no blocker today:
 - **② W2/W3 schema fold onto `conflict_resolution`** (pure make-real, no design risk; unblocks all of W2/W3).
 - **cyber-gecko C1/C2** (separate domain track; see the parallel-front note below).
 
-**Chosen: build ② first** — **✅ schema fold LANDED @`319f808`** (make-real; unblocks the W2/W3 writers + disposition engine + windowed-blast fn). Next fronts now open: the W2/W3 writers (#8–#10) and the windowed-blast fn (#6), plus ① the seam and cyber-gecko C1/C2 as parallel tracks.
+**Chosen: build ② first** — **✅ schema fold LANDED @`319f808`**; the §5 acceptance suite it triggered is **graduated & green @`09467b9`** (the rig is re-synced — 19 acceptance gates + 5 owed/rejected probes). Next fronts: the **disposition engine (#10)** and **populations writer (#9)** — the self-contained W2/W3 writers to take first (the co-mint writer #8 / enforcement #13 want the seam ①); then windowed-blast fn (#6). ① the seam and cyber-gecko C1/C2 remain the parallel tracks.
 
 ## Parallel front — cyber-gecko C1/C2/C3 (separate domain track)
 
