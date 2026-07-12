@@ -1,16 +1,21 @@
 # SPEC-W2-W3 — divergence-exception mechanism (W2) + as-of-t populations/canonical & cohort-belief blast radius (W3)
 
-> Status: **RATIFIABLE** — every [P-*] in §4 is green (Mode A for all; Mode B for every shipped
-> construct, via P-COMP), and the four probe-gated decisions (§3.1, §3.4, §1.4, §3.5) are closed.
+> Status: **RATIFIED (decisions) — 2 constructs OWED** — every constituent design decision is
+> user-ratified @`11d7ab1` (enumerated below), and every [P-*] in §4 is green (Mode A for all;
+> Mode B for every shipped construct, via P-COMP); the four probe-gated decisions (§3.1, §3.4,
+> §1.4, §3.5) are closed. **Deliberately NOT a bare document-level `RATIFIED`:** two constructs
+> stay OWED to implementation — the **windowed-blast traversal fn** and the **b3 synthesis**
+> (§3.4/§5, proven only compositionally / not probe-backed as shipped shapes) — so this never
+> reads as "everything is settled" when two constructs are not.
 > **User-ratified at commit `11d7ab1` (every constituent decision):** §2.1 → reify-as-belief;
 > §2.2 → member-scoped exception (scoped — co-mint owed to W5b, not enforced here); §2.3 → C2 not
 > shipped *today* (conditional — reopenable by SPEC-W5's OP-5 decision); §3.1 → (A) as-of-t
 > variants; §3.2 → window coexists with `computed-at`; §3.4 → b1 (widened `okf-concept`
 > blast-radius); §3.5 → populations-writer clauses (as a contract — obligations owed, no writer
 > tested); §1.4 → `[FUN5]`-immutable fns + owed `redefine` migration. Every decision is now
-> user-ratified; the whole-spec status flip (this blockquote → RATIFIED and §6's top line) is left
-> for the user's final act.
-> Ratification is the user's act — §6 is left for their `RATIFIED at commit <sha>` line.
+> user-ratified, and the whole-spec status is now the **qualified** flip above — RATIFIED at the
+> decision level, with the two OWED constructs named so nothing reads as prematurely complete.
+> Ratification is the user's act — performed here (qualified) and recorded in §6.
 > Gates: INVARIANTS.md §8.2 (ratified semantics), §8.4 rows W2/W3; resolves CONFLICT-REPORT T2/T4/T5.
 
 This is one spec for two work items because they share a schema surface and a data
@@ -793,7 +798,12 @@ Ratification is the user's act (GLOBAL-CONSTRAINTS: "a spec is at most RATIFIABL
 the user flips a status blockquote to RATIFIED at commit `<sha>`"). This spec is **RATIFIABLE**;
 this section is left for the user's act.
 
-- **RATIFIED at commit:** _(user sets `<sha>` here)_
+- **RATIFIED (decisions) at commit:** `11d7ab1` — every constituent decision is user-ratified
+  against the frozen probe-evidence state at `11d7ab1` (each decision block + the list above
+  carry the same anchor). This is a **qualified** whole-spec ratification: **2 constructs remain
+  OWED** to implementation — the **windowed-blast traversal fn** and the **b3 synthesis** (§5,
+  P-BR-6 OWED / OWED-optional). It is deliberately not a bare `RATIFIED`, which would read as
+  "everything settled" while those two constructs are unbuilt.
 - **Probe log reference:** `docs/refactor/probes/W2-W3-PROBE-LOG.md` — the `gecko-bin/tests/probes/`
   suite (probe worktree `gecko-probe-w2w3`, branch `probe/w2w3-schema`) turned every §4 `[P-*]`
   green: **23 passed / 0 failed** (2 baselines + 8 W2 + 11 W3 + P-COMP + P-REDEF), Mode A for all
