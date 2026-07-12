@@ -326,7 +326,7 @@ const PREC_LIVE_DISPOSITION_FN: &str = r#"define
 /// overridden + scope) must insert and read back — proving the shape is not just
 /// well-formed but usable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_prec_1_belief_anchored_shape_define_clean() {
+async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_defines() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -391,7 +391,7 @@ async fn p_prec_1_belief_anchored_shape_define_clean() {
 /// plus the anchor-less-write refusal (ledger #13); both are unbuilt, so a green
 /// here is not evidence any writer mints this shape.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_prec_2_member_scoped_exception_leaves_population_asserted() {
+async fn member_scoped_exception_leaves_population_belief_asserted_for_others() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
     apply_delta(&db, PREC_DISPOSITION_FN)
@@ -476,7 +476,7 @@ async fn p_prec_2_member_scoped_exception_leaves_population_asserted() {
 /// exception belief as co-claims — something a `canonical-entity` *view* (a
 /// population, not a belief) can never do. `contradicts(E, BP)` is then true.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_prec_3_reified_exception_is_a_contradiction_claim() {
+async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_holds() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -526,7 +526,7 @@ async fn p_prec_3_reified_exception_is_a_contradiction_claim() {
 /// on divergence, ledger #9; the co-mint writer, ledger #8); it is unbuilt, so a
 /// green here does not verify any writer retracts with correct provenance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_prec_4_exception_is_retractable_via_supersession() {
+async fn retracting_a_precedence_supersedes_the_exception_belief_with_lineage() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
     apply_delta(&db, PREC_LIVE_DISPOSITION_FN)
@@ -627,7 +627,7 @@ async fn p_prec_4_exception_is_retractable_via_supersession() {
 /// surfaces when the transaction commits. (The procedural residue — that the anchor
 /// was minted by the sanctioned writer — is owed to SPEC-W5 §3.2.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_prec_5_anchorless_precedence_fails_at_commit() {
+async fn anchorless_divergence_precedence_rejected_at_commit() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -775,7 +775,7 @@ async fn p_disp_1_nested_disjunction_predicate_answers() {
 /// signal forcing the host-side ranking split (risk R2). The observed outcome is
 /// printed for the probe log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_disp_2_pure_tql_winner_is_inexpressible() {
+async fn single_persisted_disposition_ranker_is_not_expressible() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
     apply_delta(&db, W2_DISPOSITION)
@@ -946,8 +946,12 @@ async fn read_disp_keys(db: &TestDb, concept_id: &str) -> DispKeys {
 /// mints the divergence-exception, and on a tie writes `belief-state "contested"`
 /// and mints the contested-anomaly hub; it is unbuilt, so a green here does not
 /// verify the engine performs those writes.
+///
+/// The §5 graduated name `empty_winner_yields_contested_anomaly_hub_no_exception_minted`
+/// is parked until the disposition engine (ledger #10) lands the hub-minting; this test
+/// keeps a name reflecting the ranking half it actually asserts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
+async fn host_side_ranking_reproduces_dispositions() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -1015,7 +1019,7 @@ async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
 /// `blast-radius(C1: concept)` must return the cohort belief B (exact set). This is
 /// the assertion-backed evidence that b1's cross-sibling widening is viable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_br_1_b1_widened_param_type_checks() {
+async fn blast_radius_widens_param_and_reaches_cohort() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -1058,7 +1062,7 @@ async fn p_br_1_b1_widened_param_type_checks() {
 /// belief D `rests-on` B. b1 sweeps B (direct population branch) AND D (recursion: the
 /// scoped belief B re-enters `blast-radius`, whose `rests-on` branch reaches D).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_br_2_b1_recursion_through_scoped_belief() {
+async fn blast_radius_widens_param_and_reaches_cohort_recursive() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -1330,7 +1334,7 @@ async fn p_br_6_windowed_blast_propagation_seam() {
 /// additive onto the existing `population-member` relation and coexists with
 /// `computed-at`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_pm_1_window_owns_additive_coexists_with_computed_at() {
+async fn population_member_carries_bitemporal_window_and_computed_at() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -1386,7 +1390,7 @@ async fn p_pm_1_window_owns_additive_coexists_with_computed_at() {
 /// **P-PM-2 (C4a)** — two `population-member` instances for the SAME (pop, member)
 /// with different windows (a left-and-rejoined member) coexist as distinct rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_pm_2_two_windowed_epochs_coexist() {
+async fn left_and_rejoined_member_is_two_windowed_epoch_rows() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -1427,7 +1431,7 @@ async fn p_pm_2_two_windowed_epochs_coexist() {
 /// for a t in [t₀, t₁) and {C1} for a t ≥ t₁ — different answers for different `$t`
 /// proving the parameter is genuinely consumed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_pm_3_population_members_at_consumes_time() {
+async fn population_members_at_returns_windowed_membership() {
     let db = TestDb::new("probe_w2w3");
     // The population-member window and the as-of-t functions (C4a + C4b) are FOLDED into
     // the shipped mem schema (Mode B); `apply_composed_schema` provides them, so this
@@ -1487,7 +1491,7 @@ async fn p_pm_3_population_members_at_consumes_time() {
 /// t₃ ≥ t₂ both are valid → the closure includes C3. Identity as-of-t is read off the
 /// resolution's validity window, never its (mutable) belief-state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_ce_1_canonical_entity_at_epoch_closure() {
+async fn canonical_entity_at_recursive_asof_closure() {
     let db = TestDb::new("probe_w2w3");
     // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
     // as-of-t functions, so this probe reads the SHIPPED `canonical-entity-at` — the
@@ -1563,7 +1567,7 @@ async fn p_ce_1_canonical_entity_at_epoch_closure() {
 /// was a member (C2 joined later), so `population-members-at(P, t0)` = {C1} — the
 /// as-of-t0 belief view and membership view are mutually consistent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_t5_fix_believed_at_and_members_at_agree() {
+async fn believed_at_and_members_at_agree_as_of_t() {
     let db = TestDb::new("probe_w2w3");
     // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
     // as-of-t functions, so the acceptance shape is proven against the SHIPPED schema
@@ -1666,7 +1670,7 @@ const REDEF_CHANGED_BLAST: &str = r#"define
 /// outcome (error → `redefine` required / silent old body / accept-and-replace) is the
 /// evidence SPEC-W2-W3 §1.4 must state. The verbatim result is printed for the log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_redef_define_path_migration_posture() {
+async fn shipped_function_mutation_requires_redefine_not_define() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
@@ -1764,7 +1768,7 @@ async fn p_redef_define_path_migration_posture() {
 ///   (b) `believed-at(t)` and `population-members-at(P, t)` agree as-of-t (T5 fix);
 ///   (c) a `divergence-exception` inserts and can be a `contradiction:claim` (W2, C1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_comp_folded_schema_define_clean_and_delivers() {
+async fn full_candidate_stack_composes_define_clean_with_cyber() {
     let db = TestDb::new("probe_w2w3");
     // Define-clean: each of core/mem/cyber `.expect`s a clean apply inside this helper;
     // a folded-in define collision (or a broken strip-define assembly) panics here.
