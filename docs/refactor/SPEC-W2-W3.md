@@ -2,6 +2,14 @@
 
 > Status: **RATIFIABLE** — every [P-*] in §4 is green (Mode A for all; Mode B for every shipped
 > construct, via P-COMP), and the four probe-gated decisions (§3.1, §3.4, §1.4, §3.5) are closed.
+> **User-ratified at commit `11d7ab1` (every constituent decision):** §2.1 → reify-as-belief;
+> §2.2 → member-scoped exception (scoped — co-mint owed to W5b, not enforced here); §2.3 → C2 not
+> shipped *today* (conditional — reopenable by SPEC-W5's OP-5 decision); §3.1 → (A) as-of-t
+> variants; §3.2 → window coexists with `computed-at`; §3.4 → b1 (widened `okf-concept`
+> blast-radius); §3.5 → populations-writer clauses (as a contract — obligations owed, no writer
+> tested); §1.4 → `[FUN5]`-immutable fns + owed `redefine` migration. Every decision is now
+> user-ratified; the whole-spec status flip (this blockquote → RATIFIED and §6's top line) is left
+> for the user's final act.
 > Ratification is the user's act — §6 is left for their `RATIFIED at commit <sha>` line.
 > Gates: INVARIANTS.md §8.2 (ratified semantics), §8.4 rows W2/W3; resolves CONFLICT-REPORT T2/T4/T5.
 
@@ -126,7 +134,7 @@ The shipped schema is applied as sequential transactions
 C3-b1 is a `redefine fun blast-radius(…)` — the first time this schema mutates an
 *already-persisted* function rather than only adding new ones.
 
-**Decision (P-REDEF, Mode B green — closes risk R1).** A persisted function is
+**Decision (P-REDEF, Mode B green — closes risk R1). RATIFIED at commit `11d7ab1`.** A persisted function is
 **`[FUN5]`-immutable under the production `define` path** (`apply_all_schemas` → `apply_schema`
 → one `define` schema transaction). Re-applying a function definition on a DB where that
 function already exists is **refused outright — for a CHANGED body and for a byte-identical one
@@ -163,7 +171,7 @@ shipped.
 
 **Design question — stored-vs-computed. DECIDED before candidates were written (blocking).**
 
-**Decision.** The divergence disposition is **computed**, and its human-override /
+**Decision. RATIFIED at commit `11d7ab1`.** The divergence disposition is **computed**, and its human-override /
 precedence outcome is **recorded as a first-class belief** — a `divergence-exception sub
 belief` (C1) that *anchors* a `divergence-precedence` relation (§2.2). The winner is
 *derived from evidence* by the disposition engine; the precedence relation is minted only
@@ -250,7 +258,8 @@ construct; this absence *is* why T4 is a conflict)." The relation *survives* —
 
 **Design question — reconcile §8.2's "the loser is superseded" with member-scoping (risk R3).**
 
-**Decision.** Population-vs-instance divergence produces a **member-scoped exception**:
+**Decision. RATIFIED at commit `11d7ab1` (scoped — see the co-mint note below).**
+Population-vs-instance divergence produces a **member-scoped exception**:
 `divergence-precedence` carries `exception-scope` (`@card(0..1)`, the member `concept`) and
 leaves the **population belief `"asserted"` for every other member**. Loser-*supersession*
 (the §8.2 "the loser is superseded" clause) applies to **instance-vs-instance** divergence,
@@ -272,7 +281,10 @@ member's exception.
 **Design question — co-mint-or-reject discipline (cross-ref SPEC-W5 §3.2).** *No alternative
 fork — this is an obligation the writer owes, not an either/or choice; the ratifiability gate's
 "rejected alternative" requirement is satisfied by that framing (there is no rival shape to
-reject, only the requirement to enforce).*
+reject, only the requirement to enforce).* **Ratified as owed, not enforced (commit `11d7ab1`):**
+§2.2's member-scoping is ratified on evidence (P-PREC-2), and the co-mint requirement's *structural*
+half is barred at commit (P-PREC-5 — the anchor-less edge fails `@card(1)`); its *procedural*
+enforcement is correctly owed to SPEC-W5 §3.2 / W5b and is **not** validated by this spec.
 
 The shape's safety depends on the exception belief and its `divergence-precedence` relation
 being **co-minted, never separately** — a relation without its anchor is the bare-edge
@@ -337,6 +349,12 @@ beliefs, the disposition engine's winner stream is **empty**. On an empty winner
 
 **Decision — CLOSED. C2 is probe scaffolding, NOT shipped** (confirmed at the Mode-B fold:
 C2 was deliberately not folded into `mem_functions.tql` — no persisted function consumes it).
+**RATIFIED at commit `11d7ab1` as "not shipped *today*" — conditional and reopenable:** this
+ratifies only the present disposition (host-side ranker stands, no persisted consumer). SPEC-W5's
+OP-5 schema-hardening decision (`INVARIANTS.md` §8.3, left open precisely because the write-bypass
+list is non-empty) **can reopen it**; if it does, the "**Conditional — if shipped**" block below
+governs — C2 ships only with its 5×5 `out-entrenches`↔`strength()` drift-lock, decided and labelled,
+never silently.
 `out-entrenches` is expressible (P-DISP-1: the nested-`or` predicate answers the strict
 entrenchment ordering both directions, incl. irreflexivity), so the exclusion is a design
 choice, not an expressibility limit. The entrenchment ordering's source of truth remains
@@ -406,7 +424,7 @@ members *and* no invalidation signal).
 **or** declare the views present-state-only and *forbid* combining them with `believed_at`
 (mirroring the index's documented present-state-only bypass, invariant 8).
 
-**Decision — (A) as-of-t variants.** Add `population-members-at($pop, $t)` and
+**Decision — (A) as-of-t variants. RATIFIED at commit `11d7ab1`.** Add `population-members-at($pop, $t)` and
 `canonical-entity-at($rec, $t)` (C4), reading the `valid-from`/`valid-to` window §3.2 adds to
 `population-member`. Keep the existing no-`$t` functions as the documented **present-state fast
 path**. Both were folded and are define-clean under P-COMP.
@@ -444,7 +462,7 @@ proven correct (P-CE-1, P-T5-FIX). P-BR-6 makes the cost concrete — present-st
 
 **Design question — window vs the existing `computed-at`: replace or coexist?**
 
-**Decision. Coexist — keep `computed-at` *alongside* `valid-from`/`valid-to`** (P-PM-1 GREEN:
+**Decision. Coexist — keep `computed-at` *alongside* `valid-from`/`valid-to`. RATIFIED at commit `11d7ab1`.** (P-PM-1 GREEN:
 the window `owns` is additive and all three attributes read back on one `population-member`
 row). They mean different things: `computed-at` is **cache-row freshness** (when the
 materializer last evaluated the spec, `mem_types.tql:255`); `valid-from`/`valid-to` is **when
@@ -515,9 +533,12 @@ role narrowing across the `memory-item`/`concept` siblings, admits a `concept` a
 the return `{ memory-item }`, and reaches the cohort belief — and the recursion through the
 scoped belief works (`blast-radius(C1)` = {B, D}).
 
-**Decision — b1 (widened `okf-concept` param).** All three sub-options are viable/expressible
-(b1, b2, b3 each reached a working verdict), so §3.4 is a design choice among *working* shapes,
-not a forced fallback. b1 is picked and was folded into the shipped `mem_functions.tql`:
+**Decision — b1 (widened `okf-concept` param). RATIFIED at commit `11d7ab1`.** All three
+sub-options are viable/expressible (b1, b2, b3 each reached a working verdict), so §3.4 is a
+design choice among *working* shapes, not a forced fallback. b1 is picked and was folded into
+the shipped `mem_functions.tql`. The user ratified this specific decision (§6); it names the
+widened-param entry point only — the b3 synthesis and the windowed-blast traversal fn stay OWED
+to implementation (§5), not carried by this ratification:
 
 - **b1 — widened param** (`$r: okf-concept`, the common supertype of both `concept` and
   `memory-item`). **Chosen.** Single entry point; **backward-compatible** (`memory-item ⊂
@@ -620,7 +641,9 @@ belief): add to `blast-radius` an or-branch —
 
 W3 creates writer obligations it does not implement (risk R4). *No alternative fork — these are
 obligations the populations writer owes, not either/or design choices; the ratifiability gate's
-"rejected alternative" requirement is satisfied by that framing.* Stated as contract clauses the
+"rejected alternative" requirement is satisfied by that framing.* **RATIFIED as a contract at commit
+`11d7ab1`:** the clauses below are ratified as *obligations owed*, **not** as a validated
+implementation — no populations writer exists yet to test them against. Stated as contract clauses the
 populations writer must satisfy (enforced by SPEC-W5's allowlist, not here):
 
 - **On member-supersession, close the member's window AND flip `computed-at`.** Set `valid-to` ←
@@ -776,15 +799,29 @@ this section is left for the user's act.
   green: **23 passed / 0 failed** (2 baselines + 8 W2 + 11 W3 + P-COMP + P-REDEF), Mode A for all
   and Mode B for every shipped construct (P-COMP is the Mode-B ratifiability gate).
 - **Decisions closed (each from its §4 verdict):**
-  - **§3.4 → b1** (widened `okf-concept` param) — b2/b3 rejected/alternative; the sibling-narrowing
-    risk did not fire (P-BR-1/2).
-  - **C2 → scaffolding, NOT shipped** (§2.3) — no persisted fn consumes `out-entrenches`; the
-    host-side ranker stands (P-DISP-2/3).
-  - **§3.1 → (A) as-of-t variants** — `canonical-entity` included, the (B) fallback did not trigger
-    (P-CE-1 epoch-correct).
-  - **§1.4 → `[FUN5]`-immutable functions; a `redefine` migration path is owed** (P-REDEF).
+  - **§3.4 → b1** (widened `okf-concept` param) — **RATIFIED at commit `11d7ab1`** (user act;
+    scoped to the widened-param entry point, not the OWED b3 synthesis / windowed-blast fn).
+    b2/b3 rejected/alternative; the sibling-narrowing risk did not fire (P-BR-1/2).
+  - **C2 → scaffolding, NOT shipped** (§2.3) — **RATIFIED at commit `11d7ab1` as "not shipped
+    *today*", conditional/reopenable by SPEC-W5's OP-5 decision** (`INVARIANTS.md` §8.3). No persisted
+    fn consumes `out-entrenches`; the host-side ranker stands (P-DISP-2/3).
+  - **§3.1 → (A) as-of-t variants** — **RATIFIED at commit `11d7ab1`** (user act). `canonical-entity`
+    included, the (B) fallback did not trigger (P-CE-1 epoch-correct).
+  - **§1.4 → `[FUN5]`-immutable functions; a `redefine` migration path is owed** — **RATIFIED at
+    commit `11d7ab1`** (user act; the owed `redefine`-emitting apply path is inherited by
+    implementation) (P-REDEF).
   - **§3.4 entry points / window-awareness** — b1's `population-member` entry ships; the b3 synthesis
     and the windowed-blast traversal fn are owed to implementation (§5), not ratified here (R9).
+  - **§2.1 → reify-as-belief** — **RATIFIED at commit `11d7ab1`** (user act). The bare
+    `prevailing/overridden` edge is barred (§8.2 delta; structurally, P-PREC-5); the
+    `divergence-exception sub belief` is the shape that satisfies §8.2 items 1 & 3 together.
+  - **§2.2 → member-scoped exception** — **RATIFIED (scoped) at commit `11d7ab1`** (user act):
+    member-scoping evidenced (P-PREC-2); the co-mint obligation is *stated* here and correctly owed
+    to SPEC-W5 §3.2 / W5b (structural half barred by P-PREC-5, procedural half not enforced here).
+  - **§3.2 → window coexists with `computed-at`** — **RATIFIED at commit `11d7ab1`** (user act;
+    pure empirical, P-PM-1).
+  - **§3.5 → populations-writer contract clauses** — **RATIFIED as a contract at commit `11d7ab1`**
+    (user act): obligations owed, **not** a validated implementation (no writer exists to test).
 
 ### Ratifiability self-check (recorded per the closure brief)
 
