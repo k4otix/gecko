@@ -1,13 +1,21 @@
 # CONTRACT-W8 — the consolidation ("dreaming") daemon contract
 
-> **Status: `DRAFT`** — awaiting ratification. Only the user flips this line to
-> `RATIFIED at commit <sha>`; this document does not self-ratify (`GLOBAL-CONSTRAINTS.md`).
+> **Status: `RATIFIED as a contract (Tier-3)`** — at the commit landing this file (the user's
+> act). W8 carries **no probe evidence** (T8: "none runnable today (stub)"), so its **own
+> landing commit is the sole anchor** — there is no separate evidence SHA, unlike SPEC-W5
+> (`95f0d6e`) / SPEC-W2-W3 (`11d7ab1`), which anchor to a prior probe-evidence commit. A
+> self-landing ratification cannot embed its own hash; the concrete SHA is in the commit
+> message and authoritative via `git log`. **Ratified as a contract:** every constraint binds
+> a future implementation; **nothing is validated because nothing is built** — correct per T8.
+> Owed items are preserved as owed in §6 (CF-3 implementable-only-after-W5b; §3's seven
+> executable checks; §5's two owed decisions), not resolved by this ratification.
 > Gates: [`CONFLICT-REPORT.md`](./CONFLICT-REPORT.md) T8; [`INVARIANTS.md`](./INVARIANTS.md)
 > inv 7/8, OP-1/3/5, mechanisms 10/14.
 >
 > This document CONSTRAINS a future implementation. It proposes no schema change and no code.
 >
-> The `ConsolidationDaemon` trait stays stubbed until this is ratified.
+> The `ConsolidationDaemon` trait stays stubbed: ratification locks this contract, it builds
+> no code.
 
 ---
 
@@ -102,7 +110,11 @@ never a blend:
   / `rollup_high_volume_episodes` may collapse *detail*, but the write-once
   `retrieval-provenance` flag (`mem_types.tql:101`) and the derivation/episode
   row itself persist. Both axes — derivation and retrieval — are retained;
-  only presentation-detail is allowed to shrink.
+  only presentation-detail is allowed to shrink. (**What separates collapsible
+  presentation-detail from load-bearing provenance is not settled here** — the
+  retention *granularity* is an owed decision, §5: the retention *principle* is
+  ratified, but the line between "detail" and "axis" is where a firewall-crossing
+  daemon can satisfy this clause on paper and violate it in practice.)
 
 ### CF-3 — monopoly + entrenchment (writes ONLY through `EpistemicWriter`)
 
@@ -221,7 +233,7 @@ drift found**; every anchor below matches the brief exactly.
 | `summarize_archived_provenance` (`consolidation.rs:120`) / `collapse_superseded_provenance` (`consolidation.rs:150`) | CF-2, D-4 | both axes retained; write-once `retrieval-provenance` flag persists |
 | `ttl_prune_record_tier` (`consolidation.rs:133`) | CF-2 | must call `retrieval_events_safe_to_tombstone` |
 | `rollup_high_volume_episodes` (`consolidation.rs:141`) | CF-2 | aggregates retain the episodic axis |
-| `precompute_blast_radius` (`consolidation.rs:158`) / `invalidate_blast_radius` (`consolidation.rs:166`) | inv 8, W3 | cache derived, graph SoR; invalidation triggers include membership-epoch changes once W3 ships |
+| `precompute_blast_radius` (`consolidation.rs:158`) / `invalidate_blast_radius` (`consolidation.rs:166`) | inv 8, W3 | cache derived, graph SoR; the membership-epoch invalidation trigger is **downstream of an OWED W3 construct** — the *windowed-blast traversal fn* (SPEC-W2-W3 §5, P-BR-6 **OWED**), not the ratified present-state b1. See §4 |
 
 **Anchor-verification footnote.** All twelve line numbers above (the real
 no-op `tick` plus the eleven stubbed job methods) were re-derived by `grep -n`
@@ -291,11 +303,21 @@ Headline," stated here in as many words.
 - **SPEC-W2-W3 §3.4** ("Blast-radius traversal extension") — `precompute_blast_radius`/
   `invalidate_blast_radius` must track whatever traversal set W3 lands (the
   extended `scoped`→`population`→`population-member` walk fixing T2), not only
-  today's `rests-on ∪ derivation` (`mem_functions.tql:64-78`). If W3 adds
-  membership-epoch windows (**SPEC-W2-W3 §3.2**, `population-member`
-  bitemporal window), a membership-epoch change becomes an invalidation
-  trigger the cache must react to, not only direct `rests-on`/`derivation`
-  writes.
+  today's `rests-on ∪ derivation` (`mem_functions.tql:64-78`). **Tier discipline —
+  this cross-ref is to a partly-OWED construct, not a wholly-ratified one.** The base
+  b1 traversal (widened `okf-concept` param) *is* ratified (SPEC-W2-W3 §3.4→b1,
+  user-ratified @`11d7ab1`), but it is **present-state / window-blind by construction**;
+  the **windowed-blast traversal function** — the variant that gates the
+  `population-member` branch on the `valid-from`/`valid-to` window so a membership-epoch
+  change *becomes* an invalidation trigger — is one of SPEC-W2-W3's **two explicitly OWED
+  items** (SPEC-W2-W3 §5, P-BR-6 **OWED**: proven only *compositionally*, the function
+  itself handed to implementation, not probe-backed). So `invalidate_blast_radius`'s
+  epoch-reactive behavior depends on a construct that **does not exist yet and whose
+  windowed variant is explicitly owed** — do not read "the traversal set W3 lands" as a
+  settled input. If W3 adds membership-epoch windows (**SPEC-W2-W3 §3.2**,
+  `population-member` bitemporal window — that window *is* ratified), a membership-epoch
+  change becomes an invalidation trigger the cache must react to **once the windowed-blast
+  traversal fn is built**, not only direct `rests-on`/`derivation` writes.
 - **SPEC-W2-W3 §3.5** ("Populations-writer contract clauses") already names
   this contract's daemon explicitly, in its own §3.6: "**W8 (consolidation
   daemon).** The daemon precomputes/invalidates population-member rows at
@@ -322,6 +344,19 @@ Explicitly out of scope — implementation freedom, not silence:
   any, and whether it lives on `EpistemicWriter` vs a daemon-scoped extension
   point are future decisions, made when W5b/the owed methods are actually
   built).
+- **The granularity of detail-collapse — what provenance is summarizable vs
+  load-bearing.** CF-2 retains *both axes* (derivation and retrieval) and forbids
+  deletion, but it does **not** define *where the line falls* between collapsible
+  "detail" and load-bearing provenance that must survive. When
+  `collapse_superseded_provenance` folds a chain of N superseded beliefs into a
+  summary, the intermediate beliefs' `derivation` edges are "detail" by one reading
+  and "the derivation axis" by another — and that line is exactly where a
+  firewall-crossing daemon can satisfy CF-2 on paper while silently losing
+  provenance in practice. The retention *principle* is ratified (CF-2); the retention
+  *granularity* is an owed decision the summarization/collapse method design must
+  settle, with its own test (§3 row 4 asserts row-existence + the write-once flag,
+  **not** per-edge retention granularity). Named here so it is a deliberate future
+  decision, not an ambiguity a reader assumes CF-2 resolved.
 - **The `BeliefEdgeDecl` seam's design** — that is W5b's / SPEC-W5's decision,
   not this contract's.
 - **Whether `precompute_blast_radius`/`invalidate_blast_radius` remain daemon
@@ -336,8 +371,27 @@ Explicitly out of scope — implementation freedom, not silence:
 
 ## §6 — Ratification record
 
-- **Status:** `DRAFT`. Not ratified. Ratification is the user's act
-  (`GLOBAL-CONSTRAINTS.md`); this contract does not flip its own status.
+- **Status:** `RATIFIED as a contract (Tier-3)` — at the commit landing this file (the user's
+  act). **Anchor:** W8 carries no probe evidence (T8: "none runnable today (stub)"), so its own
+  landing commit is the correct and only anchor — no separate evidence SHA, in contrast to
+  SPEC-W5 (`95f0d6e`) and SPEC-W2-W3 (`11d7ab1`), which each anchor to a prior probe-evidence
+  commit. A self-landing ratification cannot embed its own hash, so the landing commit's SHA is
+  recorded in the commit message and is authoritative via `git log`, not hard-coded here.
+- **Ratified as a contract, nothing validated (Tier-3).** Every constraint binds a future
+  implementation; because all eleven jobs are `NotYetImplemented` (§2a footnote), nothing is
+  built and nothing is validated — correct per T8 ("none runnable today (stub)"). Ratification
+  locks the constraints; it neither builds the daemon nor discharges any owed item below.
+- **Owed items preserved by this ratification (named-as-owed, NOT resolved):**
+  - **CF-3 is ratifiable-now / implementable-only-after-W5b** — the SATISFIABILITY NOTE (§1)
+    stands: belief-tier *relation* writes beyond the seven `EpistemicWriter` methods need W5b's
+    `BeliefEdgeDecl` seam (does not exist), and the lifecycle `consolidation-state` transitions
+    have no writer method today.
+  - **§3's seven executable checks are landing-gates owed-to-implementation** — none runs today;
+    each named test (§3 rows 1–7) must land green with the job that implements its CF.
+  - **§5's two owed decisions stay open** — (a) the **collapse-granularity** decision (what
+    provenance is summarizable vs load-bearing; CF-2 ratifies the *principle*, not the *line*),
+    and (b) the **blast-radius-invalidation dependency** on SPEC-W2-W3's **OWED windowed-blast
+    traversal fn** (§5, P-BR-6 OWED). Neither is resolved by this ratification.
 - **Gates:** `CONFLICT-REPORT.md` T8 (all three constraints, quoted verbatim
   in §1); `INVARIANTS.md` inv 7 (entrenchment/provenance grading, §8.1), inv 8
   (semantic index / two-ledger firewall), OP-1 (host-stamped provenance),
@@ -360,8 +414,8 @@ Explicitly out of scope — implementation freedom, not silence:
   SATISFIABILITY NOTE states the implementation dependency on W5b + the owed
   lifecycle/summarization writer methods explicitly, rather than presenting
   the daemon as independently buildable today.
-- **On ratification:** replace the status line above with
-  `RATIFIED at commit <sha>`, citing the commit that lands this file (per
-  `INVARIANTS.md`'s own status-blockquote convention). No other edit to this
-  document is implied by ratification — ratifying locks the constraints, it
-  does not change them.
+- **On ratification (done):** the status line above now reads
+  `RATIFIED as a contract (Tier-3)` at the commit landing this file (per
+  `INVARIANTS.md`'s status-blockquote convention). Because a self-landing ratification cannot
+  embed its own hash, the concrete SHA lives in the commit message / `git log`, not hard-coded
+  here. No constraint changed — ratifying locked them, it did not alter them.
