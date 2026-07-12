@@ -54,7 +54,7 @@
 | `belief_edge_decl_registry_writes_run_stamped` | SPEC-W5 §5.5 | seam ① |
 | `divergence_precedence_write_requires_cominted_anchor` | SPEC-W5 §5.6 | #13 |
 | `cyber_detect_test` stays green across migration | SPEC-W5 §5.7 | #12 |
-| W2/W3 §5 graduated acceptance suite (P-PREC-*, P-PM-*, P-BR-1/2, P-CE-1, P-T5-FIX, P-REDEF, P-DISP-*) | SPEC-W2-W3 §5 | ✅ **LANDED @`09467b9`** — 19 acceptance tests run by default / CI's TypeDB job; 5 probes stay `#[ignore]` (non-shipped b2/b3/C2/windowed). Writer-level assertions (co-mint, contested-hub) still owed with #8/#10/#13 |
+| W2/W3 §5 graduated acceptance suite (P-PREC-*, P-PM-*, P-BR-1/2, P-CE-1, P-T5-FIX, P-REDEF, P-DISP-*) | SPEC-W2-W3 §5 | ✅ **LANDED @`09467b9`** — 19 acceptance tests run by default / CI's TypeDB job; 5 probes stay `#[ignore]` (non-shipped b2/b3/C2/windowed). Writer-level assertions (co-mint, contested-hub) still owed with #8/#10/#13 (the three partially-graduated tests carry a `Graduation scope (owed half)` docstring). Tests ship under probe-log `p_*` names, diverging from §5's prescribed graduated names — reconciliation is an owed decision (Ledger C) |
 | CONTRACT-W8 §3 seven checks (rows 1–7, incl. `daemon_is_enumerated_by_the_monopoly_test`) | CONTRACT-W8 §3 | each with its job (#20); row 5 also needs W5a |
 
 ## Ledger C — owed decisions (not constructs)
@@ -65,6 +65,24 @@
 | collapse-granularity (summarizable detail vs load-bearing provenance) | CONTRACT-W8 §5/CF-2 | the summarize/collapse method design (#17) |
 | whether blast-radius jobs stay daemon jobs vs a `SemanticIndex`-style mechanism | CONTRACT-W8 §5 | — |
 | b3 recursion (should a resolution-bound member recurse into downstream cohort beliefs?) | SPEC-W2-W3 §3.4 | part of #7 |
+| graduated-test-name reconciliation — the shipped acceptance tests carry the probe-log `p_*` names (`p_prec_2`, `p_disp_2`, …), which diverge from §5's prescribed graduated names; §5 also folds P-PREC-1/3 → one test and P-BR-1/2 → one test, where the file keeps them split (finer, **not** weaker — no assertion dropped) | SPEC-W2-W3 §5 | user's call — either rename the file to §5's names, or record the `p_*` names as canonical in a §5-successor section. **Pending; do not rename yet.** Recorded so the divergence from the locked §5 table is tracked, not silently absorbed |
+
+## Implementation notes (empirical, TypeDB 3.12)
+
+Findings from probing the live 3.12 engine; recorded so they are not re-derived or re-litigated when the writers land.
+
+- **`[REP1]` value-into-attribute — affects the disposition/score writers (#9, #10).** Binding a
+  function- or `reduce`-returned *value* straight into an attribute slot — `insert $x has attr $v`
+  where `$v` came from `let $v in <fn>` or a `reduce` — trips `[REP1] The variable '…' cannot be
+  declared as both a 'Attribute' and as a 'Value'` at query compile. The writers that materialize a
+  computed disposition/score must bind an explicit attribute instance, not pass the bare value var
+  into `has`. (Surfaced while empirically confirming the item below.)
+- **`let $x in <single-valued fn>` coercion — validates `select-for-context`.** TypeDB 3.12 coerces a
+  `return first` scalar (e.g. `retrieval-score -> double`) into a one-row stream and *yields the row*
+  (confirmed on 3.12 with a positive insert-count probe + a zero-row negative control; not the
+  duration-comparison silent-empty failure mode). So `select-for-context`'s
+  `let $score in retrieval-score($b, $now)` is well-formed — each gated belief yields exactly one
+  score. Settled; not to be re-litigated.
 
 ## Zero-blocker starting points & chosen order
 
