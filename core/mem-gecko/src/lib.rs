@@ -211,10 +211,20 @@ mod tests {
         assert!(schema.contains("fun is-superseded($b: memory-item) -> boolean"));
         assert!(schema.contains("fun believed-at($t: datetime) -> { belief }"));
         assert!(schema.contains("fun derivation-chain($b: memory-item) -> { memory-item }"));
-        assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }"));
-        // Population / resolution functions.
+        // blast-radius's param is widened to okf-concept so a population member (a
+        // `concept`, sibling of memory-item) type-checks as the retractee.
+        assert!(schema.contains("fun blast-radius($r: okf-concept) -> { memory-item }"));
+        // Population / resolution functions — present-state fast path and as-of-t variants.
         assert!(schema.contains("fun population-members($pop: population) -> { concept }"));
         assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }"));
+        assert!(
+            schema.contains(
+                "fun population-members-at($pop: population, $t: datetime) -> { concept }"
+            )
+        );
+        assert!(
+            schema.contains("fun canonical-entity-at($rec: concept, $t: datetime) -> { concept }")
+        );
     }
 
     #[test]
