@@ -1,9 +1,14 @@
 # SPEC-W5 — the MemWriter-monopoly test (W5a) + the sanctioned belief-edge writer seam (W5b)
 
-> Status: **DRAFT** — awaiting ratification. Only the user flips this line to
-> `RATIFIED at commit <sha>`; this document does not self-ratify
-> (`GLOBAL-CONSTRAINTS.md`). It proposes a **test design** and a **seam design**; it
-> ships no production code and no shipped-schema change.
+> Status: **RATIFIED at commit `95f0d6e`** (user act) — ratified **as design**: the W5a
+> monopoly **test design** (§2), the W5b sanctioned-writer **seam design** (§3), and the
+> W5b-blocks-W5a-green **coupling** (§3.3). The anchor is SPEC-W5's **own** evidence commit
+> — where **P-W5-1** is green and the introspected surface (**23→24** on the W2 delta) was
+> observed and logged — **not** W2-W3's `11d7ab1`: each ratification anchors to the evidence
+> state it was made against (§6). **§5's executable checks (the shipped monopoly test + the
+> shipped seam) are owed-to-implementation**, not ratified as done — only P-W5-1 is green
+> today; this spec ratifies the *design*, and implementation must land §5's named checks
+> green. It ships no production code and no shipped-schema change.
 > Gates: [`INVARIANTS.md`](./INVARIANTS.md) §8.3 (enforcement-locus / monopoly),
 > §8.4 rows W5a/W5b; [`CONFLICT-REPORT.md`](./CONFLICT-REPORT.md) **Headline**
 > (the enforcement-locus cross-cutting pass — the bypass-path table, the cyber
@@ -23,8 +28,9 @@ They are one spec because **W5b blocks W5a-green** (§0, §3.3): the monopoly te
 stays red until the live cyber raw-relation breach is routed through the seam. The
 test surface is not a hand list — it is **introspection-derived** and proven live by
 **P-W5-1** (§4), so it catches every belief-edge relation the schema owns today
-(cyber's two, plus the ones INVARIANTS §8.4's enumeration omits) and any that land
-tomorrow (W2's `divergence-precedence`).
+(cyber's three — the two raw-written breaches `technique-detection`/`alert-disposition`
+plus the defined-but-unwritten `sighting-of` (§3.3) — plus the ones INVARIANTS §8.4's
+enumeration omits) and any that land tomorrow (W2's `divergence-precedence`).
 
 Every design question below carries a **decision + rationale + rejected alternative**
 (or, where a question is an obligation with no either/or fork, that is stated). Every
@@ -48,8 +54,9 @@ The cyber raw-`graph.write` anchors (`detect/mod.rs:142,196`) have **not** drift
 **In scope.**
 - **W5a — a test design (not the test).** The two halves of the MemWriter-monopoly
   guarantee: a **static** source lint (no raw belief-tier TQL outside mem's `tql.rs`)
-  and a **dynamic** live test (every bypass-capable path runs; per-type counts over
-  the introspected belief-edge surface equal what MemWriter accounts for), plus the
+  and a **dynamic** live test (every *enumerated* bypass-capable path runs; per-type
+  counts over the introspected belief-edge surface equal what MemWriter accounts for —
+  see the §2.1 residual for what a finite path-enumeration cannot reach), plus the
   introspection **ratchet** that keeps the surface honest (P-W5-1, already green).
 - **W5b — a seam design (not the seam).** The `BeliefEdgeDecl` registry: the
   mem-owned, declaration-gated writer method through which an extension's belief-edge
@@ -157,11 +164,15 @@ otherwise ship — reintroducing exactly the "checks the wrong shape" defect for
 
 **The ratchet rule.** For every relation on the introspected belief-edge surface, it
 must be **either** *accounted* (every instance was written through MemWriter / the W5b
-seam and reconciles against writer-side counts, §2.2) **or** on the **committed
-allowlist** of deliberate exclusions, each with a named owner. Any introspected
-belief-edge relation ∈ neither set **fails** the monopoly test — forcing a deliberate
-decision (route it through the seam, or allowlist it with an owner), never a silent
-gap.
+seam and reconciles against writer-side counts, §2.2), **or** on the **committed
+allowlist** of deliberate exclusions, each with a named owner, **or** — for a
+**defined-but-unwritten** surface relation (zero instances today) — explicitly
+**dispositioned as owed-to-seam-when-written** with a named owner (cyber's `sighting-of`,
+§3.3): its zero count passes the §2.2 reconciliation trivially, but the disposition is
+recorded so it is a deliberate decision, not a silent gap. Any introspected belief-edge
+relation ∈ **none** of these sets **fails** the monopoly test — forcing a deliberate
+decision (route it through the seam now, allowlist it with an owner, or record it
+owed-to-seam-when-written), never a silent gap.
 
 **The committed allowlist (deliberate exclusions, with owners).** *No either/or fork —
 these are the enumerated deliberate carve-outs the design records so nothing is
@@ -177,7 +188,13 @@ satisfied by that framing.*
 listed so the reader sees the surface is broader than the locked doc's seed): `resolves`,
 `scoped` (belief roles), and the substrate/episodic edges enumerated in the §1.1 delta.
 All are **accounted** (MemWriter authors them, or they are owed to a sanctioned writer
-per SPEC-W2-W3), never allowlisted-out.
+per SPEC-W2-W3), never allowlisted-out — **with one exception the surface caught: cyber's
+`sighting-of`, which no code path writes today** (defined `cyber_schema.tql:147`; `sighting
+sub execution-episode sub episode sub memory-item`, so its `sighting-instance` role is
+exclusively memory-item). It is neither a live breach nor an allowlist carve-out but
+**owed-to-seam-when-written** (§3.3): zero instances today (the §2.2 reconciliation passes),
+but if a sighting-ingestion path is ever built it must route `sighting-of` through the W5b
+registry, never raw.
 
 **Record-tier boundary (unchanged, cited).** The record tier owns none of this: the
 existing `no_drag` source lint proves `concept`/`external-resource`/`bundle` own no
@@ -248,9 +265,26 @@ finding, and the reason a purely dynamic test is insufficient:
 
 Because the seam cannot type-check the write, the guarantee "belief writes are authored
 only in one place" must be checked at the **source** level — exactly what the static
-lint does. It is the *authoring* half; §2.2 is the *runtime* half. Neither alone is the
-monopoly: the lint cannot see a write assembled dynamically, and the dynamic test cannot
-prove the *absence* of a rare code path — together they do.
+lint does. It is the *authoring* half; §2.2 is the *runtime* half. Neither alone
+suffices: the lint cannot see a write assembled dynamically
+(`format!("insert $x isa {}", relation_label)` carries no literal belief-tier type name
+for a grep-style scan to catch), and the dynamic test only exercises the paths the
+harness drives.
+
+**Residual coverage — stated honestly; the two halves are NOT jointly complete.**
+Together they cover **(literal belief-tier writes anywhere in source)** ∪ **(any write —
+literal or dynamically-composed — in the four enumerated bypass-capable paths of §2.2)**.
+That union is **not** *(any belief-tier write anywhere)*: a **dynamically-composed raw
+belief-tier write in a fifth, non-enumerated path** is caught by **neither** half — the
+static lint sees no literal type name, and the dynamic test never drives that path. This
+residual is the best achievable against a **type-blind seam** (the seam cannot reject the
+write, and no finite path-enumeration is provably exhaustive), and it is precisely what
+W5b removes: the `BeliefEdgeDecl` registry (§3.2) gives belief-edge writes a sanctioned,
+type-checked path, so a domain has **no reason to author a raw dynamic write at all** —
+making the residual *unnecessary*, not merely *uncaught*. **Until W5b lands the residual
+is real.** The two halves therefore *reduce* the unguarded surface to "dynamically-composed
+writes in non-enumerated paths"; they do not eliminate it. The monopoly test is honestly
+"complete **modulo** that residual," and the registry is what retires it.
 
 **Rejected alternative — rely on the dynamic count-reconciliation alone.** Rejected: a
 runtime count test only exercises the paths the harness happens to drive; it cannot
@@ -275,7 +309,7 @@ committed allowlist (§1.2). The paths, at their **current** anchors:
 | 1 | **MemWriter** (the sanctioned holder) | `core/mem-gecko/src/writer.rs:769,827` → `tql::insert_belief_ops` (`tql.rs:196`) | the harness itself mints beliefs/edges through MemWriter | every instance is accounted (this *is* the accounting baseline) |
 | 2 | **Syncer / record path** | `core/gecko-engine/src/syncer/bundle.rs:131` (`sync_bundle`, direct `db.begin_write()`) | `sync` the sample bundle | **zero** belief-tier instances (already proven by `no_drag_sync_creates_records_and_zero_epistemic_apparatus`, `no_drag_test.rs:43`, and `syncer_stays_on_the_record_path`, `bundle.rs:741`) — the record-side half W5a's dynamic half generalizes |
 | 3 | **cyber detect bridge** | `extensions/cyber-gecko/src/detect/mod.rs:49` (`cyber_extension_callback`); `claim` (`:90`) and `disposition` (`:153`) | a real `claim`/`disposition` call | beliefs via `writer.assert_belief` (`:119`, `:177`) **are** accounted; the linking `technique-detection`/`alert-disposition` written **raw** (`:142`, `:196`) are **UNACCOUNTED** → the assertion FAILS (the whole point — §3.3) until W5b routes them through the seam |
-| 4 | **A hostile future-extension stub** | composed through `build_host_bridge` (`gecko-bin/src/main.rs:957`, wired `:1068`), handed an `Arc<dyn GraphStore>` exactly as cyber's bridge is at `main.rs:1016-1018` | a test-only stub extension whose host-import handler authors a raw `insert … isa belief …` on the captured graph handle | the raw belief exists but MemWriter did not account for it → the reconciliation **flags it** — proving the test has teeth against *any* holder of the graph handle, not just cyber |
+| 4 | **A hostile future-extension stub** | composed through `build_host_bridge` (`gecko-bin/src/main.rs:957`, wired `:1068`), handed an `Arc<dyn GraphStore>` exactly as cyber's bridge is at `main.rs:1016-1018` | a test-only stub whose host-import handler authors, on the captured graph handle, **both** a raw `insert … isa belief …` **and a raw belief-referencing _relation_** (e.g. `insert $d isa technique-detection, links (…, detection-claim: $b);` against a belief it did not mint) | **both** the raw belief **and the raw relation** are unaccounted → the reconciliation **flags each**. The **relation** injection is load-bearing: the live breach is a *relation* write, so path #4 must exercise the relation case **structurally** (from a non-cyber adversary), not lean on cyber path #3 as the only relation-case teeth |
 
 The reconciliation is per-type over the introspected surface: `count(<type>) ==
 memwriter_accounted(<type>) + allowlisted(<type>)`. Path #2 contributes zero to the
@@ -294,9 +328,15 @@ for, and it is the executable check CONFLICT-REPORT owes:
 
 Driving path #4 (the hostile stub through `build_host_bridge`) is what makes the test a
 *structural* monopoly check rather than a cyber-specific one: the Headline's path #4 is
-"any future extension handed the graph … structurally unrestricted," and the dynamic
-test exercises exactly that shape so a *new* extension that bypasses the seam is caught
-by count-reconciliation, not merely by hoping its author read this spec.
+"any future extension handed the graph … structurally unrestricted." Because path #4
+injects a raw belief-referencing **relation** (not only a belief entity), the
+"structural, not cyber-specific" claim is exercised for the **relation** case — the
+actual breach shape — by a non-cyber adversary, so the relation-case teeth no longer rest
+solely on cyber path #3. A *new* extension that bypasses the seam **on a path the harness
+drives** is caught by count-reconciliation, not by hoping its author read this spec. What
+path #4 does **not** prove is the §2.1 residual: a dynamically-composed raw write in a
+path the harness does **not** enumerate is caught by neither half — reduced by W5a,
+retired by W5b, never claimed complete here.
 
 **Rejected alternative — assert only "no `belief` entity has a non-MemWriter
 provenance stamp."** Rejected: it is the entity-only test §8.4/the Headline explicitly
@@ -463,6 +503,27 @@ the *read* paths (`coverage_gaps`/`blinded`/`precision`, `:203,218,233`), but it
 belief-tier *writes* route through the seam. After migration, cyber holds no raw
 belief-tier write.
 
+**A third cyber belief-edge relation the surface caught — `sighting-of` (disposition).**
+P-W5-1's 23-relation surface (§4) includes cyber's `sighting-of` (`cyber_schema.tql:143-149`;
+`sighting sub execution-episode sub episode sub memory-item`, so its `sighting-instance`
+role is played *exclusively* by a memory-item subtype and the §1.1 surface rule selects it).
+Unlike `technique-detection`/`alert-disposition`, **`sighting-of` is defined-but-never-written**:
+no code path — cyber or otherwise — inserts a `sighting` entity or a `sighting-of` relation
+today (the sole Rust reference, `detect/mod.rs:166`, uses supplied alert/sighting ids as
+belief *evidence* for the disposition belief, not as a `sighting-of` write). Two consequences.
+**(1) Not a live breach; does NOT block W5a-green.** The dynamic count-reconciliation (§2.2)
+sees `count(sighting-of) == 0 == accounted + allowlisted` and passes; only the two
+*written-raw* relations gate W5a. **(2) Owed to the seam the moment sighting-ingestion is
+built.** `sighting-of` is a belief-edge relation; any future episodic-sighting writer must
+author it through the §3.2 `BeliefEdgeDecl` registry (its `sighting-instance` role marked
+belief-tier), **never raw `graph.write`** — exactly the discipline this section imposes on
+`technique-detection`/`alert-disposition`. It is recorded here as **owed-to-seam-when-written**
+(owner: cyber), *not* a current migration item (there is nothing to migrate — zero instances),
+so the surface-caught relation has a stated accounting rather than an
+introspected-∉-(accounted ∪ allowlist) silent gap (§1.2). The surface did its job: it found
+the relation the migration list omitted, and the honest answer is "latent, owed to the seam
+if ever written," not "silently unaccounted."
+
 **The acceptance constraint.** `gecko-bin/tests/cyber_detect_test.rs` must **stay
 green** across the migration — the observable behavior of `claim`/`disposition` (belief +
 correctly-linked `technique-detection`/`alert-disposition` with its verdict, read back
@@ -497,6 +558,17 @@ seam closed the last raw belief-tier write.
   enumerated caller, never a carve-out (CONTRACT-W8 §3 check 5,
   `daemon_is_enumerated_by_the_monopoly_test`; §4). The daemon's belief-edge writes route
   through §3.2's registry exactly as cyber's do.
+- **cyber-gecko episodic-sighting writer — a future belief-edge writer owed to the seam.**
+  `sighting-of` is on the introspected surface but **unwritten today** (§3.3); the moment
+  cyber-gecko builds sighting ingestion, its episodic-sighting writer **must** author
+  `sighting-of` through §3.2's `BeliefEdgeDecl` registry (declaring `sighting-instance` as
+  the belief-tier role), **never raw `graph.write`** — and thereby **joins the W5a monopoly
+  harness** as an enumerated, accounted caller, exactly as cyber's
+  `technique-detection`/`alert-disposition` do post-migration (§3.3) and the daemon does
+  above. Until then it stays **owed-to-seam-when-written** on the §1.2 ratchet (zero count,
+  §2.2 passes). This cross-ref is the standing pointer so the obligation is **discharged
+  when cyber-gecko reaches sighting ingestion, not rediscovered** — the surface caught it
+  (§3.3); this line makes sure the writer is built through the seam.
 - **SPEC-W2-W3 §2.2 (co-mint discipline).** The procedural co-mint residue for
   `divergence-precedence` is *enforced* here (§3.2), *stated* there. W2's surface
   additions (`divergence-exception` a `belief`, `divergence-precedence` a
@@ -553,7 +625,7 @@ its check.
 |---|---|---|---|---|
 | 1 | W5a static | `no_raw_belief_tier_tql_outside_mem_tql` | beside `gecko-bin/tests/no_drag_test.rs` | every `insert`/`put`/`update` of an introspected belief-edge type in workspace sources resolves to `core/mem-gecko/src/tql.rs` |
 | 2 | W5a dynamic | `memwriter_is_the_sole_belief_tier_writer` | a Deliverable-3-style live rig | after paths #1–#4 (§2.2) run, `count(<type>) == memwriter_accounted(<type>) + allowlisted(<type>)` for every type on the introspected surface |
-| 3 | W5a dynamic | `hostile_extension_raw_belief_write_is_flagged` | same rig | a stub extension composed through `build_host_bridge` (`main.rs:957/:1068`) that authors a raw `insert … isa belief …` is caught by count-reconciliation |
+| 3 | W5a dynamic | `hostile_extension_raw_belief_write_is_flagged` | same rig | a stub extension composed through `build_host_bridge` (`main.rs:957/:1068`) that authors **both** a raw `insert … isa belief …` **and a raw belief-referencing relation** (e.g. `technique-detection` against a belief it did not mint) is caught by count-reconciliation — the **relation** case (the actual breach shape) tested structurally by a non-cyber adversary |
 | 4 | W5a ratchet | **P-W5-1** (`p_w5_1_introspection_ratchet_catches_divergence_precedence`) | `gecko-bin/tests/schema_probe_w2w3.rs` | **SHIPPED-GREEN** — introspected surface gains `divergence-precedence` on the W2 delta, no test edit |
 | 5 | W5b seam | `belief_edge_decl_registry_writes_run_stamped` | mem-gecko + a test extension | a registered `BeliefEdgeDecl` writes the relation run-stamped, with owned attrs; an unregistered/malformed edge is refused |
 | 6 | W5b seam | `divergence_precedence_write_requires_cominted_anchor` | mem-gecko | the seam refuses a `divergence-precedence` write whose `divergence-exception` anchor is not co-minted in the same call (SPEC-W2-W3 §2.2) |
@@ -566,13 +638,21 @@ its check.
 
 Ratification is the user's act (GLOBAL-CONSTRAINTS: "a spec is at most RATIFIABLE/DRAFT;
 only the user flips a status blockquote to RATIFIED at commit `<sha>`"). This spec is
-**DRAFT** — it is sequenced to ratify **after** W2+W3 so its surface reflects their new
-relations (P-W5-1 proves it already does); this section is left for the user's act.
+**RATIFIED as design** — it was sequenced to ratify **after** W2+W3 so its surface reflects
+their new relations (P-W5-1 proves it does), and the user performed the act at SPEC-W5's own
+evidence commit.
 
-- **RATIFIED at commit:** _(user sets `<sha>` here)_
+- **RATIFIED at commit:** `95f0d6e` (full `95f0d6e14bc91af3e2bdc755236f680c6c2e6c95`) — the
+  commit where **P-W5-1 is green** and the introspected surface (**23 relations, 24 after
+  the W2 delta**) was observed and logged, i.e. SPEC-W5's own evidence state. **This is a
+  different anchor than the W2-W3 ratifications' `11d7ab1`**, by design: each ratification
+  anchors to the evidence it was made against, and bundling them would muddy which evidence
+  state each was ratified against. Ratified **as design** (W5a test-design + W5b seam-design
+  + the W5b-blocks-W5a coupling); **§5's executable checks are owed-to-implementation** —
+  only P-W5-1 (§5 row 4) is shipped-green, the rest (rows 1–3, 5–8) are named-but-owed.
 - **Probe evidence:** P-W5-1 green (`docs/refactor/probes/W2-W3-PROBE-LOG.md`, "W5 batch";
   `gecko-bin/tests/schema_probe_w2w3.rs`), run in isolation on `conflict_resolution`.
-- **Gates discharged in this DRAFT:**
+- **Gates discharged (at ratification):**
   - INVARIANTS §8.3 (verbatim-quoted §2) — the monopoly test is committed as the primary
     disposition; the "bypass list non-empty → revisit schema guards" trigger is recorded
     as fired, schema-hardening left owed (not designed here).
@@ -603,10 +683,19 @@ relations (P-W5-1 proves it already does); this section is left for the user's a
   silently reinterpreted. ✅
 - **The one shipped artifact (P-W5-1) is green and cited** (§4); the rest are owed
   executable checks named in §5, not claimed as done. ✅
-- **DRAFT, not self-ratified** — §6 left for the user's `RATIFIED at commit <sha>`. ✅
+- **Completeness claims are honest, not overstated:** §2.1/§2.2 state the **residual** —
+  the two monopoly halves cover (literal writes anywhere) ∪ (any write in the four
+  enumerated paths), *not* (any write anywhere); a dynamically-composed raw write in a
+  non-enumerated path is reduced by W5a and **retired by W5b** (the registry), never
+  claimed caught. Path #4 injects a raw belief-edge **relation** so the relation-case teeth
+  are structural, not cyber-only. The surface-caught `sighting-of` is dispositioned
+  (owed-to-seam-when-written, §3.3/§1.2), not left silently unaccounted. ✅
+- **RATIFIED as design at `95f0d6e`** (SPEC-W5's own evidence commit, ≠ W2-W3's `11d7ab1`);
+  §5's executable checks are owed-to-implementation, only P-W5-1 is shipped-green. ✅
 
-_This document is **DRAFT**; the user performs ratification (§6). Nothing here edits a
-LOCKED document or green-lights a construct INVARIANTS/CONFLICT-REPORT forbids: the
+_This document is **RATIFIED as design** at `95f0d6e` (§6); §5's executable checks remain
+owed to implementation. Nothing here edits a LOCKED document or green-lights a construct
+INVARIANTS/CONFLICT-REPORT forbids: the
 introspection-derived surface only *widens* coverage over §8.4's seed, the seam is
 strictly more restrictive than the raw `graph.write` it replaces, and W5a is designed to
 stay red until W5b closes the last raw belief-tier write._
