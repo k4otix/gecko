@@ -18,21 +18,32 @@
 //!   the composed schema. A probe that *fails as expected* (P-DISP-2) is a verdict,
 //!   not a bug — it certifies the persisted-vs-host split.
 //!
-//! The T2/T5 baselines PASS by REPRODUCING the documented conflict (a green
-//! baseline is what makes the rig trustworthy to later validate fixes). Nothing
-//! here is run by CI. Run against the live TypeDB with:
+//! **Post-fold: these are graduated acceptance tests, not probes.** The W2/W3
+//! schema fold landed on `conflict_resolution`, so `apply_composed_schema` now reads
+//! the SHIPPED (folded) mem schema — divergence-exception/-precedence, the
+//! population-member window, the b1 `blast-radius` body, and the as-of-t functions are
+//! all in the base. The graduated tests (no `#[ignore]`) assert the shipped behavior
+//! directly against the composed schema and run under `just test-it` / CI's TypeDB job,
+//! exactly as `cyber_detect_test` does. They no longer apply the winning candidates as
+//! Mode-A deltas — those constructs live in the base now; a re-applied type delta would
+//! be a no-op (idempotent `define`) and a re-applied FUNCTION delta would `[FUN5]`
+//! (see `p_redef`), so the vestigial deltas were removed.
+//!
+//! Probes that remain `#[ignore]` test constructs that were NOT shipped — the C2
+//! `out-entrenches` predicate (`p_disp_1`), the b2 companion (`p_br_3`), the b3
+//! resolution-entry (`p_br_4`/`p_br_5`), and the windowed-blast compositional seam
+//! (`p_br_6`, which stands in for the OWED windowed-blast traversal fn) — kept as manual
+//! evidence for the owed/rejected work (SPEC-W2-W3 §5). Run them with:
 //!
 //! ```text
 //! cargo test --test schema_probe_w2w3 --no-default-features --features cyber \
 //!     -- --ignored --test-threads=1
 //! ```
 //!
-//! Schema note: on `conflict_resolution` the mem schema is UNFOLDED, so only the
-//! T2/T5 baselines, the Mode-A delta probes, and `p_w5_1` (which toggles W2 via a
-//! delta on the unfolded base) pass here. The Mode-B probes — `p_comp`, `p_redef`,
-//! and the as-of probes (`p_pm_3`, `p_ce_1`, `p_t5_fix`, `p_br_6`) — assume the
-//! folded schema that lives on `probe/w2w3-schema`, and fail against this branch's
-//! unfolded schema by design; they graduate once the W2/W3 fold lands post-ratification.
+//! The T2/T5 baselines are now regression floors: `blast-radius` from a NON-member
+//! assumption still does not reach the cohort (the b1 population branch is member-keyed;
+//! the fix, driving from the member, is `p_br_1`/`p_br_2`), and the present-state
+//! `population-members` still ignores time by design (the as-of fix is `p_pm_3`).
 //!
 //! Gated on `cyber` (the rig composes the cyber schema) and needs the multi-thread
 //! runtime the TypeDB driver expects.
@@ -52,19 +63,9 @@ use common::TestDb;
 
 const CORE_SCHEMA: &str = include_str!("../../core/gecko-engine/schema/core_schema.tql");
 
-/// Candidate **C1** — the belief-anchored precedence shape (`divergence-exception
-/// sub belief` + the 4-role `divergence-precedence` relation). Applied as a Mode-A
-/// delta on top of the composed schema.
-const W2_PRECEDENCE: &str = include_str!("probes/w2_precedence.tql");
-
 /// Candidate **C2** — the entrenchment ordering as a `return check` predicate
 /// (`out-entrenches`). Applied as a Mode-A delta on top of the composed schema.
 const W2_DISPOSITION: &str = include_str!("probes/w2_disposition.tql");
-
-/// Candidate **C3-b1** — `redefine fun blast-radius` with the param widened from
-/// `memory-item` to `okf-concept` so a population *member* (a `concept`, sibling of
-/// `memory-item`) type-checks as the retractee. Adds a population-traversal branch.
-const W3_BLAST_B1: &str = include_str!("probes/w3_blast_radius_b1.tql");
 
 /// Candidate **C3-b2** — a NEW companion `cohort-blast-radius($member: concept)`
 /// function (additive `define`, no param widening); the union with `blast-radius` is
@@ -75,11 +76,6 @@ const W3_BLAST_B2: &str = include_str!("probes/w3_blast_radius_b2.tql");
 /// adding a `resolves`→`population-member`→`scoped` entry branch so retracting the
 /// identity belief that binds a member undermines the cohort.
 const W3_BLAST_B3: &str = include_str!("probes/w3_blast_radius_b3.tql");
-
-/// Candidate **C4a** — the bitemporal membership window: `population-member owns
-/// valid-from, owns valid-to` (additive on the existing relation, alongside
-/// `computed-at`).
-const W3_POPULATION_WINDOW: &str = include_str!("probes/w3_population_window.tql");
 
 /// Candidate **C4b** — the as-of-t functions `population-members-at($pop, $t)` and
 /// the recursive `canonical-entity-at($rec, $t)`, both reading membership/identity
@@ -179,16 +175,18 @@ async fn count_rows(db: &TestDb, query: &str) -> usize {
 // T2 / T5 baselines — recreate the ratified D3 conflict findings.
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// **T2 baseline** — `blast-radius` misses the cohort belief.
+/// **Regression floor (was the T2 baseline)** — `blast-radius` from a NON-member does
+/// not reach the cohort.
 ///
-/// Ground state (raw TQL against the composed schema): a cohort `{P, C1, B}` — C1 a
-/// member of population P via `population-member`, belief B `scoped` to P — plus a
-/// `rests-on` chain where belief D rests on assumption A. `blast-radius(A)` traverses
-/// only `rests-on ∪ derivation`, so it returns D and never reaches B (which attaches
-/// to the cohort solely through `scoped`→P→`population-member`). Reproduces the
-/// D3-confirmed finding: `blast-radius(A)` = `{t2/bel/D}` only, cohort belief B absent.
+/// Ground state (raw TQL against the folded composed schema): a cohort `{P, C1, B}` — C1
+/// a member of population P via `population-member`, belief B `scoped` to P — plus a
+/// `rests-on` chain where belief D rests on assumption A. `blast-radius(A)` is driven
+/// from the assumption A, which is NOT a population member, so the folded b1 population
+/// branch (`population-member:member`) does not fire: it returns D (via `rests-on`) and
+/// never reaches the cohort belief B. The complementary fix — driving from the MEMBER
+/// concept C1, where b1 DOES sweep B — is `p_br_1`/`p_br_2`; together they show the b1
+/// branch is correctly member-keyed. `blast-radius(A)` = `{t2/bel/D}` only, B absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D3 fidelity baseline; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_base_t2_blast_radius_misses_cohort_belief() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -232,16 +230,17 @@ async fn p_base_t2_blast_radius_misses_cohort_belief() {
     );
 }
 
-/// **T5 baseline** — `population-members` ignores time.
+/// **Regression floor (was the T5 baseline)** — the present-state `population-members`
+/// ignores time by design; the as-of variant is the fix.
 ///
 /// Ground state: belief B `scoped` to population P and valid from t0; the cohort grew
 /// *after* t0 — member C1 was `computed-at` t0, member C2 was `computed-at` today.
-/// `believed-at(t0)` is temporal and returns B (valid at t0), but `population-members`
-/// takes no `$t` and returns today's full cohort `{C1, C2}`. Reproduces the
-/// D3-confirmed finding: `believed-at(t0)` = `{B}` while `population-members(P)` =
-/// `{C1, C2}` — B is reconstructed against the wrong-time membership.
+/// `believed-at(t0)` is temporal and returns B (valid at t0); the present-state
+/// `population-members` takes no `$t` and returns today's full cohort `{C1, C2}` — the
+/// documented fast-path behavior. The as-of fix, `population-members-at(P, t0)`, is
+/// `p_pm_3`/`p_t5_fix`. `believed-at(t0)` = `{B}` while `population-members(P)` =
+/// `{C1, C2}`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D3 fidelity baseline; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_base_t5_population_members_ignores_time() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -327,14 +326,9 @@ const PREC_LIVE_DISPOSITION_FN: &str = r#"define
 /// overridden + scope) must insert and read back — proving the shape is not just
 /// well-formed but usable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 precedence probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_prec_1_belief_anchored_shape_define_clean() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-
-    apply_delta(&db, W2_PRECEDENCE)
-        .await
-        .expect("candidate C1 (w2_precedence) applies clean as a delta");
 
     // A full precedence instance: exception belief E dispositions instance BI over
     // population belief BP, scoped to member C1.
@@ -390,13 +384,9 @@ async fn p_prec_1_belief_anchored_shape_define_clean() {
 /// overriding the population belief for C1 leaves it asserted for C2. This is the
 /// R3 clause: member-scoping is on the exception, never on `supersession`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 precedence probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_prec_2_member_scoped_exception_leaves_population_asserted() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W2_PRECEDENCE)
-        .await
-        .expect("candidate C1 applies");
     apply_delta(&db, PREC_DISPOSITION_FN)
         .await
         .expect("disposition-of read-back fn defines");
@@ -479,13 +469,9 @@ async fn p_prec_2_member_scoped_exception_leaves_population_asserted() {
 /// exception belief as co-claims — something a `canonical-entity` *view* (a
 /// population, not a belief) can never do. `contradicts(E, BP)` is then true.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 precedence probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_prec_3_reified_exception_is_a_contradiction_claim() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W2_PRECEDENCE)
-        .await
-        .expect("candidate C1 applies");
 
     // A contradiction hub over the population belief, the instance belief, and the
     // reified exception belief. The insert only commits if E can play claim.
@@ -526,13 +512,9 @@ async fn p_prec_3_reified_exception_is_a_contradiction_claim() {
 /// still `"asserted"` — is answerable again. Retracting the disposition is just a
 /// supersession of its anchoring belief, no bare-edge deletion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 precedence probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_prec_4_exception_is_retractable_via_supersession() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W2_PRECEDENCE)
-        .await
-        .expect("candidate C1 applies");
     apply_delta(&db, PREC_LIVE_DISPOSITION_FN)
         .await
         .expect("live-disposition-of fn defines");
@@ -631,13 +613,9 @@ async fn p_prec_4_exception_is_retractable_via_supersession() {
 /// surfaces when the transaction commits. (The procedural residue — that the anchor
 /// was minted by the sanctioned writer — is owed to SPEC-W5 §3.2.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 precedence probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_prec_5_anchorless_precedence_fails_at_commit() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W2_PRECEDENCE)
-        .await
-        .expect("candidate C1 applies");
 
     let mut router = db.router();
     let tx = router.begin_write().await.expect("write tx");
@@ -717,7 +695,7 @@ const DIVERGENCE_WINNER_FN: &str = r#"define
 /// fixture (axiom / tool-derived / llm beliefs) it must answer the strict ordering
 /// both ways: stronger-over-weaker true, the reverse false.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 disposition probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+#[ignore = "C2 out-entrenches is scaffolding, NOT shipped (SPEC-W2-W3 §2.3) — evidence-only probe; run with --ignored --test-threads=1"]
 async fn p_disp_1_nested_disjunction_predicate_answers() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -783,7 +761,6 @@ async fn p_disp_1_nested_disjunction_predicate_answers() {
 /// signal forcing the host-side ranking split (risk R2). The observed outcome is
 /// printed for the probe log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 disposition probe (expected-fail verdict); needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_disp_2_pure_tql_winner_is_inexpressible() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -949,13 +926,9 @@ async fn read_disp_keys(db: &TestDb, concept_id: &str) -> DispKeys {
 /// winner; a total tie yields no winner (→ the host writes `belief-state
 /// "contested"`, mints no exception). This is the host-split the schema forces.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W2 disposition probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W2_DISPOSITION)
-        .await
-        .expect("candidate C2 applies");
 
     // Two fixtures: SEP — A (human-assertion) clearly out-ranks B (llm-synthesis) on
     // the first key; TIE — TA and TB agree on all four keys.
@@ -1021,16 +994,12 @@ async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
 /// `blast-radius(C1: concept)` must return the cohort belief B (exact set). This is
 /// the assertion-backed evidence that b1's cross-sibling widening is viable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_br_1_b1_widened_param_type_checks() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
     // The `okf-concept`-widened redefine with per-branch sibling narrowing is accepted
     // by TypeDB 3.12 — a rejection here is a hard test failure, not an open verdict.
-    apply_delta(&db, W3_BLAST_B1)
-        .await
-        .expect("b1 okf-concept redefine accepted by TypeDB 3.12");
 
     // b1 admits a `concept` argument and sweeps the cohort belief B from the member C1.
     insert(
@@ -1068,14 +1037,9 @@ async fn p_br_1_b1_widened_param_type_checks() {
 /// belief D `rests-on` B. b1 sweeps B (direct population branch) AND D (recursion: the
 /// scoped belief B re-enters `blast-radius`, whose `rests-on` branch reaches D).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_br_2_b1_recursion_through_scoped_belief() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-
-    apply_delta(&db, W3_BLAST_B1)
-        .await
-        .expect("b1 okf-concept redefine accepted by TypeDB 3.12");
 
     // C1 → member → P → scoped → B (the scoped belief), and D rests-on B.
     insert(
@@ -1113,7 +1077,7 @@ async fn p_br_2_b1_recursion_through_scoped_belief() {
 /// b2 is additive (`define`, not `redefine`); the union with `blast-radius` is
 /// host-side. Driven from member C1 it must return B directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
 async fn p_br_3_b2_companion_returns_cohort_belief() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -1155,7 +1119,7 @@ async fn p_br_3_b2_companion_returns_cohort_belief() {
 /// branch. Retracting the identity belief RES that binds member C1 must undermine the
 /// belief B scoped to C1's population.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
 async fn p_br_4_b3_resolution_entry_returns_cohort_belief() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -1202,7 +1166,7 @@ async fn p_br_4_b3_resolution_entry_returns_cohort_belief() {
 /// force: `blast-radius(RES)` (a `resolves` entry) returns the cohort belief, which
 /// the original (rests-on ∪ derivation only) body could never reach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
 async fn p_br_5_redefine_blast_radius_accepted() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -1258,7 +1222,7 @@ async fn p_br_5_redefine_blast_radius_accepted() {
 ///     as-of-t-correct behavior. This discrimination is only expressible WITH the
 ///     window, which is the evidence for §3.1 → (A) as-of-t variants.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 blast-radius probe; needs a live TypeDB — run with --ignored --test-threads=1"]
+#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
 async fn p_br_6_windowed_blast_propagation_seam() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -1345,13 +1309,9 @@ async fn p_br_6_windowed_blast_propagation_seam() {
 /// additive onto the existing `population-member` relation and coexists with
 /// `computed-at`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 population-window probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_pm_1_window_owns_additive_coexists_with_computed_at() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W3_POPULATION_WINDOW)
-        .await
-        .expect("candidate C4a (population-member window) applies clean as a delta");
 
     // One membership row carries valid-from, valid-to AND computed-at together.
     insert(
@@ -1405,13 +1365,9 @@ async fn p_pm_1_window_owns_additive_coexists_with_computed_at() {
 /// **P-PM-2 (C4a)** — two `population-member` instances for the SAME (pop, member)
 /// with different windows (a left-and-rejoined member) coexist as distinct rows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 population-window probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_pm_2_two_windowed_epochs_coexist() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-    apply_delta(&db, W3_POPULATION_WINDOW)
-        .await
-        .expect("population-member window defines");
 
     // C1 was a member during [t0,t1), left, then rejoined at t2 — two epoch rows.
     insert(
@@ -1450,7 +1406,6 @@ async fn p_pm_2_two_windowed_epochs_coexist() {
 /// for a t in [t₀, t₁) and {C1} for a t ≥ t₁ — different answers for different `$t`
 /// proving the parameter is genuinely consumed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 as-of-t probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_pm_3_population_members_at_consumes_time() {
     let db = TestDb::new("probe_w2w3");
     // The population-member window and the as-of-t functions (C4a + C4b) are FOLDED into
@@ -1511,7 +1466,6 @@ async fn p_pm_3_population_members_at_consumes_time() {
 /// t₃ ≥ t₂ both are valid → the closure includes C3. Identity as-of-t is read off the
 /// resolution's validity window, never its (mutable) belief-state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 as-of-t probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_ce_1_canonical_entity_at_epoch_closure() {
     let db = TestDb::new("probe_w2w3");
     // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
@@ -1588,7 +1542,6 @@ async fn p_ce_1_canonical_entity_at_epoch_closure() {
 /// was a member (C2 joined later), so `population-members-at(P, t0)` = {C1} — the
 /// as-of-t0 belief view and membership view are mutually consistent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W3 as-of-t acceptance probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_t5_fix_believed_at_and_members_at_agree() {
     let db = TestDb::new("probe_w2w3");
     // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
@@ -1692,7 +1645,6 @@ const REDEF_CHANGED_BLAST: &str = r#"define
 /// outcome (error → `redefine` required / silent old body / accept-and-replace) is the
 /// evidence SPEC-W2-W3 §1.4 must state. The verbatim result is printed for the log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Mode-B migration-posture probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_redef_define_path_migration_posture() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
@@ -1791,7 +1743,6 @@ async fn p_redef_define_path_migration_posture() {
 ///   (b) `believed-at(t)` and `population-members-at(P, t)` agree as-of-t (T5 fix);
 ///   (c) a `divergence-exception` inserts and can be a `contradiction:claim` (W2, C1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Mode-B composition probe; needs a live TypeDB — run with --ignored --test-threads=1"]
 async fn p_comp_folded_schema_define_clean_and_delivers() {
     let db = TestDb::new("probe_w2w3");
     // Define-clean: each of core/mem/cyber `.expect`s a clean apply inside this helper;
@@ -2026,25 +1977,39 @@ async fn belief_edge_surface(db: &TestDb) -> BTreeSet<String> {
 /// cargo test --test schema_probe_w2w3 --no-default-features --features cyber p_w5_1 \
 ///     -- --ignored --test-threads=1
 /// ```
+/// **W5a surface — graduated from the P-W5-1 ratchet to surface-MEMBERSHIP.**
+///
+/// W2 has landed (the fold), so the composed schema permanently carries
+/// `divergence-precedence`. The pre-fold form toggled the surface 23→24 by applying the
+/// W2 candidate as a delta to prove the introspection *grows* when W2 lands; that
+/// surface-growth evidence stands at its ratification anchor `95f0d6e` (unfolded base).
+/// Post-fold, the meaningful assertion is surface-MEMBERSHIP: the introspection-derived
+/// belief-edge surface, computed from the shipped folded schema with NO delta, CONTAINS
+/// `divergence-precedence` (via `belief plays :prevailing`/`:overridden`) alongside
+/// cyber's belief-referencing relations and the core belief-tier relations INVARIANTS
+/// §8.4's hand-list omits. This is the W5a monopoly surface the writers are checked
+/// against — no assertion is weakened, only the now-historical toggle is dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "W5 monopoly-surface ratchet; run p_w5_1 in ISOLATION with a live TypeDB — --ignored --test-threads=1"]
-async fn p_w5_1_introspection_ratchet_catches_divergence_precedence() {
+async fn p_w5_1_folded_surface_contains_divergence_precedence() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
-    // Without W2: the surface is derived from core + unfolded-mem + cyber.
-    let before = belief_edge_surface(&db).await;
-    eprintln!("P-W5-1 surface (core+mem+cyber, no W2) = {before:?}");
+    // The introspection-derived belief-edge surface on the SHIPPED (folded) schema.
+    let surface = belief_edge_surface(&db).await;
+    eprintln!("W5a surface (folded core+mem+cyber) = {surface:?}");
 
-    // The cyber belief-referencing relations ARE on the surface without a hand list —
-    // the raw-graph.write breach (detect/mod.rs:142,196) is caught by introspection.
+    // Membership: W2 landed, so divergence-precedence is on the surface with no delta and
+    // no hand list — it qualifies via `belief plays :prevailing`/`:overridden` even though
+    // its `exception-scope` role is played by the record-tier `concept`.
     assert!(
-        before.contains("technique-detection"),
-        "surface must include cyber's technique-detection (belief plays :detection-claim); got {before:?}"
+        surface.contains("divergence-precedence"),
+        "the folded surface must contain divergence-precedence (belief plays :prevailing/:overridden); got {surface:?}"
     );
+    // cyber's belief-referencing relations are on the surface without a hand list — the
+    // raw-graph.write breach (detect/mod.rs:142,196) is caught by introspection.
     assert!(
-        before.contains("alert-disposition"),
-        "surface must include cyber's alert-disposition (belief plays :disposition-belief); got {before:?}"
+        surface.contains("technique-detection") && surface.contains("alert-disposition"),
+        "surface must include cyber's technique-detection/alert-disposition; got {surface:?}"
     );
     // Introspection also catches the core belief-tier relations INVARIANTS §8.4's
     // hand-list omits (`resolves`, `scoped`) alongside the ones it names.
@@ -2057,38 +2022,8 @@ async fn p_w5_1_introspection_ratchet_catches_divergence_precedence() {
         "scoped",
     ] {
         assert!(
-            before.contains(expected),
-            "surface must include the belief-tier relation `{expected}`; got {before:?}"
+            surface.contains(expected),
+            "surface must include the belief-tier relation `{expected}`; got {surface:?}"
         );
     }
-    // Before W2 lands, `divergence-precedence` does not exist in the composed schema.
-    assert!(
-        !before.contains("divergence-precedence"),
-        "divergence-precedence must be ABSENT before the W2 delta (unfolded mem schema); got {before:?}"
-    );
-
-    // Turn the ratchet: apply the W2 divergence-exception candidate (w2_precedence.tql).
-    apply_delta(&db, W2_PRECEDENCE)
-        .await
-        .expect("candidate C1 (w2_precedence) applies clean as a delta");
-
-    let after = belief_edge_surface(&db).await;
-    eprintln!("P-W5-1 surface (+ W2 precedence delta) = {after:?}");
-
-    // The introspection-derived surface now catches `divergence-precedence` with NO
-    // edit to this test — the live ratchet. It qualifies via `belief plays :prevailing`
-    // / `:overridden` even though its `exception-scope` role is played by `concept`.
-    assert!(
-        after.contains("divergence-precedence"),
-        "the W2 delta must make divergence-precedence appear in the surface (the ratchet); got {after:?}"
-    );
-    // The cyber relations remain — the introspected surface only ever grows.
-    assert!(
-        after.contains("technique-detection") && after.contains("alert-disposition"),
-        "the cyber belief-referencing relations must remain on the surface after W2; got {after:?}"
-    );
-    assert!(
-        after.is_superset(&before),
-        "the introspected surface must only GROW on the W2 delta; before={before:?} after={after:?}"
-    );
 }
