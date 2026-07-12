@@ -383,6 +383,13 @@ async fn p_prec_1_belief_anchored_shape_define_clean() {
 /// The exception is member-scoped (it carries the scope, not a supersession), so
 /// overriding the population belief for C1 leaves it asserted for C2. This is the
 /// R3 clause: member-scoping is on the exception, never on `supersession`.
+///
+/// **Graduation scope (owed half).** This gate asserts only the *schema* half of
+/// the §5 row — the member-scoped exception shape defines, inserts, and reads back.
+/// The owed behavioral half is the co-mint writer that mints the exception belief
+/// and its `divergence-precedence` atomically through the W5b seam (ledger #8),
+/// plus the anchor-less-write refusal (ledger #13); both are unbuilt, so a green
+/// here is not evidence any writer mints this shape.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn p_prec_2_member_scoped_exception_leaves_population_asserted() {
     let db = TestDb::new("probe_w2w3");
@@ -511,6 +518,13 @@ async fn p_prec_3_reified_exception_is_a_contradiction_claim() {
 /// `is-superseded`) to empty, and the pre-exception state — the population belief
 /// still `"asserted"` — is answerable again. Retracting the disposition is just a
 /// supersession of its anchoring belief, no bare-edge deletion.
+///
+/// **Graduation scope (owed half).** This gate asserts only the *read* half of the
+/// §5 row — supersession of the anchoring belief flips the live-disposition read to
+/// empty, with no bare-edge delete. The owed behavioral half is a writer that
+/// performs the retraction-with-lineage (the populations writer closing/superseding
+/// on divergence, ledger #9; the co-mint writer, ledger #8); it is unbuilt, so a
+/// green here does not verify any writer retracts with correct provenance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn p_prec_4_exception_is_retractable_via_supersession() {
     let db = TestDb::new("probe_w2w3");
@@ -925,6 +939,13 @@ async fn read_disp_keys(db: &TestDb, concept_id: &str) -> DispKeys {
 /// assembled in Rust over the graph fixtures: separated evidence yields a single
 /// winner; a total tie yields no winner (→ the host writes `belief-state
 /// "contested"`, mints no exception). This is the host-split the schema forces.
+///
+/// **Graduation scope (owed half).** This gate asserts only the *ranking algorithm*
+/// — the 4-key ordering reproduced host-side over graph fixtures. The owed
+/// behavioral half is the host disposition engine (ledger #10) that, on a winner,
+/// mints the divergence-exception, and on a tie writes `belief-state "contested"`
+/// and mints the contested-anomaly hub; it is unbuilt, so a green here does not
+/// verify the engine performs those writes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn p_disp_3_host_side_ranking_reproduces_dispositions() {
     let db = TestDb::new("probe_w2w3");
