@@ -28,7 +28,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 futures-util = "0.3.32"
 wasmtime = "46.0.1"
-wasmtime-wasi = "46.0.1"
+wasmtime-wasi = "47.0.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"
