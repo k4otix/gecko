@@ -27,8 +27,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 futures-util = "0.3.32"
-wasmtime = "48.0.9"
-wasmtime-wasi = "48.0.9"
+wasmtime = "50.0.2"
+wasmtime-wasi = "50.0.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
