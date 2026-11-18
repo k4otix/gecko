@@ -13,10 +13,12 @@ use std::sync::Arc;
 use gecko_extension_api::{EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx};
 
 pub mod consolidation;
+pub mod disposition;
 mod tql;
 pub mod writer;
 
 pub use consolidation::{ConsolidationDaemon, ConsolidationReport, NoopConsolidationDaemon};
+pub use disposition::{DispKeys, Disposition};
 pub use writer::MemWriter;
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
