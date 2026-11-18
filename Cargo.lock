@@ -1041,7 +1041,7 @@ dependencies = [
  "gecko-engine",
  "gecko-extension-api",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tokio",
  "typedb-driver",
 ]
