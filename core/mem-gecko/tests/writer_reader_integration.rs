@@ -37,7 +37,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let name = format!("a3test_{}", Ulid::new().to_string().to_lowercase());
+        let name = format!("a3test_{}", Ulid::generate().to_string().to_lowercase());
         let mut router = TypeDbRouter::new(DbConfig {
             address: "localhost:1729".to_string(),
             database: name.clone(),
