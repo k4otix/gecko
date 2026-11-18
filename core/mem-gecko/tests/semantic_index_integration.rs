@@ -37,7 +37,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let name = format!("a5test_{}", Ulid::new().to_string().to_lowercase());
+        let name = format!("a5test_{}", Ulid::generate().to_string().to_lowercase());
         let mut router = TypeDbRouter::new(DbConfig {
             address: "localhost:1729".to_string(),
             database: name.clone(),
@@ -81,7 +81,7 @@ impl Fixture {
 }
 
 fn tmp_index_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("gecko-a5-{}.hnsw", Ulid::new()))
+    std::env::temp_dir().join(format!("gecko-a5-{}.hnsw", Ulid::generate()))
 }
 
 fn dt(s: &str) -> DateTime {

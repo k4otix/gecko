@@ -195,7 +195,11 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
         let file_hash = {
             let mut hasher = Sha256::new();
             hasher.update(obj.to_string().as_bytes());
-            format!("{:x}", hasher.finalize())
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
         };
 
         let mut extra_metadata = HashMap::new();

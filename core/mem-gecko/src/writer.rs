@@ -41,7 +41,7 @@ const RECALL_FETCH_CONCURRENCY: usize = 8;
 
 /// Mints a fresh mem-id under `prefix` (e.g. `mem/ep`, `mem/bel`, `mem/anom`).
 fn mint(prefix: &str) -> MemId {
-    MemId(format!("{prefix}/{}", ulid::Ulid::new()))
+    MemId(format!("{prefix}/{}", ulid::Ulid::generate()))
 }
 
 /// mem-gecko's epistemic writer + reader.
