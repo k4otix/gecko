@@ -12,4 +12,4 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }

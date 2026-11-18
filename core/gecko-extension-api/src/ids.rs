@@ -91,7 +91,7 @@ pub struct RunId(pub ulid::Ulid);
 impl RunId {
     /// Mints a fresh, monotonic run id. Host-only by convention.
     pub fn new() -> Self {
-        Self(ulid::Ulid::new())
+        Self(ulid::Ulid::generate())
     }
 
     /// Parses a canonical ULID string (e.g. from a persisted run stamp).

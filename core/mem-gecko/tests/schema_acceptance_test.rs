@@ -28,7 +28,7 @@ const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tq
 /// Provisions a fresh throwaway database, applies core + mem schema, and returns a
 /// connected router plus the db name (so the caller can drop it).
 async fn fresh_db() -> (TypeDbRouter, String) {
-    let name = format!("memtest_{}", Ulid::new().to_string().to_lowercase());
+    let name = format!("memtest_{}", Ulid::generate().to_string().to_lowercase());
     let mut router = TypeDbRouter::new(DbConfig {
         address: "localhost:1729".to_string(),
         database: name.clone(),
