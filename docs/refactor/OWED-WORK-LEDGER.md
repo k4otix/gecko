@@ -32,7 +32,7 @@
 | 7 | **b3 synthesis** (fold `resolves` branch into b1; match record-a **and** record-b) | SPEC-W2-W3 §3.4/§5 **OWED-opt** | fn (TQL) | needs own green probe (R9) + recursion decision (#24) |
 | 8 | resolution / divergence-exception writer (co-mint belief+relation) | SPEC-W2-W3 §0/§2.2 | writer | seam ① + C1 (#2) |
 | 9 | populations writer (materialize/invalidate rows, maintain window, close-on-supersession) | SPEC-W2-W3 §3.5 | writer | seam ① + window (#3) + migration (#11) |
-| 10 | host disposition engine (4-key ranker → `resolved`\|`contested`) | SPEC-W2-W3 §2.3 | host-engine | window (#3) |
+| 10 | host disposition engine (4-key ranker → `resolved`\|`contested`) | SPEC-W2-W3 §2.3 | host-engine | **ranker ✅ LANDED @`3dbb393`** (`mem_gecko::disposition::rank` + `DerivationMethod::rank`, pure, Tier-1 tested); **writer half still owed** — acting on `Contested` (anomaly-hub mint, P-DISP-3's owed assertion) needs seam ① |
 | 11 | `redefine`-emitting migration path (or documented drop-and-recreate) | SPEC-W2-W3 §1.4 | migration | — (precondition for #4 on an initialized DB) |
 | 12 | cyber migration: `technique-detection`/`alert-disposition` → seam (drop raw `graph.write`) | SPEC-W5 §3.3 | writer (migration) | seam ① |
 | 13 | `divergence-precedence` co-mint **enforcement** (seam refuses anchor-less write) | SPEC-W5 §3.2 | writer (seam) | seam ① + C1 (#2) |
@@ -92,7 +92,7 @@ Three fronts have no blocker today:
 - **② W2/W3 schema fold onto `conflict_resolution`** (pure make-real, no design risk; unblocks all of W2/W3).
 - **cyber-gecko C1/C2** (separate domain track; see the parallel-front note below).
 
-**Chosen: build ② first** — **✅ schema fold LANDED @`319f808`**; the §5 acceptance suite it triggered is **graduated & green @`09467b9`** (the rig is re-synced — 19 acceptance gates + 5 owed/rejected probes). Next fronts: the **disposition engine (#10)** and **populations writer (#9)** — the self-contained W2/W3 writers to take first (the co-mint writer #8 / enforcement #13 want the seam ①); then windowed-blast fn (#6). ① the seam and cyber-gecko C1/C2 remain the parallel tracks.
+**Chosen: build ② first** — **✅ schema fold LANDED @`319f808`**; the §5 acceptance suite it triggered is **graduated & green @`09467b9`** (the rig is re-synced — 19 acceptance gates + 5 owed/rejected probes). Next fronts: the **disposition engine (#10)** — **ranker ✅ LANDED @`3dbb393`**, writer half owed to seam ① — and **populations writer (#9)** — the self-contained W2/W3 writers to take first (the co-mint writer #8 / enforcement #13 want the seam ①); then windowed-blast fn (#6). ① the seam and cyber-gecko C1/C2 remain the parallel tracks.
 
 ## Parallel front — cyber-gecko C1/C2/C3 (separate domain track)
 
