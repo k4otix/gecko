@@ -9,6 +9,12 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # The driver's wire protocol must match the TypeDB server version (CI service
+      # and `gecko up`); a minor driver bump alone refuses to connect. Bumped
+      # together with the server, deliberately.
+      - dependency-name: typedb-driver
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   # GitHub Actions. Keeps the SHA-pinned actions current (Dependabot updates the
   # pin and its version comment together).

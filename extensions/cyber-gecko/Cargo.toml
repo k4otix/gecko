@@ -13,4 +13,4 @@ chrono.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 tokio.workspace = true
-typedb-driver = "3.12.0"
+typedb-driver.workspace = true
