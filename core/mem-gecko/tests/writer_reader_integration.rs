@@ -1,4 +1,4 @@
-//! Writer/reader acceptance tests (live TypeDB 3.12).
+//! Writer/reader acceptance tests (live TypeDB).
 //!
 //! These drive the **real** [`MemWriter`] over a [`RouterGraphStore`] against a
 //! live server (`localhost:1729`, admin/password): every write is a real TypeDB
@@ -6,7 +6,7 @@
 //! provisions its own throwaway database, applies core + mem schema, and drops it.
 //! The real `gecko` database is never touched.
 //!
-//! Requires a running TypeDB 3.12 service (CI provides one).
+//! Requires a running TypeDB service (CI provides one).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1129,7 +1129,7 @@ async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
         .raw_fetch(&format!(
             r#"match $k isa episode, has concept-id "{}";
                try {{ $k has consolidation-state $s; }};
-               fetch {{ "s": $s }};"#,
+               fetch {{ "s": $s? }};"#,
             keeper.0
         ))
         .await;

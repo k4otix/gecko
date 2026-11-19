@@ -31,11 +31,11 @@ serde_json = "1"
 serde_yaml = "0.9"
 toml = "1"
 
-# TypeDB — 3.12 required for parameterized `given` queries (query_with_rows).
-# Pinned to the 3.12 line: the driver's wire protocol must match the TypeDB server
-# (3.12 in CI and `gecko up`), and a newer minor driver refuses to connect to it.
+# TypeDB — 3.12+ required for parameterized `given` queries (query_with_rows).
+# Pinned to the 3.15 line: the driver's wire protocol must match the TypeDB server
+# (3.15 in CI and `gecko up`), and a newer minor driver refuses to connect to an older one.
 # Bump the driver and the server together, deliberately.
-typedb-driver = "~3.12"
+typedb-driver = "~3.15"
 
 # Markdown / text processing
 pulldown-cmark = "0.13"

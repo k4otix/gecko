@@ -129,7 +129,7 @@ fn up_orchestrated_is_idempotent_against_running_server() {
     assert!(
         !tmp.path()
             .join("typedb")
-            .join("3.12.0")
+            .join("3.15.0")
             .join("dist")
             .exists(),
         "idempotent `up` must not fetch the dist when a server is already up"

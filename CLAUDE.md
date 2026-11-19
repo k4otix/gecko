@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What GECKO is
 
-A Rust workspace + TypeDB 3.12 engine that ingests human-readable "OKF" documentation bundles into a strongly-typed knowledge graph, then executes playbook code blocks in an all-WebAssembly sandbox. It also ships an always-on **epistemic memory substrate** (bitemporal beliefs, provenance, semantic recall). See `README.md` for the product-level overview and `docs/refactor/KNOWN-LIMITATIONS.md` for load-bearing caveats.
+A Rust workspace + TypeDB 3.15 engine that ingests human-readable "OKF" documentation bundles into a strongly-typed knowledge graph, then executes playbook code blocks in an all-WebAssembly sandbox. It also ships an always-on **epistemic memory substrate** (bitemporal beliefs, provenance, semantic recall). See `README.md` for the product-level overview and `docs/refactor/KNOWN-LIMITATIONS.md` for load-bearing caveats.
 
 ## Build / test / lint
 
@@ -60,7 +60,7 @@ JavaScript playbooks run in a **Boa** JS engine compiled to `wasm32-wasip1`, che
 
 **The embedding model is a runtime asset, never in the build tree.** `auto_fetch` defaults to `false` (no silent 1.3GB pull). The model id is pinned by immutable HuggingFace commit SHA as `BAAI/bge-large-en-v1.5@<sha>` (`default_model_id()` in `gecko-bin/src/config.rs`, single-sourced from `PINNED_MODEL_REVISION` in `core/gecko-semantic-index/src/fetch.rs`) — the **`BAAI/` org prefix is required** or the HF fetch 401s. Downloads are checksum-verified.
 
-**CI structure** (`.github/workflows/`): `ci.yml` is per-push, **must stay candle-free** (a `cargo tree | grep candle` guard enforces this) and runs against a TypeDB 3.12 service. `model-integration.yml` is the Tier-3 real-model job — **manual `workflow_dispatch` only**; validate the model locally otherwise. Changing the pinned model id/revision trips the `model-bump-gate` job, which requires a green Tier-3 run and the `tier3-validated` PR label. Tier-3 tests read `GECKO_SMOKE_MODEL_DIR` (a staged model dir) or they skip.
+**CI structure** (`.github/workflows/`): `ci.yml` is per-push, **must stay candle-free** (a `cargo tree | grep candle` guard enforces this) and runs against a TypeDB 3.15 service. `model-integration.yml` is the Tier-3 real-model job — **manual `workflow_dispatch` only**; validate the model locally otherwise. Changing the pinned model id/revision trips the `model-bump-gate` job, which requires a green Tier-3 run and the `tier3-validated` PR label. Tier-3 tests read `GECKO_SMOKE_MODEL_DIR` (a staged model dir) or they skip.
 
 ## Code-quality conventions
 

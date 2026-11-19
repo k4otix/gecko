@@ -102,6 +102,10 @@ pub enum RegistryError {
         "extension `{extension}` has an `alias` token in its schema or a migration; the belief-edge registry cannot resolve aliased types"
     )]
     AliasUnsupported { extension: String },
+    #[error(
+        "extension `{extension}` renames a type or role with `label` in its schema or a migration; the belief-edge registry resolves types by their declared labels"
+    )]
+    RenameUnsupported { extension: String },
     #[error("extension `{extension}` is not registered; the belief-edge registry needs its schema")]
     MemMissing { extension: String },
 }
@@ -134,6 +138,12 @@ impl BeliefEdgeRegistry {
             // No rule resolves an alias to the type it names, so none is allowed.
             if stmts.iter().any(|s| s.has("alias")) {
                 return Err(RegistryError::AliasUnsupported {
+                    extension: ext.name.to_owned(),
+                });
+            }
+            // A rename moves a label out from under every rule that resolved it.
+            if stmts.iter().any(Statement::renames) {
+                return Err(RegistryError::RenameUnsupported {
                     extension: ext.name.to_owned(),
                 });
             }
@@ -757,6 +767,46 @@ mod tests {
         let quoted =
             format!("{PROBE_SCHEMA}  # alias\n  entity foo @doc(\"An alias for nothing.\");\n");
         build(&[frag("probe-ext", &quoted, &foo)]).expect("builds");
+    }
+
+    fn assert_rename_unsupported(err: &RegistryError, by: &str) {
+        match err {
+            RegistryError::RenameUnsupported { extension } => assert_eq!(extension, by),
+            other => panic!("expected RenameUnsupported, got {other:?}"),
+        }
+        assert!(err.to_string().contains(by), "{err}");
+    }
+
+    #[test]
+    fn refuses_an_extension_fragment_that_renames_a_type_or_role() {
+        // A rename of a mem type or role.
+        for rename in [
+            "redefine\n  belief label idea;\n",
+            "redefine\n  entity belief label idea;\n",
+            "redefine\n  supersession:superseded label old;\n",
+        ] {
+            let err = build_x_and_y("", rename).unwrap_err();
+            assert_rename_unsupported(&err, "y-ext");
+        }
+        // A rename of the declarer's own relation, which its declaration names by label.
+        let err = build_x_and_y("redefine\n  x-link label y-link;\n", "").unwrap_err();
+        assert_rename_unsupported(&err, "x-ext");
+        // A rename carried by a migration.
+        let probe = [decl("probe-link")];
+        let err = build_with_migration(
+            "probe-ext",
+            PROBE_SCHEMA,
+            Some("redefine concept label thing-x;"),
+            &probe,
+        )
+        .unwrap_err();
+        assert_rename_unsupported(&err, "probe-ext");
+
+        // A function body's `$t label …` pattern is not a rename.
+        let with_fun = format!(
+            "{PROBE_SCHEMA}  fun probe-link-exists() -> boolean:\n    match $t label probe-link;\n    return check;\n"
+        );
+        build(&[frag("probe-ext", &with_fun, &probe)]).expect("builds");
     }
 
     fn assert_not_owned(err: &RegistryError, why: &str) {
