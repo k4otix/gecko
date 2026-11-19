@@ -285,20 +285,24 @@ pub(crate) fn supersession_ops(
     link.s("nid", new_id.0.clone());
     link.s("reason", reason);
     link.dt("ca", created_at);
-    let link_op = link.write(
-        "match
+    let link_op = link
+        .write(
+            "match
            $o isa belief, has concept-id $oc; $oc == $oid;
            $n isa belief, has concept-id $nc; $nc == $nid;
          insert (superseded: $o, superseding: $n) isa supersession,
              has supersession-reason == $reason, has created-at == $ca;",
-    );
+        )
+        .expecting(1);
 
     let mut flip = Params::new();
     flip.s("oid", old.0.clone());
-    let flip_op = flip.write(
-        "match $o isa belief, has concept-id $oc; $oc == $oid;
+    let flip_op = flip
+        .write(
+            "match $o isa belief, has concept-id $oc; $oc == $oid;
          update $o has belief-state \"superseded\";",
-    );
+        )
+        .expecting(1);
 
     vec![link_op, flip_op]
 }

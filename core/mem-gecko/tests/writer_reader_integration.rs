@@ -695,6 +695,37 @@ async fn supersede_rejects_lower_entrenchment_and_leaves_graph_unchanged() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Superseding a belief that does not exist errors and commits nothing: no orphan
+// replacement belief is left behind.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn supersede_of_a_missing_belief_errors_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let err = w
+        .supersede(
+            &ctx,
+            MemId::new("mem/bel/does-not-exist"),
+            belief("orphan replacement", "agent-1", 0.5),
+            "r",
+        )
+        .await
+        .expect_err("superseding a missing belief must fail");
+    assert!(matches!(err, EpistemicError::Storage(_)), "got {err:?}");
+
+    let orphans = fx
+        .raw_fetch(
+            r#"match $b isa belief, has title $t; $t == "orphan replacement"; fetch { "t": $t };"#,
+        )
+        .await;
+    assert!(orphans.is_empty(), "no replacement belief was committed");
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // An equal-or-higher entrenchment supersede SUCCEEDS.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
