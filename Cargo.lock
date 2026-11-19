@@ -2540,6 +2540,7 @@ dependencies = [
  "gecko-extension-api",
  "gecko-semantic-index",
  "serde_json",
+ "thiserror 2.0.21",
  "tokio",
  "typedb-driver",
  "ulid",

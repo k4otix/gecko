@@ -1,0 +1,205 @@
+//! A token-level scanner that finds the type statements a TypeQL schema fragment makes.
+
+/// What a schema statement does to the type it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// `entity <label> …`.
+    Entity,
+    /// `relation <label> …`.
+    Relation,
+    /// `attribute <label> …`.
+    Attribute,
+    /// `<label> relates|owns|plays|sub …`, or a `redefine` of `<label>`: extends a type
+    /// introduced elsewhere.
+    Touch,
+}
+
+/// One type statement in a schema fragment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TypeHead {
+    pub(super) kind: Kind,
+    pub(super) label: String,
+    /// The supertype named by the statement's `sub` clause.
+    pub(super) sub: Option<String>,
+    /// Whether any `relates X as Y` clause appears in the statement.
+    pub(super) relates_as: bool,
+}
+
+/// Returns the type statements of `fragment`, ignoring comments, string literals and
+/// function bodies.
+pub(super) fn type_heads(fragment: &str) -> Vec<TypeHead> {
+    let tokens = tokenize(&strip_comments_and_strings(fragment));
+    tokens
+        .split(|t| t == ";")
+        .filter_map(statement_head)
+        .collect()
+}
+
+/// Removes `#`-to-end-of-line comments and `"…"` literals (honoring `\"`), keeping line breaks.
+fn strip_comments_and_strings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '#' => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                out.push(' ');
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Splits on whitespace and `, ( ) : { }`, keeping each `;` as its own token.
+fn tokenize(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for c in text.chars() {
+        if c.is_whitespace() || matches!(c, ',' | '(' | ')' | ':' | '{' | '}' | ';') {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            if c == ';' {
+                tokens.push(";".to_owned());
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Whether `token` can be a type label rather than a variable, annotation or keyword.
+fn is_label(token: &str) -> bool {
+    token.starts_with(|c: char| c.is_ascii_lowercase())
+}
+
+fn statement_head(statement: &[String]) -> Option<TypeHead> {
+    let (redefine, rest) = match statement.first().map(String::as_str) {
+        Some("define") => (false, &statement[1..]),
+        Some("redefine") => (true, &statement[1..]),
+        _ => (false, statement),
+    };
+    let first = rest.first()?.as_str();
+    let declared = match first {
+        "entity" => Some(Kind::Entity),
+        "relation" => Some(Kind::Relation),
+        "attribute" => Some(Kind::Attribute),
+        _ => None,
+    };
+    let (kind, label, clauses) = match declared {
+        Some(kind) => {
+            let label = rest.get(1)?;
+            let kind = if redefine { Kind::Touch } else { kind };
+            (kind, label, &rest[2..])
+        }
+        None => {
+            let second = rest.get(1)?.as_str();
+            if !(is_label(first) && matches!(second, "relates" | "owns" | "plays" | "sub")) {
+                return None;
+            }
+            (Kind::Touch, &rest[0], &rest[1..])
+        }
+    };
+    if !is_label(label) {
+        return None;
+    }
+    let sub = clauses
+        .iter()
+        .position(|t| t == "sub")
+        .and_then(|i| clauses.get(i + 1))
+        .cloned();
+    // `as` occurs in a type statement only as a `relates X as Y` override, which may carry
+    // annotations between the role and the `as`.
+    let relates_as = clauses.iter().any(|t| t == "relates") && clauses.iter().any(|t| t == "as");
+    Some(TypeHead {
+        kind,
+        label: label.clone(),
+        sub,
+        relates_as,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MemGecko;
+    use gecko_extension_api::GeckoExtension;
+
+    fn heads_named<'a>(heads: &'a [TypeHead], label: &str) -> Vec<&'a TypeHead> {
+        heads.iter().filter(|h| h.label == label).collect()
+    }
+
+    #[test]
+    fn scanner_finds_relation_heads_in_mem() {
+        let mem = MemGecko::new();
+        let heads = type_heads(mem.schema());
+        for label in ["supersession", "scoped"] {
+            let found = heads_named(&heads, label);
+            assert!(
+                found
+                    .iter()
+                    .any(|h| h.kind == Kind::Relation && h.sub.is_none()),
+                "no un-subtyped relation head for {label}: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scanner_ignores_doc_strings_and_comments() {
+        let heads = type_heads(
+            "define\n  entity a @doc(\"relation fake-rel, relates x\");\n  # relation also-fake\n",
+        );
+        assert!(heads_named(&heads, "fake-rel").is_empty());
+        assert!(heads_named(&heads, "also-fake").is_empty());
+        assert_eq!(heads_named(&heads, "a")[0].kind, Kind::Entity);
+    }
+
+    #[test]
+    fn scanner_distinguishes_prefix_labels() {
+        let heads = type_heads("define relation probe-link-x, relates a, relates b;");
+        assert!(heads_named(&heads, "probe-link").is_empty());
+        assert_eq!(heads_named(&heads, "probe-link-x").len(), 1);
+    }
+
+    #[test]
+    fn scanner_records_sub_relates_as_and_touch() {
+        let heads =
+            type_heads("define relation r2 sub r1, relates q as p;\n x-link relates extra;");
+        let r2 = heads_named(&heads, "r2");
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].kind, Kind::Relation);
+        assert_eq!(r2[0].sub.as_deref(), Some("r1"));
+        assert!(r2[0].relates_as);
+        let touch = heads_named(&heads, "x-link");
+        assert_eq!(touch.len(), 1);
+        assert_eq!(touch[0].kind, Kind::Touch);
+    }
+
+    #[test]
+    fn scanner_function_bodies_yield_no_heads() {
+        assert!(type_heads(crate::MEM_FUNCTIONS).is_empty());
+        let mem = MemGecko::new();
+        assert_eq!(type_heads(mem.schema()), type_heads(crate::MEM_TYPES));
+    }
+}
