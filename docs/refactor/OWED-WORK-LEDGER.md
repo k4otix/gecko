@@ -19,7 +19,7 @@ references in specs and commit messages still resolve.
 - **Landed in PR #50:** the W2/W3 schema fold, the as-of functions, `blast-radius-at`, the
   disposition ranker (pure half), the populations writer, function-aware schema re-apply, and
   the §5 acceptance suite (20 tests run by default, 5 evidence probes ignored).
-- **Broken on main:** a database initialized before PR #50 cannot be upgraded (**F1**).
+- **Fixed after the review:** a database initialized before PR #50 could not be upgraded (**F1**, now landed on `review/ledger-2026-11`).
 - **Keystone:** the `BeliefEdgeDecl` seam (**A1**). It unblocks the cyber migration, both W5a
   tests going green, the divergence-exception writer, and the resolved half of the disposition
   writer. It does **not** gate the populations work, the bitemporal track, or the three daemon
@@ -28,7 +28,7 @@ references in specs and commit messages still resolve.
 ## Sequence
 
 ```text
-F1 ──────────────────────────────► (unblocks every pre-#50 database; do first)
+F1 ✅ ───────────────────────────► (pre-#50 databases upgrade again)
 F2, F3, F4, F5, F6, F7 ──────────► independent; no blockers
 
 D-B, D-D ──► A1 ──┬─► A2 ──► A3 green, A4 green
@@ -52,7 +52,7 @@ C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I 
 
 | ID | Item | Severity | Where | Done when |
 |---|---|---|---|---|
-| **F1** | **Schema upgrade path for changed type annotations.** `define` refuses a changed `@doc`/`@card`/`@values` (`[DEX15]`); PR #50 changed `population-member`'s `@doc`, so `schema-init`/`sync` fail on every pre-#50 database. Add an ordered, versioned migration list (explicit `redefine`/`undefine` fragments keyed by a stored schema version) that runs before the idempotent `define`; first entry is the `population-member` `@doc` redefine (verified to unblock the upgrade). Functions dropped from the shipped schema are undefined through the same list. (completes #11) | High | `db/router.rs:240`, `db/schema_apply.rs`, `mem_types.tql:252` — REVIEW D1 | A test applies the previous release's composed schema, then the current one, and passes in the per-push TypeDB job; the "idempotent" doc comments in `router.rs`/`main.rs` are corrected |
+| **F1** ✅ | **Schema upgrade path for changed type annotations — LANDED.** `SchemaMigration { id, applies_when, tql }` in `gecko-extension-api`, `GeckoExtension::schema_migrations()`, and `TypeDbRouter::apply_schema_with_migrations`: pending migrations run first, in the extension's schema transaction. Migrations are **self-detecting** rather than keyed by a stored version: one runs only while the database's exported schema still contains its `applies_when` text. A stored marker cannot work for the first migration, because databases created by `main` @`8eedf85` already hold the new `@doc` and have no marker, and an identical `redefine` is refused (`[REX25]`). First entry: `mem/population-member-window-doc`. Dropping a shipped function goes through the same list (`undefine fun …`, `applies_when: "fun …("`). (completes #11's type half) | High | `gecko-extension-api/src/lib.rs`, `db/router.rs`, `mem-gecko/src/lib.rs` `MEM_MIGRATIONS` — REVIEW D1 | ✅ `previous_release_upgrades_to_the_shipped_schema` applies the pinned 95ebac1 schema (`tests/fixtures/mem_schema_95ebac1.tql`), asserts plain `define` fails `[DEX15]`, then upgrades twice; `migrations_lead_to_the_shipped_schema` keeps each migration in step with the shipped text; doc comments corrected |
 | **F2** | **Harden function-aware re-apply.** (a) Order `redefine`s and new-function `define`s callee-first; report an unsatisfiable mutual signature change as a schema error. (b) End a function block at its `return …;` so a trailing `<type> plays/owns …;` statement or comment is not swallowed into a `redefine`. | Medium | `db/schema_apply.rs:45-120` — REVIEW D2, D3 | Unit tests for caller-before-callee and for a trailing additive statement; a Tier-2 test re-applies such a fragment twice |
 | **F3** | **Populations writer atomicity and truthful reporting.** Make open/close/refresh ops self-guarding (no second open row; stale guard in the match), add a per-population lock around read-plan-write, report attempted counts as attempted, bound `at` against the host clock, and error on an unparseable stored datetime. Fix the module doc that says the read happens in the write transaction. | Medium | `writer.rs:403-544`, `populations.rs:14-15, 56-94`, `tql.rs:685-735` — REVIEW D4, D7a/b/e | A Tier-2 test runs two overlapping passes and finds one open row per member and a monotonic `computed-at` |
 | **F4** | **Present-state `blast-radius` excludes closed membership rows**, matching `population-members`. Decide and document whether `EpistemicReader::blast_radius` accepts a member concept or the member entry stays `blast_radius_at`-only. | Low–Medium | `mem_functions.tql:67-83`, `writer.rs:1110-1121` — REVIEW D6 | A departed member no longer sweeps its former cohort through `blast-radius`; applied to existing databases through F1's path |
@@ -174,7 +174,7 @@ on `origin/conflict_resolution` only and will dangle if that branch is deleted.
 | #6 | `blast-radius-at` + `MemWriter::blast_radius_at`; `windowed_blast_radius_traversal_respects_membership_window` | SPEC-W2-W3 §3.4, §5 | `ba25e0b` | — |
 | #9 | Populations writer + pure planner | SPEC-W2-W3 §3.5 | `4c72a95` | F3, P1–P4 |
 | #10 (ranker) | `mem_gecko::disposition::rank`, `DerivationMethod::rank` | SPEC-W2-W3 §2.3 | `3dbb393` | F5; writer half: A6 |
-| #11 | Function-aware schema re-apply (`db::schema_apply`, `TypeDbRouter::apply_schema`) — fixes `[FUN5]` on re-run | SPEC-W2-W3 §1.4 | `ba25e0b` | **Partial:** F1, F2 |
+| #11 | Function-aware schema re-apply (`db::schema_apply`, `TypeDbRouter::apply_schema`) — fixes `[FUN5]` on re-run | SPEC-W2-W3 §1.4 | `ba25e0b` | **Partial:** F2 (F1 landed) |
 | — | §5 acceptance suite: 20 tests run by default, 5 evidence probes `#[ignore]` (C2, b2, b3 ×2, compositional windowed) | SPEC-W2-W3 §5 | `09467b9`, names `4163fa8` | F6 |
 | — | W5a surface probe (membership form) | SPEC-W5 §2.3, §5 row 4 | `09467b9` | D-G |
 

@@ -60,6 +60,25 @@ pub struct HostImportDef {
     pub description: String,
 }
 
+/// A schema change TypeDB's idempotent `define` cannot apply to a database that
+/// already holds an earlier version of the schema — such as a changed annotation
+/// (`@doc`, `@card`, `@values`), which `define` refuses (`[DEX15]`).
+///
+/// A migration is self-detecting: it runs only while the database's current schema
+/// text still contains `applies_when`, so it is skipped on a fresh database and on one
+/// that already holds the new definition (where an identical `redefine` would be
+/// refused, `[REX25]`). Pending migrations run, in order, in the same schema
+/// transaction as the extension's `define`, before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchemaMigration {
+    /// Stable identifier, namespaced by extension (e.g. `mem/population-member-doc`).
+    pub id: &'static str,
+    /// Text present in the database's exported schema only before this migration.
+    pub applies_when: &'static str,
+    /// The TypeQL (`redefine`/`undefine`) that brings the schema forward.
+    pub tql: &'static str,
+}
+
 /// Trait that domain-specific extensions must implement.
 ///
 /// The Assembler binary (`gecko-bin`) instantiates extension structs and passes
@@ -80,6 +99,13 @@ pub trait GeckoExtension: Send + Sync {
     /// Must use `sub` to inherit from `okf-concept` or `okf-link` types
     /// defined in the core schema (design §4).
     fn schema(&self) -> &str;
+
+    /// Migrations that bring an earlier version of [`schema`](Self::schema) forward on
+    /// an existing database, applied before it. Empty when the schema has only ever
+    /// changed in ways `define` re-applies.
+    fn schema_migrations(&self) -> &[SchemaMigration] {
+        &[]
+    }
 
     /// Host-imported functions this extension provides to sandboxed scripts.
     ///

@@ -597,8 +597,9 @@ async fn cmd_databases(config: DbConfig) -> Result<()> {
 
 /// Applies the core schema (embedded or a custom file) plus every extension
 /// schema, and runs each extension's init hook. Safe to re-run on every sync:
-/// `apply_schema` re-`define`s types idempotently and `redefine`s functions the
-/// database already holds, so a changed shipped function body takes effect.
+/// unchanged types re-`define` idempotently, functions the database already holds
+/// are `redefine`d, and each extension's pending schema migrations bring changed
+/// type annotations forward first.
 async fn apply_all_schemas(
     db: &mut TypeDbRouter,
     extensions: &[Box<dyn GeckoExtension>],
@@ -620,7 +621,7 @@ async fn apply_all_schemas(
     for ext in extensions {
         let schema = ext.schema();
         if !schema.trim().is_empty() {
-            db.apply_schema(schema)
+            db.apply_schema_with_migrations(schema, ext.schema_migrations())
                 .await
                 .with_context(|| format!("Failed to apply {} schema", ext.name()))?;
             info!(extension = ext.name(), "Extension schema applied");

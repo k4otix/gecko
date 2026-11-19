@@ -10,7 +10,9 @@ use std::sync::LazyLock;
 
 use std::sync::Arc;
 
-use gecko_extension_api::{EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx};
+use gecko_extension_api::{
+    EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx, SchemaMigration,
+};
 
 pub mod consolidation;
 pub mod disposition;
@@ -40,6 +42,14 @@ static MEM_SCHEMA: LazyLock<String> = LazyLock::new(|| {
         .unwrap_or(MEM_FUNCTIONS);
     format!("{}\n{}", MEM_TYPES.trim_end(), functions_body)
 });
+
+/// Schema migrations for databases initialized with an earlier mem schema, oldest
+/// first. Each runs only while the database still holds the text it replaces.
+pub const MEM_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
+    id: "mem/population-member-window-doc",
+    applies_when: "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, with a staleness marker.\")",
+    tql: "redefine relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\");",
+}];
 
 /// Cognitive memory extension.
 pub struct MemGecko;
@@ -73,6 +83,10 @@ impl GeckoExtension for MemGecko {
         &MEM_SCHEMA
     }
 
+    fn schema_migrations(&self) -> &[SchemaMigration] {
+        MEM_MIGRATIONS
+    }
+
     fn host_imports(&self) -> Vec<HostImportDef> {
         vec![]
     }
@@ -101,6 +115,30 @@ impl GeckoExtension for MemGecko {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrations_lead_to_the_shipped_schema() {
+        // Each migration's replaced text is gone from the shipped schema, and the
+        // annotation it installs is the one the shipped schema defines, so applying
+        // the shipped `define` after it is a no-op for that type.
+        for m in MEM_MIGRATIONS {
+            assert!(
+                !MEM_SCHEMA.contains(m.applies_when),
+                "{}: shipped schema still contains the replaced text",
+                m.id
+            );
+            let installed = m
+                .tql
+                .strip_prefix("redefine ")
+                .and_then(|t| t.strip_suffix(';'))
+                .expect("migration is a single redefine statement");
+            assert!(
+                MEM_SCHEMA.contains(installed),
+                "{}: shipped schema does not define {installed}",
+                m.id
+            );
+        }
+    }
 
     #[test]
     fn test_schema_is_single_define_block() {

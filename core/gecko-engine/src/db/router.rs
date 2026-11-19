@@ -10,6 +10,8 @@ use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 
+use gecko_extension_api::SchemaMigration;
+
 use super::schema_apply;
 use typedb_driver::{
     Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
@@ -230,26 +232,50 @@ impl TypeDbRouter {
         Ok(all.iter().map(|d| d.name().to_string()).collect())
     }
 
-    /// Installs a TypeQL schema definition into the database, safely re-appliable.
-    ///
-    /// Types are `define`d (idempotent). A function the database already holds is
-    /// `redefine`d with the fragment's body rather than re-`define`d, which TypeDB
-    /// refuses (`[FUN5]`); new functions are `define`d. Everything runs in one
-    /// schema transaction. Functions the database holds but the fragment omits are
-    /// left in place.
-    pub async fn apply_schema(&mut self, schema_content: &str) -> Result<(), DbError> {
+    /// The database's full schema (types and functions) as TypeQL `define` text.
+    pub async fn database_schema(&mut self) -> Result<String, DbError> {
         self.ensure_database().await?;
         let db_name = self.config.database.clone();
         let driver = self.driver().await?;
-
-        let current = driver
+        driver
             .databases()
             .get(&db_name)
             .await
             .map_err(to_db_err(DbError::Schema))?
             .schema()
             .await
-            .map_err(to_db_err(DbError::Schema))?;
+            .map_err(to_db_err(DbError::Schema))
+    }
+
+    /// Installs a TypeQL schema definition into the database, safely re-appliable.
+    ///
+    /// Types are `define`d (idempotent for unchanged definitions). A function the
+    /// database already holds is `redefine`d with the fragment's body rather than
+    /// re-`define`d, which TypeDB refuses (`[FUN5]`); new functions are `define`d.
+    /// Everything runs in one schema transaction. Functions the database holds but
+    /// the fragment omits are left in place. A changed type annotation needs a
+    /// [`SchemaMigration`]; see [`apply_schema_with_migrations`](Self::apply_schema_with_migrations).
+    pub async fn apply_schema(&mut self, schema_content: &str) -> Result<(), DbError> {
+        self.apply_schema_with_migrations(schema_content, &[]).await
+    }
+
+    /// [`apply_schema`](Self::apply_schema), preceded in the same schema transaction
+    /// by every migration whose `applies_when` text is still present in the
+    /// database's schema, in order.
+    pub async fn apply_schema_with_migrations(
+        &mut self,
+        schema_content: &str,
+        migrations: &[SchemaMigration],
+    ) -> Result<(), DbError> {
+        self.ensure_database().await?;
+        let db_name = self.config.database.clone();
+        let driver = self.driver().await?;
+
+        let current = self.database_schema().await?;
+        let pending: Vec<&SchemaMigration> = migrations
+            .iter()
+            .filter(|m| current.contains(m.applies_when))
+            .collect();
         let queries =
             schema_apply::plan_queries(schema_content, &schema_apply::function_names(&current))
                 .map_err(DbError::Schema)?;
@@ -259,6 +285,11 @@ impl TypeDbRouter {
             .await
             .map_err(to_db_err(DbError::Schema))?;
 
+        for m in &pending {
+            tx.query(m.tql)
+                .await
+                .map_err(|e| DbError::Schema(format!("schema migration '{}' failed: {e}", m.id)))?;
+        }
         for query in &queries {
             tx.query(query.as_str())
                 .await
@@ -267,6 +298,9 @@ impl TypeDbRouter {
 
         tx.commit().await.map_err(to_db_err(DbError::Schema))?;
 
+        for m in &pending {
+            info!(database = %db_name, migration = m.id, "Schema migration applied");
+        }
         info!(database = %db_name, "Schema applied");
         Ok(())
     }

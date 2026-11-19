@@ -1,0 +1,458 @@
+# mem-gecko schema as released at 95ebac1 (before the population-member window),
+# composed exactly as MemGecko::schema() composed it. Fixture for upgrade tests only.
+define
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2 — mem-gecko substrate ontology (additive on core_schema.tql)
+  # ══════════════════════════════════════════════════════════════════
+
+  # ── A2.2 State enums ──────────────────────────────────────────────
+  attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");
+  attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");
+  attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "type-db-function", "external-tool", "human-assertion", "llm-synthesis");
+  attribute entrenchment value string @values("axiom", "user-stated", "tool-derived", "inferred", "llm");
+  attribute stability-tier value string @values("volatile", "provisional", "stable", "canonical");
+  attribute visibility value string @values("private", "team", "shared");
+  attribute justification-status value string @values("in", "out");
+
+  # ── A2.4 Bitemporal + decay attrs ─────────────────────────────────
+  attribute event-time value datetime;
+  attribute ingest-time value datetime;
+  attribute valid-from value datetime;
+  attribute valid-to value datetime;
+  attribute salience value double;
+  attribute base-activation value double;
+  attribute access-count value integer;
+  attribute last-access value datetime;
+  attribute half-life-hours value double;
+
+  # ── misc scalar attrs ─────────────────────────────────────────────
+  attribute confidence value double;
+  attribute corroboration-count value integer;
+  attribute supersession-reason value string;
+  attribute created-at value datetime;
+  attribute computed-at value datetime;
+  attribute condition value string;
+  attribute execution-status value string @values("pending", "active", "suspended", "completed", "failed");
+  attribute deadline value datetime;
+  attribute agent-id value string;
+  attribute origin-kind value string;          # OPEN, adapter-extensible set (invariant 9) — NOT @values
+  attribute run-id value string;
+  attribute tool-name value string;
+  attribute pivot-method value string;
+  attribute calibration-score value double;
+  attribute predicted-probability value double;
+  attribute outcome value string;
+
+  # ── A2.9 population attrs ──────────────────────────────────────────
+  attribute spec-dialect value string;         # (dialect, text) modelled as 2 attrs; structs unimpl in 3.x
+  attribute spec-text value string;            # a stored TypeDB match clause — the DEFINING predicate (SoR)
+  attribute spec-hash value string;
+
+  # ── A2.10 retrieval-provenance attrs ──────────────────────────────
+  attribute retrieval-method value string @values("semantic", "typed", "hybrid");
+  attribute retrieval-provenance value string @values("semantic", "typed", "hybrid", "none");
+  attribute similarity-score value double;
+  attribute was-used value boolean;
+  attribute candidate-count value integer;     # sketch said `long`; 3.x has no long -> integer (64-bit)
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.1 Memory-item hierarchy (four-layer substrate)
+  #   id scheme: concept-id @key inherited from okf-concept (mem/ep|bel/{ulid})
+  # ══════════════════════════════════════════════════════════════════
+  entity memory-item @abstract, sub okf-concept @doc("Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies."),
+      owns salience @card(0..1),
+      owns base-activation @card(0..1),
+      owns access-count @card(0..1),
+      owns last-access @card(0..1),
+      owns consolidation-state @card(0..1),
+      plays derivation:derived,
+      plays derivation:source,
+      plays evidence:evidenced,
+      plays evidence:evidence-item,
+      plays justification:consequent,
+      plays justification:antecedent,
+      plays support:supporter,
+      plays support:supported,
+      plays attack:attacker,
+      plays attack:attacked,
+      plays supersession:superseded,
+      plays supersession:superseding,
+      plays source-link:memory,
+      plays ownership:owned,
+      plays rests-on:resting,
+      plays rests-on:assumption,
+      plays pivot:from-state,            # A2.8 pivot: a memory-item is the state pivoted from
+      plays pivot:to-state,              # A2.8 pivot: ...and the state pivoted to
+      plays surfaced:item;               # anything surfaced by a retrieval (typically a belief)
+
+  entity episode sub memory-item @doc("A time-stamped episodic memory of something that happened, carrying its event-time, ingest-time, and an optional decay half-life."),
+      owns event-time @card(1),
+      owns ingest-time @card(1),
+      owns half-life-hours @card(0..1),
+      plays prediction-resolution:resolving-episode,
+      plays execution:episode-step,
+      plays tool-invocation:invocation-episode;
+
+  entity belief sub memory-item @doc("A bitemporal proposition the system holds, with a lifecycle state, optional confidence and entrenchment, and an optional validity window."),
+      owns belief-state @card(1),
+      owns confidence @card(0..1),
+      owns entrenchment @card(0..1),
+      owns valid-from @card(0..1),
+      owns valid-to @card(0..1),
+      owns retrieval-provenance @card(0..1),   # write-once summary flag (A2.10)
+      plays contradiction:claim,
+      plays scoped:scoped-belief,
+      plays prediction-resolution:predicted-belief,
+      plays informs-synthesis:synthesized;
+
+  entity playbook sub memory-item @doc("A reusable procedure held in memory, with a stability tier and a count of how many times it has been corroborated."),
+      owns stability-tier @card(0..1),
+      owns corroboration-count @card(0..1);
+
+  entity working-set sub memory-item @doc("A transient grouping of memory items held together for the duration of a task.");
+
+  # episode domain subtype used by retrieval provenance
+  entity execution-episode sub episode @doc("An episode representing a step of an execution run; the episodic tier from which retrievals inform belief synthesis."),
+      plays informs-synthesis:retrieval;
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.3 Provenance relations (reified)
+  # ══════════════════════════════════════════════════════════════════
+  relation derivation @doc("Records that one memory item was derived from one or more source items by a named derivation method, with optional confidence."),
+      relates derived @doc("The memory item produced by the derivation."),
+      relates source @card(1..) @doc("A memory item the derivation drew on."),
+      owns derivation-method @card(1),
+      owns confidence @card(0..1);
+
+  relation evidence @doc("Ties a memory item to the one or more evidence items that support it."),                       # n-ary
+      relates evidenced @doc("The memory item being evidenced."),
+      relates evidence-item @card(1..) @doc("A memory item serving as evidence.");
+
+  relation justification @doc("A JTMS justification: a consequent held IN or OUT depending on the status of its antecedents."),                  # JTMS IN/OUT
+      relates consequent @doc("The memory item justified by the antecedents."),
+      relates antecedent @card(0..) @doc("A memory item the justification depends on; zero antecedents is an unconditional premise."),
+      owns justification-status @card(0..1);
+
+  relation support @doc("One memory item lends support to another."),
+      relates supporter @doc("The memory item offering support."),
+      relates supported @doc("The memory item being supported.");
+
+  relation attack @doc("One memory item argues against another."),
+      relates attacker @doc("The memory item making the attack."),
+      relates attacked @doc("The memory item being attacked.");
+
+  # A2.3 contradiction -> anomaly hub (claims 2..)
+  entity anomaly sub memory-item @doc("A contradiction hub: a memory node linking a set of claims that cannot all hold, with the condition under which they conflict."),
+      owns condition @card(0..1),
+      plays contradiction:hub;
+
+  relation contradiction @doc("Groups two or more mutually inconsistent claims under an anomaly hub."),
+      relates hub @doc("The anomaly node collecting the conflicting claims."),
+      relates claim @card(2..) @doc("A memory item that conflicts with the other claims.");
+
+  # deprecation / supersession
+  relation supersession @doc("Records that one memory item supersedes (deprecates) another, with a reason and the time it happened."),
+      relates superseded @doc("The memory item being deprecated."),
+      relates superseding @doc("The memory item that replaces it."),
+      owns supersession-reason @card(0..1),
+      owns created-at @card(1);
+
+  # source-link: memory -> origin (1.. in concept|document|code-block|doc-run)
+  relation source-link @doc("Links a memory item to the origin(s) it was produced from — a concept, code block, or doc-run — tagged by origin kind."),
+      relates memory @doc("The memory item that was produced."),
+      relates origin @card(1..) @doc("A source the memory item came from (a concept, external resource, or doc-run)."),
+      owns origin-kind @card(0..1);
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.5 Prospective: intention + goal-hierarchy
+  # ══════════════════════════════════════════════════════════════════
+  entity intention sub memory-item @doc("A prospective goal the system holds, with an execution status, optional deadline, and a place in a goal hierarchy."),
+      owns execution-status @card(1),
+      owns deadline @card(0..1),
+      plays goal-hierarchy:parent-goal,
+      plays goal-hierarchy:child-goal;
+
+  relation goal-hierarchy @doc("Parent/child decomposition of an intention into sub-goals."),                 # self-referential on intention
+      relates parent-goal @doc("The enclosing goal."),
+      relates child-goal @doc("A sub-goal of the parent.");
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.6 Anti-context: learned-constraint + contextualizes
+  # ══════════════════════════════════════════════════════════════════
+  entity learned-constraint sub memory-item @doc("A learned anti-context rule: a condition under which some concept does not apply, used to suppress out-of-context recall."),
+      owns condition @card(0..1),
+      plays contextualizes:constraint;
+
+  relation contextualizes @doc("Applies a learned constraint to the concept whose context it narrows."),                 # constraint -> any concept
+      relates constraint @doc("The learned constraint being applied."),
+      relates context-target @doc("The concept the constraint contextualizes.");
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.7 Multi-agent: agent + ownership
+  # ══════════════════════════════════════════════════════════════════
+  entity agent @doc("An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping."),
+      owns agent-id @key,
+      plays ownership:owner,
+      plays pivot:pivoting-agent;         # A2.8 pivot: the agent that made the investigative move
+
+  relation ownership @doc("Assigns a memory item to its owning agent(s) and carries the visibility scope that gates who can recall it."),
+      relates owned @doc("The memory item being owned."),
+      relates owner @card(1..) @doc("An agent that owns the memory item."),
+      owns visibility @card(0..1);
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.8 Cross-cutting primitives (substrate, invariant 5)
+  # ══════════════════════════════════════════════════════════════════
+  relation rests-on @doc("Records the assumptions a memory item depends on; retracting an assumption propagates through this edge to everything resting on it."),
+      relates resting @doc("The memory item that depends on the assumptions."),
+      relates assumption @card(1..) @doc("A memory item taken as an assumption by the resting item.");
+
+  relation pivot @doc("A reified investigative move by an agent from one memory state to another, capturing the method and a calibration score."),                          # reified n-ary investigative move + calibration
+      relates pivoting-agent @doc("The agent that made the move."),
+      relates from-state @doc("The memory state pivoted from."),
+      relates to-state @doc("The memory state pivoted to."),
+      owns pivot-method @card(0..1),
+      owns calibration-score @card(0..1);
+
+  relation prediction-resolution @doc("Ties a predicted belief to the episode that resolved it, recording the predicted probability and the observed outcome."),
+      relates predicted-belief @doc("The belief whose prediction is being resolved."),
+      relates resolving-episode @doc("The episode that resolved the prediction."),
+      owns predicted-probability @card(0..1),
+      owns outcome @card(0..1);
+
+  # doc-run provenance
+  entity doc-run @doc("A single execution run of a playbook code block; the provenance origin stamped onto memory produced during the run, keyed by run-id."),
+      owns run-id @key,
+      owns event-time @card(0..1),
+      plays execution:run,
+      plays source-link:origin;
+
+  relation execution @doc("Groups the episode steps that make up a doc-run."),
+      relates run @doc("The doc-run being executed."),
+      relates episode-step @doc("An episode recorded as a step of the run.");
+
+  relation tool-invocation @doc("An episode recording a call to an external tool, identified by tool name."),
+      relates invocation-episode @doc("The episode in which the tool was invoked."),
+      owns tool-name @card(0..1);
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.9 Populations & cross-source resolution
+  # ══════════════════════════════════════════════════════════════════
+  entity population @doc("A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash."),
+      owns spec-dialect @card(0..1),
+      owns spec-text @card(0..1),
+      owns spec-hash @key,                 # dedup cohorts: two beliefs same cohort -> same node
+      plays scoped:population,
+      plays population-member:owning-population;
+
+  relation scoped @doc("Scopes a belief to the population it is about."),                         # belief -> population
+      relates scoped-belief @doc("The belief scoped to the population."),
+      relates population @doc("The population the belief concerns.");
+
+  # MATERIALIZED membership: derived cache of the spec's evaluation
+  relation population-member @doc("Materialized cache of a population's membership: the concepts the spec currently evaluates to, with a staleness marker."),
+      relates owning-population @doc("The population the membership belongs to."),
+      relates member @doc("A concept the population's spec currently matches."),
+      owns computed-at @card(0..1);        # staleness marker
+
+  # cross-source identity (invariant 9): canonical entity IS a population;
+  # resolution is a reified identity BELIEF (provenance, method, state, supersession)
+  entity resolution sub belief @doc("A reified identity belief asserting that two source records denote the same entity, carrying the full belief provenance, state, and supersession."),
+      plays resolves:resolution-belief;
+
+  relation resolves @doc("Asserts, via a resolution belief, that two source records refer to the same entity."),                       # two source-records -> same entity
+      relates resolution-belief @doc("The identity belief backing the resolution."),
+      relates record-a @doc("One of the two records being resolved together."),
+      relates record-b @doc("The other record being resolved together.");
+
+  # ══════════════════════════════════════════════════════════════════
+  # A2.10 Retrieval provenance (episodic tier, firewalled from derivation)
+  # ══════════════════════════════════════════════════════════════════
+  relation surfaced @doc("Reified record of what a retrieval surfaced, and the search signal behind it — similarity score and whether the item was actually used."),                       # reified: what was surfaced + the SEARCH signal
+      relates surfacer @doc("The retrieval event that surfaced the item."),
+      relates item @doc("A memory item (typically a belief) surfaced by the retrieval."),
+      owns similarity-score @card(0..1),   # cosine; meaningful only for semantic method
+      owns was-used @card(0..1);           # consumed by synthesis vs merely returned
+
+  relation informs-synthesis @doc("Ties a synthesized belief to the retrieval that informed it; episodic provenance kept firewalled from the logical derivation chain."),              # ties a synthesized belief to the retrieval
+      relates retrieval @doc("The retrieval event that fed the synthesis."),
+      relates synthesized @doc("The belief synthesized from the retrieval.");
+
+  # retrieval-event: episodic record that a retrieval happened
+  entity retrieval-event sub execution-episode @doc("An episodic record that a recall happened: the retrieval method used and how many candidates it considered."),
+      owns retrieval-method @card(0..1),
+      owns candidate-count @card(0..1),
+      plays surfaced:surfacer;
+
+  # ══════════════════════════════════════════════════════════════════
+  # Additive role wiring onto core authored/reference tier (records)
+  #   concept & external-resource are the source-record / origin players
+  # ══════════════════════════════════════════════════════════════════
+  # concept is the authored/reference record tier: it is the population member and the
+  # cross-source resolution record. (population-member:member / resolves:record-* are scoped
+  # to `concept` — not external-resource — so typed functions can return a single `{ concept }`
+  # type; external-resource is not a `okf-concept` subtype and would break return-type inference.)
+  # `concept` and `external-resource` are DEFINED in core_schema.tql; mem only ADDS plays roles
+  # (additive `<type> plays <role>;` form — never a root re-declaration of `entity concept`).
+  concept plays source-link:origin,
+      plays contextualizes:context-target,
+      plays population-member:member,
+      plays resolves:record-a,
+      plays resolves:record-b;
+
+  # external-resource participates only as a source-link origin (citation target), never as a
+  # typed-function return player.
+  external-resource plays source-link:origin;
+
+
+  # ══════════════════════════════════════════════════════════════════
+  # A3 — substrate functions (persisted; query-time reasoning)
+  # ══════════════════════════════════════════════════════════════════
+
+  # 1 — is-superseded($b) -> bool
+  fun is-superseded($b: memory-item) -> boolean @doc("True if the memory item has been superseded or retracted — either a supersession edge points at it, or its belief-state is 'superseded'/'retracted'."):
+      match
+          {
+              (superseded: $b, superseding: $newer) isa supersession;
+          } or {
+              $b has belief-state "superseded";
+          } or {
+              $b has belief-state "retracted";
+          };
+      return check;
+
+  # 2 — believed-at($t) -> {belief}  (temporal; index NOT involved)
+  fun believed-at($t: datetime) -> { belief } @doc("Returns the beliefs asserted and within their validity window as of time $t (valid-from <= $t and no valid-to on or before $t)."):
+      match
+          $b isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $t;
+          not { $b has valid-to $vt; $vt <= $t; };
+      return { $b };
+
+  # 3 — derivation-chain($b) -> {memory-item}  (recursive transitive closure)
+  fun derivation-chain($b: memory-item) -> { memory-item } @doc("Recursive transitive closure of the sources $b was derived from, following derivation edges to their roots."):
+      match
+          {
+              (derived: $b, source: $m) isa derivation;
+          } or {
+              (derived: $b, source: $mid) isa derivation;
+              let $m in derivation-chain($mid);
+          };
+      return { $m };
+
+  # 4 — retrieval-score($m,$now) -> double
+  #   THREE validated 3.12 constraints shape this body:
+  #   (a) CONTINUOUS half-life decay is NOT expressible in pure TQL — datetime-datetime yields a
+  #       duration, but duration/duration, duration->scalar, scalar->duration and ln/log are all
+  #       REJECTED. So the smooth 0.5^(age_hours/half_life) multiplier is applied HOST-SIDE (Rust Reader).
+  #   (b) A DURATION value cannot be used as a filtering comparison predicate: `$age <op> <dur-literal>`
+  #       parses but matches ZERO rows (verified for >,>=,< against a computed OR literal duration).
+  #       Temporal filtering must be done on DATETIME values (datetime comparisons filter correctly).
+  #   (c) A variable assigned ONLY inside `or`-branches is NOT bound at `return`. Keep $score top-level.
+  #   So: consume $now via a datetime comparison (last-access must not be in the future) and return
+  #   the static activation component; recency decay is layered on host-side.
+  fun retrieval-score($m: memory-item, $now: datetime) -> double @doc("The static activation component of a memory item's recall score (base-activation + salience); continuous half-life recency decay is applied host-side."):
+      match
+          $m has base-activation $ba, has salience $s, has last-access $la;
+          $la <= $now;                                 # datetime comparison (filters correctly); consumes $now
+          let $score = $ba + $s;                       # top-level binding, visible to `return`
+      return first $score;
+
+  # 6 — contradicts($b1,$b2) -> bool
+  fun contradicts($b1: belief, $b2: belief) -> boolean @doc("True if two distinct beliefs are both claims of the same contradiction."):
+      match
+          $c isa contradiction, links (claim: $b1, claim: $b2);
+          not { $b1 is $b2; };
+      return check;
+
+  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
+  fun blast-radius($r: memory-item) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all items reachable through rests-on assumption and derivation source edges."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              {
+                  (assumption: $r, resting: $mid) isa rests-on;
+              } or {
+                  (source: $r, derived: $mid) isa derivation;
+              };
+              let $m in blast-radius($mid);
+          };
+      return { $m };
+
+  # 5 — gate($n,$agent,$now) -> bool  (composes is-superseded + validity + VISIBILITY)
+  #   A belief passes gate iff it is (a) NOT superseded, (b) within its validity window
+  #   (valid-from <= now, and valid-to absent or > now), AND (c) scope-visible to $agent:
+  #     • visibility "team" or "shared" ⇒ visible regardless of owner;
+  #     • visibility "private" (or absent — the restrictive default) ⇒ $agent must own it.
+  #   Visibility lives on the `ownership` relation (`ownership owns visibility`), so the
+  #   scope test joins through ownership, never the belief entity. The two scope branches
+  #   are a disjunction: a private belief owned by a DIFFERENT agent satisfies neither and
+  #   is gated OUT; a team/shared belief satisfies the first branch for ANY agent.
+  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean @doc("Access predicate for a belief: true iff it is asserted, not superseded, within its validity window at $now, and visible to $agent (team/shared, or private and owned by $agent)."):
+      match
+          $n isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $now;
+          not { true == is-superseded($n); };
+          not { $n has valid-to $vt; $vt <= $now; };
+          {
+              $own isa ownership, links (owned: $n);
+              $own has visibility $vis;
+              { $vis == "team"; } or { $vis == "shared"; };
+          } or {
+              $own2 isa ownership, links (owned: $n, owner: $agent);
+          };
+      return check;
+
+  # 8 — select-for-context($agent,$now) -> {belief, double}  (tuple stream)
+  fun select-for-context($agent: agent, $now: datetime) -> { belief, double } @doc("Returns each belief visible to $agent at $now paired with its retrieval score; the gated, scored candidate set for context assembly."):
+      match
+          $b isa belief;
+          true == gate($b, $agent, $now);
+          let $score in retrieval-score($b, $now);
+      return { $b, $score };
+
+  # ── Retrieval-provenance function (A2.10) ─────────────────────────
+  # walks informs-synthesis; MUST NOT be reachable from derivation-chain
+  fun retrieval-provenance-of($b: belief) -> { retrieval-event } @doc("The retrieval events that informed the synthesis of belief $b; walks informs-synthesis and never crosses into the logical derivation chain."):
+      match
+          $r isa retrieval-event;                      # narrow: `retrieval` role is played by execution-episode
+          (retrieval: $r, synthesized: $b) isa informs-synthesis;
+      return { $r };
+
+  # ── Population & resolution functions (A2.9) ──────────────────────
+  # reads the materialized population-member view.
+  #   NOTE: sketch signature was ($pop,$now) but 3.12 rejects unused params ([FRP1]); the
+  #   materialized read does not consume time. The STRICT variant (re-evaluate the stored
+  #   spec-text for a named entity-set) is executed host-side (the spec-text is a runnable
+  #   match clause — validated below), so it does not need a persisted $now-taking function.
+  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to; the strict re-evaluation of spec-text runs host-side."):
+      match
+          (owning-population: $pop, member: $m) isa population-member;
+      return { $m };
+
+  # transitive closure over PROVABLE resolution beliefs; MUST NOT collapse probabilistic
+  #   PROVABLE-ness lives on the resolution belief's `derivation` relation (derivation-method),
+  #   NOT on the belief itself — join through derivation to read the method.
+  fun canonical-entity($rec: concept) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec, following only provable (type-join/cardinality/functional-dependency) resolution beliefs."):
+      match
+          {
+              $res isa resolution, has belief-state "asserted";
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has belief-state "asserted";
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity($mid);
+          };
+      return { $other };
