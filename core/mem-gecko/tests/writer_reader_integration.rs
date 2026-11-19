@@ -1364,3 +1364,236 @@ async fn store_reads_run_concurrently_and_writes_are_gated() {
 
     fx.drop_db().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Populations writer (SPEC-W2-W3 §3.5): materialization keeps the window and the
+// freshness marker in step, closes departed members, and opens a fresh epoch on
+// rejoin — so present-state and as-of-t reads both stay correct.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const POP: &str = "pop/internet-facing";
+
+async fn seed_concepts(fx: &Fixture, ids: &[&str]) {
+    let lines: String = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!("$c{i} isa concept, has concept-id \"{id}\";\n"))
+        .collect();
+    fx.raw_write(&format!("insert {lines}")).await;
+}
+
+async fn members_at(fx: &Fixture, t: &str) -> Vec<String> {
+    let docs = fx
+        .raw_fetch(&format!(
+            "match $p isa population, has spec-hash \"{POP}\";
+                   let $m in population-members-at($p, {t});
+                   $m has concept-id $id;
+             fetch {{ \"id\": $id }};"
+        ))
+        .await;
+    let mut ids: Vec<String> = docs
+        .iter()
+        .map(|d| d["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Every row of `member` as (valid-from, valid-to, computed-at), oldest first.
+async fn rows_of(fx: &Fixture, member: &str) -> Vec<(String, Option<String>, String)> {
+    let docs = fx
+        .raw_fetch(&format!(
+            "match $p isa population, has spec-hash \"{POP}\";
+                   $c isa concept, has concept-id \"{member}\";
+                   $pm isa population-member, links (owning-population: $p, member: $c);
+             fetch {{ \"vf\": $pm.valid-from, \"vt\": $pm.valid-to, \"ca\": $pm.computed-at }};"
+        ))
+        .await;
+    let mut rows: Vec<_> = docs
+        .iter()
+        .map(|d| {
+            (
+                d["vf"].as_str().unwrap().to_string(),
+                d["vt"].as_str().map(str::to_string),
+                d["ca"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn ids(xs: &[&str]) -> Vec<ConceptId> {
+    xs.iter().map(|x| ConceptId::new(*x)).collect()
+}
+
+#[tokio::test]
+async fn populations_writer_maintains_windows_across_passes() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    seed_concepts(&fx, &["asset/a", "asset/b", "asset/c"]).await;
+
+    assert!(
+        w.define_population(POP, "typeql-3", "match $c isa concept;")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !w.define_population(POP, "typeql-3", "match $c isa concept;")
+            .await
+            .unwrap(),
+        "redefining with the same spec is a no-op"
+    );
+
+    let t0 = dt("2026-01-01T00:00:00Z");
+    let t1 = dt("2026-02-01T00:00:00Z");
+    let t2 = dt("2026-03-01T00:00:00Z");
+    let t3 = dt("2026-04-01T00:00:00Z");
+
+    // t0: {a, b}.
+    let r = w
+        .materialize_population(POP, &ids(&["asset/a", "asset/b"]), t0)
+        .await
+        .unwrap();
+    assert_eq!((r.opened, r.closed, r.refreshed), (2, 0, 0));
+
+    // t1: unchanged — valid-from must not move; computed-at advances.
+    let r = w
+        .materialize_population(POP, &ids(&["asset/a", "asset/b"]), t1)
+        .await
+        .unwrap();
+    assert_eq!((r.opened, r.closed, r.refreshed), (0, 0, 2));
+    assert_eq!(
+        rows_of(&fx, "asset/a").await,
+        vec![(
+            "2026-01-01T00:00:00.000000000".into(),
+            None,
+            "2026-02-01T00:00:00.000000000".into()
+        )]
+    );
+
+    // t2: a leaves, c joins.
+    let r = w
+        .materialize_population(POP, &ids(&["asset/b", "asset/c"]), t2)
+        .await
+        .unwrap();
+    assert_eq!((r.opened, r.closed, r.refreshed), (1, 1, 1));
+    assert_eq!(
+        rows_of(&fx, "asset/a").await,
+        vec![(
+            "2026-01-01T00:00:00.000000000".into(),
+            Some("2026-03-01T00:00:00.000000000".into()),
+            "2026-03-01T00:00:00.000000000".into()
+        )],
+        "a departed member's window closes AND its computed-at advances"
+    );
+
+    // t3: a rejoins — a second epoch row, the closed one stays.
+    let r = w
+        .materialize_population(POP, &ids(&["asset/a", "asset/b", "asset/c"]), t3)
+        .await
+        .unwrap();
+    assert_eq!((r.opened, r.closed, r.refreshed), (1, 0, 2));
+    assert_eq!(rows_of(&fx, "asset/a").await.len(), 2);
+
+    // As-of reads follow the epochs; the present-state view excludes closed rows.
+    assert_eq!(
+        members_at(&fx, "2026-01-15T00:00:00").await,
+        vec!["asset/a", "asset/b"]
+    );
+    assert_eq!(
+        members_at(&fx, "2026-03-15T00:00:00").await,
+        vec!["asset/b", "asset/c"]
+    );
+    let mut now = w.population_members(POP).await.unwrap();
+    now.sort();
+    assert_eq!(now, ids(&["asset/a", "asset/b", "asset/c"]));
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn populations_writer_closes_one_membership() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    seed_concepts(&fx, &["asset/a", "asset/b"]).await;
+    w.define_population(POP, "typeql-3", "match $c isa concept;")
+        .await
+        .unwrap();
+    w.materialize_population(
+        POP,
+        &ids(&["asset/a", "asset/b"]),
+        dt("2026-01-01T00:00:00Z"),
+    )
+    .await
+    .unwrap();
+
+    let t1 = dt("2026-02-01T00:00:00Z");
+    assert!(
+        w.close_population_membership(POP, &ConceptId::new("asset/a"), t1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !w.close_population_membership(POP, &ConceptId::new("asset/a"), t1)
+            .await
+            .unwrap(),
+        "an already-closed membership reports nothing closed"
+    );
+    assert_eq!(w.population_members(POP).await.unwrap(), ids(&["asset/b"]));
+    // b's row is untouched by the single close.
+    assert_eq!(
+        rows_of(&fx, "asset/b").await,
+        vec![(
+            "2026-01-01T00:00:00.000000000".into(),
+            None,
+            "2026-01-01T00:00:00.000000000".into()
+        )]
+    );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn populations_writer_rejects_bad_input_and_writes_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    seed_concepts(&fx, &["asset/a"]).await;
+    let t0 = dt("2026-01-01T00:00:00Z");
+
+    // Unknown population.
+    let err = w
+        .materialize_population("pop/missing", &ids(&["asset/a"]), t0)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+
+    w.define_population(POP, "typeql-3", "match $c isa concept;")
+        .await
+        .unwrap();
+
+    // Same hash, different spec.
+    let err = w
+        .define_population(POP, "typeql-3", "match $c isa concept, has tag \"x\";")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+
+    // A member that is not a stored concept fails the whole pass.
+    let err = w
+        .materialize_population(POP, &ids(&["asset/a", "asset/ghost"]), t0)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+    assert!(w.population_members(POP).await.unwrap().is_empty());
+
+    // A pass older than the population's latest recorded time.
+    w.materialize_population(POP, &ids(&["asset/a"]), dt("2026-02-01T00:00:00Z"))
+        .await
+        .unwrap();
+    let err = w.materialize_population(POP, &[], t0).await.unwrap_err();
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+    assert_eq!(w.population_members(POP).await.unwrap(), ids(&["asset/a"]));
+
+    fx.drop_db().await;
+}

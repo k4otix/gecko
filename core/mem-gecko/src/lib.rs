@@ -14,11 +14,13 @@ use gecko_extension_api::{EpistemicWriter, GeckoExtension, HostImportDef, Sandbo
 
 pub mod consolidation;
 pub mod disposition;
+pub mod populations;
 mod tql;
 pub mod writer;
 
 pub use consolidation::{ConsolidationDaemon, ConsolidationReport, NoopConsolidationDaemon};
 pub use disposition::{DispKeys, Disposition};
+pub use populations::MaterializeReport;
 pub use writer::MemWriter;
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):

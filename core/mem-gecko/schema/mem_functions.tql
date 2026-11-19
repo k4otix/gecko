@@ -128,9 +128,12 @@ define
   #   materialized read does not consume time. The STRICT variant (re-evaluate the stored
   #   spec-text for a named entity-set) is executed host-side (the spec-text is a runnable
   #   match clause — validated below), so it does not need a persisted $now-taking function.
-  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to; the strict re-evaluation of spec-text runs host-side."):
+  #   Closed rows (a valid-to is set) are past epochs kept for as-of reads; the
+  #   present-state view excludes them.
+  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to, excluding closed membership windows; the strict re-evaluation of spec-text runs host-side."):
       match
-          (owning-population: $pop, member: $m) isa population-member;
+          $pm isa population-member, links (owning-population: $pop, member: $m);
+          not { $pm has valid-to $vt; };
       return { $m };
 
   # transitive closure over PROVABLE resolution beliefs; MUST NOT collapse probabilistic

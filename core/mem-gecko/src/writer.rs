@@ -27,6 +27,7 @@ use gecko_extension_api::{
 };
 use serde_json::Value;
 
+use crate::populations::{self, MaterializeReport, MemberRow};
 use crate::tql::{self, Params};
 
 type Result<T> = std::result::Result<T, EpistemicError>;
@@ -391,6 +392,155 @@ impl MemWriter {
         );
         let docs = self.graph.read(&q, &v, &r).await?;
         Ok(dedup_mapped(&docs, ConceptId))
+    }
+
+    // ── Populations writer (the sole writer of `population-member` rows) ─────
+
+    /// Creates the population keyed by `spec_hash` with its defining spec. Returns
+    /// `true` when created and `false` when it already exists with the same spec;
+    /// an existing population with a different spec is an error, since `spec-hash`
+    /// identifies one cohort definition.
+    pub async fn define_population(
+        &self,
+        spec_hash: &str,
+        spec_dialect: &str,
+        spec_text: &str,
+    ) -> Result<bool> {
+        for (field, v) in [
+            ("spec_hash", spec_hash),
+            ("spec_dialect", spec_dialect),
+            ("spec_text", spec_text),
+        ] {
+            if v.trim().is_empty() {
+                return Err(EpistemicError::InvalidInput(format!(
+                    "define_population: {field} is empty"
+                )));
+            }
+        }
+        let (q, v, r) = tql::population_spec_read(spec_hash);
+        if let Some(d) = self.graph.read(&q, &v, &r).await?.first() {
+            if str_field(d, "dialect") == spec_dialect && str_field(d, "text") == spec_text {
+                return Ok(false);
+            }
+            return Err(EpistemicError::InvalidInput(format!(
+                "define_population: population {spec_hash:?} exists with a different spec"
+            )));
+        }
+        self.graph
+            .write(&[tql::define_population_op(
+                spec_hash,
+                spec_dialect,
+                spec_text,
+            )])
+            .await?;
+        Ok(true)
+    }
+
+    /// Materializes the membership of population `spec_hash` as evaluated by the
+    /// caller at `at`: `members` is the complete member set. New members open an
+    /// epoch row, departed members' rows close (`valid-to` and `computed-at` both
+    /// set to `at`), and unchanged members advance only `computed-at`. All row
+    /// changes commit in one transaction.
+    ///
+    /// Errors when the population does not exist, when a member is not a stored
+    /// `concept`, or when `at` precedes a time already recorded on the population.
+    pub async fn materialize_population(
+        &self,
+        spec_hash: &str,
+        members: &[ConceptId],
+        at: DateTime,
+    ) -> Result<MaterializeReport> {
+        let rows = self.population_rows(spec_hash).await?;
+        let plan = populations::plan(&rows, members, at)?;
+        self.require_concepts(&plan.open).await?;
+        self.graph
+            .write(&[
+                tql::open_membership_op(spec_hash, &plan.open, at),
+                tql::close_membership_op(spec_hash, &plan.close, at),
+                tql::refresh_membership_op(spec_hash, &plan.refresh, at),
+            ])
+            .await?;
+        Ok(plan.report())
+    }
+
+    /// Closes `member`'s open row in population `spec_hash` at `at` (the member was
+    /// superseded or otherwise left), setting `valid-to` and advancing
+    /// `computed-at`. Other members' rows are untouched. Returns `false` when the
+    /// member has no open row.
+    pub async fn close_population_membership(
+        &self,
+        spec_hash: &str,
+        member: &ConceptId,
+        at: DateTime,
+    ) -> Result<bool> {
+        let rows = self.population_rows(spec_hash).await?;
+        let staying: Vec<ConceptId> = rows
+            .iter()
+            .filter(|r| r.valid_to.is_none() && &r.member != member)
+            .map(|r| r.member.clone())
+            .collect();
+        let plan = populations::plan(&rows, &staying, at)?;
+        if !plan.close.contains(member) {
+            return Ok(false);
+        }
+        self.graph
+            .write(&[tql::close_membership_op(
+                spec_hash,
+                std::slice::from_ref(member),
+                at,
+            )])
+            .await?;
+        Ok(true)
+    }
+
+    /// Every `population-member` row of `spec_hash`. Errors when the population
+    /// does not exist.
+    async fn population_rows(&self, spec_hash: &str) -> Result<Vec<MemberRow>> {
+        if spec_hash.trim().is_empty() {
+            return Err(EpistemicError::InvalidInput(
+                "population: spec_hash is empty".into(),
+            ));
+        }
+        let (q, v, r) = tql::population_spec_read(spec_hash);
+        if self.graph.read(&q, &v, &r).await?.is_empty() {
+            return Err(EpistemicError::InvalidInput(format!(
+                "population {spec_hash:?} does not exist"
+            )));
+        }
+        let (q, v, r) = tql::population_rows_read(spec_hash);
+        let docs = self.graph.read(&q, &v, &r).await?;
+        Ok(docs
+            .iter()
+            .map(|d| MemberRow {
+                member: ConceptId(str_field(d, "id")),
+                valid_from: dt_field(d, "vf"),
+                valid_to: dt_field(d, "vt"),
+                computed_at: dt_field(d, "ca"),
+            })
+            .collect())
+    }
+
+    /// Errors unless every id in `ids` is a stored `concept`.
+    async fn require_concepts(&self, ids: &[ConceptId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let (q, v, r) = tql::existing_concepts_read(ids);
+        let found: HashSet<String> = dedup_ids(&self.graph.read(&q, &v, &r).await?)
+            .into_iter()
+            .collect();
+        let missing: Vec<&str> = ids
+            .iter()
+            .map(|c| c.0.as_str())
+            .filter(|c| !found.contains(*c))
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(EpistemicError::InvalidInput(format!(
+                "population member(s) are not stored concepts: {missing:?}"
+            )))
+        }
     }
 
     /// `canonical-entity($rec)` — the transitive closure over **provable**
