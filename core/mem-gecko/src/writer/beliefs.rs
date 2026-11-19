@@ -6,7 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gecko_extension_api::{
     AnomalyId, BeliefDraft, BeliefState, ConceptId, DerivationMethod, EpisodeDraft, EpistemicError,
-    EpistemicReader, EpistemicWriter, FilterMeta, MemId, Outcome, RunContext, Visibility,
+    EpistemicReader, EpistemicWriter, FilterMeta, GraphWrite, MemId, Outcome, RunContext,
+    Visibility,
 };
 
 use super::{MemWriter, Result, mint, str_field};
@@ -22,6 +23,43 @@ impl MemWriter {
             .first()
             .map(|d| str_field(d, "e"))
             .filter(|s| !s.is_empty()))
+    }
+
+    /// The ops that write belief `id`: the belief with its run and actor stamps, its
+    /// derivation from `evidence`, and, when retrieval provenance is on, its links to
+    /// the run's retrievals whose candidates overlap that evidence.
+    pub(super) fn belief_ops(
+        &self,
+        ctx: &RunContext,
+        b: &BeliefDraft,
+        id: &MemId,
+        evidence: &[MemId],
+        method: DerivationMethod,
+    ) -> Vec<GraphWrite> {
+        let mut ops = tql::insert_belief_ops(ctx, b, id, tql::entrenchment_for(method));
+        if let Some(deriv) = tql::derivation_op(id, evidence, method, b.confidence) {
+            ops.push(deriv);
+        }
+        // Correlate this belief with the run's prior semantic retrievals by
+        // evidence overlap (auto-linked; the agent passes nothing). Same transaction
+        // as the belief so the retrieval-provenance axis lands atomically with it.
+        if self.record_retrieval_provenance {
+            let matched = ctx.matched_retrievals(evidence);
+            for (ev, used) in &matched {
+                ops.push(tql::informs_synthesis_op(ev, id));
+                for item in used {
+                    ops.push(tql::set_was_used_op(ev, item));
+                }
+            }
+            // Only semantic retrievals are recorded today ⇒ single method or none.
+            let provenance = if matched.is_empty() {
+                "none"
+            } else {
+                "semantic"
+            };
+            ops.push(tql::set_retrieval_provenance_op(id, provenance));
+        }
+        ops
     }
 }
 
@@ -52,29 +90,7 @@ impl EpistemicWriter for MemWriter {
         validate_confidence(b.confidence, Some(method))?;
         let id = mint("mem/bel");
         // AUTHORITATIVE: belief + provenance stamp + (evidence⇒derivation) commit first.
-        let mut ops = tql::insert_belief_ops(ctx, &b, &id, tql::entrenchment_for(method));
-        if let Some(deriv) = tql::derivation_op(&id, evidence, method, b.confidence) {
-            ops.push(deriv);
-        }
-        // Correlate this belief with the run's prior semantic retrievals by
-        // evidence overlap (auto-linked; the agent passes nothing). Same transaction
-        // as the belief so the retrieval-provenance axis lands atomically with it.
-        if self.record_retrieval_provenance {
-            let matched = ctx.matched_retrievals(evidence);
-            for (ev, used) in &matched {
-                ops.push(tql::informs_synthesis_op(ev, &id));
-                for item in used {
-                    ops.push(tql::set_was_used_op(ev, item));
-                }
-            }
-            // Only semantic retrievals are recorded today ⇒ single method or none.
-            let provenance = if matched.is_empty() {
-                "none"
-            } else {
-                "semantic"
-            };
-            ops.push(tql::set_retrieval_provenance_op(&id, provenance));
-        }
+        let ops = self.belief_ops(ctx, &b, &id, evidence, method);
         self.graph.write(&ops).await?;
         // Best-effort embed + upsert; failure marks dirty, never fails the write.
         let meta = self.belief_meta(&b, ctx, BeliefState::Asserted);

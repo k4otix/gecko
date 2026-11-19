@@ -17,11 +17,13 @@
 //!
 //! The implementation is split by concern: `index` (dirty set, rebuild, index
 //! hooks), `reader` (persisted-function reads and recall), `beliefs` (the writer
-//! trait), `populations` (the populations writer) and `consolidation`.
+//! trait), `edges` (the per-extension belief-edge writer), `populations` (the
+//! populations writer) and `consolidation`.
 //! Query text lives in the crate's `tql` module.
 
 mod beliefs;
 mod consolidation;
+mod edges;
 mod index;
 mod populations;
 mod reader;
@@ -32,9 +34,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use gecko_extension_api::{
-    ConceptId, DateTime, Embedder, EpistemicError, GraphStore, MemId, SemanticIndex,
+    BeliefEdgeWriter, ConceptId, DateTime, Embedder, EpistemicError, GraphStore, MemId,
+    SemanticIndex,
 };
 use serde_json::Value;
+
+use crate::belief_edge::BeliefEdgeRegistry;
 
 type Result<T> = std::result::Result<T, EpistemicError>;
 
@@ -63,6 +68,11 @@ pub struct MemWriter {
     /// One lock per population `spec-hash`, held across a populations-writer
     /// method's read, plan and write so passes from this writer never interleave.
     population_locks: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<()>>>>,
+    /// The belief-edge relations each extension may write through its bound handle.
+    belief_edges: BeliefEdgeRegistry,
+    /// Relations whose declaration has passed the live-schema check against the
+    /// database.
+    checked_relations: Mutex<HashSet<String>>,
 }
 
 impl MemWriter {
@@ -79,6 +89,8 @@ impl MemWriter {
             dirty: Mutex::new(HashSet::new()),
             record_retrieval_provenance: false,
             population_locks: Mutex::new(HashMap::new()),
+            belief_edges: BeliefEdgeRegistry::default(),
+            checked_relations: Mutex::new(HashSet::new()),
         }
     }
 
@@ -93,6 +105,26 @@ impl MemWriter {
     pub fn with_retrieval_provenance(mut self, on: bool) -> Self {
         self.record_retrieval_provenance = on;
         self
+    }
+
+    /// Sets the belief-edge registry the bound edge writers check requests against.
+    pub fn with_belief_edges(mut self, registry: BeliefEdgeRegistry) -> Self {
+        self.belief_edges = registry;
+        self
+    }
+
+    /// A belief-edge writer bound to `extension`: it writes only the relations the
+    /// registry records as owned by that extension. Fails when the extension owns none.
+    pub fn edge_writer_for(self: &Arc<Self>, extension: &str) -> Result<Arc<dyn BeliefEdgeWriter>> {
+        if !self.belief_edges.declares_any(extension) {
+            return Err(EpistemicError::InvalidInput(format!(
+                "extension `{extension}` declares no belief edges"
+            )));
+        }
+        Ok(Arc::new(edges::BoundEdgeWriter::new(
+            self.clone(),
+            extension,
+        )))
     }
 }
 
