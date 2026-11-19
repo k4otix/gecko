@@ -265,6 +265,12 @@ fn check_ownership<'h>(
         {
             return Err(not_owned(format!("{name} also defines or extends it")));
         }
+        if heads.iter().any(|h| {
+            matches!(h.kind, Kind::Relation | Kind::Touch)
+                && h.sub.as_deref() == Some(decl.relation)
+        }) {
+            return Err(not_owned(format!("{name} subtypes it")));
+        }
     }
     for head in own_heads {
         if let Some(supertype) = &head.sub {
@@ -435,6 +441,53 @@ mod tests {
         assert_not_owned(&err, "x-ext also defines");
     }
 
+    #[test]
+    fn refuses_a_relation_another_extension_subtypes() {
+        let decls = [decl("x-link")];
+        let err = build(&[
+            frag(
+                "x-ext",
+                "define relation x-link, relates claim, relates subject;",
+                &decls,
+            ),
+            frag(
+                "y-ext",
+                "define relation y-sub sub x-link, relates claim, relates subject;",
+                &[],
+            ),
+        ])
+        .unwrap_err();
+        assert_not_owned(&err, "y-ext subtypes it");
+
+        // The owner may subtype its own relation.
+        build(&[frag(
+            "x-ext",
+            "define relation x-link, relates claim, relates subject; relation x-sub sub x-link;",
+            &decls,
+        )])
+        .expect("an owner's own subtype is allowed");
+    }
+
+    #[test]
+    fn refuses_alias_and_value_touches() {
+        let decls = [decl("x-link")];
+        for touch in [
+            "define x-link alias other-name;",
+            "define x-link value string;",
+        ] {
+            let err = build(&[
+                frag(
+                    "x-ext",
+                    "define relation x-link, relates claim, relates subject;",
+                    &decls,
+                ),
+                frag("y-ext", touch, &[]),
+            ])
+            .unwrap_err();
+            assert_not_owned(&err, "y-ext also defines");
+        }
+    }
+
     fn assert_not_owned(err: &RegistryError, why: &str) {
         match err {
             RegistryError::NotOwned { reason, .. } => {
@@ -485,6 +538,14 @@ mod tests {
                 "define relation my-edge @doc('a;b'), sub supersession, relates claim;",
                 None,
             ),
+            (
+                "define relation my-edge, relates claim, relates subject; my-edge@abstract, sub supersession;",
+                None,
+            ),
+            (
+                "define relation my-edge@abstract, sub supersession, relates claim, relates subject;",
+                None,
+            ),
         ] {
             let err = build_with_migration("probe-ext", schema, migration, &decls).unwrap_err();
             assert!(
@@ -510,6 +571,10 @@ mod tests {
             (
                 base,
                 Some("redefine relation my-edge relates subject as superseded;"),
+            ),
+            (
+                "define relation my-edge, relates claim; my-edge@doc(\"x\") relates subject as superseded;",
+                None,
             ),
         ] {
             let err = build_with_migration("probe-ext", schema, migration, &decls).unwrap_err();
@@ -588,6 +653,15 @@ mod tests {
                 "  entity sighting;\n",
                 Some("redefine entity sighting sub execution-episode;"),
             ),
+            (
+                "  entity Mid sub execution-episode;\n  entity sighting sub Mid;\n",
+                None,
+            ),
+            (
+                "  entity _mid sub execution-episode;\n  entity sighting sub _mid;\n",
+                None,
+            ),
+            ("  entity sighting@abstract, sub execution-episode;\n", None),
         ] {
             let schema = format!("{PROBE_SCHEMA}{extra}");
             for player in [

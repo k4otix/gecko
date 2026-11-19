@@ -9,8 +9,8 @@ pub(super) enum Kind {
     Relation,
     /// `attribute <label> …`.
     Attribute,
-    /// `<label> relates|owns|plays|sub|@annotation …`, or a `redefine` of `<label>`: extends
-    /// a type introduced elsewhere.
+    /// `<label> relates|owns|plays|sub|alias|value|@annotation …`, or a `redefine` of
+    /// `<label>`: extends a type introduced elsewhere.
     Touch,
 }
 
@@ -81,7 +81,8 @@ fn closing_quote(chars: &[char], start: usize, quote: char) -> Option<usize> {
     None
 }
 
-/// Splits on whitespace and `, ( ) : { }`, keeping each `;` as its own token.
+/// Splits on whitespace and `, ( ) : { }`, keeping each `;` as its own token and starting a
+/// new token at each `@`, since a label ends before an attached annotation.
 fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -94,6 +95,9 @@ fn tokenize(text: &str) -> Vec<String> {
                 tokens.push(";".to_owned());
             }
         } else {
+            if c == '@' && !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
             current.push(c);
         }
     }
@@ -103,9 +107,64 @@ fn tokenize(text: &str) -> Vec<String> {
     tokens
 }
 
-/// Whether `token` can be a type label rather than a variable, annotation or keyword.
+/// TypeQL keywords that can open a statement inside a query or function body.
+const KEYWORDS: &[&str] = &[
+    "define",
+    "redefine",
+    "undefine",
+    "match",
+    "fetch",
+    "insert",
+    "put",
+    "update",
+    "delete",
+    "select",
+    "sort",
+    "offset",
+    "limit",
+    "reduce",
+    "require",
+    "distinct",
+    "return",
+    "fun",
+    "with",
+    "let",
+    "check",
+    "first",
+    "last",
+    "or",
+    "not",
+    "try",
+    "is",
+    "isa",
+    "isa!",
+    "has",
+    "links",
+    "iid",
+    "in",
+    "of",
+    "from",
+    "as",
+    "entity",
+    "relation",
+    "attribute",
+    "struct",
+    "relates",
+    "owns",
+    "plays",
+    "sub",
+    "sub!",
+    "value",
+    "alias",
+    "label",
+    "true",
+    "false",
+];
+
+/// Whether `token` can be a type label: it starts with `_` or a letter, as TypeQL identifiers
+/// do, and is not a keyword. Anything else (a variable, an annotation, punctuation) is not.
 fn is_label(token: &str) -> bool {
-    token.starts_with(|c: char| c.is_ascii_lowercase())
+    token.starts_with(|c: char| c == '_' || c.is_alphabetic()) && !KEYWORDS.contains(&token)
 }
 
 fn statement_head(statement: &[String]) -> Option<TypeHead> {
@@ -129,8 +188,10 @@ fn statement_head(statement: &[String]) -> Option<TypeHead> {
         }
         None => {
             let second = rest.get(1)?.as_str();
-            let extends =
-                matches!(second, "relates" | "owns" | "plays" | "sub") || second.starts_with('@');
+            let extends = matches!(
+                second,
+                "relates" | "owns" | "plays" | "sub" | "alias" | "value"
+            ) || second.starts_with('@');
             if !(is_label(first) && extends) {
                 return None;
             }
@@ -205,6 +266,25 @@ mod tests {
     fn scanner_keeps_text_after_an_unterminated_quote() {
         let heads = type_heads("define entity a @doc(\"oops);\n relation hidden-link, relates x;");
         assert_eq!(heads_named(&heads, "hidden-link").len(), 1, "{heads:?}");
+    }
+
+    #[test]
+    fn scanner_splits_an_attached_annotation() {
+        let heads = type_heads(
+            "define relation my-edge@abstract, sub r1; x-link@doc(\"x\") relates q as p;",
+        );
+        assert_eq!(heads_named(&heads, "my-edge")[0].sub.as_deref(), Some("r1"));
+        let touch = heads_named(&heads, "x-link");
+        assert_eq!(touch[0].kind, Kind::Touch);
+        assert!(touch[0].relates_as);
+    }
+
+    #[test]
+    fn scanner_keeps_non_lowercase_labels() {
+        let heads = type_heads("define entity Mid sub a; entity _low sub Mid; Upper owns x;");
+        assert_eq!(heads_named(&heads, "Mid")[0].sub.as_deref(), Some("a"));
+        assert_eq!(heads_named(&heads, "_low")[0].sub.as_deref(), Some("Mid"));
+        assert_eq!(heads_named(&heads, "Upper")[0].kind, Kind::Touch);
     }
 
     #[test]
