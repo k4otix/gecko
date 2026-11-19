@@ -1,103 +1,217 @@
-# OWED-WORK-LEDGER — named-but-unbuilt work across W2 / W3 / W5 / W8
+# OWED-WORK-LEDGER — owed work across W2 / W3 / W5 / W8
 
 > **Status: living working-surface** (not a ratified spec — it tracks, it does not decide).
-> Consolidates every construct, method, test, and decision that the four ratified
-> conflict-resolution documents name but leave unbuilt. The source of truth for each item is
-> its owning doc's cited section; this ledger is the index, kept in sync as items land.
-> **Ratification provenance:** SPEC-W2-W3 decisions @`11d7ab1` (commit `3a10d7f`); SPEC-W5
-> as-design @`95f0d6e` (commit `f132214`); CONTRACT-W8 as-contract, self-anchored (commit
-> `fdd1dc6`).
+> The source of truth for each item is its owning document's cited section; this ledger is the
+> index and the sequencing. Last reconciled against `main` @ `8eedf85` (PR #50) on 2026-11-18;
+> the evidence for every status and every review-sourced item is in
+> [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
+>
+> **Ratification provenance:** SPEC-W2-W3 decisions @`11d7ab1`; SPEC-W5 as-design @`95f0d6e`;
+> CONTRACT-W8 as-contract (self-anchored, `fdd1dc6`).
 
-**Two keystones gate almost everything downstream:**
+**Reading the IDs.** Items are grouped by track: **F** fix-now, **A** seam ①, **B** bitemporal
+correctness, **P** populations, **C** consolidation daemon, **D-** open decisions. A number in
+parentheses — "(was #12)" — is the row number the item had in the previous ledger, kept so
+references in specs and commit messages still resolve.
 
-- **① W5b `BeliefEdgeDecl` seam** — unblocks every sanctioned belief-edge/relation write (cyber
-  migration, the divergence-exception co-mint writer, all of W8's owed writer methods, the
-  `sighting-of` writer, and W5a going green).
-- **② The W2/W3 schema fold** — **✅ LANDED @`319f808`**. The C1 constructs, the
-  `population-member` window, b1 `blast-radius`, and the two as-of fns are folded onto
-  `conflict_resolution` byte-identical to the P-COMP-green shape (159 serviceless tests green;
-  live Tier-2 apply proven by P-COMP). This unblocks the W2/W3 writers (#8–#10), the disposition
-  engine (#10), and the windowed-blast fn (#6).
+## Where things stand
 
-## Ledger A — constructs & methods (named, unbuilt)
+- **Landed in PR #50:** the W2/W3 schema fold, the as-of functions, `blast-radius-at`, the
+  disposition ranker (pure half), the populations writer, function-aware schema re-apply, and
+  the §5 acceptance suite (20 tests run by default, 5 evidence probes ignored).
+- **Broken on main:** a database initialized before PR #50 cannot be upgraded (**F1**).
+- **Keystone:** the `BeliefEdgeDecl` seam (**A1**). It unblocks the cyber migration, both W5a
+  tests going green, the divergence-exception writer, and the resolved half of the disposition
+  writer. It does **not** gate the populations work, the bitemporal track, or the three daemon
+  jobs listed under track C as buildable now.
 
-| # | Item | Owning doc | Type | Blocked on |
+## Sequence
+
+```text
+F1 ──────────────────────────────► (unblocks every pre-#50 database; do first)
+F2, F3, F4, F5, F6, F7 ──────────► independent; no blockers
+
+D-B, D-D ──► A1 ──┬─► A2 ──► A3 green, A4 green
+                  ├─► A5 (also needs D-A, D-C)
+                  ├─► A6 resolved half (also needs D-C)
+                  └─► A8 (parked until cyber builds sighting ingestion)
+A6 contested half ─► needs D-E only (no seam)
+A7 ────────────────► no blocker
+
+D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
+
+F3 ──► P1, P2          P3 ─► no blocker
+
+C1, C2 ────────────────► buildable now
+C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I     C8 ─► needs A4
+```
+
+---
+
+## Track F — fix now (from REVIEW-2026-11; no blockers)
+
+| ID | Item | Severity | Where | Done when |
 |---|---|---|---|---|
-| 1 | `BeliefEdgeDecl` registry / sanctioned relation-writer seam | SPEC-W5 §3.2 | writer + registry | — (**keystone ①**) |
-| 2 | C1 divergence constructs (`divergence-exception` entity, `divergence-precedence` relation + 4 roles) | SPEC-W2-W3 §2.1/§2.2 | schema | ✅ **LANDED** @`319f808` |
-| 3 | `population-member` bitemporal window (`valid-from`/`valid-to`) | SPEC-W2-W3 §3.2 | schema | ✅ **LANDED** @`319f808` |
-| 4 | `blast-radius` b1 redefine (widened `okf-concept` param) | SPEC-W2-W3 §3.4 | fn (TQL) | ✅ **LANDED** @`319f808` (reaches already-initialized DBs via #11) |
-| 5 | `population-members-at` / `canonical-entity-at` as-of fns | SPEC-W2-W3 §3.3 | fn (TQL) | ✅ **LANDED** @`319f808` |
-| 6 | **Windowed-blast traversal fn** (gates `population-member` branch on the window) | SPEC-W2-W3 §3.4/§5 | fn (TQL) | ✅ **LANDED** — `blast-radius-at($r: okf-concept, $t)` + `MemWriter::blast_radius_at`; graduated test `windowed_blast_radius_traversal_respects_membership_window` (P-BR-6 stays `#[ignore]` as evidence). Present-state `blast-radius` is still window-blind (sweeps via closed rows); use `blast-radius-at(now)` for a window-correct present answer |
-| 7 | **b3 synthesis** (fold `resolves` branch into b1; match record-a **and** record-b) | SPEC-W2-W3 §3.4/§5 **OWED-opt** | fn (TQL) | needs own green probe (R9) + recursion decision (#24) |
-| 8 | resolution / divergence-exception writer (co-mint belief+relation) | SPEC-W2-W3 §0/§2.2 | writer | seam ① + C1 (#2) |
-| 9 | populations writer (materialize/invalidate rows, maintain window, close-on-supersession) | SPEC-W2-W3 §3.5 | writer | ✅ **LANDED** — `MemWriter::{define_population, materialize_population, close_population_membership}` (pure planner `mem_gecko::populations::plan`, Tier-1 + Tier-2 tested). Caller supplies the evaluated member set; the writer never executes `spec-text`. Not seam-gated: `population-member` is cache-tier, off the belief-edge surface (SPEC-W5 §3.4). Present-state `population-members` now excludes closed rows (reaches initialized DBs via #11). **Still owed:** the W5a allowlist test that asserts it is the sole writer, and any caller (daemon / spec evaluator) |
-| 10 | host disposition engine (4-key ranker → `resolved`\|`contested`) | SPEC-W2-W3 §2.3 | host-engine | **ranker ✅ LANDED @`3dbb393`** (`mem_gecko::disposition::rank` + `DerivationMethod::rank`, pure, Tier-1 tested); **writer half still owed** — acting on `Contested` (anomaly-hub mint, P-DISP-3's owed assertion) needs seam ① |
-| 11 | `redefine`-emitting migration path (or documented drop-and-recreate) | SPEC-W2-W3 §1.4 | migration | ✅ **LANDED** — `TypeDbRouter::apply_schema` splits each fragment (`db::schema_apply`): types + new fns `define`, fns the DB already holds `redefine`, one schema tx. Also fixes re-running `schema-init`/`sync` on any initialized DB, which `[FUN5]`-failed even with unchanged bodies. Fns dropped from the shipped schema are left in the DB |
-| 12 | cyber migration: `technique-detection`/`alert-disposition` → seam (drop raw `graph.write`) | SPEC-W5 §3.3 | writer (migration) | seam ① |
-| 13 | `divergence-precedence` co-mint **enforcement** (seam refuses anchor-less write) | SPEC-W5 §3.2 | writer (seam) | seam ① + C1 (#2) |
-| 14 | cyber-gecko episodic-**sighting** writer (`sighting-of` through seam) | SPEC-W5 §3.3/§3.4 | writer | seam ① + a future cyber sighting-ingestion feature |
-| 15 | similarity-on-`surfaced`/`informs-synthesis` writer for **offline** batch scan | CONTRACT-W8 §2 | writer (new) | new sanctioned method |
-| 16 | lifecycle `consolidation-state` transition writer (arbitrary item advance/tombstone) | CONTRACT-W8 §2 | writer (new) | new sanctioned method |
-| 17 | provenance summarize/collapse writer | CONTRACT-W8 §2 | writer (new) | new method + collapse-granularity decision (#22) |
-| 18 | high-volume episode rollup writer | CONTRACT-W8 §2 | writer (new) | new sanctioned method |
-| 19 | blast-radius cache materialize/invalidate (`precompute`/`invalidate_blast_radius`) | CONTRACT-W8 §2a/§4 | cache | windowed-blast fn (#6) |
-| 20 | the eleven daemon jobs + `tick` (all `NotYetImplemented`) | CONTRACT-W8 §2a | host code | #15–#19 + seam ① |
+| **F1** | **Schema upgrade path for changed type annotations.** `define` refuses a changed `@doc`/`@card`/`@values` (`[DEX15]`); PR #50 changed `population-member`'s `@doc`, so `schema-init`/`sync` fail on every pre-#50 database. Add an ordered, versioned migration list (explicit `redefine`/`undefine` fragments keyed by a stored schema version) that runs before the idempotent `define`; first entry is the `population-member` `@doc` redefine (verified to unblock the upgrade). Functions dropped from the shipped schema are undefined through the same list. (completes #11) | High | `db/router.rs:240`, `db/schema_apply.rs`, `mem_types.tql:252` — REVIEW D1 | A test applies the previous release's composed schema, then the current one, and passes in the per-push TypeDB job; the "idempotent" doc comments in `router.rs`/`main.rs` are corrected |
+| **F2** | **Harden function-aware re-apply.** (a) Order `redefine`s and new-function `define`s callee-first; report an unsatisfiable mutual signature change as a schema error. (b) End a function block at its `return …;` so a trailing `<type> plays/owns …;` statement or comment is not swallowed into a `redefine`. | Medium | `db/schema_apply.rs:45-120` — REVIEW D2, D3 | Unit tests for caller-before-callee and for a trailing additive statement; a Tier-2 test re-applies such a fragment twice |
+| **F3** | **Populations writer atomicity and truthful reporting.** Make open/close/refresh ops self-guarding (no second open row; stale guard in the match), add a per-population lock around read-plan-write, report attempted counts as attempted, bound `at` against the host clock, and error on an unparseable stored datetime. Fix the module doc that says the read happens in the write transaction. | Medium | `writer.rs:403-544`, `populations.rs:14-15, 56-94`, `tql.rs:685-735` — REVIEW D4, D7a/b/e | A Tier-2 test runs two overlapping passes and finds one open row per member and a monotonic `computed-at` |
+| **F4** | **Present-state `blast-radius` excludes closed membership rows**, matching `population-members`. Decide and document whether `EpistemicReader::blast_radius` accepts a member concept or the member entry stays `blast_radius_at`-only. | Low–Medium | `mem_functions.tql:67-83`, `writer.rs:1110-1121` — REVIEW D6 | A departed member no longer sweeps its former cohort through `blast-radius`; applied to existing databases through F1's path |
+| **F5** | **Confidence validation and a total-order comparator.** `MemWriter::assert_belief` rejects NaN/out-of-range confidence and a probabilistic confidence of 1.0 (invariant 7); the ranker compares with `f64::total_cmp`. | Low | `writer.rs:927-938`, `disposition.rs:128-138` — REVIEW D7c | Unit tests for both |
+| **F6** | **Test and comment drift.** Remove the stale first doc block on `p_w5_1_folded_surface_contains_divergence_precedence`; stop the schema comment claiming the as-of functions mirror `believed-at` reading windows (it reads state — see B2). | Low | `schema_probe_w2w3.rs:2035-2045`, `mem_functions.tql:162-166` — REVIEW D7d, D5 | Text matches behavior |
+| **F7** | **Split `MemWriter` before the seam lands.** Move the inline reader queries into `tql.rs` and break `writer.rs` into reader / populations / edge-writer submodules. | Maintainability | `writer.rs` (≈1,400 lines; 14 inline read queries) | No query text outside `tql.rs`; no behavior change |
 
-## Ledger B — owed tests / landing-gates
+---
 
-| Test | Owning doc | Blocked on |
+## Track A — seam ① and what it unblocks
+
+Owning document: SPEC-W5. Design inputs the review recommends settling first are decisions
+**D-B** (reserved labels) and **D-D** (read-only graph handle); see REVIEW §3 for the full
+list (label validation for interpolated identifiers, belief-plus-edges in one transaction,
+the `GeckoExtension` declaration hook).
+
+| ID | Item | Owning section | Type | Blocked on |
+|---|---|---|---|---|
+| **A1** | `BeliefEdgeDecl` registry and the sanctioned belief-edge writer method (was #1) | SPEC-W5 §3.2 | writer + registry + extension-API hook | D-B, D-D |
+| **A2** | Cyber migration: `technique-detection` / `alert-disposition` written through the seam; raw `graph.write` at `detect/mod.rs:142,196` removed (was #12) | SPEC-W5 §3.3 | writer migration | A1 |
+| **A3** | W5a static lint `no_raw_belief_tier_tql_outside_mem_tql` | SPEC-W5 §2.1, §5 row 1 | test | Buildable now. **Red until A2** — the cyber literals at `detect/mod.rs:133,186` are exactly what it flags. Needs a stated scope for test sources |
+| **A4** | W5a dynamic rig: `memwriter_is_the_sole_belief_tier_writer` and `hostile_extension_raw_belief_write_is_flagged` (entity and relation) | SPEC-W5 §2.2, §5 rows 2–3, 8 | test rig | Rig buildable now; reconciliation red until A2 |
+| **A5** | Divergence-exception writer: co-mints the `divergence-exception` belief and its `divergence-precedence` in one call; refuses an anchor-less or separately-fabricated anchor (was #8 and #13) | SPEC-W2-W3 §2.2; SPEC-W5 §3.2 | writer (mem-owned, dedicated method) | A1's edge-writing core, D-A, D-C |
+| **A6** | Disposition writer — acts on the ranker's outcome (was #10, writer half). **Resolved:** mint via A5, or supersede the loser for instance-vs-instance. **Contested:** `contest()` (exists) plus a `belief-state "contested"` write (no writer today). Contract must also say how an evidence-less belief's method is read (REVIEW §2) | SPEC-W2-W3 §2.3, §2.4 | host engine + writer | Resolved half: A5, D-C. Contested half: D-E only |
+| **A7** | `scoped` writer (belief → population). No production path writes `scoped`; the cohort branch of `blast-radius` has no input without it. Mem-owned, on the belief-edge surface | SPEC-W5 §1.1 (surface), SPEC-W2-W3 §3.4 | writer (dedicated method) | — |
+| **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
+
+Tests owed with these items (names reserved by the specs):
+
+| Test | Owning section | Lands with |
 |---|---|---|
-| `no_raw_belief_tier_tql_outside_mem_tql` (W5a static lint) | SPEC-W5 §5.1 | **buildable now; complete only after fold ②** — its introspected surface is short `divergence-precedence` until ② lands C1 (23 → 24 relations) |
-| `memwriter_is_the_sole_belief_tier_writer` (W5a dynamic) | SPEC-W5 §5.2/§5.8 | RED until cyber migration (#12) |
-| `hostile_extension_raw_belief_write_is_flagged` (entity **+ relation**) | SPEC-W5 §5.3 | the rig |
-| `belief_edge_decl_registry_writes_run_stamped` | SPEC-W5 §5.5 | seam ① |
-| `divergence_precedence_write_requires_cominted_anchor` | SPEC-W5 §5.6 | #13 |
-| `cyber_detect_test` stays green across migration | SPEC-W5 §5.7 | #12 |
-| W2/W3 §5 graduated acceptance suite (P-PREC-*, P-PM-*, P-BR-1/2, P-CE-1, P-T5-FIX, P-REDEF, P-DISP-*) | SPEC-W2-W3 §5 | ✅ **LANDED @`09467b9`** — 19 acceptance tests run by default / CI's TypeDB job; 5 probes stay `#[ignore]` (non-shipped b2/b3/C2/windowed). Writer-level assertions (co-mint, contested-hub) still owed with #8/#10/#13 (the three partially-graduated tests carry a `Graduation scope (owed half)` docstring). Shipped tests now carry §5's graduated names (reconciled — Ledger C **RESOLVED**); the still-`#[ignore]` probes, the baselines, and the W5 probe keep their probe names |
-| CONTRACT-W8 §3 seven checks (rows 1–7, incl. `daemon_is_enumerated_by_the_monopoly_test`) | CONTRACT-W8 §3 | each with its job (#20); row 5 also needs W5a |
+| `belief_edge_decl_registry_writes_run_stamped` | SPEC-W5 §5 row 5 | A1 |
+| `divergence_precedence_write_requires_cominted_anchor` | SPEC-W5 §5 row 6 | A5 |
+| `cyber_detect_test` stays green | SPEC-W5 §5 row 7 | A2 |
+| `empty_winner_yields_contested_anomaly_hub_no_exception_minted` (the hub-minting half; today's `host_side_ranking_reproduces_dispositions` covers the ranking half) | SPEC-W2-W3 §5 P-DISP-3 | A6 |
+| Writer-level halves of the three partially graduated W2 tests (docstrings marked `Graduation scope (owed half)`) | SPEC-W2-W3 §5 | A5, A6 |
 
-## Ledger C — owed decisions (not constructs)
+---
 
-| Decision | Owning doc | Depends on |
-|---|---|---|
-| C2 `out-entrenches` / OP-5 schema-hardening (ship a schema guard?) | SPEC-W2-W3 §2.3 (conditional) + SPEC-W5 §2 (trigger fired; INVARIANTS §8.3) | a deliberate OP-5 decision — if yes, owes a 5×5 drift-lock test |
-| collapse-granularity (summarizable detail vs load-bearing provenance) | CONTRACT-W8 §5/CF-2 | the summarize/collapse method design (#17) |
-| whether blast-radius jobs stay daemon jobs vs a `SemanticIndex`-style mechanism | CONTRACT-W8 §5 | — |
-| b3 recursion (should a resolution-bound member recurse into downstream cohort beliefs?) | SPEC-W2-W3 §3.4 | part of #7 |
-| graduated-test-name reconciliation | SPEC-W2-W3 §5 | ✅ **RESOLVED (this commit)** — decision: rename the artifact to match ratified §5 (moving code to spec, not reinterpreting spec). Shipped tests renamed to §5's graduated names, code-side only (§5 doc untouched). Three carried deviations: (a) the folded §5 rows are **kept split** with distinct-word single-underscore tails (snake-case-clean, no lint waiver) — P-PREC-1/3 as `…_plays_contradiction_claim_defines` / `…_plays_contradiction_claim_holds`, P-BR-1/2 as `…_widens_param_and_reaches_cohort` / `…_widens_param_and_reaches_cohort_recursive`; (b) **P-DISP-3 is the exception** — kept `host_side_ranking_reproduces_dispositions`, NOT §5's `empty_winner_yields_contested_anomaly_hub_no_exception_minted`, which asserts the hub-minting half owed to #10 (parked in-docstring until #10 lands); (c) baselines, the W5 probe (`p_w5_1`), and the still-`#[ignore]` probes retain probe names (no adoptable §5 name / not yet graduated). No assertion changed |
+## Track B — bitemporal correctness of beliefs (new; from REVIEW D5)
+
+No writer ever sets a belief's `valid-to`, and `believed-at` gates on present-state
+`belief-state`. The as-of functions are therefore correct only on hand-built fixtures.
+
+| ID | Item | Owning section | Type | Blocked on |
+|---|---|---|---|---|
+| **B1** | Supersession (and retraction) records when the belief stopped holding, per D-A | SPEC-W2-W3 §3.3; INVARIANTS inv 6 | writer | D-A |
+| **B2** | `believed-at` answers as-of-t for a belief superseded after `t` | SPEC-W2-W3 §3.1, §3.3 (T5) | fn (TQL) | B1 |
+| **B3** | `canonical-entity-at` stops following a resolution superseded at or before `t`; acceptance fixtures supersede through the writer instead of hand-writing `valid-to` | SPEC-W2-W3 §3.3 | fn (TQL) + tests | B1 |
+| **B4** | b3 synthesis: fold the `resolves` branch into `blast-radius`, matching `record-a` and `record-b` (was #7; optional) | SPEC-W2-W3 §3.4, §5 (OWED-optional) | fn (TQL) | Its own green probe (R9), D-F |
+
+---
+
+## Track P — populations follow-ups
+
+The writer landed (`define_population`, `materialize_population`,
+`close_population_membership`); `population-member` is cache-tier and off the belief-edge
+surface (SPEC-W5 §1.1, allowlisted in §1.2), so none of this is seam-gated.
+
+| ID | Item | Owning section | Type | Blocked on |
+|---|---|---|---|---|
+| **P1** | A caller that evaluates a population's spec and calls `materialize_population` (daemon job or spec evaluator) | SPEC-W2-W3 §3.5, §3.6 | host code | F3 |
+| **P2** | Close-on-supersession trigger: something calls `close_population_membership` when a member record is superseded | SPEC-W2-W3 §3.5 (first clause) | host code | F3; a definition of "member-supersession" for record-tier concepts |
+| **P3** | Enforce "only the populations writer writes `population-member`". No test is named for this anywhere: SPEC-W5 §1.2 exempts the relation from accounting and §5's lint scans belief-edge types only. Smallest form: extend A3's lint with an explicit cache-tier list | SPEC-W2-W3 §3.5 (third clause) | test | — (shares A3's scanner) |
+| **P4** | Rows written before windows existed: backfill `valid-from` or document that as-of reads skip them. Attribution: the writer takes no `RunContext`, so populations carry no run/actor stamp | — (REVIEW §2) | writer | — |
+
+---
+
+## Track C — CONTRACT-W8 consolidation daemon
+
+All eleven job methods return `NotYetImplemented` today. CONTRACT-W8 §2 marks three write
+surfaces as existing, so the track is not uniformly blocked.
+
+| ID | Item | Owning section | Blocked on |
+|---|---|---|---|
+| **C1** | `tick` with one host-minted `RunContext` per tick and a reconciling `ConsolidationReport` | CONTRACT-W8 CF-3, §2a | — |
+| **C2** | `dedup_content_hash`, `discover_typed_join_links`, `contradiction_sweep` (write surfaces exist: `dedup_episodes`, `assert_belief`, `contest`) | CONTRACT-W8 §2, §2a | C1 |
+| **C3** | Similarity recorded on `surfaced`/`informs-synthesis` for an offline batch scan, then `synthesize_links_llm` (was #15) | CONTRACT-W8 §2 (CF-1) | New sanctioned method; D-H |
+| **C4** | General `consolidation-state` transition writer, then `decay_archive_tombstone` and `ttl_prune_record_tier` (was #16) | CONTRACT-W8 §2 (CF-2) | New sanctioned method |
+| **C5** | Provenance summarize/collapse writer, then `summarize_archived_provenance` and `collapse_superseded_provenance` (was #17) | CONTRACT-W8 §2, §5 | New method; D-J |
+| **C6** | Episode rollup writer, then `rollup_high_volume_episodes` (was #18) | CONTRACT-W8 §2 | New sanctioned method |
+| **C7** | Blast-radius cache `precompute`/`invalidate` (was #19). The windowed traversal it depended on has landed (`blast-radius-at`) | CONTRACT-W8 §2a, §4 | D-I |
+| **C8** | `daemon_is_enumerated_by_the_monopoly_test` | CONTRACT-W8 §3 row 5 | A4 |
+
+The remaining six checks in CONTRACT-W8 §3 (rows 1–4, 6, 7) land with the job each one names:
+rows 1, 6, 7 with C1/C2; row 2 with C3; row 3 with C4; row 4 with C5/C6.
+
+---
+
+## Open decisions
+
+| ID | Decision | Owning section | Gates |
+|---|---|---|---|
+| **D-A** | How a belief's validity ends: `supersede` closes `valid-to` and as-of reads use the window, **or** as-of functions read `supersession.created-at`. Includes whether `believed-at` keeps any state gate | SPEC-W2-W3 §3.3 (its description of `believed-at` does not match the shipped function — REVIEW D5) | B1–B3, A5 |
+| **D-B** | Registry refuses relations defined by the core or mem fragments (mem-owned edges get dedicated writers only) | SPEC-W5 §3.1, §3.2 | A1 |
+| **D-C** | What the disposition writer does when the ranker's winner cannot supersede the loser under the entrenchment guard (provable winner, human-asserted loser), and how an evidence-less belief is graded on the method key | SPEC-W2-W3 §2.3, §2.4; INVARIANTS §8.1, §8.2 | A5, A6 |
+| **D-D** | Give extensions a read-only graph handle so a raw belief-tier write is impossible rather than merely detected | SPEC-W5 §2.1 (residual), §3.3 | A1, A2 |
+| **D-E** | Which entity carries `belief-state "contested"` on a tie (each competing belief, or only the anomaly hub records it) | SPEC-W2-W3 §2.3 ("What `contested` returns") | A6 contested half |
+| **D-F** | b3 recursion: does a resolution-bound member recurse into downstream cohort beliefs? | SPEC-W2-W3 §3.4 | B4 |
+| **D-G** | Errata in ratified text, for the spec owner: SPEC-W5 §2.3/§4/§5 name a test that is now `p_w5_1_folded_surface_contains_divergence_precedence`; `writer.rs` line anchors in SPEC-W5, SPEC-W2-W3 and CONTRACT-W8 pre-date PR #50 (guard `806-824` → ≈`970-990`; `dedup_episodes` `442` → `609`) | SPEC-W5 §6; CONTRACT-W8 §2a footnote | — |
+| **D-H** | Shape of the offline similarity-recording method (which edge, which run identity) | CONTRACT-W8 §2, §5 | C3 |
+| **D-I** | Whether blast-radius caching stays a daemon job or becomes a separate `SemanticIndex`-style mechanism | CONTRACT-W8 §5 | C7 |
+| **D-J** | Collapse granularity: which provenance is summarizable and which must survive | CONTRACT-W8 §5 / CF-2 | C5 |
+| **D-K** | C2 `out-entrenches` schema hardening (OP-5). The §8.3 trigger has fired; shipping it owes a 5×5 drift-lock test against `Entrenchment::strength()` | SPEC-W2-W3 §2.3 (conditional); SPEC-W5 §2; INVARIANTS §8.3 | — (deliberate decision; D-D may make it unnecessary) |
+
+---
+
+## Landed
+
+All of the following are on `main` via the squash **PR #50 (`8eedf85`)**. The per-item SHAs are
+on `origin/conflict_resolution` only and will dangle if that branch is deleted.
+
+| Was | Item | Owning section | Commit | Residual |
+|---|---|---|---|---|
+| #2 | C1 `divergence-exception` + `divergence-precedence` (4 roles) | SPEC-W2-W3 §2.1, §2.2 | `319f808` | Writer: A5 |
+| #3 | `population-member` window (`valid-from`/`valid-to`) | SPEC-W2-W3 §3.2 | `319f808` | Pre-#50 databases: F1 |
+| #4 | `blast-radius` widened to `okf-concept` (b1) | SPEC-W2-W3 §3.4 | `319f808` | Closed rows: F4 |
+| #5 | `population-members-at`, `canonical-entity-at` | SPEC-W2-W3 §3.3 | `319f808` | B3 |
+| #6 | `blast-radius-at` + `MemWriter::blast_radius_at`; `windowed_blast_radius_traversal_respects_membership_window` | SPEC-W2-W3 §3.4, §5 | `ba25e0b` | — |
+| #9 | Populations writer + pure planner | SPEC-W2-W3 §3.5 | `4c72a95` | F3, P1–P4 |
+| #10 (ranker) | `mem_gecko::disposition::rank`, `DerivationMethod::rank` | SPEC-W2-W3 §2.3 | `3dbb393` | F5; writer half: A6 |
+| #11 | Function-aware schema re-apply (`db::schema_apply`, `TypeDbRouter::apply_schema`) — fixes `[FUN5]` on re-run | SPEC-W2-W3 §1.4 | `ba25e0b` | **Partial:** F1, F2 |
+| — | §5 acceptance suite: 20 tests run by default, 5 evidence probes `#[ignore]` (C2, b2, b3 ×2, compositional windowed) | SPEC-W2-W3 §5 | `09467b9`, names `4163fa8` | F6 |
+| — | W5a surface probe (membership form) | SPEC-W5 §2.3, §5 row 4 | `09467b9` | D-G |
+
+Test-naming decision carried from the previous ledger: shipped tests use SPEC-W2-W3 §5's
+graduated names; the folded §5 rows stay split (`…_claim_defines` / `…_claim_holds`,
+`…_reaches_cohort` / `…_reaches_cohort_recursive`); P-DISP-3 keeps
+`host_side_ranking_reproduces_dispositions` until A6 lands the hub-minting half.
+
+---
 
 ## Implementation notes (empirical, TypeDB 3.12)
 
-Findings from probing the live 3.12 engine; recorded so they are not re-derived or re-litigated when the writers land.
+Observed on the live engine; recorded so they are not re-derived.
 
-- **`[REP1]` value-into-attribute — affects the disposition/score writers (#9, #10).** Binding a
-  function- or `reduce`-returned *value* straight into an attribute slot — `insert $x has attr $v`
-  where `$v` came from `let $v in <fn>` or a `reduce` — trips `[REP1] The variable '…' cannot be
-  declared as both a 'Attribute' and as a 'Value'` at query compile. The writers that materialize a
-  computed disposition/score must bind an explicit attribute instance, not pass the bare value var
-  into `has`. (Surfaced while empirically confirming the item below.)
-- **`let $x in <single-valued fn>` coercion — validates `select-for-context`.** TypeDB 3.12 coerces a
-  `return first` scalar (e.g. `retrieval-score -> double`) into a one-row stream and *yields the row*
-  (confirmed on 3.12 with a positive insert-count probe + a zero-row negative control; not the
-  duration-comparison silent-empty failure mode). So `select-for-context`'s
-  `let $score in retrieval-score($b, $now)` is well-formed — each gated belief yields exactly one
-  score. Settled; not to be re-litigated.
+- **`[DEX15]` — a changed type annotation is not re-`define`-able.** Re-`define` is a no-op
+  only for an identical definition; a different `@doc` on an existing type is refused.
+  `redefine relation <name> @doc("…");` replaces it. (REVIEW D1.)
+- **`[REP3]`/`[REX38]` — functions are validated one at a time on `redefine`,** against the
+  stored versions of their callees, even inside a single `redefine` block. Callee-first order
+  is required for a coordinated signature change. (REVIEW D2.)
+- **`[REX27]` — `redefine` of an identical `owns … @card(…)` is an error,** so a type statement
+  carried into a function's `redefine` text fails on re-apply. (REVIEW D3.)
+- **`[FUN5]` — a persisted function is immutable under `define`,** for a changed and for a
+  byte-identical body alike. (SPEC-W2-W3 §1.4, P-REDEF.)
+- **`[REP1]` value-into-attribute.** `insert $x has attr $v` where `$v` is a function- or
+  `reduce`-returned value fails at compile ("cannot be declared as both a 'Attribute' and as
+  a 'Value'"). Writers that persist a computed score must bind an attribute instance; a
+  `given` parameter with `has attr == $p` is fine (the populations writer uses that form).
+- **`let $x in <single-valued fn>` yields one row.** A `return first` scalar is coerced to a
+  one-row stream, so `select-for-context`'s `let $score in retrieval-score($b, $now)` is
+  well-formed. Settled.
 
-## Zero-blocker starting points & chosen order
+---
 
-Three fronts have no blocker today:
+## Outside this ledger
 
-- **① W5b `BeliefEdgeDecl` seam** (keystone; unblocks all sanctioned belief-edge writes).
-- **② W2/W3 schema fold onto `conflict_resolution`** (pure make-real, no design risk; unblocks all of W2/W3).
-- **cyber-gecko C1/C2** (separate domain track; see the parallel-front note below).
-
-**Chosen: build ② first** — **✅ schema fold LANDED @`319f808`**; the §5 acceptance suite it triggered is **graduated & green @`09467b9`** (the rig is re-synced — 19 acceptance gates + 5 owed/rejected probes). Since then: the disposition ranker (#10, pure half), the populations writer (#9), the `redefine`-emitting schema apply (#11) and the windowed-blast fn (#6) have all landed. Next front: **seam ① (#1)**, which unblocks the co-mint writer #8, #10's writer half, the cyber migration #12, enforcement #13, the sighting writer #14 and W5a; b3 (#7) and the CONTRACT-W8 writers remain separate tracks.
-
-## Parallel front — cyber-gecko C1/C2/C3 (separate domain track)
-
-Cyber-gecko's own **C1/C2/C3** roadmap is a distinct, **mostly-unblocked** front, **not owed by W2/W3/W5/W8** and not gated on either keystone. The **only** touchpoint with this ledger is the `sighting-of` writer (**#14**): if/when cyber-gecko builds sighting ingestion, that writer must route through the W5b seam (①). Recorded here so the ledger's scope boundary does not hide that a whole parallel cyber front runs alongside the conflict-resolution work.
-
-## Out-of-ledger
-
-Excluded from the spec plan, **not owed by these four items**: W1 `attested()`, W4 (scope inv 3 to activation), W6 (reconciled design doc), W7 (split OP-6), W-T6 (IOC-convergence test).
+- **Cyber-gecko C1/C2/C3** is a separate, mostly unblocked domain track. Its only touchpoint
+  here is the sighting writer (**A8**).
+- **Not owed by W2/W3/W5/W8:** W1 `attested()`, W4 (scope invariant 3 to activation), W6
+  (reconciled design doc), W7 (split OP-6), W-T6 (IOC-convergence test) — INVARIANTS §8.4.
