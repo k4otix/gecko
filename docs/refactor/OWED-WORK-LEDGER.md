@@ -2,7 +2,7 @@
 
 > **Status: living working-surface** (not a ratified spec — it tracks, it does not decide).
 > The source of truth for each item is its owning document's cited section; this ledger is the
-> index and the sequencing. Last reconciled against `main` @ `8eedf85` (PR #50) on 2026-11-18;
+> index and the sequencing. Last reconciled against `main` @ `61b02e5` (PR #51) on 2026-11-18;
 > the evidence for every status and every review-sourced item is in
 > [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
 >
@@ -19,7 +19,7 @@ references in specs and commit messages still resolve.
 - **Landed in PR #50:** the W2/W3 schema fold, the as-of functions, `blast-radius-at`, the
   disposition ranker (pure half), the populations writer, function-aware schema re-apply, and
   the §5 acceptance suite (20 tests run by default, 5 evidence probes ignored).
-- **Fixed after the review:** a database initialized before PR #50 could not be upgraded (**F1**, now landed on `review/ledger-2026-11`).
+- **Fixed after the review:** a database initialized before PR #50 could not be upgraded (**F1**, PR #51); the rest of track F (**F2–F7**) landed on `fix/ledger-f2-f7`.
 - **Keystone:** the `BeliefEdgeDecl` seam (**A1**). It unblocks the cyber migration, both W5a
   tests going green, the divergence-exception writer, and the resolved half of the disposition
   writer. It does **not** gate the populations work, the bitemporal track, or the three daemon
@@ -29,7 +29,7 @@ references in specs and commit messages still resolve.
 
 ```text
 F1 ✅ ───────────────────────────► (pre-#50 databases upgrade again)
-F2, F3, F4, F5, F6, F7 ──────────► independent; no blockers
+F2 ✅ F3 ✅ F4 ✅ F5 ✅ F6 ✅ F7 ✅ ─► track F complete
 
 D-B, D-D ──► A1 ──┬─► A2 ──► A3 green, A4 green
                   ├─► A5 (also needs D-A, D-C)
@@ -40,7 +40,7 @@ A7 ────────────────► no blocker
 
 D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
 
-F3 ──► P1, P2          P3 ─► no blocker
+P1, P2 (F3 ✅) ─► buildable    P3 ─► no blocker
 
 C1, C2 ────────────────► buildable now
 C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I     C8 ─► needs A4
@@ -53,12 +53,12 @@ C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I 
 | ID | Item | Severity | Where | Done when |
 |---|---|---|---|---|
 | **F1** ✅ | **Schema upgrade path for changed type annotations — LANDED.** `SchemaMigration { id, applies_when, tql }` in `gecko-extension-api`, `GeckoExtension::schema_migrations()`, and `TypeDbRouter::apply_schema_with_migrations`: pending migrations run first, in the extension's schema transaction. Migrations are **self-detecting** rather than keyed by a stored version: one runs only while the database's exported schema still contains its `applies_when` text. A stored marker cannot work for the first migration, because databases created by `main` @`8eedf85` already hold the new `@doc` and have no marker, and an identical `redefine` is refused (`[REX25]`). First entry: `mem/population-member-window-doc`. Dropping a shipped function goes through the same list (`undefine fun …`, `applies_when: "fun …("`). (completes #11's type half) | High | `gecko-extension-api/src/lib.rs`, `db/router.rs`, `mem-gecko/src/lib.rs` `MEM_MIGRATIONS` — REVIEW D1 | ✅ `previous_release_upgrades_to_the_shipped_schema` applies the pinned 95ebac1 schema (`tests/fixtures/mem_schema_95ebac1.tql`), asserts plain `define` fails `[DEX15]`, then upgrades twice; `migrations_lead_to_the_shipped_schema` keeps each migration in step with the shipped text; doc comments corrected |
-| **F2** | **Harden function-aware re-apply.** (a) Order `redefine`s and new-function `define`s callee-first; report an unsatisfiable mutual signature change as a schema error. (b) End a function block at its `return …;` so a trailing `<type> plays/owns …;` statement or comment is not swallowed into a `redefine`. | Medium | `db/schema_apply.rs:45-120` — REVIEW D2, D3 | Unit tests for caller-before-callee and for a trailing additive statement; a Tier-2 test re-applies such a fragment twice |
-| **F3** | **Populations writer atomicity and truthful reporting.** Make open/close/refresh ops self-guarding (no second open row; stale guard in the match), add a per-population lock around read-plan-write, report attempted counts as attempted, bound `at` against the host clock, and error on an unparseable stored datetime. Fix the module doc that says the read happens in the write transaction. | Medium | `writer.rs:403-544`, `populations.rs:14-15, 56-94`, `tql.rs:685-735` — REVIEW D4, D7a/b/e | A Tier-2 test runs two overlapping passes and finds one open row per member and a monotonic `computed-at` |
-| **F4** | **Present-state `blast-radius` excludes closed membership rows**, matching `population-members`. Decide and document whether `EpistemicReader::blast_radius` accepts a member concept or the member entry stays `blast_radius_at`-only. | Low–Medium | `mem_functions.tql:67-83`, `writer.rs:1110-1121` — REVIEW D6 | A departed member no longer sweeps its former cohort through `blast-radius`; applied to existing databases through F1's path |
-| **F5** | **Confidence validation and a total-order comparator.** `MemWriter::assert_belief` rejects NaN/out-of-range confidence and a probabilistic confidence of 1.0 (invariant 7); the ranker compares with `f64::total_cmp`. | Low | `writer.rs:927-938`, `disposition.rs:128-138` — REVIEW D7c | Unit tests for both |
-| **F6** | **Test and comment drift.** Remove the stale first doc block on `p_w5_1_folded_surface_contains_divergence_precedence`; stop the schema comment claiming the as-of functions mirror `believed-at` reading windows (it reads state — see B2). | Low | `schema_probe_w2w3.rs:2035-2045`, `mem_functions.tql:162-166` — REVIEW D7d, D5 | Text matches behavior |
-| **F7** | **Split `MemWriter` before the seam lands.** Move the inline reader queries into `tql.rs` and break `writer.rs` into reader / populations / edge-writer submodules. | Maintainability | `writer.rs` (≈1,400 lines; 14 inline read queries) | No query text outside `tql.rs`; no behavior change |
+| **F2** ✅ | **Function-aware re-apply hardened — LANDED.** The planner compares each fragment function with the database's exported text (which preserves function bodies verbatim): unchanged functions are skipped, new ones `define`d and changed ones `redefine`d, ordered callee-first by strongly connected components of the call graph. Mutually recursive functions are written together; if one of them already exists with a different signature the plan is refused with a schema error. A function block ends at the `;` closing its `return`, so a later statement goes to the type `define` and a later comment stays harmlessly with the function. | Medium | `db/schema_apply.rs`, `db/router.rs` — REVIEW D2, D3 | ✅ 13 planner unit tests (callee-first, new caller after changed callee, mutual signature change refused, multi-line `return`, trailing statement); Tier-2 `trailing_statement_after_a_function_reapplies` (×3) and `callee_signature_change_lands_before_its_caller` (caller first in source, callee gains a parameter, applied twice) |
+| **F3** ✅ | **Populations writer guarded — LANDED.** The open op refuses a second open row and a row computed after `at`; close and refresh refuse a row computed after `at` (all in the write's `match`). A per-population lock in `MemWriter` serializes one writer's read-plan-write; `define_population` takes the same lock and reports a lost create race as "exists" when the specs agree. `MaterializeReport` fields are `opens_attempted` / `closes_attempted` / `refreshes_attempted`. A pass more than 5 minutes ahead of the host clock is rejected; an unparseable stored datetime is a `Storage` error. Module doc corrected. Cross-process passes still read in a separate transaction; the guards keep them from corrupting rows, but a stale pass can still open a member the fresher pass did not include. | Medium | `writer/populations.rs`, `populations.rs`, `tql.rs` — REVIEW D4, D7a/b/e | ✅ `populations_writer_overlapping_passes_keep_one_open_row`: two writers with separate locks race four rounds; one open row per member, no window closing before it opens, `computed-at` monotonic. Fails without the open guard (checked by removing it). Clock bound covered in `populations_writer_rejects_bad_input_and_writes_nothing` |
+| **F4** ✅ | **Present-state `blast-radius` follows open membership rows only — LANDED.** Both population branches carry `not { $pm has valid-to $vt; }`. Decision: `EpistemicReader::blast_radius` stays memory-item-keyed; a member concept goes through `MemWriter::blast_radius_at` (stated in the trait doc). Reaches existing databases as a body-only `redefine`. | Low–Medium | `mem_functions.tql`, `epistemic.rs` — REVIEW D6 | ✅ `blast_radius_at_follows_the_materialized_window` also asserts present-state `blast-radius` sweeps the cohort while the member is in and nothing after it leaves |
+| **F5** ✅ | **Confidence validated; ranker totally ordered — LANDED.** `assert_belief` and `supersede` reject a confidence that is NaN or outside `[0, 1]`; `assert_belief` rejects 1.0 from a probabilistic method (invariant 7). The ranker reads a NaN confidence as absent (method-defaulted) and compares with `f64::total_cmp`. | Low | `writer/beliefs.rs`, `disposition.rs` — REVIEW D7c | ✅ `confidence_validation_enforces_range_and_invariant_7`, `nan_confidence_is_method_defaulted_and_order_independent` |
+| **F6** ✅ | **Test and comment drift — LANDED.** Stale P-W5-1 doc block removed; the as-of comment now says `believed-at` reads state. | Low | `schema_probe_w2w3.rs`, `mem_functions.tql` — REVIEW D7d, D5 | ✅ Text matches behavior |
+| **F7** ✅ | **`MemWriter` split — LANDED.** `writer.rs` is now `writer/{mod, index, reader, beliefs, populations, consolidation, tests}.rs`; the 14 inline read queries are builders in `tql.rs`. The edge-writer submodule is created with A1, since no edge writer exists yet. | Maintainability | `core/mem-gecko/src/writer/` | ✅ No query text under `writer/`; no behavior change (full suite green) |
 
 ---
 
@@ -169,13 +169,13 @@ on `origin/conflict_resolution` only and will dangle if that branch is deleted.
 |---|---|---|---|---|
 | #2 | C1 `divergence-exception` + `divergence-precedence` (4 roles) | SPEC-W2-W3 §2.1, §2.2 | `319f808` | Writer: A5 |
 | #3 | `population-member` window (`valid-from`/`valid-to`) | SPEC-W2-W3 §3.2 | `319f808` | Pre-#50 databases: F1 |
-| #4 | `blast-radius` widened to `okf-concept` (b1) | SPEC-W2-W3 §3.4 | `319f808` | Closed rows: F4 |
+| #4 | `blast-radius` widened to `okf-concept` (b1) | SPEC-W2-W3 §3.4 | `319f808` | — (F4 ✅) |
 | #5 | `population-members-at`, `canonical-entity-at` | SPEC-W2-W3 §3.3 | `319f808` | B3 |
 | #6 | `blast-radius-at` + `MemWriter::blast_radius_at`; `windowed_blast_radius_traversal_respects_membership_window` | SPEC-W2-W3 §3.4, §5 | `ba25e0b` | — |
-| #9 | Populations writer + pure planner | SPEC-W2-W3 §3.5 | `4c72a95` | F3, P1–P4 |
-| #10 (ranker) | `mem_gecko::disposition::rank`, `DerivationMethod::rank` | SPEC-W2-W3 §2.3 | `3dbb393` | F5; writer half: A6 |
-| #11 | Function-aware schema re-apply (`db::schema_apply`, `TypeDbRouter::apply_schema`) — fixes `[FUN5]` on re-run | SPEC-W2-W3 §1.4 | `ba25e0b` | **Partial:** F2 (F1 landed) |
-| — | §5 acceptance suite: 20 tests run by default, 5 evidence probes `#[ignore]` (C2, b2, b3 ×2, compositional windowed) | SPEC-W2-W3 §5 | `09467b9`, names `4163fa8` | F6 |
+| #9 | Populations writer + pure planner | SPEC-W2-W3 §3.5 | `4c72a95` | P1–P4 (F3 ✅) |
+| #10 (ranker) | `mem_gecko::disposition::rank`, `DerivationMethod::rank` | SPEC-W2-W3 §2.3 | `3dbb393` | Writer half: A6 (F5 ✅) |
+| #11 | Function-aware schema re-apply (`db::schema_apply`, `TypeDbRouter::apply_schema`) — fixes `[FUN5]` on re-run | SPEC-W2-W3 §1.4 | `ba25e0b` | — (F1, F2 ✅) |
+| — | §5 acceptance suite: 20 tests run by default, 5 evidence probes `#[ignore]` (C2, b2, b3 ×2, compositional windowed) | SPEC-W2-W3 §5 | `09467b9`, names `4163fa8` | — (F6 ✅) |
 | — | W5a surface probe (membership form) | SPEC-W5 §2.3, §5 row 4 | `09467b9` | D-G |
 
 Test-naming decision carried from the previous ledger: shipped tests use SPEC-W2-W3 §5's
@@ -206,6 +206,11 @@ Observed on the live engine; recorded so they are not re-derived.
 - **`let $x in <single-valued fn>` yields one row.** A `return first` scalar is coerced to a
   one-row stream, so `select-for-context`'s `let $score in retrieval-score($b, $now)` is
   well-formed. Settled.
+- **`database.schema()` exports each function's source text verbatim** (unindented, comments
+  dropped), so the schema planner can compare a fragment's function with the stored one after
+  normalizing whitespace and comments.
+- **Nested negation works in a write's `match`** — `not { $o isa population-member, links (…);
+  not { $o has valid-to $vt; }; };` guards an `insert` against a second open row.
 
 ---
 

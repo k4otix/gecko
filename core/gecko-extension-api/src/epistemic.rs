@@ -272,7 +272,10 @@ pub trait EpistemicReader: Send + Sync {
     /// the index (invariant 8).
     async fn believed_at(&self, at: DateTime, q: BeliefQuery) -> Result<Vec<MemId>>;
 
-    /// The `rests-on` propagation set for a retracted belief.
+    /// The memory items undermined by retracting memory item `retracted`, following
+    /// `rests-on`, derivation, and open population-member edges. Retracting a
+    /// population member concept goes through the mem extension's as-of
+    /// `blast_radius_at` instead.
     async fn blast_radius(&self, retracted: MemId) -> Result<Vec<MemId>>;
 }
 

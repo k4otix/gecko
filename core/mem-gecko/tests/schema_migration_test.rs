@@ -158,3 +158,61 @@ async fn changed_function_body_reaches_an_initialized_database() {
 
     common::drop_db_with_retry(&mut router, &name).await;
 }
+
+#[tokio::test]
+async fn trailing_statement_after_a_function_reapplies() {
+    let (mut router, name) = router();
+    let fragment = r#"define
+  entity widget, owns label;
+  attribute label, value string;
+  attribute tag, value string;
+  fun widgets() -> { widget }:
+      match $w isa widget;
+      return { $w };
+  # an additive statement after the last function
+  widget owns tag @card(0..1);
+"#;
+    for _ in 0..3 {
+        router.apply_schema(fragment).await.expect("apply fragment");
+    }
+    let schema = router.database_schema().await.expect("schema");
+    assert!(schema.contains("owns tag @card(0..1)"), "{schema}");
+    common::drop_db_with_retry(&mut router, &name).await;
+}
+
+#[tokio::test]
+async fn callee_signature_change_lands_before_its_caller() {
+    let (mut router, name) = router();
+    let before = r#"define
+  entity widget, owns label;
+  attribute label, value string;
+  fun pick($w: widget) -> { widget }:
+      match $w isa widget;
+      return { $w };
+  fun uses-pick($w: widget) -> boolean:
+      match let $x in pick($w);
+      return check;
+"#;
+    // The caller precedes the callee, and the callee gains a parameter.
+    let after = r#"define
+  entity widget, owns label;
+  attribute label, value string;
+  fun uses-pick($w: widget) -> boolean:
+      match let $x in pick($w, "a");
+      return check;
+  fun pick($w: widget, $l: string) -> { widget }:
+      match $w isa widget, has label == $l;
+      return { $w };
+"#;
+    router.apply_schema(before).await.expect("first release");
+    for _ in 0..2 {
+        router.apply_schema(after).await.expect("second release");
+    }
+    let schema = router.database_schema().await.expect("schema");
+    assert!(
+        schema.contains("fun pick($w: widget, $l: string)"),
+        "{schema}"
+    );
+    assert!(schema.contains("pick($w, \"a\")"), "{schema}");
+    common::drop_db_with_retry(&mut router, &name).await;
+}
