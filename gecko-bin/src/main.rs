@@ -596,8 +596,9 @@ async fn cmd_databases(config: DbConfig) -> Result<()> {
 }
 
 /// Applies the core schema (embedded or a custom file) plus every extension
-/// schema, and runs each extension's init hook. Idempotent — TypeDB `define` is a
-/// no-op for already-defined types, so this is safe to re-run on every sync.
+/// schema, and runs each extension's init hook. Safe to re-run on every sync:
+/// `apply_schema` re-`define`s types idempotently and `redefine`s functions the
+/// database already holds, so a changed shipped function body takes effect.
 async fn apply_all_schemas(
     db: &mut TypeDbRouter,
     extensions: &[Box<dyn GeckoExtension>],

@@ -9,6 +9,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::info;
+
+use super::schema_apply;
 use typedb_driver::{
     Addresses, Credentials, DriverOptions, DriverTlsConfig, Transaction, TransactionType,
     TypeDBDriver,
@@ -228,20 +230,40 @@ impl TypeDbRouter {
         Ok(all.iter().map(|d| d.name().to_string()).collect())
     }
 
-    /// Installs a TypeQL schema definition into the database.
+    /// Installs a TypeQL schema definition into the database, safely re-appliable.
+    ///
+    /// Types are `define`d (idempotent). A function the database already holds is
+    /// `redefine`d with the fragment's body rather than re-`define`d, which TypeDB
+    /// refuses (`[FUN5]`); new functions are `define`d. Everything runs in one
+    /// schema transaction. Functions the database holds but the fragment omits are
+    /// left in place.
     pub async fn apply_schema(&mut self, schema_content: &str) -> Result<(), DbError> {
         self.ensure_database().await?;
         let db_name = self.config.database.clone();
         let driver = self.driver().await?;
+
+        let current = driver
+            .databases()
+            .get(&db_name)
+            .await
+            .map_err(to_db_err(DbError::Schema))?
+            .schema()
+            .await
+            .map_err(to_db_err(DbError::Schema))?;
+        let queries =
+            schema_apply::plan_queries(schema_content, &schema_apply::function_names(&current))
+                .map_err(DbError::Schema)?;
 
         let tx = driver
             .transaction(&db_name, TransactionType::Schema)
             .await
             .map_err(to_db_err(DbError::Schema))?;
 
-        tx.query(schema_content)
-            .await
-            .map_err(to_db_err(DbError::Schema))?;
+        for query in &queries {
+            tx.query(query.as_str())
+                .await
+                .map_err(to_db_err(DbError::Schema))?;
+        }
 
         tx.commit().await.map_err(to_db_err(DbError::Schema))?;
 
@@ -258,6 +280,19 @@ impl TypeDbRouter {
             .transaction(&db_name, TransactionType::Write)
             .await
             .map_err(to_db_err(DbError::Transaction))
+    }
+
+    /// Begins a schema transaction, bypassing [`apply_schema`](Self::apply_schema)'s
+    /// function-aware planning. Caller must commit it.
+    pub async fn begin_schema(&mut self) -> Result<Transaction, DbError> {
+        self.ensure_database().await?;
+        let db_name = self.config.database.clone();
+        let driver = self.driver().await?;
+
+        driver
+            .transaction(&db_name, TransactionType::Schema)
+            .await
+            .map_err(to_db_err(DbError::Schema))
     }
 
     /// Begins a read transaction.

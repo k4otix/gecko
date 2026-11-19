@@ -60,19 +60,24 @@ define
           not { $b1 is $b2; };
       return check;
 
-  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
-  fun blast-radius($r: memory-item) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all items reachable through rests-on assumption and derivation source edges."):
+  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation U population-member->scoped)
+  #   Param is okf-concept (not memory-item) so a population member — a `concept`,
+  #   sibling of memory-item under okf-concept — type-checks as the retractee; the
+  #   population branch then sweeps the cohort beliefs scoped to that member's population.
+  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions, derivation sources, and the population-member cohort edge (a retracted member sweeps the beliefs scoped to its population)."):
       match
           {
               (assumption: $r, resting: $m) isa rests-on;
           } or {
               (source: $r, derived: $m) isa derivation;
           } or {
-              {
-                  (assumption: $r, resting: $mid) isa rests-on;
-              } or {
-                  (source: $r, derived: $mid) isa derivation;
-              };
+              (owning-population: $pop, member: $r) isa population-member;
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { (owning-population: $pop2, member: $r) isa population-member;
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
               let $m in blast-radius($mid);
           };
       return { $m };
@@ -123,9 +128,12 @@ define
   #   materialized read does not consume time. The STRICT variant (re-evaluate the stored
   #   spec-text for a named entity-set) is executed host-side (the spec-text is a runnable
   #   match clause — validated below), so it does not need a persisted $now-taking function.
-  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to; the strict re-evaluation of spec-text runs host-side."):
+  #   Closed rows (a valid-to is set) are past epochs kept for as-of reads; the
+  #   present-state view excludes them.
+  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to, excluding closed membership windows; the strict re-evaluation of spec-text runs host-side."):
       match
-          (owning-population: $pop, member: $m) isa population-member;
+          $pm isa population-member, links (owning-population: $pop, member: $m);
+          not { $pm has valid-to $vt; };
       return { $m };
 
   # transitive closure over PROVABLE resolution beliefs; MUST NOT collapse probabilistic
@@ -148,5 +156,64 @@ define
               or
               { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
               let $other in canonical-entity($mid);
+          };
+      return { $other };
+
+  # ── As-of-t population & identity variants (read off validity windows) ──────
+  #   The present-state population-members/canonical-entity above stay as the fast
+  #   path; these $t-taking variants answer as-of-t by gating on the membership /
+  #   resolution validity WINDOW (valid-from/valid-to), never on belief-state — which
+  #   mutates on supersession — mirroring believed-at.
+  fun population-members-at($pop: population, $t: datetime) -> { concept } @doc("The members of a population as of time $t, read from the windowed materialized membership (valid-from <= $t and no valid-to on or before $t)."):
+      match
+          $pm isa population-member, links (owning-population: $pop, member: $m);
+          $pm has valid-from $vf; $vf <= $t;
+          not { $pm has valid-to $vt; $vt <= $t; };
+      return { $m };
+
+  #   blast-radius as of $t: the rests-on and derivation branches are unchanged, and the
+  #   population-member cohort branch follows only a membership row whose window
+  #   contains $t, so a member that had left the cohort by $t no longer sweeps it.
+  fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r as of time $t — like blast-radius, but the population-member cohort edge is followed only while the membership window contains $t."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              $pm has valid-from $vf; $vf <= $t;
+              not { $pm has valid-to $vt; $vt <= $t; };
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   $pm2 has valid-from $vf2; $vf2 <= $t;
+                   not { $pm2 has valid-to $vt2; $vt2 <= $t; };
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              let $m in blast-radius-at($mid, $t);
+          };
+      return { $m };
+
+  fun canonical-entity-at($rec: concept, $t: datetime) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec as of time $t, following provable resolution beliefs whose validity window contains $t."):
+      match
+          {
+              $res isa resolution, has valid-from $vf; $vf <= $t;
+              not { $res has valid-to $vt; $vt <= $t; };
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has valid-from $vf2; $vf2 <= $t;
+              not { $res2 has valid-to $vt2; $vt2 <= $t; };
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity-at($mid, $t);
           };
       return { $other };

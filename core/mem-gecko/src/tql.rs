@@ -604,3 +604,132 @@ pub(crate) fn resolve_prediction_ops(
 
     vec![ensure_run(ctx), ensure_agent(ctx), ep_op, link_op]
 }
+
+// ── Populations (materialized membership, SPEC-W2-W3 §3.5) ────────────────────
+
+/// Reads a population's stored spec by `spec-hash`; empty when it does not exist.
+pub(crate) fn population_spec_read(spec_hash: &str) -> (String, Vec<String>, Vec<GraphValue>) {
+    let mut p = Params::new();
+    p.s("h", spec_hash);
+    p.read(
+        "match $p isa population, has spec-hash $ph; $ph == $h;
+         fetch { \"h\": $ph, \"dialect\": $p.spec-dialect, \"text\": $p.spec-text };",
+    )
+}
+
+/// Inserts a population with its defining spec.
+pub(crate) fn define_population_op(spec_hash: &str, dialect: &str, text: &str) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("h", spec_hash);
+    p.s("dl", dialect);
+    p.s("tx", text);
+    p.write(
+        "insert $p isa population, has spec-hash == $h, has spec-dialect == $dl,
+             has spec-text == $tx;",
+    )
+}
+
+/// Every `population-member` row of a population — open and closed — with its
+/// member's concept-id and window/freshness attributes.
+pub(crate) fn population_rows_read(spec_hash: &str) -> (String, Vec<String>, Vec<GraphValue>) {
+    let mut p = Params::new();
+    p.s("h", spec_hash);
+    p.read(
+        "match $p isa population, has spec-hash $ph; $ph == $h;
+               $pm isa population-member, links (owning-population: $p, member: $m);
+               $m has concept-id $mid;
+         fetch { \"id\": $mid, \"vf\": $pm.valid-from, \"vt\": $pm.valid-to,
+                 \"ca\": $pm.computed-at };",
+    )
+}
+
+/// The subset of `ids` that exist as `concept`s (the only type that may be a
+/// population member). The id-count shapes the disjunction; every id is a param.
+pub(crate) fn existing_concepts_read(ids: &[ConceptId]) -> (String, Vec<String>, Vec<GraphValue>) {
+    let mut p = Params::new();
+    let mut alts = Vec::with_capacity(ids.len());
+    for (i, id) in ids.iter().enumerate() {
+        let name = format!("c{i}");
+        p.s(&name, id.0.clone());
+        alts.push(format!("{{ $cid == ${name}; }}"));
+    }
+    let filter = match alts.len() {
+        1 => "$cid == $c0;".to_string(),
+        _ => format!("{};", alts.join(" or ")),
+    };
+    p.read(&format!(
+        "match $c isa concept, has concept-id $cid; {filter}
+         fetch {{ \"id\": $cid }};"
+    ))
+}
+
+/// One write op over `members`, one row per member, binding `$h`, `$cid`, `$at`.
+fn member_rows_op(body: &str, spec_hash: &str, members: &[ConceptId], at: DateTime) -> GraphWrite {
+    GraphWrite {
+        query: format!("given $h: string, $cid: string, $at: datetime;\n{body}"),
+        vars: vec!["h".into(), "cid".into(), "at".into()],
+        rows: members
+            .iter()
+            .map(|m| {
+                vec![
+                    GraphValue::String(spec_hash.to_string()),
+                    GraphValue::String(m.0.clone()),
+                    GraphValue::Datetime(at),
+                ]
+            })
+            .collect(),
+    }
+}
+
+/// Opens a new membership epoch row for each member at `at`.
+pub(crate) fn open_membership_op(
+    spec_hash: &str,
+    members: &[ConceptId],
+    at: DateTime,
+) -> GraphWrite {
+    member_rows_op(
+        "match $p isa population, has spec-hash $ph; $ph == $h;
+               $c isa concept, has concept-id $cc; $cc == $cid;
+         insert (owning-population: $p, member: $c) isa population-member,
+             has valid-from == $at, has computed-at == $at;",
+        spec_hash,
+        members,
+        at,
+    )
+}
+
+/// Closes each member's open row at `at`: sets `valid-to` and advances `computed-at`.
+pub(crate) fn close_membership_op(
+    spec_hash: &str,
+    members: &[ConceptId],
+    at: DateTime,
+) -> GraphWrite {
+    member_rows_op(
+        "match $p isa population, has spec-hash $ph; $ph == $h;
+               $c isa concept, has concept-id $cc; $cc == $cid;
+               $pm isa population-member, links (owning-population: $p, member: $c);
+               not { $pm has valid-to $vt; };
+         update $pm has valid-to == $at, has computed-at == $at;",
+        spec_hash,
+        members,
+        at,
+    )
+}
+
+/// Advances `computed-at` on each member's open row, leaving its window untouched.
+pub(crate) fn refresh_membership_op(
+    spec_hash: &str,
+    members: &[ConceptId],
+    at: DateTime,
+) -> GraphWrite {
+    member_rows_op(
+        "match $p isa population, has spec-hash $ph; $ph == $h;
+               $c isa concept, has concept-id $cc; $cc == $cid;
+               $pm isa population-member, links (owning-population: $p, member: $c);
+               not { $pm has valid-to $vt; };
+         update $pm has computed-at == $at;",
+        spec_hash,
+        members,
+        at,
+    )
+}

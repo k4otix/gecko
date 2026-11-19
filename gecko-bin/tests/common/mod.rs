@@ -4,6 +4,7 @@
 //! on drop — even if the test panics — so repeated test runs never leave
 //! databases behind on the server.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
@@ -18,14 +19,22 @@ pub struct TestDb {
 }
 
 impl TestDb {
-    /// Creates a config for a fresh, uniquely-named database. The name uses a
-    /// nanosecond timestamp to avoid collisions across concurrent tests.
+    /// Creates a config for a fresh, uniquely-named database. The name combines a
+    /// nanosecond timestamp, the process id, and a process-wide monotonic counter.
+    /// The timestamp is in nanosecond *units*, not nanosecond *resolution*, so it
+    /// cannot alone guarantee uniqueness: the counter separates two `new` calls in
+    /// one clock tick within a process (threaded `cargo test`), and the pid
+    /// separates two tests that sample the same tick in different processes (CI's
+    /// nextest runs one process per test, where the counter resets to zero).
     pub fn new(prefix: &str) -> Self {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let name = format!("{prefix}_{ts}");
+        let pid = std::process::id();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{prefix}_{ts}_{pid}_{seq}");
         let config = DbConfig {
             address: "localhost:1729".to_string(),
             database: name.clone(),

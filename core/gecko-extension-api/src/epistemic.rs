@@ -89,6 +89,25 @@ impl DerivationMethod {
     pub fn probabilistic(&self) -> bool {
         matches!(self, Self::LlmSynthesis)
     }
+
+    /// The 3-class disposition rank — **provable (2) > attested (1) >
+    /// probabilistic (0)** — the ranking authority of the `derivation-method` key
+    /// in the host disposition engine (SPEC-W2-W3 §2.3 / §8.1). Derived from
+    /// [`provable`](Self::provable) / [`probabilistic`](Self::probabilistic) so
+    /// those classifiers stay the single source of truth; every method that is
+    /// neither structurally provable nor probabilistic is *attested*. A higher
+    /// rank is stronger evidence, so `provable` out-ranks `human-assertion`
+    /// (attested) — the point where this order departs from an entrenchment- or
+    /// authorship-weighted scheme.
+    pub fn rank(&self) -> u8 {
+        if self.provable() {
+            2
+        } else if self.probabilistic() {
+            0
+        } else {
+            1
+        }
+    }
 }
 
 /// A draft episode (episodic tier): an observation to be recorded.
@@ -306,5 +325,33 @@ mod tests {
     fn probabilistic_classifier_flags_llm_synthesis() {
         assert!(DerivationMethod::LlmSynthesis.probabilistic());
         assert!(!DerivationMethod::TypeJoin.probabilistic());
+    }
+
+    #[test]
+    fn rank_is_three_class_provable_attested_probabilistic() {
+        // Provable (invariant 7) → 2.
+        for m in [
+            DerivationMethod::TypeJoin,
+            DerivationMethod::Cardinality,
+            DerivationMethod::FunctionalDependency,
+        ] {
+            assert_eq!(m.rank(), 2, "{} is provable", m.as_str());
+        }
+        // Attested — neither structurally provable nor probabilistic → 1.
+        for m in [
+            DerivationMethod::TypeDbFunction,
+            DerivationMethod::ExternalTool,
+            DerivationMethod::HumanAssertion,
+        ] {
+            assert_eq!(m.rank(), 1, "{} is attested", m.as_str());
+        }
+        // Probabilistic → 0.
+        assert_eq!(DerivationMethod::LlmSynthesis.rank(), 0);
+        // The ordering that matters for the disposition engine: a provable method
+        // out-ranks a human assertion (this is exactly where the 3-class order
+        // departs from an authorship-weighted scheme that would float
+        // human-assertion above provable).
+        assert!(DerivationMethod::TypeJoin.rank() > DerivationMethod::HumanAssertion.rank());
+        assert!(DerivationMethod::HumanAssertion.rank() > DerivationMethod::LlmSynthesis.rank());
     }
 }
