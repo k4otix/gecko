@@ -680,6 +680,13 @@ its check.
 | 7 | W5b migration | `cyber_detect_test` (unchanged) | `gecko-bin/tests/cyber_detect_test.rs` | **stays green** across the migration from raw `graph.write` (`detect/mod.rs:142,196`) to the seam |
 | 8 | W5b→W5a | `memwriter_is_the_sole_belief_tier_writer` (row 2) turns GREEN | — | after row 7's migration lands, the §2.2 reconciliation finds zero unaccounted belief-tier instances — the W5b-blocks-W5a proof (§3.3) discharged |
 
+> **Implementation note (2026-11-19, not ratified text) — row 5.** `belief_edge_decl_registry_writes_run_stamped`
+> ships in `core/mem-gecko/tests/belief_edge_integration.rs`, against a test-only extension
+> fixture shaped like cyber. The refusal half is covered beside it (`missing_player_commits_no_belief`,
+> `value_outside_values_commits_no_belief`, `non_unique_key_commits_no_belief`,
+> `live_schema_mismatch_is_refused_before_writing`) and by the registry unit tests in
+> `core/mem-gecko/src/belief_edge/registry.rs`. Tracked as ledger item A1.
+
 ---
 
 ## §6 — Ratification record

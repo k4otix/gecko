@@ -610,7 +610,7 @@ async fn apply_all_schemas(
             .await
             .with_context(|| format!("Failed to read schema file: {}", path.display()))?
     } else {
-        include_str!("../../core/gecko-engine/schema/core_schema.tql").to_string()
+        gecko_engine::db::CORE_SCHEMA.to_string()
     };
 
     db.apply_schema(&core_schema)
@@ -767,8 +767,8 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
     Ok(())
 }
 
-/// Builds mem's epistemic writer, wiring the semantic-index accelerator when the
-/// `[semantic_index]` config enables it.
+/// Builds mem's epistemic writer over the belief-edge registry `edges`, wiring the
+/// semantic-index accelerator when the `[semantic_index]` config enables it.
 ///
 /// - **Disabled** ⇒ `MemWriter::without_index` (recall falls back to the non-vector
 ///   path; no drag).
@@ -779,12 +779,13 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 async fn build_epistemic_writer(
     store: std::sync::Arc<dyn GraphStore>,
     cfg: &GeckoConfig,
-) -> Result<std::sync::Arc<dyn EpistemicWriter>> {
+    edges: mem_gecko::BeliefEdgeRegistry,
+) -> Result<std::sync::Arc<mem_gecko::MemWriter>> {
     let sic = &cfg.semantic_index;
     if !sic.enabled {
-        return Ok(std::sync::Arc::new(mem_gecko::MemWriter::without_index(
-            store,
-        )));
+        return Ok(std::sync::Arc::new(
+            mem_gecko::MemWriter::without_index(store).with_belief_edges(edges),
+        ));
     }
     if sic.backend != "hnsw" {
         anyhow::bail!(
@@ -842,7 +843,8 @@ async fn build_epistemic_writer(
     let index: std::sync::Arc<dyn SemanticIndex> = index;
 
     let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
-        .with_retrieval_provenance(sic.record_provenance());
+        .with_retrieval_provenance(sic.record_provenance())
+        .with_belief_edges(edges);
     // Reconstruct the accelerator from the graph (the source of truth) before
     // serving recalls. For the real embedder this stays lazy: an empty/doc-only
     // graph enumerates no embeddables, so the 1.3GB model is never loaded here.
@@ -965,7 +967,14 @@ async fn build_host_bridge(
     let graph_router =
         std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
     let store = std::sync::Arc::new(RouterGraphStore::new(graph_router.clone()));
-    let writer: std::sync::Arc<dyn EpistemicWriter> = build_epistemic_writer(store, cfg).await?;
+    // Built from the host's own extension list before it moves into the base bridge,
+    // so a bad declaration fails the run before anything executes.
+    let edges =
+        mem_gecko::BeliefEdgeRegistry::from_extensions(gecko_engine::db::CORE_SCHEMA, &extensions)
+            .map_err(anyhow::Error::new)
+            .context("belief-edge declarations")?;
+    let writer: std::sync::Arc<dyn EpistemicWriter> =
+        build_epistemic_writer(store, cfg, edges).await?;
 
     // mem (forced-on, first) binds the writer into the sandbox context; other
     // extensions inherit the no-op.
