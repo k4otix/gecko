@@ -98,6 +98,10 @@ pub enum RegistryError {
         "extension `{extension}` gives `{label}` a supertype, but the core or mem schema introduces that type"
     )]
     ReparentedType { extension: String, label: String },
+    #[error(
+        "extension `{extension}` has an `alias` token in its schema or a migration; the belief-edge registry cannot resolve aliased types"
+    )]
+    AliasUnsupported { extension: String },
     #[error("extension `{extension}` is not registered; the belief-edge registry needs its schema")]
     MemMissing { extension: String },
 }
@@ -127,6 +131,12 @@ impl BeliefEdgeRegistry {
 
         let base_types = introduced_labels(core.iter().chain(&mem));
         for (ext, stmts) in extensions.iter().zip(&ext_stmts) {
+            // No rule resolves an alias to the type it names, so none is allowed.
+            if stmts.iter().any(|s| s.has("alias")) {
+                return Err(RegistryError::AliasUnsupported {
+                    extension: ext.name.to_owned(),
+                });
+            }
             check_no_reparenting(ext.name, stmts, &base_types)?;
         }
 
@@ -298,9 +308,8 @@ fn own_closure<'s>(relation: &'s str, own: &'s [Statement]) -> HashSet<&'s str> 
     }
 }
 
-/// Refuses `decl` unless the declarer alone mentions the relation and its subtypes, never
-/// alongside `alias`, and defines the relation once cleanly: no `sub` on it and no `as`
-/// alongside it.
+/// Refuses `decl` unless the declarer alone mentions the relation and its subtypes, and
+/// defines the relation once cleanly: no `sub` on it and no `as` alongside it.
 fn check_ownership<'s>(
     extension: &str,
     decl: &BeliefEdgeDecl,
@@ -318,15 +327,6 @@ fn check_ownership<'s>(
             if let Some(label) = closure.iter().find(|l| stmt.has(l)) {
                 return Err(not_owned(format!("{name} also mentions `{label}`")));
             }
-        }
-    }
-    for stmt in own {
-        if stmt.has("alias")
-            && let Some(label) = closure.iter().find(|l| stmt.has(l))
-        {
-            return Err(not_owned(format!(
-                "its schema fragment has a statement with `{label}` and `alias`"
-            )));
         }
     }
     for stmt in own {
@@ -708,22 +708,55 @@ mod tests {
 
     #[test]
     fn refuses_alias_and_value_touches() {
-        let decls = [decl("x-link")];
-        for touch in [
-            "define x-link alias other-name;",
-            "define x-link value string;",
-        ] {
-            let err = build(&[
-                frag(
-                    "x-ext",
-                    "define relation x-link, relates claim, relates subject;",
-                    &decls,
-                ),
-                frag("y-ext", touch, &[]),
-            ])
-            .unwrap_err();
-            assert_not_owned(&err, "y-ext also mentions");
+        let err = build_x_and_y("", "define x-link alias other-name;").unwrap_err();
+        assert_alias_unsupported(&err, "y-ext");
+        let err = build_x_and_y("", "define x-link value string;").unwrap_err();
+        assert_not_owned(&err, "y-ext also mentions");
+    }
+
+    fn assert_alias_unsupported(err: &RegistryError, by: &str) {
+        match err {
+            RegistryError::AliasUnsupported { extension } => assert_eq!(extension, by),
+            other => panic!("expected AliasUnsupported, got {other:?}"),
         }
+        assert!(err.to_string().contains(by), "{err}");
+    }
+
+    #[test]
+    fn refuses_an_extension_fragment_with_an_alias() {
+        // An alias would re-parent a mem type under a label no other rule resolves.
+        let foo = [decl_with_player("probe-link", "foo")];
+        let aliased = format!("{PROBE_SCHEMA}  entity foo;\n  belief alias b2;\n  b2 sub foo;\n");
+        let err = build(&[frag("probe-ext", &aliased, &foo)]).unwrap_err();
+        assert_alias_unsupported(&err, "probe-ext");
+
+        let plain = format!("{PROBE_SCHEMA}  entity foo;\n");
+        let err = build_with_migration(
+            "probe-ext",
+            &plain,
+            Some("define belief alias b2; b2 sub foo;"),
+            &foo,
+        )
+        .unwrap_err();
+        assert_alias_unsupported(&err, "probe-ext");
+
+        // An extension that declares nothing is refused as well.
+        let probe = [decl("probe-link")];
+        let err = build(&[
+            frag("probe-ext", PROBE_SCHEMA, &probe),
+            frag(
+                "y-ext",
+                "define entity foo; belief alias b2; b2 sub foo;",
+                &[],
+            ),
+        ])
+        .unwrap_err();
+        assert_alias_unsupported(&err, "y-ext");
+
+        // The word inside a comment or a string is not a token.
+        let quoted =
+            format!("{PROBE_SCHEMA}  # alias\n  entity foo @doc(\"An alias for nothing.\");\n");
+        build(&[frag("probe-ext", &quoted, &foo)]).expect("builds");
     }
 
     fn assert_not_owned(err: &RegistryError, why: &str) {
@@ -1048,11 +1081,11 @@ mod tests {
             &decls,
         )])
         .unwrap_err();
-        assert_not_owned(&err, "`alias`");
+        assert_alias_unsupported(&err, "x-ext");
 
         // The owner aliases its relation, and another extension extends the alias.
         let err = build_x_and_y("x-link alias xl;\n", "define xl relates extra;").unwrap_err();
-        assert_not_owned(&err, "`alias`");
+        assert_alias_unsupported(&err, "x-ext");
 
         // An alias on the owner's own subtype hides a mention the same way.
         let err = build_x_and_y(
@@ -1060,7 +1093,7 @@ mod tests {
             "define xs relates extra;",
         )
         .unwrap_err();
-        assert_not_owned(&err, "`alias`");
+        assert_alias_unsupported(&err, "x-ext");
     }
 
     #[test]
