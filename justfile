@@ -92,7 +92,7 @@ fmt:
     cargo fmt
 
 lint:
-    cargo clippy --no-default-features -- -D warnings
+    cargo clippy --no-default-features --all-targets -- -D warnings
 
 # pre-push gate: format, lint, fast tests
 check: fmt lint test

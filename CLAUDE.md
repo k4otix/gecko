@@ -21,7 +21,7 @@ just test-model   # Tier 3: OPT-IN real bge-large model (first run downloads ~1.
 
 # What CI actually runs (candle-free whole-suite + lint):
 cargo nextest run --workspace --exclude js-sandbox --no-default-features --features cyber
-cargo clippy --workspace --exclude js-sandbox --no-default-features -- -D warnings
+cargo clippy --workspace --exclude js-sandbox --no-default-features --all-targets -- -D warnings
 cargo fmt --all -- --check
 
 # A single test (nextest substring filter, or plain cargo):

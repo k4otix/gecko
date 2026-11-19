@@ -484,7 +484,7 @@ mod edges {
                     belief(),
                     &[],
                     DerivationMethod::TypeJoin,
-                    &[edge.clone()],
+                    std::slice::from_ref(&edge),
                 )
                 .await
                 .expect_err("an unowned relation is refused");
@@ -578,14 +578,17 @@ mod edges {
         let cases = [
             (
                 "missing role",
-                edge(&[subject.clone()], &[verdict.clone()]),
+                edge(
+                    std::slice::from_ref(&subject),
+                    std::slice::from_ref(&verdict),
+                ),
                 "probe-object",
             ),
             (
                 "duplicate role",
                 edge(
                     &[subject.clone(), object.clone(), subject.clone()],
-                    &[verdict.clone()],
+                    std::slice::from_ref(&verdict),
                 ),
                 "probe-subject",
             ),
@@ -593,7 +596,7 @@ mod edges {
                 "unknown role",
                 edge(
                     &[subject.clone(), object.clone(), ("probe-claim", s("x"))],
-                    &[verdict.clone()],
+                    std::slice::from_ref(&verdict),
                 ),
                 "probe-claim",
             ),
