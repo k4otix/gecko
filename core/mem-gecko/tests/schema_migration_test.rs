@@ -14,6 +14,9 @@ mod common;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
+/// The mem schema as released before the population-member window landed.
+const PREVIOUS_MEM_SCHEMA: &str = include_str!("fixtures/mem_schema_95ebac1.tql");
+
 /// The shipped `population-members` body, and the earlier body that did not
 /// exclude closed membership rows.
 const NEW_BODY: &str =
@@ -61,8 +64,47 @@ async fn reapplying_the_schema_is_idempotent() {
     let mem = mem_gecko::MemGecko::new();
     for _ in 0..2 {
         router.apply_schema(CORE_SCHEMA).await.expect("core schema");
-        router.apply_schema(mem.schema()).await.expect("mem schema");
+        router
+            .apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+            .await
+            .expect("mem schema");
     }
+    common::drop_db_with_retry(&mut router, &name).await;
+}
+
+#[tokio::test]
+async fn previous_release_upgrades_to_the_shipped_schema() {
+    let (mut router, name) = router();
+    let mem = mem_gecko::MemGecko::new();
+    router.apply_schema(CORE_SCHEMA).await.expect("core schema");
+    router
+        .apply_schema(PREVIOUS_MEM_SCHEMA)
+        .await
+        .expect("previous mem schema");
+
+    // A changed type annotation is refused by a plain re-define…
+    let err = router
+        .apply_schema(mem.schema())
+        .await
+        .expect_err("a changed @doc cannot be re-defined");
+    assert!(format!("{err}").contains("DEX15"), "{err}");
+
+    // …and lands through the migration, together with the new functions and the
+    // window attributes, in one transaction. A second apply skips the migration.
+    for _ in 0..2 {
+        router.apply_schema(CORE_SCHEMA).await.expect("core schema");
+        router
+            .apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+            .await
+            .expect("upgrade to the shipped mem schema");
+    }
+    let schema = router.database_schema().await.expect("schema");
+    for m in mem.schema_migrations() {
+        assert!(!schema.contains(m.applies_when), "{} left old text", m.id);
+    }
+    assert!(schema.contains("fun blast-radius-at("));
+    assert!(schema.contains("fun population-members-at("));
+
     common::drop_db_with_retry(&mut router, &name).await;
 }
 
