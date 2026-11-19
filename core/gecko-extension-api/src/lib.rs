@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 // `RunContext`/`EpistemicWriter`/`EpistemicReader`/`SemanticIndex`/`Embedder` live
 // alongside `GeckoExtension`/`HostImportDef` in this same crate. mem-gecko
 // implements them; `gecko-engine` re-exports them for sandbox host-fn injection.
+pub mod belief_edge;
 pub mod epistemic;
 pub mod error;
 pub mod graph;
@@ -37,12 +38,15 @@ pub mod provenance;
 pub mod sandbox_ctx;
 pub mod semantic;
 
+pub use belief_edge::{
+    AttrDecl, AttrValueType, BeliefEdge, BeliefEdgeDecl, BeliefEdgeWriter, RoleDecl,
+};
 pub use epistemic::{
     BeliefDraft, BeliefQuery, Chunk, ContextBudget, DerivationMethod, EpisodeDraft,
     EpistemicReader, EpistemicWriter, Outcome, RecallQuery,
 };
 pub use error::EpistemicError;
-pub use graph::{GraphStore, GraphValue, GraphWrite};
+pub use graph::{GraphStore, GraphValue, GraphWrite, RowCountMismatch};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
 pub use sandbox_ctx::SandboxCtx;
@@ -104,6 +108,12 @@ pub trait GeckoExtension: Send + Sync {
     /// an existing database, applied before it. Empty when the schema has only ever
     /// changed in ways `define` re-applies.
     fn schema_migrations(&self) -> &[SchemaMigration] {
+        &[]
+    }
+
+    /// Relations this extension attaches to a belief, written atomically with it through
+    /// [`BeliefEdgeWriter`]. Empty when the extension adds no belief edges.
+    fn belief_edges(&self) -> &[BeliefEdgeDecl] {
         &[]
     }
 

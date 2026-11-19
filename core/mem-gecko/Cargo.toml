@@ -13,6 +13,7 @@ chrono = { workspace = true }
 async-trait = "0.1"
 ulid = "3"
 futures-util = "0.3"
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }

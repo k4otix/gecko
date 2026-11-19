@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use gecko_extension_api::{EpistemicError, GraphStore, GraphValue, GraphWrite};
+use gecko_extension_api::{EpistemicError, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
 use tokio::sync::{Mutex, OnceCell};
+use typedb_driver::answer::QueryAnswer;
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
@@ -66,6 +67,32 @@ fn store_err<E: std::fmt::Display>(e: E) -> EpistemicError {
     EpistemicError::Storage(e.to_string())
 }
 
+/// Drains the answer of write op `op` and fails unless it produced exactly
+/// `expected` rows.
+async fn check_row_count(
+    answer: QueryAnswer,
+    op: usize,
+    expected: usize,
+    query: &str,
+) -> Result<(), EpistemicError> {
+    let head: String = query.chars().take(80).collect();
+    if !answer.is_row_stream() {
+        return Err(EpistemicError::Storage(format!(
+            "write op {op} answer is not a row stream: {head}"
+        )));
+    }
+    let mut stream = answer.into_rows();
+    let mut got = 0usize;
+    while let Some(item) = stream.next().await {
+        item.map_err(store_err)?;
+        got += 1;
+    }
+    if got != expected {
+        return Err(RowCountMismatch { op, expected, got }.into_error(&head));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl GraphStore for RouterGraphStore {
     async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError> {
@@ -76,23 +103,27 @@ impl GraphStore for RouterGraphStore {
             .await
             .map_err(store_err)?;
         let tx = wtx.transaction();
-        for op in ops {
+        for (index, op) in ops.iter().enumerate() {
             if op.rows.is_empty() {
                 continue; // no-op, matching the syncer's `run_rows` convention.
             }
-            if op.vars.is_empty() {
+            let answer = if op.vars.is_empty() {
                 // Parameterless write: run the query text as-is.
-                tx.query(&op.query).await.map_err(store_err)?;
-                continue;
+                tx.query(&op.query).await.map_err(store_err)?
+            } else {
+                let mut given = GivenRows::new(op.vars.clone(), op.rows.len());
+                for row in &op.rows {
+                    let entries: Vec<GivenRowEntry> = row.iter().map(entry).collect();
+                    given.push_row(entries).map_err(store_err)?;
+                }
+                tx.query_with_rows(&op.query, given)
+                    .await
+                    .map_err(store_err)?
+            };
+            if let Some(per_row) = op.expect_rows {
+                // Returning here drops `wtx` uncommitted, rolling back every op.
+                check_row_count(answer, index, per_row * op.rows.len(), &op.query).await?;
             }
-            let mut given = GivenRows::new(op.vars.clone(), op.rows.len());
-            for row in &op.rows {
-                let entries: Vec<GivenRowEntry> = row.iter().map(entry).collect();
-                given.push_row(entries).map_err(store_err)?;
-            }
-            tx.query_with_rows(&op.query, given)
-                .await
-                .map_err(store_err)?;
         }
         wtx.commit().await.map_err(store_err)?;
         Ok(())

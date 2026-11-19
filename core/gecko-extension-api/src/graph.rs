@@ -67,6 +67,11 @@ pub struct GraphWrite {
     /// One or more value rows; `vars.len()` values each. An empty `rows` is a
     /// no-op (the op is skipped), matching the syncer's `run_rows` convention.
     pub rows: Vec<Vec<GraphValue>>,
+    /// The answer-row count per value row, or `None` to skip the check. The store
+    /// checks only the total, `n * rows.len()` (`n` for a parameterless op), and
+    /// rolls the whole transaction back on any other count.
+    #[serde(default)]
+    pub expect_rows: Option<usize>,
 }
 
 impl GraphWrite {
@@ -76,6 +81,7 @@ impl GraphWrite {
             query: query.into(),
             vars,
             rows: vec![row],
+            expect_rows: None,
         }
     }
 
@@ -85,7 +91,65 @@ impl GraphWrite {
             query: query.into(),
             vars: Vec::new(),
             rows: vec![Vec::new()],
+            expect_rows: None,
         }
+    }
+
+    /// Requires the op to produce exactly `n × rows.len()` answer rows in total, so a
+    /// `match` that binds nothing (or too much) fails the write instead of committing.
+    ///
+    /// The store checks only that total: a two-row op expecting 1 cannot tell 2 + 0
+    /// from 1 + 1, so use it on single-row ops when the per-row count matters.
+    pub fn expecting(self, n: usize) -> Self {
+        Self {
+            expect_rows: Some(n),
+            ..self
+        }
+    }
+}
+
+/// A write op whose answer row count missed its [`GraphWrite::expect_rows`] total.
+///
+/// A [`GraphStore`] reports the mismatch as the `Storage` error [`Self::into_error`]
+/// builds, and a caller recovers the failing op with [`Self::from_error`], so the
+/// message format has one owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowCountMismatch {
+    /// The index of the failing op in the slice passed to [`GraphStore::write`].
+    pub op: usize,
+    /// The total row count the op required.
+    pub expected: usize,
+    /// The row count the op produced.
+    pub got: usize,
+}
+
+impl RowCountMismatch {
+    const PREFIX: &'static str = "write op ";
+
+    /// The `Storage` error for this mismatch, followed by the head of the failing query.
+    pub fn into_error(self, query_head: &str) -> EpistemicError {
+        let Self { op, expected, got } = self;
+        EpistemicError::Storage(format!(
+            "{}{op} expected {expected} row(s), matched {got}: {query_head}",
+            Self::PREFIX
+        ))
+    }
+
+    /// The mismatch an error built by [`Self::into_error`] carries, or `None` for any
+    /// other error.
+    pub fn from_error(err: &EpistemicError) -> Option<Self> {
+        let EpistemicError::Storage(msg) = err else {
+            return None;
+        };
+        let rest = msg.strip_prefix(Self::PREFIX)?;
+        let (op, rest) = rest.split_once(" expected ")?;
+        let (expected, rest) = rest.split_once(" row(s), matched ")?;
+        let (got, _) = rest.split_once(": ")?;
+        Some(Self {
+            op: op.parse().ok()?,
+            expected: expected.parse().ok()?,
+            got: got.parse().ok()?,
+        })
     }
 }
 
@@ -98,7 +162,9 @@ pub trait GraphStore: Send + Sync {
     /// Runs a sequence of parameterized writes in **one** transaction and commits.
     ///
     /// Ops execute in order; any error rolls the whole transaction back (nothing
-    /// is committed). Ops with empty `rows` are skipped.
+    /// is committed). Ops with empty `rows` are skipped. An op whose answer row
+    /// count differs from its [`GraphWrite::expect_rows`] total is an error built by
+    /// [`RowCountMismatch::into_error`].
     async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError>;
 
     /// Runs a read query, returning the fetched documents as JSON values.
@@ -112,4 +178,38 @@ pub trait GraphStore: Send + Sync {
         vars: &[String],
         row: &[GraphValue],
     ) -> Result<Vec<serde_json::Value>, EpistemicError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_count_mismatch_round_trips_through_its_error() {
+        let m = RowCountMismatch {
+            op: 7,
+            expected: 1,
+            got: 0,
+        };
+        let err = m.clone().into_error("given $b: string; match $x isa y;");
+        let EpistemicError::Storage(msg) = &err else {
+            panic!("expected Storage, got {err:?}");
+        };
+        assert_eq!(
+            msg,
+            "write op 7 expected 1 row(s), matched 0: given $b: string; match $x isa y;"
+        );
+        assert_eq!(RowCountMismatch::from_error(&err), Some(m));
+    }
+
+    #[test]
+    fn row_count_mismatch_ignores_other_errors() {
+        for err in [
+            EpistemicError::Storage("write answer is not a row stream: q".into()),
+            EpistemicError::Storage("write op x expected 1 row(s), matched 0: q".into()),
+            EpistemicError::InvalidInput("write op 1 expected 1 row(s), matched 0: q".into()),
+        ] {
+            assert_eq!(RowCountMismatch::from_error(&err), None, "{err:?}");
+        }
+    }
 }

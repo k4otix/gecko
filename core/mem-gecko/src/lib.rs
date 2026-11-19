@@ -14,12 +14,14 @@ use gecko_extension_api::{
     EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx, SchemaMigration,
 };
 
+pub mod belief_edge;
 pub mod consolidation;
 pub mod disposition;
 pub mod populations;
 mod tql;
 pub mod writer;
 
+pub use belief_edge::{BeliefEdgeRegistry, ExtensionFragment, RegistryError};
 pub use consolidation::{ConsolidationDaemon, ConsolidationReport, NoopConsolidationDaemon};
 pub use disposition::{DispKeys, Disposition};
 pub use populations::MaterializeReport;

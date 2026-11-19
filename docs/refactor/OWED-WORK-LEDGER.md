@@ -2,9 +2,9 @@
 
 > **Status: living working-surface** (not a ratified spec — it tracks, it does not decide).
 > The source of truth for each item is its owning document's cited section; this ledger is the
-> index and the sequencing. Last reconciled against `main` @ `43fcb70` (PR #52) on 2026-11-19;
-> the evidence for every status and every review-sourced item is in
-> [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
+> index and the sequencing. Last reconciled against the belief-edge seam PR (A1; branch
+> `feat/belief-edge-seam`, base `389ac2c`, the merge of PR #53) on 2026-11-19; the evidence for every status and every
+> review-sourced item is in [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
 >
 > **Ratification provenance:** SPEC-W2-W3 decisions @`11d7ab1`; SPEC-W5 as-design @`95f0d6e`;
 > CONTRACT-W8 as-contract (self-anchored, `fdd1dc6`).
@@ -20,11 +20,14 @@ references in specs and commit messages still resolve.
   disposition ranker (pure half), the populations writer, function-aware schema re-apply, and
   the §5 acceptance suite (20 tests run by default, 5 evidence probes ignored).
 - **Fixed after the review:** a database initialized before PR #50 could not be upgraded (**F1**, PR #51); the rest of track F (**F2–F7**) landed in PR #52.
-- **Decided 2026-11-19:** **D-B** (ownership rule) and **D-D** (no write-capable handle for extensions), recorded as SPEC-W5 §3.5. A1 is unblocked.
-- **Keystone:** the `BeliefEdgeDecl` seam (**A1**). It unblocks the cyber migration, both W5a
+- **Decided 2026-11-19:** **D-B** (ownership rule) and **D-D** (no write-capable handle for extensions), recorded as SPEC-W5 §3.5.
+- **Landed in the belief-edge seam PR (branch `feat/belief-edge-seam`, base `389ac2c`):** the
+  keystone `BeliefEdgeDecl` seam (**A1** ✅), write-count enforcement (`GraphWrite.expect_rows`),
+  and the `supersede`-of-a-missing-belief fix. The seam unblocks the cyber migration, both W5a
   tests going green, the divergence-exception writer, and the resolved half of the disposition
-  writer. It does **not** gate the populations work, the bitemporal track, or the three daemon
-  jobs listed under track C as buildable now.
+  writer; it does **not** gate the populations work, the bitemporal track, or the three daemon
+  jobs listed under track C as buildable now. The remaining mem writes owe the same count
+  (**A11**).
 
 ## Sequence
 
@@ -32,13 +35,14 @@ references in specs and commit messages still resolve.
 F1 ✅ ───────────────────────────► (pre-#50 databases upgrade again)
 F2 ✅ F3 ✅ F4 ✅ F5 ✅ F6 ✅ F7 ✅ ─► track F complete
 
-D-B ✅ D-D ✅ ─► A1 ──┬─► A2 + A9 ──► A3 green, A4 green
+D-B ✅ D-D ✅ ─► A1 ✅ ┬─► A2 + A9 ──► A3 green, A4 green
                   ├─► A5 (also needs D-A, D-C)
                   ├─► A6 resolved half (also needs D-C)
                   └─► A8 (parked until cyber builds sighting ingestion)
 A6 contested half ─► needs D-E only (no seam)
 A7 ────────────────► no blocker
 A10 ───────────────► no blocker; must land before a second extension
+A11 ───────────────► entries 1–3 no blocker; entry 4 needs a uniqueness decision
 
 D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
 
@@ -72,22 +76,23 @@ in one transaction, the `GeckoExtension` declaration hook — are A1's to settle
 
 | ID | Item | Owning section | Type | Blocked on |
 |---|---|---|---|---|
-| **A1** | `BeliefEdgeDecl` registry and the sanctioned belief-edge writer method (was #1). The registry accepts only relations the declaring extension's fragment introduces; mem-owned edges are dedicated methods, not declarations | SPEC-W5 §3.2, §3.5 (D-B) | writer + registry + extension-API hook | — |
+| **A1** ✅ | **`BeliefEdgeDecl` registry and the sanctioned belief-edge writer — LANDED in the belief-edge seam PR (branch `feat/belief-edge-seam`, base `389ac2c`)** (was #1). Extensions declare edges through `GeckoExtension::belief_edges()`; `BeliefEdgeRegistry::from_extensions` accepts only relations the declaring extension's fragment introduces, and `gecko run` builds it in `build_host_bridge` (a bad declaration fails the run with `belief-edge declarations`). `MemWriter::edge_writer_for(ext)` returns a `BeliefEdgeWriter` bound to that extension, whose `assert_belief_with_edges` writes the belief and its edges in one transaction, every edge op `expect_rows = Some(1)`. The scanner fails closed: ownership is refused when any other fragment mentions the relation or one of its subtypes, and a non-belief player is refused unless its whole supertype chain resolves outside `memory-item`. Mem-owned edges stay dedicated methods. No production extension declares edges yet (cyber does in A2) | SPEC-W5 §3.2, §3.5 (D-B) | writer + registry + extension-API hook | ✅ Tier 2 (`core/mem-gecko/tests/belief_edge_integration.rs`): `belief_edge_decl_registry_writes_run_stamped`, `missing_player_commits_no_belief`, `value_outside_values_commits_no_belief`, `non_unique_key_commits_no_belief`, `live_schema_mismatch_is_refused_before_writing`, `two_edges_of_one_relation_both_land`, `expect_rows_accepts_an_exact_insert_match`, `expect_rows_rolls_back_a_zero_match`, `expect_rows_rolls_back_a_double_match`, `expect_rows_counts_an_update`; `supersede_of_a_missing_belief_errors_and_commits_nothing`. Unit: the registry suite in `belief_edge/registry.rs` (incl. `refuses_a_mem_relation`, `refuses_a_relation_another_extension_subtypes`, `refuses_memory_item_players`, `refuses_an_extension_fragment_with_an_alias`), the scanner suite in `belief_edge/scan.rs`, `bound_writer_writes_belief_and_edges_in_one_call`, `edge_writer_for_refuses_an_extension_with_no_declarations`, `edge_op_keeps_values_out_of_query_text`, `ownership_is_refused_before_confidence_is_checked`, `a_row_count_mismatch_names_the_failing_edge`, and `graph::tests::row_count_mismatch_*` in the API crate. Shipped set: `from_extensions_accepts_the_shipped_extensions` (`gecko-bin/tests/belief_edge_registry_test.rs`, `cyber` feature) |
 | **A2** | Cyber migration: `technique-detection` / `alert-disposition` written through the seam; raw `graph.write` at `detect/mod.rs:142,196` removed (was #12) | SPEC-W5 §3.3 | writer migration | A1 |
 | **A3** | W5a static lint `no_raw_belief_tier_tql_outside_mem_tql` | SPEC-W5 §2.1, §5 row 1 | test | Buildable now. **Red until A2** — the cyber literals at `detect/mod.rs:133,186` are exactly what it flags. Needs a stated scope for test sources |
 | **A4** | W5a dynamic rig: `memwriter_is_the_sole_belief_tier_writer` and `hostile_extension_raw_belief_write_is_flagged` (entity and relation) | SPEC-W5 §2.2, §5 rows 2–3, 8 | test rig | Rig buildable now; reconciliation red until A2 |
-| **A5** | Divergence-exception writer: co-mints the `divergence-exception` belief and its `divergence-precedence` in one call; refuses an anchor-less or separately-fabricated anchor (was #8 and #13) | SPEC-W2-W3 §2.2; SPEC-W5 §3.2 | writer (mem-owned, dedicated method) | A1's edge-writing core, D-A, D-C |
+| **A5** | Divergence-exception writer: co-mints the `divergence-exception` belief and its `divergence-precedence` in one call; refuses an anchor-less or separately-fabricated anchor (was #8 and #13) | SPEC-W2-W3 §2.2; SPEC-W5 §3.2 | writer (mem-owned, dedicated method) | A1's edge-writing core, D-A, D-C. Before A5 reuses that core, `tql::belief_edge_op` must return `Result` instead of `debug_assert!` + `continue` on a missing role value |
 | **A6** | Disposition writer — acts on the ranker's outcome (was #10, writer half). **Resolved:** mint via A5, or supersede the loser for instance-vs-instance. **Contested:** `contest()` (exists) plus a `belief-state "contested"` write (no writer today). Contract must also say how an evidence-less belief's method is read (REVIEW §2) | SPEC-W2-W3 §2.3, §2.4 | host engine + writer | Resolved half: A5, D-C. Contested half: D-E only |
 | **A7** | `scoped` writer (belief → population). No production path writes `scoped`; the cohort branch of `blast-radius` has no input without it. Mem-owned, on the belief-edge surface | SPEC-W5 §1.1 (surface), SPEC-W2-W3 §3.4 | writer (dedicated method) | — |
 | **A9** | Read-only graph handle and neutral sync writes: `GraphReader` split out of `GraphStore`; extension bridges get `Arc<dyn GraphReader>`; the post-sync hook returns `GraphWrite`s instead of taking a driver transaction | SPEC-W5 §3.5 (D-D steps 1–2) | extension-API + engine + cyber | A1; lands with A2 |
 | **A10** | Extensions depend only on `gecko-extension-api`: move `ExtensionCallback` and the OKF import types into the API crate; CI guard fails if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine` | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — (before a second extension) |
 | **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
+| **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op; each op below gets an `expect_rows` count, ranked by guest reachability: (1) `derivation_op`, via `mem.derive`: one missing evidence id silently stores the belief as underived. Expect 1, since it is one conjunctive match. A behavior change for any playbook passing ids that match nothing today. (2) `contest_ops`, via `mem.contest`: a missing claim returns the id of an anomaly that was never written. Expect 1. (3) `rests_on_op` and `record_prediction_op`: not guest-exposed. Expect 1. (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs:188-189`), so the right count needs a decision first. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3: — ; entry 4: a uniqueness decision for predictions |
 
 Tests owed with these items (names reserved by the specs):
 
 | Test | Owning section | Lands with |
 |---|---|---|
-| `belief_edge_decl_registry_writes_run_stamped` | SPEC-W5 §5 row 5 | A1 |
+| `belief_edge_decl_registry_writes_run_stamped` ✅ (`core/mem-gecko/tests/belief_edge_integration.rs`) | SPEC-W5 §5 row 5 | A1 |
 | `divergence_precedence_write_requires_cominted_anchor` | SPEC-W5 §5 row 6 | A5 |
 | `cyber_detect_test` stays green | SPEC-W5 §5 row 7 | A2 |
 | `empty_winner_yields_contested_anomaly_hub_no_exception_minted` (the hub-minting half; today's `host_side_ranking_reproduces_dispositions` covers the ranking half) | SPEC-W2-W3 §5 P-DISP-3 | A6 |
@@ -214,6 +219,24 @@ Observed on the live engine; recorded so they are not re-derived.
   normalizing whitespace and comments.
 - **Nested negation works in a write's `match`** — `not { $o isa population-member, links (…);
   not { $o has valid-to $vt; }; };` guards an `insert` against a second open row.
+- **Write answers are countable.** Under `query_with_rows`, `match … insert` and
+  `match … update` answers are row streams with one row per match (counts of 0, 1 and 2 were
+  all observed). `GraphWrite.expect_rows` relies on this.
+- **The live check dropped its `@key`/`@unique` condition.** Matching on annotations returns
+  `[REP254]` (not implemented). An ambiguous key is still refused at commit by the expect-1
+  row count.
+- **Unmet type patterns error instead of returning empty.** On 3.12, a type pattern the schema
+  cannot satisfy raises a query error (`INF2`/`INF3`/`FCP1`) rather than an empty answer. So the
+  live check reads any error as a failed condition (`InvalidInput`), which also means a DB
+  outage during the check is labelled `InvalidInput`, with the storage cause kept in the
+  message.
+- **The memory-item backstop uses a negation.** It is written as
+  `$m label memory-item; not { $s sub $m; $s sub P; };` and passes when it returns one
+  document, because the pass-on-empty form raises `FCP1`.
+- **A `reduce … count` over an empty pattern panics the TypeDB 3.12 server**
+  (`compiler/executable/reduce.rs:132`). Avoid that query shape.
+- **Alias definitions are unimplemented** (`[DEX1]`). The registry refuses any `alias` in
+  extension fragments regardless.
 
 ---
 

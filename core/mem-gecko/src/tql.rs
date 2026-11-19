@@ -9,8 +9,8 @@
 //! sources, how many claims), never a value.
 
 use gecko_extension_api::{
-    ActorId, BeliefDraft, ConceptId, DateTime, DerivationMethod, Entrenchment, EpisodeDraft,
-    GraphValue, GraphWrite, MemId, ProvenanceSource, RunContext,
+    ActorId, BeliefDraft, BeliefEdge, BeliefEdgeDecl, ConceptId, DateTime, DerivationMethod,
+    Entrenchment, EpisodeDraft, GraphValue, GraphWrite, MemId, ProvenanceSource, RunContext,
 };
 
 /// Open-set `origin-kind` discriminator for a run's provenance source (invariant 9:
@@ -285,20 +285,24 @@ pub(crate) fn supersession_ops(
     link.s("nid", new_id.0.clone());
     link.s("reason", reason);
     link.dt("ca", created_at);
-    let link_op = link.write(
-        "match
+    let link_op = link
+        .write(
+            "match
            $o isa belief, has concept-id $oc; $oc == $oid;
            $n isa belief, has concept-id $nc; $nc == $nid;
          insert (superseded: $o, superseding: $n) isa supersession,
              has supersession-reason == $reason, has created-at == $ca;",
-    );
+        )
+        .expecting(1);
 
     let mut flip = Params::new();
     flip.s("oid", old.0.clone());
-    let flip_op = flip.write(
-        "match $o isa belief, has concept-id $oc; $oc == $oid;
+    let flip_op = flip
+        .write(
+            "match $o isa belief, has concept-id $oc; $oc == $oid;
          update $o has belief-state \"superseded\";",
-    );
+        )
+        .expecting(1);
 
     vec![link_op, flip_op]
 }
@@ -678,6 +682,7 @@ fn member_rows_op(body: &str, spec_hash: &str, members: &[ConceptId], at: DateTi
                 ]
             })
             .collect(),
+        expect_rows: None,
     }
 }
 
@@ -922,4 +927,146 @@ pub(crate) fn gated_candidate_read(cid: &ConceptId, actor: &ActorId, now: DateTi
                let $act in retrieval-score($b, $now);
          fetch { \"title\": $b.title, \"act\": $act, \"la\": $b.last-access };",
     )
+}
+
+// ── Belief edges ──────────────────────────────────────────────────────────────
+//
+// Relation, role, player, key and attribute labels are interpolated into these
+// queries: they cannot be `given` parameters. Every label comes from a
+// `BeliefEdgeDecl` that the belief-edge registry admitted only after checking it
+// against `^[a-z][a-z0-9-]*$`. Values still travel as `given` params.
+
+/// The TypeQL value type that carries `v` in a `given` stage.
+fn graph_value_type(v: &GraphValue) -> &'static str {
+    match v {
+        GraphValue::String(_) => "string",
+        GraphValue::Datetime(_) => "datetime",
+        GraphValue::Double(_) => "double",
+        GraphValue::Long(_) => "integer",
+        GraphValue::Boolean(_) => "boolean",
+    }
+}
+
+/// One `decl` edge from the belief `belief` to the players `edge` names by key,
+/// carrying `edge`'s attributes. The op must bind exactly one row, so a missing or
+/// ambiguous player fails the write.
+///
+/// `edge` must already be validated against `decl`: each declared role supplied once,
+/// and only declared attributes. Players bind in `decl.roles` order and attributes in
+/// `decl.owned_attrs` order.
+pub(crate) fn belief_edge_op(
+    decl: &BeliefEdgeDecl,
+    belief: &MemId,
+    edge: &BeliefEdge,
+) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("b", belief.0.clone());
+    let mut match_lines = String::from("$bel isa belief, has concept-id $bc; $bc == $b;\n");
+    let mut role_players = format!("{}: $bel", decl.belief_role);
+    for (i, role) in decl.roles.iter().enumerate() {
+        let value = edge
+            .players
+            .iter()
+            .find(|(r, _)| r == role.role)
+            .map(|(_, v)| v);
+        debug_assert!(
+            value.is_some(),
+            "edge validated: role {} supplied",
+            role.role
+        );
+        let Some(value) = value else { continue };
+        p.add(&format!("p{i}"), graph_value_type(value), value.clone());
+        match_lines.push_str(&format!(
+            "           $x{i} isa {}, has {} $k{i}; $k{i} == $p{i};\n",
+            role.player, role.key
+        ));
+        role_players.push_str(&format!(", {}: $x{i}", role.role));
+    }
+    let mut has = String::new();
+    for (i, attr) in decl.owned_attrs.iter().enumerate() {
+        let Some((_, value)) = edge.attrs.iter().find(|(a, _)| a == attr.attr) else {
+            continue;
+        };
+        p.add(&format!("a{i}"), attr.value.tql(), value.clone());
+        has.push_str(&format!(", has {} == $a{i}", attr.attr));
+    }
+    let body = format!(
+        "match\n           {match_lines}         insert ({role_players}) isa {}{has};",
+        decl.relation
+    );
+    p.write(&body).expecting(1)
+}
+
+/// One condition of a belief edge's live-schema check and the type query that
+/// confirms it.
+pub(crate) struct SchemaCheck {
+    /// The condition, as an error message names it.
+    pub(crate) condition: String,
+    /// A parameterless `fetch` that returns at least one document when the condition
+    /// holds.
+    pub(crate) read: Read,
+}
+
+impl SchemaCheck {
+    fn new(condition: String, pattern: &str, var: &str) -> Self {
+        let query = format!("match {pattern} let $l = label(${var}); fetch {{ \"l\": $l }};");
+        Self {
+            condition,
+            read: (query, Vec::new(), Vec::new()),
+        }
+    }
+}
+
+/// The type queries that confirm the database schema matches `decl`. Every check
+/// passes on at least one document; on TypeDB 3.12 a check whose pattern the schema
+/// cannot satisfy fails as a query error rather than an empty answer, so an error
+/// also fails the check.
+///
+/// TypeDB 3.12 cannot match annotations in a type query, so the key check confirms
+/// only that the player owns its key, not that the key is `@key` or `@unique`. The
+/// write's one-row count still refuses a key that matches more than one player.
+pub(crate) fn belief_edge_schema_reads(decl: &BeliefEdgeDecl) -> Vec<SchemaCheck> {
+    let rel = decl.relation;
+    let mut checks = Vec::new();
+    for role in std::iter::once(decl.belief_role).chain(decl.roles.iter().map(|r| r.role)) {
+        checks.push(SchemaCheck::new(
+            format!("`{rel}` relates `{role}`"),
+            &format!("$r label {rel}; $r relates {role};"),
+            "r",
+        ));
+    }
+    checks.push(SchemaCheck::new(
+        format!("`belief` plays `{rel}:{}`", decl.belief_role),
+        &format!("$t label belief; $t plays {rel}:{};", decl.belief_role),
+        "t",
+    ));
+    for role in decl.roles {
+        let (player, r, key) = (role.player, role.role, role.key);
+        checks.push(SchemaCheck::new(
+            format!("`{player}` plays `{rel}:{r}`"),
+            &format!("$t label {player}; $t plays {rel}:{r};"),
+            "t",
+        ));
+        checks.push(SchemaCheck::new(
+            format!("`{player}` owns its key `{key}`"),
+            &format!("$t label {player}; $t owns {key};"),
+            "t",
+        ));
+        // Holds when no type is both a memory item and a `player`, so the role can
+        // never bind a belief, an episode or another memory node.
+        checks.push(SchemaCheck::new(
+            format!("no memory-item type is a `{player}`"),
+            &format!("$m label memory-item; not {{ $s sub $m; $s sub {player}; }};"),
+            "m",
+        ));
+    }
+    for attr in decl.owned_attrs {
+        let a = attr.attr;
+        checks.push(SchemaCheck::new(
+            format!("`{rel}` owns `{a}`"),
+            &format!("$r label {rel}; $r owns {a};"),
+            "r",
+        ));
+    }
+    checks
 }
