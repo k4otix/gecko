@@ -579,6 +579,54 @@ seam closed the last raw belief-tier write.
   attrs are the committed allowlist entries §1.2 records, owned by the populations writer,
   "never raw `graph.write`."
 
+### §3.5 — Amendments decided after ratification (D-B, D-D)
+
+> **Status: decided by the user on 2026-11-19** (ledger D-B and D-D, from
+> `REVIEW-2026-11.md` §3 points 1, 2 and 5). These amend §3.2 and §3.3; the ratified text above is
+> left as it stood at `95f0d6e`, and where the two disagree this section governs. Ratifying the
+> amendment is a separate act for the user.
+
+**D-B — the registry accepts only extension-owned relations.** §3.2 protects the registry
+procedurally ("registered, reviewed"). That leaves the free-form hole of §3.1 (i) open one step
+removed: an extension could declare `supersession` and then write it past the entrenchment guard.
+The rule is therefore structural:
+
+- A `BeliefEdgeDecl` is accepted only for a relation that the **declaring extension's own schema
+  fragment introduces**. A relation that core, mem or another extension defines, or one the
+  declaring fragment only extends by role-addition (invariant 5), is refused.
+- The check runs when the assembler builds the registry. It reads the fragments' text, so it is
+  testable without a live TypeDB. Before first use, the seam also validates every declared label
+  against a strict identifier pattern and against the live schema, because labels are
+  interpolated (they cannot be `given` parameters) and are the seam's one exception to "all TQL
+  is parameterized".
+- **Mem-owned belief edges are not registry clients.** `supersession`, `resolves`, `scoped` and
+  `divergence-precedence` each carry their own guard (entrenchment, disposition, scope, co-mint),
+  so each is written by a dedicated `MemWriter` method. This supersedes §3.2's description of a
+  `divergence-precedence` `BeliefEdgeDecl`. The co-mint obligation of SPEC-W2-W3 §2.2 is
+  unchanged and is enforced by that dedicated method. The consolidation daemon (§3.4) writes
+  mem-owned edges through the same dedicated methods.
+
+**D-D — extensions get no write-capable graph handle.** §3.3 keeps an `Arc<dyn GraphStore>` in
+the cyber bridge for reads, which is also a raw write path, so the §2.1/§2.2 residual is only
+detected. The decision is to retire it structurally, in three steps:
+
+1. **Read-only handle at run time.** `gecko-extension-api` splits a read-only `GraphReader`
+   (`read`) out of `GraphStore`, which keeps `write` and extends `GraphReader`. Extension bridges
+   are built with `Arc<dyn GraphReader>`; only mem holds a `GraphStore`. Lands with the cyber
+   migration (§3.3).
+2. **Neutral writes at sync time.** An extension's post-sync hook returns `GraphWrite`s for the
+   engine to run in its sync transaction, instead of receiving a driver transaction. Lands with
+   step 1.
+3. **Extensions depend only on `gecko-extension-api`.** The types extensions use from
+   `gecko-engine` move into the API crate: the sandbox `ExtensionCallback` and the OKF bundle
+   types used by import. A CI guard (the same shape as the `candle` guard) fails the build if
+   any crate under `extensions/` depends on `typedb-driver` or `gecko-engine`. Lands before a
+   second extension is started.
+
+**Limit.** Extensions are compiled-in, trusted code. These steps prevent an author from reaching
+a raw write path by accident; they do not defend against a deliberately hostile extension. W5a
+(§2) remains the backstop for every belief-tier write, mem's own included.
+
 ---
 
 ## §4 — Probe evidence (P-W5-1)
