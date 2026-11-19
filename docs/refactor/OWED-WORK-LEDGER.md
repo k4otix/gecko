@@ -28,6 +28,8 @@ references in specs and commit messages still resolve.
   writer; it does **not** gate the populations work, the bitemporal track, or the three daemon
   jobs listed under track C as buildable now. The remaining mem writes owe the same count
   (**A11**).
+- **Landed in the TypeDB 3.15 upgrade PR (branch `chore/typedb-3.15`):** server and driver at
+  3.15.0 (**U1** ✅), and the registry refusing type and role renames.
 
 ## Sequence
 
@@ -50,6 +52,9 @@ P1, P2 (F3 ✅) ─► buildable    P3 ─► no blocker
 
 C1, C2 ────────────────► buildable now
 C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I     C8 ─► needs A4
+
+U1 ✅ ──────────────► server + driver on 3.15.0
+A12 ───────────────► no blocker
 ```
 
 ---
@@ -87,6 +92,7 @@ in one transaction, the `GeckoExtension` declaration hook — are A1's to settle
 | **A10** | Extensions depend only on `gecko-extension-api`: move `ExtensionCallback` and the OKF import types into the API crate; CI guard fails if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine` | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — (before a second extension) |
 | **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
 | **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op; each op below gets an `expect_rows` count, ranked by guest reachability: (1) `derivation_op`, via `mem.derive`: one missing evidence id silently stores the belief as underived. Expect 1, since it is one conjunctive match. A behavior change for any playbook passing ids that match nothing today. (2) `contest_ops`, via `mem.contest`: a missing claim returns the id of an anomaly that was never written. Expect 1. (3) `rests_on_op` and `record_prediction_op`: not guest-exposed. Expect 1. (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs:188-189`), so the right count needs a decision first. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3: — ; entry 4: a uniqueness decision for predictions |
+| **A12** | **Registry coverage of `undefine`.** An extension fragment or migration that is an explicit `undefine` is applied as written (`db/schema_apply.rs`), and the registry does not inspect it, so an extension can remove a core or mem type or capability (`undefine belief;`, `undefine owns … from belief;`). Refuse any `undefine` statement in an extension that names a type the core or mem schema introduces | SPEC-W5 §3.5 (D-B) | registry | — |
 
 Tests owed with these items (names reserved by the specs):
 
@@ -150,6 +156,18 @@ rows 1, 6, 7 with C1/C2; row 2 with C3; row 3 with C4; row 4 with C5/C6.
 
 ---
 
+## Track U — TypeDB upgrade
+
+Server and driver move together (dependency policy: lockstep). The pin lives in `Cargo.toml`,
+`PINNED_TYPEDB` (`gecko-bin/src/orchestrator.rs`, which `gecko doctor` also reads), the CI
+images and `docker-compose.yml`.
+
+| ID | Item | Why | Done when | Blocked on |
+|---|---|---|---|---|
+| **U1** ✅ | **Upgrade TypeDB server and driver to 3.15.0 — LANDED in the TypeDB 3.15 upgrade PR.** Bump `typedb-driver = "~3.15"` (`Cargo.toml`), the `typedb/typedb:3.15.0` image in `.github/workflows/ci.yml` and `model-integration.yml`, the version `gecko doctor` expects (`gecko-bin/src/doctor.rs`), and the local server `just up` starts | Fixes on our paths: the `reduce … count` server panic recorded in the implementation notes (typedb#8021, fixed 3.15.0); string-attribute comparisons dropping answers (3.12.1) and value comparisons skipping valid answers, incl. long strings and decimals (3.14.1); a server crash when a database is deleted right after a transaction on it commits or closes, the integration tests' create/drop pattern (3.14.2); schema-transaction opens stuck behind a timed-out request or the statistics updater (3.14.1); parse/translation caching for parameterized queries (3.12.2). Risk: 3.15 reworks type inference, and the live check relies on unmet type patterns raising `INF2`/`INF3`/`FCP1` | Full Tier-2 suite green on 3.15.0 with `--test-threads=1`, `belief_edge_integration.rs` in particular. Each 3.12 implementation note below re-checked: the `reduce` panic note closed (the memory-item backstop may then use the direct count form, optional), the others kept or updated. 3.15 deprecation warnings checked for `try` in write stages and unchecked optional variables (`writer_reader_integration.rs:1131` uses a match-stage `try`). A registry test that `redefine <type> label <new>;` (type rename, since 3.12.2) in an extension fragment is refused for core and mem types. ✅ Suite green on 3.15.0 (349 passed, 5 skipped); notes below re-checked; the one deprecation warning (an unchecked optional variable in a test fetch) fixed with `$s?`; `refuses_an_extension_fragment_that_renames_a_type_or_role` and `scanner_recognizes_type_and_role_renames`. A 3.15.0 server opens a 3.12.0 data directory (databases and schemas listed and readable; the copies tried held no instances) | — |
+
+---
+
 ## Open decisions
 
 | ID | Decision | Owning section | Gates |
@@ -193,9 +211,10 @@ graduated names; the folded §5 rows stay split (`…_claim_defines` / `…_clai
 
 ---
 
-## Implementation notes (empirical, TypeDB 3.12)
+## Implementation notes (empirical, TypeDB 3.12; re-checked on 3.15.0)
 
-Observed on the live engine; recorded so they are not re-derived.
+Observed on the live engine; recorded so they are not re-derived. Unless a note says
+otherwise, it holds on 3.15.0.
 
 - **`[DEX15]` — a changed type annotation is not re-`define`-able.** Re-`define` is a no-op
   only for an identical definition; a different `@doc` on an existing type is refused.
@@ -223,20 +242,30 @@ Observed on the live engine; recorded so they are not re-derived.
   `match … update` answers are row streams with one row per match (counts of 0, 1 and 2 were
   all observed). `GraphWrite.expect_rows` relies on this.
 - **The live check dropped its `@key`/`@unique` condition.** Matching on annotations returns
-  `[REP254]` (not implemented). An ambiguous key is still refused at commit by the expect-1
+  `[REP254]` (not implemented; still so on 3.15.0). An ambiguous key is still refused at commit by the expect-1
   row count.
-- **Unmet type patterns error instead of returning empty.** On 3.12, a type pattern the schema
-  cannot satisfy raises a query error (`INF2`/`INF3`/`FCP1`) rather than an empty answer. So the
-  live check reads any error as a failed condition (`InvalidInput`), which also means a DB
-  outage during the check is labelled `InvalidInput`, with the storage cause kept in the
-  message.
+- **Unknown labels error; unmet conditions return empty.** On 3.15.0 a type query naming a
+  label the schema lacks raises `INF2`/`INF3`, and a known type that fails the condition
+  (`$t label belief; $t plays x:y;` with no such `plays`) returns no rows. 3.12 also raised
+  `FCP1` for some unsatisfiable patterns. The live check passes only on a returned row and
+  reads any error as a failed condition (`InvalidInput`), so it refuses in both cases; a DB
+  outage during the check is therefore labelled `InvalidInput`, with the storage cause kept
+  in the message.
 - **The memory-item backstop uses a negation.** It is written as
   `$m label memory-item; not { $s sub $m; $s sub P; };` and passes when it returns one
-  document, because the pass-on-empty form raises `FCP1`.
-- **A `reduce … count` over an empty pattern panics the TypeDB 3.12 server**
-  (`compiler/executable/reduce.rs:132`). Avoid that query shape.
-- **Alias definitions are unimplemented** (`[DEX1]`). The registry refuses any `alias` in
+  document. On 3.12 the pass-on-empty form raised `FCP1`; on 3.15.0 it returns no rows.
+- **`reduce … count` over an unsatisfiable pattern panicked the 3.12 server**
+  (`compiler/executable/reduce.rs:132`). Fixed in 3.15.0 (typedb#8021): the same query returns
+  a count of 0.
+- **Alias definitions are unimplemented** (`[DEX1]`, still so on 3.15.0). The registry refuses any `alias` in
   extension fragments regardless.
+- **Types and roles can be renamed** (since 3.12.2): `redefine <type> label <new>;` and
+  `redefine <relation>:<role> label <new>;` both commit on 3.15.0. The registry refuses
+  either in an extension fragment.
+- **Optional variables are dereferenced explicitly** (3.15.0). Fetching a `try`-bound
+  variable needs `$v?`; the bare form still works but logs a deprecation warning that says
+  it will fail in the next version. `try` in a write stage is deprecated in favor of
+  `if { isset $v; } then { … }`.
 
 ---
 

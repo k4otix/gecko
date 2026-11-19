@@ -8,7 +8,7 @@
 //! `derivation` / `source-link` instances and **zero** index upserts appear. Plain
 //! documentation → DB is drag-free.
 //!
-//! Requires a live TypeDB 3.12 service (`localhost:1729`, admin/password). Each test
+//! Requires a live TypeDB service (`localhost:1729`, admin/password). Each test
 //! provisions a throwaway database and drops it; the real `gecko` db is untouched.
 
 use futures_util::StreamExt;

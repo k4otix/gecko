@@ -1,4 +1,4 @@
-//! Schema re-application on an already-initialized database (live TypeDB 3.12).
+//! Schema re-application on an already-initialized database (live TypeDB).
 //!
 //! Applying the schema again must succeed, and a function whose shipped body
 //! changed must take effect on a database that already stores the old body.

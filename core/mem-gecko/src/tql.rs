@@ -1018,11 +1018,10 @@ impl SchemaCheck {
 }
 
 /// The type queries that confirm the database schema matches `decl`. Every check
-/// passes on at least one document; on TypeDB 3.12 a check whose pattern the schema
-/// cannot satisfy fails as a query error rather than an empty answer, so an error
-/// also fails the check.
+/// passes on at least one document. A check naming a label the schema lacks fails as a
+/// query error rather than an empty answer, so an error also fails the check.
 ///
-/// TypeDB 3.12 cannot match annotations in a type query, so the key check confirms
+/// TypeDB cannot match annotations in a type query, so the key check confirms
 /// only that the player owns its key, not that the key is `@key` or `@unique`. The
 /// write's one-row count still refuses a key that matches more than one player.
 pub(crate) fn belief_edge_schema_reads(decl: &BeliefEdgeDecl) -> Vec<SchemaCheck> {

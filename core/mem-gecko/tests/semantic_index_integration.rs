@@ -1,5 +1,5 @@
 //! Semantic index acceptance tests: the real [`HnswIndex`] driven through the
-//! [`MemWriter`] against live TypeDB 3.12 (`localhost:1729`, admin/password).
+//! [`MemWriter`] against live TypeDB (`localhost:1729`, admin/password).
 //!
 //! Covers belief upsert/supersede against index state, rebuild-from-graph
 //! determinism, model-id-bump rebuild, gated recall through the real index,
