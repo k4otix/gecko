@@ -9,8 +9,8 @@ pub(super) enum Kind {
     Relation,
     /// `attribute <label> …`.
     Attribute,
-    /// `<label> relates|owns|plays|sub …`, or a `redefine` of `<label>`: extends a type
-    /// introduced elsewhere.
+    /// `<label> relates|owns|plays|sub|@annotation …`, or a `redefine` of `<label>`: extends
+    /// a type introduced elsewhere.
     Touch,
 }
 
@@ -35,36 +35,50 @@ pub(super) fn type_heads(fragment: &str) -> Vec<TypeHead> {
         .collect()
 }
 
-/// Removes `#`-to-end-of-line comments and `"…"` literals (honoring `\"`), keeping line breaks.
+/// Removes `#`-to-end-of-line comments and `"…"` / `'…'` literals (honoring `\` escapes),
+/// keeping line breaks. An unterminated quote is kept as ordinary text, so it cannot hide
+/// the statements after it.
 fn strip_comments_and_strings(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(c) = chars.next() {
-        match c {
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
             '#' => {
-                for c in chars.by_ref() {
-                    if c == '\n' {
-                        out.push('\n');
-                        break;
-                    }
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
                 }
             }
-            '"' => {
-                out.push(' ');
-                while let Some(c) = chars.next() {
-                    match c {
-                        '\\' => {
-                            chars.next();
-                        }
-                        '"' => break,
-                        _ => {}
-                    }
+            quote @ ('"' | '\'') => match closing_quote(&chars, i + 1, quote) {
+                Some(end) => {
+                    out.push(' ');
+                    i = end + 1;
                 }
+                None => {
+                    out.push(quote);
+                    i += 1;
+                }
+            },
+            c => {
+                out.push(c);
+                i += 1;
             }
-            _ => out.push(c),
         }
     }
     out
+}
+
+/// The index of the `quote` that closes a literal whose body starts at `start`.
+fn closing_quote(chars: &[char], start: usize, quote: char) -> Option<usize> {
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 2,
+            c if c == quote => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Splits on whitespace and `, ( ) : { }`, keeping each `;` as its own token.
@@ -115,7 +129,9 @@ fn statement_head(statement: &[String]) -> Option<TypeHead> {
         }
         None => {
             let second = rest.get(1)?.as_str();
-            if !(is_label(first) && matches!(second, "relates" | "owns" | "plays" | "sub")) {
+            let extends =
+                matches!(second, "relates" | "owns" | "plays" | "sub") || second.starts_with('@');
+            if !(is_label(first) && extends) {
                 return None;
             }
             (Kind::Touch, &rest[0], &rest[1..])
@@ -173,6 +189,30 @@ mod tests {
         assert!(heads_named(&heads, "fake-rel").is_empty());
         assert!(heads_named(&heads, "also-fake").is_empty());
         assert_eq!(heads_named(&heads, "a")[0].kind, Kind::Entity);
+    }
+
+    #[test]
+    fn scanner_strips_single_quoted_strings() {
+        let heads = type_heads(
+            "define relation my-edge @doc('a;b # c\\'d'), sub supersession, relates claim;",
+        );
+        assert_eq!(heads.len(), 1, "{heads:?}");
+        assert_eq!(heads[0].label, "my-edge");
+        assert_eq!(heads[0].sub.as_deref(), Some("supersession"));
+    }
+
+    #[test]
+    fn scanner_keeps_text_after_an_unterminated_quote() {
+        let heads = type_heads("define entity a @doc(\"oops);\n relation hidden-link, relates x;");
+        assert_eq!(heads_named(&heads, "hidden-link").len(), 1, "{heads:?}");
+    }
+
+    #[test]
+    fn scanner_records_annotation_only_touch() {
+        let heads = type_heads("define x-link @abstract;");
+        let touch = heads_named(&heads, "x-link");
+        assert_eq!(touch.len(), 1);
+        assert_eq!(touch[0].kind, Kind::Touch);
     }
 
     #[test]

@@ -114,14 +114,14 @@ impl BeliefEdgeRegistry {
         let mem_heads = type_heads(mem_schema);
         let ext_heads: Vec<Vec<TypeHead>> = extensions.iter().map(|e| e.heads()).collect();
 
-        let mut supertypes: HashMap<&str, &str> = HashMap::new();
+        let mut supertypes: HashMap<&str, Vec<&str>> = HashMap::new();
         for head in core_heads
             .iter()
             .chain(&mem_heads)
             .chain(ext_heads.iter().flatten())
         {
-            if let (Kind::Entity, Some(sub)) = (head.kind, &head.sub) {
-                supertypes.insert(&head.label, sub);
+            if let (Kind::Entity | Kind::Touch, Some(sub)) = (head.kind, &head.sub) {
+                supertypes.entry(&head.label).or_default().push(sub);
             }
         }
 
@@ -251,9 +251,9 @@ fn check_ownership<'h>(
     };
     let own_heads: Vec<&TypeHead> = own
         .iter()
-        .filter(|h| h.kind == Kind::Relation && h.label == decl.relation)
+        .filter(|h| matches!(h.kind, Kind::Relation | Kind::Touch) && h.label == decl.relation)
         .collect();
-    if own_heads.is_empty() {
+    if !own_heads.iter().any(|h| h.kind == Kind::Relation) {
         return Err(not_owned(
             "its schema fragment has no `relation` statement for it".to_owned(),
         ));
@@ -285,17 +285,18 @@ fn check_ownership<'h>(
 }
 
 /// Whether walking `sub` links up from `from` reaches `to`.
-fn chain_reaches(supertypes: &HashMap<&str, &str>, from: &str, to: &str) -> bool {
+fn chain_reaches(supertypes: &HashMap<&str, Vec<&str>>, from: &str, to: &str) -> bool {
     let mut seen = HashSet::new();
-    let mut current = from;
-    while let Some(&parent) = supertypes.get(current) {
-        if parent == to {
-            return true;
+    let mut pending = vec![from];
+    while let Some(current) = pending.pop() {
+        for &parent in supertypes.get(current).into_iter().flatten() {
+            if parent == to {
+                return true;
+            }
+            if seen.insert(parent) {
+                pending.push(parent);
+            }
         }
-        if !seen.insert(parent) {
-            return false;
-        }
-        current = parent;
     }
     false
 }
@@ -303,7 +304,7 @@ fn chain_reaches(supertypes: &HashMap<&str, &str>, from: &str, to: &str) -> bool
 fn check_players(
     extension: &str,
     decl: &BeliefEdgeDecl,
-    supertypes: &HashMap<&str, &str>,
+    supertypes: &HashMap<&str, Vec<&str>>,
 ) -> Result<(), RegistryError> {
     for role in decl.roles {
         let p = role.player;
@@ -469,28 +470,76 @@ mod tests {
     #[test]
     fn refuses_a_subtype_relation() {
         let decls = [decl("my-edge")];
-        let err = build(&[frag(
-            "probe-ext",
-            "define relation my-edge sub supersession, relates claim, relates subject;",
-            &decls,
-        )])
-        .unwrap_err();
-        assert!(
-            matches!(err, RegistryError::SubtypedRelation { .. }),
-            "{err:?}"
-        );
+        let base = "define relation my-edge, relates claim, relates subject;";
+        for (schema, migration) in [
+            (
+                "define relation my-edge sub supersession, relates claim, relates subject;",
+                None,
+            ),
+            (
+                "define relation my-edge, relates claim, relates subject; my-edge sub supersession;",
+                None,
+            ),
+            (base, Some("redefine relation my-edge sub supersession;")),
+            (
+                "define relation my-edge @doc('a;b'), sub supersession, relates claim;",
+                None,
+            ),
+        ] {
+            let err = build_with_migration("probe-ext", schema, migration, &decls).unwrap_err();
+            assert!(
+                matches!(err, RegistryError::SubtypedRelation { .. }),
+                "{schema} / {migration:?}: {err:?}"
+            );
+        }
     }
 
     #[test]
     fn refuses_a_relates_as_role() {
         let decls = [decl("my-edge")];
-        let err = build(&[frag(
-            "probe-ext",
-            "define relation my-edge, relates claim, relates subject as superseded;",
-            &decls,
-        )])
-        .unwrap_err();
-        assert!(matches!(err, RegistryError::RoleAlias { .. }), "{err:?}");
+        let base = "define relation my-edge, relates claim, relates subject;";
+        for (schema, migration) in [
+            (
+                "define relation my-edge, relates claim, relates subject as superseded;",
+                None,
+            ),
+            (
+                "define relation my-edge, relates claim; my-edge relates subject as superseded;",
+                None,
+            ),
+            (
+                base,
+                Some("redefine relation my-edge relates subject as superseded;"),
+            ),
+        ] {
+            let err = build_with_migration("probe-ext", schema, migration, &decls).unwrap_err();
+            assert!(
+                matches!(err, RegistryError::RoleAlias { .. }),
+                "{schema} / {migration:?}: {err:?}"
+            );
+        }
+    }
+
+    fn build_with_migration(
+        name: &str,
+        schema: &str,
+        migration: Option<&'static str>,
+        decls: &[BeliefEdgeDecl],
+    ) -> Result<BeliefEdgeRegistry, RegistryError> {
+        let migrations: Vec<SchemaMigration> = migration
+            .into_iter()
+            .map(|tql| SchemaMigration {
+                id: "probe/m",
+                applies_when: "never",
+                tql,
+            })
+            .collect();
+        build(&[ExtensionFragment {
+            name,
+            schema,
+            migrations: &migrations,
+            decls,
+        }])
     }
 
     #[test]
@@ -529,23 +578,46 @@ mod tests {
 
     #[test]
     fn refuses_memory_item_players() {
-        let schema = format!("{PROBE_SCHEMA}  entity sighting sub execution-episode;\n");
-        for player in [
-            "belief",
-            "episode",
-            "okf-concept",
-            "memory-item",
-            "sighting",
+        for (extra, migration) in [
+            ("  entity sighting sub execution-episode;\n", None),
+            (
+                "  entity sighting;\n  sighting sub execution-episode;\n",
+                None,
+            ),
+            (
+                "  entity sighting;\n",
+                Some("redefine entity sighting sub execution-episode;"),
+            ),
         ] {
-            let decls = [decl_with_player("probe-link", player)];
-            let err = build(&[frag("probe-ext", &schema, &decls)]).unwrap_err();
-            assert!(
-                matches!(err, RegistryError::MemoryItemPlayer { .. }),
-                "{player}: {err:?}"
-            );
+            let schema = format!("{PROBE_SCHEMA}{extra}");
+            for player in [
+                "belief",
+                "episode",
+                "okf-concept",
+                "memory-item",
+                "sighting",
+            ] {
+                let decls = [decl_with_player("probe-link", player)];
+                let err =
+                    build_with_migration("probe-ext", &schema, migration, &decls).unwrap_err();
+                assert!(
+                    matches!(err, RegistryError::MemoryItemPlayer { .. }),
+                    "{extra} / {migration:?} / {player}: {err:?}"
+                );
+            }
+            let decls = [decl_with_player("probe-link", "concept")];
+            build_with_migration("probe-ext", &schema, migration, &decls)
+                .expect("concept is not a memory item");
         }
-        let decls = [decl_with_player("probe-link", "concept")];
-        build(&[frag("probe-ext", &schema, &decls)]).expect("concept is not a memory item");
+
+        // A second supertype added to memory-item makes that type a supertype too.
+        let schema = format!("{PROBE_SCHEMA}  entity probe-root;\n  memory-item sub probe-root;\n");
+        let decls = [decl_with_player("probe-link", "probe-root")];
+        let err = build(&[frag("probe-ext", &schema, &decls)]).unwrap_err();
+        assert!(
+            matches!(err, RegistryError::MemoryItemPlayer { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
