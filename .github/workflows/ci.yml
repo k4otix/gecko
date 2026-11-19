@@ -131,13 +131,13 @@ jobs:
       - name: Run cargo-deny
         run: cargo deny check licenses bans sources
 
-      # Gating (P7 cleared the clippy backlog): a regression here now fails the
-      # build, not just shows up in the log.
+      # Gating: a lint in library or test code fails the build. `--all-targets`
+      # covers tests, benches and examples, not just the libraries and binaries.
       - name: Clippy (candle-free)
-        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --locked -- -D warnings
+        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --all-targets --locked -- -D warnings
 
       - name: Clippy (candle-free, cyber)
-        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --features cyber --locked -- -D warnings
+        run: cargo clippy --workspace --exclude js-sandbox --no-default-features --features cyber --all-targets --locked -- -D warnings
 
       # Structural guard: this job must NEVER compile candle. `--no-default-
       # features` drops `real-embedder` (default-on since P4), so candle should
