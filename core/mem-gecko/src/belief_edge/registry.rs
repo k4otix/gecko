@@ -1,16 +1,18 @@
 //! Builds the set of belief-edge relations each extension may write, refusing any it does
 //! not own (design §3).
+//!
+//! Every check fails closed. A form the position rules cannot prove safe is refused.
 
 use std::collections::{HashMap, HashSet};
 
 use gecko_extension_api::{BeliefEdgeDecl, GeckoExtension, SchemaMigration};
 
-use super::scan::{Kind, TypeHead, type_heads};
+use super::scan::{Statement, statements};
 
 /// The name mem's extension registers under; its schema is scanned as mem's fragment.
 const MEM_EXTENSION: &str = "mem-gecko";
 
-/// The abstract root of every memory node; no non-belief role may be played by it, a
+/// The abstract root of every memory node. No non-belief role may be played by it, a
 /// subtype of it, or a supertype of it.
 const MEMORY_ITEM: &str = "memory-item";
 
@@ -34,12 +36,13 @@ impl<'a> ExtensionFragment<'a> {
         }
     }
 
-    fn heads(&self) -> Vec<TypeHead> {
-        let mut heads = type_heads(self.schema);
+    /// The statements of the schema and of every migration.
+    fn statements(&self) -> Vec<Statement> {
+        let mut stmts = statements(self.schema);
         for m in self.migrations {
-            heads.extend(type_heads(m.tql));
+            stmts.extend(statements(m.tql));
         }
-        heads
+        stmts
     }
 }
 
@@ -83,7 +86,7 @@ pub enum RegistryError {
         role: String,
     },
     #[error(
-        "extension `{extension}` declares belief edge `{relation}` with role `{role}` played by `{player}`, which is or contains a memory item"
+        "extension `{extension}` declares belief edge `{relation}` with role `{role}` played by `{player}`, which is a memory item, a supertype of one, or a type whose hierarchy cannot be resolved"
     )]
     MemoryItemPlayer {
         extension: String,
@@ -110,20 +113,13 @@ impl BeliefEdgeRegistry {
         mem_schema: &str,
         extensions: &[ExtensionFragment],
     ) -> Result<Self, RegistryError> {
-        let core_heads = type_heads(core_schema);
-        let mem_heads = type_heads(mem_schema);
-        let ext_heads: Vec<Vec<TypeHead>> = extensions.iter().map(|e| e.heads()).collect();
-
-        let mut supertypes: HashMap<&str, Vec<&str>> = HashMap::new();
-        for head in core_heads
+        let core = statements(core_schema);
+        let mem = statements(mem_schema);
+        let ext_stmts: Vec<Vec<Statement>> = extensions
             .iter()
-            .chain(&mem_heads)
-            .chain(ext_heads.iter().flatten())
-        {
-            if let (Kind::Entity | Kind::Touch, Some(sub)) = (head.kind, &head.sub) {
-                supertypes.entry(&head.label).or_default().push(sub);
-            }
-        }
+            .map(ExtensionFragment::statements)
+            .collect();
+        let hierarchy = Hierarchy::new(core.iter().chain(&mem).chain(ext_stmts.iter().flatten()));
 
         let mut by_relation: HashMap<String, (String, BeliefEdgeDecl)> = HashMap::new();
         for (i, ext) in extensions.iter().enumerate() {
@@ -136,18 +132,18 @@ impl BeliefEdgeRegistry {
                         relation: decl.relation.to_owned(),
                     });
                 }
-                let others = std::iter::once(("the core schema", &core_heads))
-                    .chain(std::iter::once(("mem", &mem_heads)))
+                let others = [("the core schema", &core), ("mem", &mem)]
+                    .into_iter()
                     .chain(
                         extensions
                             .iter()
-                            .zip(&ext_heads)
+                            .zip(&ext_stmts)
                             .enumerate()
                             .filter(|(j, _)| *j != i)
-                            .map(|(_, (e, h))| (e.name, h)),
+                            .map(|(_, (e, s))| (e.name, s)),
                     );
-                check_ownership(ext.name, decl, &ext_heads[i], others)?;
-                check_players(ext.name, decl, &supertypes)?;
+                check_ownership(ext.name, decl, &ext_stmts[i], others)?;
+                check_players(ext.name, decl, &hierarchy)?;
                 by_relation.insert(
                     decl.relation.to_owned(),
                     (ext.name.to_owned(), decl.clone()),
@@ -157,8 +153,9 @@ impl BeliefEdgeRegistry {
         Ok(Self { by_relation })
     }
 
-    /// Builds the registry from the registered extensions, taking mem's schema from the
-    /// `mem-gecko` extension and every other extension as a declaring fragment.
+    /// Builds the registry from the registered extensions, taking mem's schema and
+    /// migrations from the `mem-gecko` extension and every other extension as a declaring
+    /// fragment.
     pub fn from_extensions(
         core_schema: &str,
         extensions: &[Box<dyn GeckoExtension>],
@@ -169,12 +166,18 @@ impl BeliefEdgeRegistry {
             .ok_or_else(|| RegistryError::MemMissing {
                 extension: MEM_EXTENSION.to_owned(),
             })?;
+        // Each text is closed with its own `;` so no statement runs into the next text.
+        let mut mem_text = format!("{}\n;\n", mem.schema());
+        for m in mem.schema_migrations() {
+            mem_text.push_str(m.tql);
+            mem_text.push_str("\n;\n");
+        }
         let fragments: Vec<ExtensionFragment> = extensions
             .iter()
             .filter(|e| e.name() != MEM_EXTENSION)
             .map(|e| ExtensionFragment::of(e.as_ref()))
             .collect();
-        Self::build(core_schema, mem.schema(), &fragments)
+        Self::build(core_schema, &mem_text, &fragments)
     }
 
     /// The declaration of `relation`, if `extension` owns it.
@@ -238,91 +241,151 @@ fn check_shape(extension: &str, decl: &BeliefEdgeDecl) -> Result<(), RegistryErr
     Ok(())
 }
 
-fn check_ownership<'h>(
+/// The declared relation plus every subtype of it the declarer's own fragment defines,
+/// directly or through another such subtype.
+fn own_closure<'s>(relation: &'s str, own: &'s [Statement]) -> HashSet<&'s str> {
+    let mut closure = HashSet::from([relation]);
+    loop {
+        let before = closure.len();
+        for stmt in own {
+            if let Some(label) = stmt.first_label()
+                && stmt.supertypes().any(|s| closure.contains(s))
+            {
+                closure.insert(label);
+            }
+        }
+        if closure.len() == before {
+            return closure;
+        }
+    }
+}
+
+/// Refuses `decl` unless the declarer alone mentions the relation and its subtypes, and
+/// defines the relation once cleanly: no `sub` on it and no `as` alongside it.
+fn check_ownership<'s>(
     extension: &str,
     decl: &BeliefEdgeDecl,
-    own: &[TypeHead],
-    others: impl Iterator<Item = (&'h str, &'h Vec<TypeHead>)>,
+    own: &[Statement],
+    others: impl Iterator<Item = (&'s str, &'s Vec<Statement>)>,
 ) -> Result<(), RegistryError> {
     let not_owned = |reason: String| RegistryError::NotOwned {
         extension: extension.to_owned(),
         relation: decl.relation.to_owned(),
         reason,
     };
-    let own_heads: Vec<&TypeHead> = own
-        .iter()
-        .filter(|h| matches!(h.kind, Kind::Relation | Kind::Touch) && h.label == decl.relation)
-        .collect();
-    if !own_heads.iter().any(|h| h.kind == Kind::Relation) {
-        return Err(not_owned(
-            "its schema fragment has no `relation` statement for it".to_owned(),
-        ));
-    }
-    for (name, heads) in others {
-        if heads
-            .iter()
-            .any(|h| matches!(h.kind, Kind::Relation | Kind::Touch) && h.label == decl.relation)
-        {
-            return Err(not_owned(format!("{name} also defines or extends it")));
-        }
-        if heads.iter().any(|h| {
-            matches!(h.kind, Kind::Relation | Kind::Touch)
-                && h.sub.as_deref() == Some(decl.relation)
-        }) {
-            return Err(not_owned(format!("{name} subtypes it")));
+    let closure = own_closure(decl.relation, own);
+    for (name, stmts) in others {
+        for stmt in stmts {
+            if let Some(label) = closure.iter().find(|l| stmt.has(l)) {
+                return Err(not_owned(format!("{name} also mentions `{label}`")));
+            }
         }
     }
-    for head in own_heads {
-        if let Some(supertype) = &head.sub {
+    for stmt in own {
+        if stmt.first_label() == Some(decl.relation) && stmt.has("sub") {
             return Err(RegistryError::SubtypedRelation {
                 extension: extension.to_owned(),
                 relation: decl.relation.to_owned(),
-                supertype: supertype.clone(),
+                supertype: stmt.supertypes().next().unwrap_or("<missing>").to_owned(),
             });
         }
-        if head.relates_as {
+        if stmt.has(decl.relation) && stmt.has("as") {
             return Err(RegistryError::RoleAlias {
                 extension: extension.to_owned(),
                 relation: decl.relation.to_owned(),
             });
         }
     }
+    if !own
+        .iter()
+        .any(|s| s.introduces("relation") == Some(decl.relation))
+    {
+        return Err(not_owned(
+            "its schema fragment has no `relation` statement for it".to_owned(),
+        ));
+    }
     Ok(())
 }
 
-/// Whether walking `sub` links up from `from` reaches `to`.
-fn chain_reaches(supertypes: &HashMap<&str, Vec<&str>>, from: &str, to: &str) -> bool {
-    let mut seen = HashSet::new();
-    let mut pending = vec![from];
-    while let Some(current) = pending.pop() {
-        for &parent in supertypes.get(current).into_iter().flatten() {
-            if parent == to {
-                return true;
+/// The `sub` links of every scanned fragment, and which labels some statement introduces.
+struct Hierarchy<'s> {
+    parents: HashMap<&'s str, Vec<&'s str>>,
+    introduced: HashSet<&'s str>,
+    entities: HashSet<&'s str>,
+}
+
+impl<'s> Hierarchy<'s> {
+    fn new(stmts: impl Iterator<Item = &'s Statement>) -> Self {
+        let mut h = Self {
+            parents: HashMap::new(),
+            introduced: HashSet::new(),
+            entities: HashSet::new(),
+        };
+        for stmt in stmts {
+            if let Some(label) = stmt.first_label() {
+                for parent in stmt.supertypes() {
+                    h.parents.entry(label).or_default().push(parent);
+                }
             }
-            if seen.insert(parent) {
-                pending.push(parent);
+            for kind in ["entity", "relation", "attribute"] {
+                if let Some(label) = stmt.introduces(kind) {
+                    h.introduced.insert(label);
+                    if kind == "entity" {
+                        h.entities.insert(label);
+                    }
+                }
             }
         }
+        h
     }
-    false
+
+    fn parents_of(&self, label: &str) -> &[&'s str] {
+        self.parents.get(label).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every label reachable from `from` through `sub` links, `from` included.
+    fn reachable(&self, from: &'s str) -> HashSet<&'s str> {
+        let mut seen = HashSet::from([from]);
+        let mut pending = vec![from];
+        while let Some(current) = pending.pop() {
+            for &parent in self.parents_of(current) {
+                if seen.insert(parent) {
+                    pending.push(parent);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Whether `player` is provably neither a memory item, a subtype of one, nor a
+    /// supertype of one. Every type above it must be introduced, ending in an entity root.
+    fn clear_of_memory_items(&self, player: &'s str) -> bool {
+        if player == MEMORY_ITEM || self.reachable(MEMORY_ITEM).contains(player) {
+            return false;
+        }
+        self.reachable(player).into_iter().all(|label| {
+            label != MEMORY_ITEM
+                && if self.parents_of(label).is_empty() {
+                    self.entities.contains(label)
+                } else {
+                    self.introduced.contains(label)
+                }
+        })
+    }
 }
 
 fn check_players(
     extension: &str,
     decl: &BeliefEdgeDecl,
-    supertypes: &HashMap<&str, Vec<&str>>,
+    hierarchy: &Hierarchy,
 ) -> Result<(), RegistryError> {
     for role in decl.roles {
-        let p = role.player;
-        if p == MEMORY_ITEM
-            || chain_reaches(supertypes, p, MEMORY_ITEM)
-            || chain_reaches(supertypes, MEMORY_ITEM, p)
-        {
+        if !hierarchy.clear_of_memory_items(role.player) {
             return Err(RegistryError::MemoryItemPlayer {
                 extension: extension.to_owned(),
                 relation: decl.relation.to_owned(),
                 role: role.role.to_owned(),
-                player: p.to_owned(),
+                player: role.player.to_owned(),
             });
         }
     }
@@ -409,7 +472,7 @@ mod tests {
         let decls = [decl("supersession")];
         let schema = "define relation supersession, relates claim, relates subject;";
         let err = build(&[frag("probe-ext", schema, &decls)]).unwrap_err();
-        assert_not_owned(&err, "mem also defines");
+        assert_not_owned(&err, "mem also mentions");
     }
 
     #[test]
@@ -417,8 +480,9 @@ mod tests {
         let decls = [decl("hierarchy")];
         let schema = "define relation hierarchy, relates claim, relates subject;";
         let err = build(&[frag("probe-ext", schema, &decls)]).unwrap_err();
-        assert_not_owned(&err, "the core schema also defines");
-        let err = build(&[frag("probe-ext", PROBE_SCHEMA, &decls)]).unwrap_err();
+        assert_not_owned(&err, "the core schema also mentions");
+        let ghost = [decl("ghost-link")];
+        let err = build(&[frag("probe-ext", PROBE_SCHEMA, &ghost)]).unwrap_err();
         assert_not_owned(&err, "no `relation` statement");
     }
 
@@ -438,7 +502,7 @@ mod tests {
             ),
         ])
         .unwrap_err();
-        assert_not_owned(&err, "x-ext also defines");
+        assert_not_owned(&err, "x-ext also mentions");
     }
 
     #[test]
@@ -457,7 +521,7 @@ mod tests {
             ),
         ])
         .unwrap_err();
-        assert_not_owned(&err, "y-ext subtypes it");
+        assert_not_owned(&err, "y-ext also mentions");
 
         // The owner may subtype its own relation.
         build(&[frag(
@@ -466,6 +530,121 @@ mod tests {
             &decls,
         )])
         .expect("an owner's own subtype is allowed");
+    }
+
+    const X_LINK: &str = "define relation x-link, relates claim, relates subject;\n";
+
+    /// Builds with X owning and declaring `x-link` and Y contributing `y_schema`.
+    fn build_x_and_y(x_extra: &str, y_schema: &str) -> Result<BeliefEdgeRegistry, RegistryError> {
+        let decls = [decl("x-link")];
+        let x_schema = format!("{X_LINK}{x_extra}");
+        build(&[
+            frag("x-ext", &x_schema, &decls),
+            frag("y-ext", y_schema, &[]),
+        ])
+    }
+
+    #[test]
+    fn refuses_keyword_and_xid_named_intermediates() {
+        for mid in [
+            "label",
+            "value",
+            "check",
+            "limit",
+            "select",
+            "distinct",
+            "\u{2118}mid",
+        ] {
+            let schema = format!(
+                "{PROBE_SCHEMA}  entity {mid} sub execution-episode;\n  entity sighting sub {mid};\n"
+            );
+            let decls = [decl_with_player("probe-link", "sighting")];
+            let err = build(&[frag("probe-ext", &schema, &decls)]).unwrap_err();
+            assert!(
+                matches!(err, RegistryError::MemoryItemPlayer { .. }),
+                "{mid}: {err:?}"
+            );
+        }
+        let schema = format!("{PROBE_SCHEMA}  entity check sub execution-episode;\n");
+        let decls = [decl_with_player("probe-link", "check")];
+        let err = build(&[frag("probe-ext", &schema, &decls)]).unwrap_err();
+        assert!(
+            matches!(err, RegistryError::MemoryItemPlayer { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_statements_after_a_cr_terminated_comment() {
+        let err = build_x_and_y("", "define\n# c\rx-link relates extra;\n").unwrap_err();
+        assert_not_owned(&err, "y-ext also mentions");
+
+        let schema = format!("{PROBE_SCHEMA}  # c\rentity sighting sub execution-episode;\n");
+        let decls = [decl_with_player("probe-link", "sighting")];
+        let err = build(&[frag("probe-ext", &schema, &decls)]).unwrap_err();
+        assert!(
+            matches!(err, RegistryError::MemoryItemPlayer { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_transitive_subtype_from_another_fragment() {
+        let err = build_x_and_y(
+            "relation x-sub sub x-link;\n",
+            "define relation y-sub sub x-sub, relates a;",
+        )
+        .unwrap_err();
+        assert_not_owned(&err, "y-ext also mentions");
+    }
+
+    #[test]
+    fn refuses_a_keyword_named_subtype_from_another_fragment() {
+        let err = build_x_and_y("", "define relation label sub x-link, relates a;").unwrap_err();
+        assert_not_owned(&err, "y-ext also mentions");
+    }
+
+    #[test]
+    fn refuses_plays_from_another_fragment() {
+        let err = build_x_and_y("", "define concept plays x-link:subject;").unwrap_err();
+        assert_not_owned(&err, "y-ext also mentions");
+    }
+
+    #[test]
+    fn refuses_an_unresolvable_player() {
+        let decls = [decl_with_player("probe-link", "ghost")];
+        let err = build(&[frag("probe-ext", PROBE_SCHEMA, &decls)]).unwrap_err();
+        assert!(
+            matches!(err, RegistryError::MemoryItemPlayer { .. }),
+            "{err:?}"
+        );
+    }
+
+    const CYBER_SHAPED: &str = "define\n  entity cyber-object sub concept @doc(\"Root.\"),\n      owns attack-id @card(0..1) @unique;\n  attribute attack-id, value string;\n  entity attack-pattern sub cyber-object @doc(\"A technique.\"),\n      plays technique-detection:detected-technique;\n  relation technique-detection @doc(\"Logic covers a technique.\"),\n      relates detecting-logic @doc(\"The logic.\"),\n      relates detected-technique @doc(\"The technique.\"),\n      relates detection-claim @doc(\"The belief.\");\n  concept plays technique-detection:detecting-logic;\n  belief plays technique-detection:detection-claim;\n";
+
+    const CYBER_ROLES: &[RoleDecl] = &[
+        RoleDecl {
+            role: "detecting-logic",
+            player: "concept",
+            key: "concept-id",
+        },
+        RoleDecl {
+            role: "detected-technique",
+            player: "attack-pattern",
+            key: "attack-id",
+        },
+    ];
+
+    #[test]
+    fn accepts_a_cyber_shaped_extension() {
+        let decls = [BeliefEdgeDecl {
+            relation: "technique-detection",
+            belief_role: "detection-claim",
+            roles: CYBER_ROLES,
+            owned_attrs: &[],
+        }];
+        let reg = build(&[frag("cyber-ext", CYBER_SHAPED, &decls)]).expect("builds");
+        assert_eq!(reg.owner("technique-detection"), Some("cyber-ext"));
     }
 
     #[test]
@@ -484,7 +663,7 @@ mod tests {
                 frag("y-ext", touch, &[]),
             ])
             .unwrap_err();
-            assert_not_owned(&err, "y-ext also defines");
+            assert_not_owned(&err, "y-ext also mentions");
         }
     }
 
