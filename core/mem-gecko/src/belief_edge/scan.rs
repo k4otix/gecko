@@ -42,6 +42,16 @@ impl Statement {
             .filter(|t| is_label(t))
     }
 
+    /// Whether the statement renames a type (`[kind] <label> label <new>`) or a role
+    /// (`<relation>:<role> label <new>`), the two shapes a TypeQL rename takes.
+    pub(super) fn renames(&self) -> bool {
+        match self.body() {
+            [old, l, new] => l == "label" && is_label(old) && is_label(new),
+            [rel, role, l, new] => l == "label" && is_label(rel) && is_label(role) && is_label(new),
+            _ => false,
+        }
+    }
+
     /// Every token that directly follows a `sub` token.
     pub(super) fn supertypes(&self) -> impl Iterator<Item = &str> {
         self.tokens
@@ -182,6 +192,27 @@ mod tests {
                 .collect();
             assert_eq!(heads.len(), 1, "{label}");
             assert_eq!(heads[0].supertypes().count(), 0, "{label}");
+        }
+    }
+
+    #[test]
+    fn scanner_recognizes_type_and_role_renames() {
+        for text in [
+            "redefine belief label idea;",
+            "redefine entity belief label idea;",
+            "redefine\n  supersession:superseded label old;",
+            "redefine\n  fun f() -> boolean:\n    match $t label belief;\n    return check;\n  plan label roadmap;",
+        ] {
+            assert!(statements(text).iter().any(Statement::renames), "{text}");
+        }
+        for text in [
+            "define entity label sub concept;",
+            "define entity sighting sub label;",
+            "define\n  fun f() -> boolean:\n    match $t label belief;\n    return check;\n",
+            "define\n  fun f() -> boolean:\n    match\n      $r label x-link;\n      $r relates claim;\n    return check;\n",
+            "define entity a @doc(\"a label b\");",
+        ] {
+            assert!(!statements(text).iter().any(Statement::renames), "{text}");
         }
     }
 

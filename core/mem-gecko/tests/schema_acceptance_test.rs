@@ -1,4 +1,4 @@
-//! Schema-level acceptance tests (live TypeDB 3.12).
+//! Schema-level acceptance tests (live TypeDB).
 //!
 //! These prove the mem-gecko substrate schema at the SCHEMA level by
 //! driving raw parameterized TQL against a live server (`localhost:1729`,
@@ -10,7 +10,7 @@
 //! fixture via TQL, reads it back, and drops the database on the way out. The real
 //! `gecko` database is never touched.
 //!
-//! Requires a running TypeDB 3.12 service (CI provides one). If no server is
+//! Requires a running TypeDB service (CI provides one). If no server is
 //! reachable the tests fail loudly rather than silently skipping.
 
 use futures_util::StreamExt;

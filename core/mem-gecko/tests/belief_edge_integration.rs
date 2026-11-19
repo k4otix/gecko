@@ -1,4 +1,4 @@
-//! Live TypeDB 3.12 acceptance tests for two suites:
+//! Live TypeDB acceptance tests for two suites:
 //!
 //! - **Write-count enforcement.** These drive [`RouterGraphStore::write`] directly to
 //!   prove that a [`GraphWrite`] carrying an expected row count commits only when its
@@ -11,7 +11,7 @@
 //!
 //! Each test provisions its own throwaway database on `localhost:1729`
 //! (admin/password), applies core + mem schema, and drops it. The real `gecko`
-//! database is never touched. Requires a running TypeDB 3.12 service (CI provides one).
+//! database is never touched. Requires a running TypeDB service (CI provides one).
 
 use std::sync::Arc;
 
@@ -555,7 +555,7 @@ async fn value_outside_values_commits_no_belief() {
 }
 
 /// `probe-tag` is shared by two targets, so a key lookup on it binds two rows. The
-/// live schema check does not test `@key`/`@unique` (TypeDB 3.12 rejects annotation
+/// live schema check does not test `@key`/`@unique` (TypeDB rejects annotation
 /// matching), so the commit-time row count refuses the write as `Storage`.
 #[tokio::test(flavor = "multi_thread")]
 async fn non_unique_key_commits_no_belief() {

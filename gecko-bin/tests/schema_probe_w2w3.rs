@@ -1015,7 +1015,7 @@ async fn host_side_ranking_reproduces_dispositions() {
 /// C1 (sibling of `memory-item`) can be the retractee. Per-branch role narrowing
 /// (`rests-on:assumption`/`derivation:source` want a `memory-item`;
 /// `population-member:member` wants a `concept`) is the central type-inference risk —
-/// and TypeDB 3.12 admits it. The redefine is ASSERTED to be accepted (a rejection
+/// and TypeDB admits it. The redefine is ASSERTED to be accepted (a rejection
 /// fails the test, not merely logged: `apply_schema` collapses every failure to
 /// `DbError::Schema`, so an `Err`-tolerant match could not certify acceptance), then
 /// `blast-radius(C1: concept)` must return the cohort belief B (exact set). This is
@@ -1026,7 +1026,7 @@ async fn blast_radius_widens_param_and_reaches_cohort() {
     apply_composed_schema(&db).await;
 
     // The `okf-concept`-widened redefine with per-branch sibling narrowing is accepted
-    // by TypeDB 3.12 — a rejection here is a hard test failure, not an open verdict.
+    // by TypeDB — a rejection here is a hard test failure, not an open verdict.
 
     // b1 admits a `concept` argument and sweeps the cohort belief B from the member C1.
     insert(

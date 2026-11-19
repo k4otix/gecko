@@ -58,6 +58,10 @@ build the extension only inside the CLI arms that use it — a typo in
   the source `#` comments; type/role/function coverage is the convention.
 - **`alias` is a reserved word.** The belief-edge registry refuses an extension fragment
   (or migration) that contains the token `alias` anywhere, so don't use it as a label.
+- **No type or role renames.** The registry also refuses a fragment or migration that
+  renames a type or role (`redefine <type> label <new>;`,
+  `redefine <relation>:<role> label <new>;`), including the extension's own types: it
+  resolves every type by the label the fragments declare.
 - **`@meta("key","value")` (client-readable schema metadata) is deliberately unused.**
   It only pays off when an *unknown-at-compile-time* client reads the schema; GECKO
   composes its schema at compile time and its current clients never introspect it. Two

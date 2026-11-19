@@ -5,7 +5,7 @@
 # GECKO: Graph Execution of Contextual Knowledge Objects
 
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
-[![TypeDB](https://img.shields.io/badge/TypeDB-3.12-blue.svg)](https://typedb.com/)
+[![TypeDB](https://img.shields.io/badge/TypeDB-3.15-blue.svg)](https://typedb.com/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasmtime-654FF0.svg)](https://wasmtime.dev/)
 [![Build Status](https://github.com/k4otix/gecko/actions/workflows/ci.yml/badge.svg)](https://github.com/k4otix/gecko/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -181,7 +181,7 @@ just build-guest    # rebuild + re-commit the WASM JS guest after editing core/j
 just check          # pre-push gate: fmt + clippy + fast tests
 ```
 
-CI (`ci.yml`) runs the candle-free, model-free suite against a TypeDB 3.12 service on every push; the real-model Tier-3 tests run nightly (`model-integration.yml`). The checked-in WASM guest is never rebuilt in CI — rebuild it locally with `just build-guest` and commit the binary.
+CI (`ci.yml`) runs the candle-free, model-free suite against a TypeDB 3.15 service on every push; the real-model Tier-3 tests run nightly (`model-integration.yml`). The checked-in WASM guest is never rebuilt in CI — rebuild it locally with `just build-guest` and commit the binary.
 
 ## Contributing
 
