@@ -2,7 +2,7 @@
 
 > **Status: living working-surface** (not a ratified spec — it tracks, it does not decide).
 > The source of truth for each item is its owning document's cited section; this ledger is the
-> index and the sequencing. Last reconciled against `main` @ `61b02e5` (PR #51) on 2026-11-18;
+> index and the sequencing. Last reconciled against `main` @ `43fcb70` (PR #52) on 2026-11-19;
 > the evidence for every status and every review-sourced item is in
 > [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
 >
@@ -19,7 +19,8 @@ references in specs and commit messages still resolve.
 - **Landed in PR #50:** the W2/W3 schema fold, the as-of functions, `blast-radius-at`, the
   disposition ranker (pure half), the populations writer, function-aware schema re-apply, and
   the §5 acceptance suite (20 tests run by default, 5 evidence probes ignored).
-- **Fixed after the review:** a database initialized before PR #50 could not be upgraded (**F1**, PR #51); the rest of track F (**F2–F7**) landed on `fix/ledger-f2-f7`.
+- **Fixed after the review:** a database initialized before PR #50 could not be upgraded (**F1**, PR #51); the rest of track F (**F2–F7**) landed in PR #52.
+- **Decided 2026-11-19:** **D-B** (ownership rule) and **D-D** (no write-capable handle for extensions), recorded as SPEC-W5 §3.5. A1 is unblocked.
 - **Keystone:** the `BeliefEdgeDecl` seam (**A1**). It unblocks the cyber migration, both W5a
   tests going green, the divergence-exception writer, and the resolved half of the disposition
   writer. It does **not** gate the populations work, the bitemporal track, or the three daemon
@@ -31,12 +32,13 @@ references in specs and commit messages still resolve.
 F1 ✅ ───────────────────────────► (pre-#50 databases upgrade again)
 F2 ✅ F3 ✅ F4 ✅ F5 ✅ F6 ✅ F7 ✅ ─► track F complete
 
-D-B, D-D ──► A1 ──┬─► A2 ──► A3 green, A4 green
+D-B ✅ D-D ✅ ─► A1 ──┬─► A2 + A9 ──► A3 green, A4 green
                   ├─► A5 (also needs D-A, D-C)
                   ├─► A6 resolved half (also needs D-C)
                   └─► A8 (parked until cyber builds sighting ingestion)
 A6 contested half ─► needs D-E only (no seam)
 A7 ────────────────► no blocker
+A10 ───────────────► no blocker; must land before a second extension
 
 D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
 
@@ -64,20 +66,21 @@ C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I 
 
 ## Track A — seam ① and what it unblocks
 
-Owning document: SPEC-W5. Design inputs the review recommends settling first are decisions
-**D-B** (reserved labels) and **D-D** (read-only graph handle); see REVIEW §3 for the full
-list (label validation for interpolated identifiers, belief-plus-edges in one transaction,
-the `GeckoExtension` declaration hook).
+Owning document: SPEC-W5, as amended by §3.5 (decisions **D-B** and **D-D**). The other
+design inputs in REVIEW §3 — label validation for interpolated identifiers, belief-plus-edges
+in one transaction, the `GeckoExtension` declaration hook — are A1's to settle.
 
 | ID | Item | Owning section | Type | Blocked on |
 |---|---|---|---|---|
-| **A1** | `BeliefEdgeDecl` registry and the sanctioned belief-edge writer method (was #1) | SPEC-W5 §3.2 | writer + registry + extension-API hook | D-B, D-D |
+| **A1** | `BeliefEdgeDecl` registry and the sanctioned belief-edge writer method (was #1). The registry accepts only relations the declaring extension's fragment introduces; mem-owned edges are dedicated methods, not declarations | SPEC-W5 §3.2, §3.5 (D-B) | writer + registry + extension-API hook | — |
 | **A2** | Cyber migration: `technique-detection` / `alert-disposition` written through the seam; raw `graph.write` at `detect/mod.rs:142,196` removed (was #12) | SPEC-W5 §3.3 | writer migration | A1 |
 | **A3** | W5a static lint `no_raw_belief_tier_tql_outside_mem_tql` | SPEC-W5 §2.1, §5 row 1 | test | Buildable now. **Red until A2** — the cyber literals at `detect/mod.rs:133,186` are exactly what it flags. Needs a stated scope for test sources |
 | **A4** | W5a dynamic rig: `memwriter_is_the_sole_belief_tier_writer` and `hostile_extension_raw_belief_write_is_flagged` (entity and relation) | SPEC-W5 §2.2, §5 rows 2–3, 8 | test rig | Rig buildable now; reconciliation red until A2 |
 | **A5** | Divergence-exception writer: co-mints the `divergence-exception` belief and its `divergence-precedence` in one call; refuses an anchor-less or separately-fabricated anchor (was #8 and #13) | SPEC-W2-W3 §2.2; SPEC-W5 §3.2 | writer (mem-owned, dedicated method) | A1's edge-writing core, D-A, D-C |
 | **A6** | Disposition writer — acts on the ranker's outcome (was #10, writer half). **Resolved:** mint via A5, or supersede the loser for instance-vs-instance. **Contested:** `contest()` (exists) plus a `belief-state "contested"` write (no writer today). Contract must also say how an evidence-less belief's method is read (REVIEW §2) | SPEC-W2-W3 §2.3, §2.4 | host engine + writer | Resolved half: A5, D-C. Contested half: D-E only |
 | **A7** | `scoped` writer (belief → population). No production path writes `scoped`; the cohort branch of `blast-radius` has no input without it. Mem-owned, on the belief-edge surface | SPEC-W5 §1.1 (surface), SPEC-W2-W3 §3.4 | writer (dedicated method) | — |
+| **A9** | Read-only graph handle and neutral sync writes: `GraphReader` split out of `GraphStore`; extension bridges get `Arc<dyn GraphReader>`; the post-sync hook returns `GraphWrite`s instead of taking a driver transaction | SPEC-W5 §3.5 (D-D steps 1–2) | extension-API + engine + cyber | A1; lands with A2 |
+| **A10** | Extensions depend only on `gecko-extension-api`: move `ExtensionCallback` and the OKF import types into the API crate; CI guard fails if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine` | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — (before a second extension) |
 | **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
 
 Tests owed with these items (names reserved by the specs):
@@ -147,9 +150,9 @@ rows 1, 6, 7 with C1/C2; row 2 with C3; row 3 with C4; row 4 with C5/C6.
 | ID | Decision | Owning section | Gates |
 |---|---|---|---|
 | **D-A** | How a belief's validity ends: `supersede` closes `valid-to` and as-of reads use the window, **or** as-of functions read `supersession.created-at`. Includes whether `believed-at` keeps any state gate | SPEC-W2-W3 §3.3 (its description of `believed-at` does not match the shipped function — REVIEW D5) | B1–B3, A5 |
-| **D-B** | Registry refuses relations defined by the core or mem fragments (mem-owned edges get dedicated writers only) | SPEC-W5 §3.1, §3.2 | A1 |
+| **D-B** ✅ | **Decided 2026-11-19 — ownership rule.** The registry accepts only a relation the declaring extension's own fragment introduces (not core, mem, another extension, or a role-addition); mem-owned edges get dedicated `MemWriter` methods | SPEC-W5 §3.5 | A1 |
 | **D-C** | What the disposition writer does when the ranker's winner cannot supersede the loser under the entrenchment guard (provable winner, human-asserted loser), and how an evidence-less belief is graded on the method key | SPEC-W2-W3 §2.3, §2.4; INVARIANTS §8.1, §8.2 | A5, A6 |
-| **D-D** | Give extensions a read-only graph handle so a raw belief-tier write is impossible rather than merely detected | SPEC-W5 §2.1 (residual), §3.3 | A1, A2 |
+| **D-D** ✅ | **Decided 2026-11-19 — read-only handle and no driver route.** Extensions get `GraphReader` only, return neutral writes at sync time, and depend only on `gecko-extension-api` (CI-guarded). W5a stays the backstop | SPEC-W5 §3.5 | A9, A10 |
 | **D-E** | Which entity carries `belief-state "contested"` on a tie (each competing belief, or only the anomaly hub records it) | SPEC-W2-W3 §2.3 ("What `contested` returns") | A6 contested half |
 | **D-F** | b3 recursion: does a resolution-bound member recurse into downstream cohort beliefs? | SPEC-W2-W3 §3.4 | B4 |
 | **D-G** | Errata in ratified text, for the spec owner: SPEC-W5 §2.3/§4/§5 name a test that is now `p_w5_1_folded_surface_contains_divergence_precedence`; `writer.rs` line anchors in SPEC-W5, SPEC-W2-W3 and CONTRACT-W8 pre-date PR #50 (guard `806-824` → ≈`970-990`; `dedup_episodes` `442` → `609`) | SPEC-W5 §6; CONTRACT-W8 §2a footnote | — |
