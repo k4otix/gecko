@@ -678,6 +678,7 @@ fn member_rows_op(body: &str, spec_hash: &str, members: &[ConceptId], at: DateTi
                 ]
             })
             .collect(),
+        expect_rows: None,
     }
 }
 

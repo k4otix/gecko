@@ -67,6 +67,11 @@ pub struct GraphWrite {
     /// One or more value rows; `vars.len()` values each. An empty `rows` is a
     /// no-op (the op is skipped), matching the syncer's `run_rows` convention.
     pub rows: Vec<Vec<GraphValue>>,
+    /// The number of answer rows each value row must produce, or `None` to skip
+    /// the check. The store requires `n * rows.len()` rows in total (`n` for a
+    /// parameterless op) and rolls the whole transaction back on any other count.
+    #[serde(default)]
+    pub expect_rows: Option<usize>,
 }
 
 impl GraphWrite {
@@ -76,6 +81,7 @@ impl GraphWrite {
             query: query.into(),
             vars,
             rows: vec![row],
+            expect_rows: None,
         }
     }
 
@@ -85,6 +91,16 @@ impl GraphWrite {
             query: query.into(),
             vars: Vec::new(),
             rows: vec![Vec::new()],
+            expect_rows: None,
+        }
+    }
+
+    /// Requires each value row to produce exactly `n` answer rows, so a `match`
+    /// that binds nothing (or too much) fails the write instead of committing.
+    pub fn expecting(self, n: usize) -> Self {
+        Self {
+            expect_rows: Some(n),
+            ..self
         }
     }
 }
@@ -98,7 +114,8 @@ pub trait GraphStore: Send + Sync {
     /// Runs a sequence of parameterized writes in **one** transaction and commits.
     ///
     /// Ops execute in order; any error rolls the whole transaction back (nothing
-    /// is committed). Ops with empty `rows` are skipped.
+    /// is committed). Ops with empty `rows` are skipped. An op whose answer row
+    /// count differs from its [`GraphWrite::expect_rows`] total is an error.
     async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError>;
 
     /// Runs a read query, returning the fetched documents as JSON values.
