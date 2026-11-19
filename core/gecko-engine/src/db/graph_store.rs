@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use gecko_extension_api::{EpistemicError, GraphStore, GraphValue, GraphWrite};
+use gecko_extension_api::{EpistemicError, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
 use tokio::sync::{Mutex, OnceCell};
 use typedb_driver::answer::QueryAnswer;
 use typedb_driver::concept::Value;
@@ -67,16 +67,18 @@ fn store_err<E: std::fmt::Display>(e: E) -> EpistemicError {
     EpistemicError::Storage(e.to_string())
 }
 
-/// Drains a write answer and fails unless it produced exactly `expected` rows.
+/// Drains the answer of write op `op` and fails unless it produced exactly
+/// `expected` rows.
 async fn check_row_count(
     answer: QueryAnswer,
+    op: usize,
     expected: usize,
     query: &str,
 ) -> Result<(), EpistemicError> {
     let head: String = query.chars().take(80).collect();
     if !answer.is_row_stream() {
         return Err(EpistemicError::Storage(format!(
-            "write answer is not a row stream: {head}"
+            "write op {op} answer is not a row stream: {head}"
         )));
     }
     let mut stream = answer.into_rows();
@@ -86,9 +88,7 @@ async fn check_row_count(
         got += 1;
     }
     if got != expected {
-        return Err(EpistemicError::Storage(format!(
-            "write expected {expected} row(s), matched {got}: {head}"
-        )));
+        return Err(RowCountMismatch { op, expected, got }.into_error(&head));
     }
     Ok(())
 }
@@ -103,7 +103,7 @@ impl GraphStore for RouterGraphStore {
             .await
             .map_err(store_err)?;
         let tx = wtx.transaction();
-        for op in ops {
+        for (index, op) in ops.iter().enumerate() {
             if op.rows.is_empty() {
                 continue; // no-op, matching the syncer's `run_rows` convention.
             }
@@ -122,7 +122,7 @@ impl GraphStore for RouterGraphStore {
             };
             if let Some(per_row) = op.expect_rows {
                 // Returning here drops `wtx` uncommitted, rolling back every op.
-                check_row_count(answer, per_row * op.rows.len(), &op.query).await?;
+                check_row_count(answer, index, per_row * op.rows.len(), &op.query).await?;
             }
         }
         wtx.commit().await.map_err(store_err)?;

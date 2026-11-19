@@ -1,13 +1,17 @@
-//! Write-count enforcement acceptance tests (live TypeDB 3.12).
+//! Live TypeDB 3.12 acceptance tests for two suites:
 //!
-//! These drive [`RouterGraphStore::write`] directly against a live server
-//! (`localhost:1729`, admin/password) to prove that a [`GraphWrite`] carrying an
-//! expected row count commits only when its `match` bound exactly that many rows,
-//! and otherwise rolls the whole transaction back. Each test provisions its own
-//! throwaway database, applies core + mem schema, and drops it. The real `gecko`
-//! database is never touched.
+//! - **Write-count enforcement.** These drive [`RouterGraphStore::write`] directly to
+//!   prove that a [`GraphWrite`] carrying an expected row count commits only when its
+//!   `match` bound exactly that many rows, and otherwise rolls the whole transaction
+//!   back.
+//! - **The belief-edge seam.** These drive a bound `BeliefEdgeWriter` over a probe
+//!   extension fragment to prove that a belief and its declared edges commit together,
+//!   that a missing, ambiguous or ill-typed player commits nothing, and that a
+//!   declaration the live schema does not match is refused before any write.
 //!
-//! Requires a running TypeDB 3.12 service (CI provides one).
+//! Each test provisions its own throwaway database on `localhost:1729`
+//! (admin/password), applies core + mem schema, and drops it. The real `gecko`
+//! database is never touched. Requires a running TypeDB 3.12 service (CI provides one).
 
 use std::sync::Arc;
 
@@ -19,7 +23,7 @@ use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_extension_api::{
     ActorId, AttrDecl, AttrValueType, BeliefDraft, BeliefEdge, BeliefEdgeDecl, DerivationMethod,
     EpistemicError, EpistemicWriter, GeckoExtension, GraphStore, GraphValue, GraphWrite, MemId,
-    ProvenanceSource, RoleDecl, RunContext, Visibility,
+    ProvenanceSource, RoleDecl, RowCountMismatch, RunContext, Visibility,
 };
 use mem_gecko::{BeliefEdgeRegistry, ExtensionFragment, MemWriter};
 use ulid::Ulid;
@@ -194,9 +198,15 @@ async fn expect_rows_rolls_back_a_zero_match() {
         ])
         .await
         .expect_err("a zero-match insert must not commit");
-    let msg = storage_msg(err);
-    assert!(msg.contains("expected 1"), "unexpected message: {msg}");
-    assert!(msg.contains("matched 0"), "unexpected message: {msg}");
+    assert_eq!(
+        RowCountMismatch::from_error(&err),
+        Some(RowCountMismatch {
+            op: 1,
+            expected: 1,
+            got: 0
+        }),
+        "the error names the second op: {err:?}"
+    );
 
     let third = fx
         .raw_fetch(
@@ -511,7 +521,12 @@ async fn missing_player_commits_no_belief() {
         )
         .await
         .expect_err("an unmatched player must not commit");
-    assert!(matches!(err, EpistemicError::Storage(_)), "got {err:?}");
+    let EpistemicError::Storage(msg) = &err else {
+        panic!("expected Storage, got {err:?}");
+    };
+    assert!(msg.contains("probe-link"), "{msg}");
+    assert!(msg.contains("probe-object probe-ref=nope"), "{msg}");
+    assert!(msg.contains("matched 0 rows"), "{msg}");
     assert_eq!(beliefs_titled(&fx, "probe missing player").await, 0);
     assert_no_probe_links(&fx).await;
 
@@ -558,7 +573,11 @@ async fn non_unique_key_commits_no_belief() {
         )
         .await
         .expect_err("a non-unique key must not commit");
-    assert!(matches!(err, EpistemicError::Storage(_)), "got {err:?}");
+    let EpistemicError::Storage(msg) = &err else {
+        panic!("expected Storage, got {err:?}");
+    };
+    assert!(msg.contains("probe-object probe-tag=shared"), "{msg}");
+    assert!(msg.contains("matched 2 rows"), "{msg}");
     assert_eq!(beliefs_titled(&fx, "probe non-unique key").await, 0);
     assert_no_probe_links(&fx).await;
 

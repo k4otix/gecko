@@ -713,7 +713,10 @@ async fn supersede_of_a_missing_belief_errors_and_commits_nothing() {
         )
         .await
         .expect_err("superseding a missing belief must fail");
-    assert!(matches!(err, EpistemicError::Storage(_)), "got {err:?}");
+    let EpistemicError::Storage(msg) = &err else {
+        panic!("expected Storage, got {err:?}");
+    };
+    assert!(msg.contains("mem/bel/does-not-exist"), "{msg}");
 
     let orphans = fx
         .raw_fetch(

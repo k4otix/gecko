@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gecko_extension_api::{
     BeliefDraft, BeliefEdge, BeliefEdgeDecl, BeliefEdgeWriter, BeliefState, DerivationMethod,
-    EpistemicError, MemId, RunContext,
+    EpistemicError, GraphValue, MemId, RowCountMismatch, RunContext,
 };
 
 use super::beliefs::validate_confidence;
@@ -40,6 +40,7 @@ impl BoundEdgeWriter {
                 .unwrap_or_else(|e| e.into_inner())
                 .contains(rel)
         };
+        // Concurrent first writes may both run the check; the only cost is duplicate reads.
         if checked(&self.writer) {
             return Ok(());
         }
@@ -74,11 +75,11 @@ impl BeliefEdgeWriter for BoundEdgeWriter {
         method: DerivationMethod,
         edges: &[BeliefEdge],
     ) -> Result<MemId> {
-        validate_confidence(draft.confidence, Some(method))?;
         let decls = edges
             .iter()
             .map(|e| validate_edge(&self.writer.belief_edges, &self.extension, e))
             .collect::<Result<Vec<_>>>()?;
+        validate_confidence(draft.confidence, Some(method))?;
 
         let mut seen = HashSet::new();
         for decl in &decls {
@@ -89,6 +90,7 @@ impl BeliefEdgeWriter for BoundEdgeWriter {
 
         let id = mint("mem/bel");
         let mut ops = self.writer.belief_ops(ctx, &draft, &id, evidence, method);
+        let first_edge = ops.len();
         ops.extend(
             decls
                 .iter()
@@ -96,11 +98,64 @@ impl BeliefEdgeWriter for BoundEdgeWriter {
                 .map(|(decl, edge)| tql::belief_edge_op(decl, &id, edge)),
         );
         // AUTHORITATIVE: the belief and every edge commit together or not at all.
-        self.writer.graph.write(&ops).await?;
+        self.writer
+            .graph
+            .write(&ops)
+            .await
+            .map_err(|e| name_failing_edge(e, first_edge, &decls, edges))?;
         // Best-effort embed + upsert; failure marks dirty, never fails the write.
         let meta = self.writer.belief_meta(&draft, ctx, BeliefState::Asserted);
         self.writer.best_effort_index(&id, &draft.text, meta);
         Ok(id)
+    }
+}
+
+/// Rewrites a row-count mismatch on an edge op (index `first_edge` onward) into an
+/// error naming that edge's relation and each role's key value; any other error is
+/// returned unchanged.
+fn name_failing_edge(
+    err: EpistemicError,
+    first_edge: usize,
+    decls: &[&BeliefEdgeDecl],
+    edges: &[BeliefEdge],
+) -> EpistemicError {
+    let Some(m) = RowCountMismatch::from_error(&err) else {
+        return err;
+    };
+    let Some(i) = m.op.checked_sub(first_edge) else {
+        return err;
+    };
+    let (Some(decl), Some(edge)) = (decls.get(i), edges.get(i)) else {
+        return err;
+    };
+    let players = decl
+        .roles
+        .iter()
+        .map(|role| {
+            let value = edge
+                .players
+                .iter()
+                .find(|(r, _)| r == role.role)
+                .map_or_else(|| "<missing>".to_owned(), |(_, v)| shown(v));
+            format!("{} {}={value}", role.role, role.key)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rows = if m.got == 1 { "row" } else { "rows" };
+    EpistemicError::Storage(format!(
+        "belief edge {} ({players}) matched {} {rows}; nothing was committed",
+        decl.relation, m.got
+    ))
+}
+
+/// A key value as an error message shows it.
+fn shown(v: &GraphValue) -> String {
+    match v {
+        GraphValue::String(s) => s.clone(),
+        GraphValue::Datetime(dt) => dt.to_rfc3339(),
+        GraphValue::Double(d) => d.to_string(),
+        GraphValue::Long(i) => i.to_string(),
+        GraphValue::Boolean(b) => b.to_string(),
     }
 }
 

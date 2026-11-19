@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gecko_extension_api::{
     AnomalyId, BeliefDraft, BeliefState, ConceptId, DerivationMethod, EpisodeDraft, EpistemicError,
-    EpistemicReader, EpistemicWriter, FilterMeta, GraphWrite, MemId, Outcome, RunContext,
-    Visibility,
+    EpistemicReader, EpistemicWriter, FilterMeta, GraphWrite, MemId, Outcome, RowCountMismatch,
+    RunContext, Visibility,
 };
 
 use super::{MemWriter, Result, mint, str_field};
@@ -128,13 +128,25 @@ impl EpistemicWriter for MemWriter {
         let new_id = mint("mem/bel");
         // AUTHORITATIVE: new belief + supersession lineage + old→superseded commit first.
         let mut ops = tql::insert_belief_ops(ctx, &new, &new_id, new_entrenchment);
+        let first_supersession = ops.len();
         ops.extend(tql::supersession_ops(
             &old,
             &new_id,
             reason,
             ctx.occurred_at,
         ));
-        self.graph.write(&ops).await?;
+        self.graph
+            .write(&ops)
+            .await
+            .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
+                (EpistemicError::Storage(msg), Some(m)) if m.op >= first_supersession => {
+                    EpistemicError::Storage(format!(
+                        "supersede of {} matched {} belief(s); nothing was committed: {msg}",
+                        old.0, m.got
+                    ))
+                }
+                _ => e,
+            })?;
         // Best-effort: drop the old vector via the existing remove hook (gated on
         // BOTH embedder+index present, the same condition as upsert).
         self.best_effort_remove(ConceptId(old.0.clone()));

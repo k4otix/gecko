@@ -49,6 +49,9 @@ struct RecordingGraphStore {
     /// One entry per `write` call: the ops it carried.
     write_calls: Mutex<Vec<Vec<GraphWrite>>>,
     fail_write: bool,
+    /// When set, every `write` fails with a row-count mismatch at the op index this
+    /// maps the batch length to.
+    mismatch_at: Option<fn(usize) -> usize>,
     /// The documents every `read` returns.
     read_reply: Vec<Value>,
     /// How many `read` calls were made.
@@ -67,6 +70,14 @@ impl GraphStore for RecordingGraphStore {
     async fn write(&self, ops: &[GraphWrite]) -> Result<()> {
         if self.fail_write {
             return Err(EpistemicError::Storage("db down".into()));
+        }
+        if let Some(at) = self.mismatch_at {
+            let mismatch = gecko_extension_api::RowCountMismatch {
+                op: at(ops.len()),
+                expected: 1,
+                got: 0,
+            };
+            return Err(mismatch.into_error("given $b: string;"));
         }
         self.writes.lock().unwrap().extend_from_slice(ops);
         self.write_calls.lock().unwrap().push(ops.to_vec());
@@ -483,6 +494,75 @@ mod edges {
         }
         assert!(store.writes.lock().unwrap().is_empty());
         assert_eq!(*store.reads.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn ownership_is_refused_before_confidence_is_checked() {
+        let store = passing_store();
+        let h = writer_over(&store).edge_writer_for("y").unwrap();
+        let mut draft = belief();
+        draft.confidence = Some(1.5);
+        let e = h
+            .assert_belief_with_edges(
+                &ctx(),
+                draft,
+                &[],
+                DerivationMethod::TypeJoin,
+                &[probe_edge("c/a", "t/1", "yes")],
+            )
+            .await
+            .expect_err("an unowned relation is refused");
+        let msg = invalid_input(e);
+        assert!(msg.contains("probe-link"), "{msg}");
+        assert!(msg.contains("probe-ext"), "{msg}");
+        assert!(store.writes.lock().unwrap().is_empty());
+        assert_eq!(*store.reads.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_row_count_mismatch_names_the_failing_edge() {
+        let edges = [
+            probe_edge("c/a", "t/1", "yes"),
+            probe_edge("c/b", "t/2", "no"),
+        ];
+        let write_failing_at = |at: fn(usize) -> usize| {
+            let edges = edges.clone();
+            async move {
+                let store = Arc::new(RecordingGraphStore {
+                    read_reply: vec![json!({"ok": true})],
+                    mismatch_at: Some(at),
+                    ..Default::default()
+                });
+                writer_over(&store)
+                    .edge_writer_for("probe-ext")
+                    .unwrap()
+                    .assert_belief_with_edges(
+                        &ctx(),
+                        belief(),
+                        &[],
+                        DerivationMethod::TypeJoin,
+                        &edges,
+                    )
+                    .await
+                    .expect_err("a row-count mismatch fails the write")
+            }
+        };
+
+        // The last op is the second edge.
+        let e = write_failing_at(|len| len - 1).await;
+        let EpistemicError::Storage(msg) = &e else {
+            panic!("expected Storage, got {e:?}");
+        };
+        assert_eq!(
+            msg,
+            "belief edge probe-link (probe-subject concept-id=c/b, probe-object probe-ref=t/2) \
+             matched 0 rows; nothing was committed"
+        );
+
+        // A belief op's mismatch passes through unchanged.
+        let e = write_failing_at(|_| 0).await;
+        let mismatch = gecko_extension_api::RowCountMismatch::from_error(&e);
+        assert_eq!(mismatch.map(|m| m.op), Some(0), "{e:?}");
     }
 
     #[tokio::test]
