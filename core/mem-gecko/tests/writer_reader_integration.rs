@@ -1455,14 +1455,20 @@ async fn populations_writer_maintains_windows_across_passes() {
         .materialize_population(POP, &ids(&["asset/a", "asset/b"]), t0)
         .await
         .unwrap();
-    assert_eq!((r.opened, r.closed, r.refreshed), (2, 0, 0));
+    assert_eq!(
+        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
+        (2, 0, 0)
+    );
 
     // t1: unchanged — valid-from must not move; computed-at advances.
     let r = w
         .materialize_population(POP, &ids(&["asset/a", "asset/b"]), t1)
         .await
         .unwrap();
-    assert_eq!((r.opened, r.closed, r.refreshed), (0, 0, 2));
+    assert_eq!(
+        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
+        (0, 0, 2)
+    );
     assert_eq!(
         rows_of(&fx, "asset/a").await,
         vec![(
@@ -1477,7 +1483,10 @@ async fn populations_writer_maintains_windows_across_passes() {
         .materialize_population(POP, &ids(&["asset/b", "asset/c"]), t2)
         .await
         .unwrap();
-    assert_eq!((r.opened, r.closed, r.refreshed), (1, 1, 1));
+    assert_eq!(
+        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
+        (1, 1, 1)
+    );
     assert_eq!(
         rows_of(&fx, "asset/a").await,
         vec![(
@@ -1493,7 +1502,10 @@ async fn populations_writer_maintains_windows_across_passes() {
         .materialize_population(POP, &ids(&["asset/a", "asset/b", "asset/c"]), t3)
         .await
         .unwrap();
-    assert_eq!((r.opened, r.closed, r.refreshed), (1, 0, 2));
+    assert_eq!(
+        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
+        (1, 0, 2)
+    );
     assert_eq!(rows_of(&fx, "asset/a").await.len(), 2);
 
     // As-of reads follow the epochs; the present-state view excludes closed rows.
@@ -1595,6 +1607,19 @@ async fn populations_writer_rejects_bad_input_and_writes_nothing() {
     assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
     assert_eq!(w.population_members(POP).await.unwrap(), ids(&["asset/a"]));
 
+    // A pass stamped ahead of the host clock.
+    let ahead = chrono::Utc::now() + chrono::TimeDelta::hours(1);
+    let err = w
+        .materialize_population(POP, &ids(&["asset/a"]), ahead)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+    let err = w
+        .close_population_membership(POP, &ConceptId::new("asset/a"), ahead)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+
     fx.drop_db().await;
 }
 
@@ -1616,9 +1641,18 @@ async fn blast_radius_at_follows_the_materialized_window() {
     w.materialize_population(POP, std::slice::from_ref(&a), dt("2026-01-01T00:00:00Z"))
         .await
         .unwrap();
+    assert_eq!(
+        present_blast_radius(&fx, "asset/a").await,
+        ["mem/bel/cohort"],
+        "a current member sweeps its cohort through present-state blast-radius"
+    );
     w.materialize_population(POP, &[], dt("2026-03-01T00:00:00Z"))
         .await
         .unwrap();
+    assert!(
+        present_blast_radius(&fx, "asset/a").await.is_empty(),
+        "a departed member no longer sweeps its former cohort"
+    );
 
     assert_eq!(
         w.blast_radius_at(&a, dt("2026-02-01T00:00:00Z"))
@@ -1636,4 +1670,105 @@ async fn blast_radius_at_follows_the_materialized_window() {
     );
 
     fx.drop_db().await;
+}
+
+/// Present-state `blast-radius($r)` of concept `member`, read directly (the
+/// `EpistemicReader` entry point takes a memory item).
+async fn present_blast_radius(fx: &Fixture, member: &str) -> Vec<String> {
+    let docs = fx
+        .raw_fetch(&format!(
+            "match $r isa concept, has concept-id \"{member}\";
+                   let $m in blast-radius($r);
+                   $m has concept-id $mid;
+             fetch {{ \"id\": $mid }};"
+        ))
+        .await;
+    let mut out: Vec<String> = docs
+        .iter()
+        .map(|d| d["id"].as_str().unwrap().to_string())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Two writers (separate per-population locks) race overlapping passes; the write
+/// guards alone must keep one open row per member and `computed-at` from moving
+/// backwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn populations_writer_overlapping_passes_keep_one_open_row() {
+    let fx = Fixture::new().await;
+    let w1 = fx.writer(None, None);
+    let w2 = fx.writer(None, None);
+    seed_concepts(&fx, &["asset/a", "asset/b", "asset/c"]).await;
+    let (d1, d2) = tokio::join!(
+        w1.define_population(POP, "typeql-3", "match $c isa concept;"),
+        w2.define_population(POP, "typeql-3", "match $c isa concept;"),
+    );
+    assert_eq!(
+        [d1.unwrap(), d2.unwrap()].iter().filter(|c| **c).count(),
+        1,
+        "exactly one writer creates the population"
+    );
+
+    let rounds: [(&[&str], &[&str]); 4] = [
+        (&["asset/a", "asset/b"], &["asset/a", "asset/b"]),
+        (&["asset/a", "asset/c"], &["asset/b", "asset/c"]),
+        (&["asset/a"], &["asset/a", "asset/b", "asset/c"]),
+        (&["asset/b", "asset/c"], &["asset/c"]),
+    ];
+    let mut latest = String::new();
+    for (i, (m1, m2)) in rounds.iter().enumerate() {
+        let t1 = dt(&format!("2026-0{}-01T00:00:00Z", i + 1));
+        let t2 = dt(&format!("2026-0{}-15T00:00:00Z", i + 1));
+        // The later pass may finish first; the earlier one is then refused as
+        // stale by the planner or made a no-op by the write guards.
+        let (m1, m2) = (ids(m1), ids(m2));
+        let (r1, r2) = tokio::join!(
+            w1.materialize_population(POP, &m1, t1),
+            w2.materialize_population(POP, &m2, t2),
+        );
+        for r in [r1, r2] {
+            if let Err(e) = r {
+                assert!(matches!(e, EpistemicError::InvalidInput(_)), "{e:?}");
+            }
+        }
+        for member in ["asset/a", "asset/b", "asset/c"] {
+            let rows = rows_of(&fx, member).await;
+            assert!(
+                rows.iter().filter(|(_, vt, _)| vt.is_none()).count() <= 1,
+                "round {i}: {member} has more than one open row: {rows:?}"
+            );
+            for (vf, vt, _) in &rows {
+                if let Some(vt) = vt {
+                    assert!(
+                        vf <= vt,
+                        "round {i}: {member} window closes before it opens"
+                    );
+                }
+            }
+        }
+        let now_latest = latest_computed_at(&fx).await;
+        assert!(
+            now_latest >= latest,
+            "round {i}: computed-at moved backwards"
+        );
+        latest = now_latest;
+    }
+    fx.drop_db().await;
+}
+
+async fn latest_computed_at(fx: &Fixture) -> String {
+    let docs = fx
+        .raw_fetch(&format!(
+            "match $p isa population, has spec-hash \"{POP}\";
+                   $pm isa population-member, links (owning-population: $p),
+                       has computed-at $ca;
+             fetch {{ \"ca\": $ca }};"
+        ))
+        .await;
+    docs.iter()
+        .filter_map(|d| d["ca"].as_str().map(str::to_string))
+        .max()
+        .unwrap_or_default()
 }

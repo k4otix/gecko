@@ -11,8 +11,13 @@
 //!   `computed-at` advances — both markers, never one;
 //! - a member that left and rejoins gets a fresh epoch row; the closed row stays.
 //!
-//! The planner is pure; [`MemWriter::materialize_population`](crate::MemWriter::materialize_population)
-//! reads the rows, calls it, and applies the result in one transaction.
+//! The planner is pure. [`MemWriter::materialize_population`](crate::MemWriter::materialize_population)
+//! reads the rows, calls it, and applies the result in one write transaction; the
+//! read is a separate transaction. Within one writer a per-population lock
+//! serializes read-plan-write, and each write op carries its own guard (no second
+//! open row, no row moved back in time), so a pass that races another writer
+//! changes nothing it should not. The report therefore counts the rows each op
+//! was attempted on.
 
 use std::collections::BTreeSet;
 
@@ -42,24 +47,26 @@ pub struct MaterializationPlan {
     pub refresh: Vec<ConceptId>,
 }
 
-/// Counts of the rows a materialization pass opened, closed and refreshed.
+/// Counts of the members a materialization pass attempted to open, close and
+/// refresh. A guarded write that a concurrent pass made redundant changes nothing,
+/// so these are attempts, not mutations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaterializeReport {
-    /// New epoch rows opened.
-    pub opened: usize,
-    /// Open rows whose window was closed.
-    pub closed: usize,
-    /// Open rows whose `computed-at` advanced with membership unchanged.
-    pub refreshed: usize,
+    /// Members for which a new epoch row was attempted.
+    pub opens_attempted: usize,
+    /// Members whose open row's window close was attempted.
+    pub closes_attempted: usize,
+    /// Members whose open row's `computed-at` advance was attempted.
+    pub refreshes_attempted: usize,
 }
 
 impl MaterializationPlan {
     /// The report this plan produces once applied.
     pub fn report(&self) -> MaterializeReport {
         MaterializeReport {
-            opened: self.open.len(),
-            closed: self.close.len(),
-            refreshed: self.refresh.len(),
+            opens_attempted: self.open.len(),
+            closes_attempted: self.close.len(),
+            refreshes_attempted: self.refresh.len(),
         }
     }
 }

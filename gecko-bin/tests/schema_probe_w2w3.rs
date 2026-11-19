@@ -2024,24 +2024,6 @@ async fn belief_edge_surface(db: &TestDb) -> BTreeSet<String> {
     surface
 }
 
-/// **P-W5-1** — the live monopoly-surface ratchet (SPEC-W5 §1.1 / §2.3).
-///
-/// Derives the belief-edge relation surface by introspection (`belief_edge_surface`)
-/// instead of a hand list, then turns the ratchet: on the unfolded mem schema this
-/// branch composes, the surface must already include cyber's `technique-detection`
-/// and `alert-disposition` — the raw-`graph.write` breach W5b must route through the
-/// sanctioned seam — and must NOT yet include W2's `divergence-precedence`. Applying
-/// the W2 candidate delta (`w2_precedence.tql`) makes `divergence-precedence` appear
-/// in the surface with NO edit to this test — catching it the instant W2 lands,
-/// whereas INVARIANTS §8.4's hand-list would miss it.
-///
-/// Runs in ISOLATION on `conflict_resolution`: the folded-schema probes in this file
-/// are EXPECTED to fail here (the shipped mem schema is unfolded), so run only:
-///
-/// ```text
-/// cargo test --test schema_probe_w2w3 --no-default-features --features cyber p_w5_1 \
-///     -- --ignored --test-threads=1
-/// ```
 /// **W5a surface — graduated from the P-W5-1 ratchet to surface-MEMBERSHIP.**
 ///
 /// W2 has landed (the fold), so the composed schema permanently carries

@@ -128,11 +128,7 @@ pub fn rank(competitors: &[(MemId, DispKeys)]) -> Disposition {
 fn cmp_keys(a: &DispKeys, b: &DispKeys) -> Ordering {
     method_key(a)
         .cmp(&method_key(b))
-        .then_with(|| {
-            confidence_key(a)
-                .partial_cmp(&confidence_key(b))
-                .unwrap_or(Ordering::Equal)
-        })
+        .then_with(|| confidence_key(a).total_cmp(&confidence_key(b)))
         .then_with(|| entrenchment_key(a).cmp(&entrenchment_key(b)))
         .then_with(|| a.valid_from.cmp(&b.valid_from))
 }
@@ -145,9 +141,10 @@ fn method_key(k: &DispKeys) -> Option<u8> {
 }
 
 /// Key #2: confidence, method-defaulted when absent — `provable → 1.0` (invariant
-/// 7), else → `0.5` (the chosen midpoint). Only bites on a method-class tie.
+/// 7), else → `0.5` (the chosen midpoint); a NaN confidence reads as absent. Only
+/// bites on a method-class tie.
 fn confidence_key(k: &DispKeys) -> f64 {
-    match k.confidence {
+    match k.confidence.filter(|c| !c.is_nan()) {
         Some(c) => c,
         None if k.method.is_some_and(|m| m.provable()) => 1.0,
         None => 0.5,
@@ -255,6 +252,28 @@ mod tests {
             ]),
             Some(DerivationMethod::HumanAssertion)
         );
+    }
+
+    #[test]
+    fn nan_confidence_is_method_defaulted_and_order_independent() {
+        let m = Some(DerivationMethod::HumanAssertion);
+        let nan = (
+            "mem/bel/nan".to_string(),
+            keys(m, Some(f64::NAN), None, None),
+        );
+        let low = ("mem/bel/low".to_string(), keys(m, Some(0.4), None, None));
+        let high = ("mem/bel/high".to_string(), keys(m, Some(0.9), None, None));
+        for order in [
+            [nan.clone(), low.clone(), high.clone()],
+            [high.clone(), nan.clone(), low.clone()],
+            [low.clone(), high.clone(), nan.clone()],
+        ] {
+            let c: Vec<_> = order.into_iter().map(|(id, k)| (MemId(id), k)).collect();
+            assert_eq!(head_of(&rank(&c)), "mem/bel/high");
+        }
+        // NaN reads as the attested default 0.5, which out-ranks 0.4.
+        let c = vec![(MemId(nan.0), nan.1), (MemId(low.0), low.1)];
+        assert_eq!(head_of(&rank(&c)), "mem/bel/nan");
     }
 
     // ── SEP / TIE (the §8.2 prototype cases) ────────────────────────────────────

@@ -250,8 +250,9 @@ impl TypeDbRouter {
     /// Installs a TypeQL schema definition into the database, safely re-appliable.
     ///
     /// Types are `define`d (idempotent for unchanged definitions). A function the
-    /// database already holds is `redefine`d with the fragment's body rather than
-    /// re-`define`d, which TypeDB refuses (`[FUN5]`); new functions are `define`d.
+    /// database holds with a different body is `redefine`d rather than re-`define`d,
+    /// which TypeDB refuses (`[FUN5]`); new functions are `define`d; unchanged ones
+    /// are skipped. Functions are written callee-first (see [`schema_apply`]).
     /// Everything runs in one schema transaction. Functions the database holds but
     /// the fragment omits are left in place. A changed type annotation needs a
     /// [`SchemaMigration`]; see [`apply_schema_with_migrations`](Self::apply_schema_with_migrations).
@@ -276,9 +277,9 @@ impl TypeDbRouter {
             .iter()
             .filter(|m| current.contains(m.applies_when))
             .collect();
+        let stored = schema_apply::stored_functions(&current).map_err(DbError::Schema)?;
         let queries =
-            schema_apply::plan_queries(schema_content, &schema_apply::function_names(&current))
-                .map_err(DbError::Schema)?;
+            schema_apply::plan_queries(schema_content, &stored).map_err(DbError::Schema)?;
 
         let tx = driver
             .transaction(&db_name, TransactionType::Schema)

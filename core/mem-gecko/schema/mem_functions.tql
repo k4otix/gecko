@@ -64,19 +64,23 @@ define
   #   Param is okf-concept (not memory-item) so a population member — a `concept`,
   #   sibling of memory-item under okf-concept — type-checks as the retractee; the
   #   population branch then sweeps the cohort beliefs scoped to that member's population.
-  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions, derivation sources, and the population-member cohort edge (a retracted member sweeps the beliefs scoped to its population)."):
+  #   Only open membership rows count, matching population-members; blast-radius-at
+  #   answers for a past membership window.
+  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions, derivation sources, and open population-member cohort edges (a retracted current member sweeps the beliefs scoped to its population)."):
       match
           {
               (assumption: $r, resting: $m) isa rests-on;
           } or {
               (source: $r, derived: $m) isa derivation;
           } or {
-              (owning-population: $pop, member: $r) isa population-member;
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              not { $pm has valid-to $vt; };
               (scoped-belief: $m, population: $pop) isa scoped;
           } or {
               { (assumption: $r, resting: $mid) isa rests-on; }
               or { (source: $r, derived: $mid) isa derivation; }
-              or { (owning-population: $pop2, member: $r) isa population-member;
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   not { $pm2 has valid-to $vt2; };
                    (scoped-belief: $mid, population: $pop2) isa scoped; };
               let $m in blast-radius($mid);
           };
@@ -163,7 +167,8 @@ define
   #   The present-state population-members/canonical-entity above stay as the fast
   #   path; these $t-taking variants answer as-of-t by gating on the membership /
   #   resolution validity WINDOW (valid-from/valid-to), never on belief-state — which
-  #   mutates on supersession — mirroring believed-at.
+  #   mutates on supersession. (believed-at does read belief-state, so it is not an
+  #   as-of read of superseded beliefs.)
   fun population-members-at($pop: population, $t: datetime) -> { concept } @doc("The members of a population as of time $t, read from the windowed materialized membership (valid-from <= $t and no valid-to on or before $t)."):
       match
           $pm isa population-member, links (owning-population: $pop, member: $m);

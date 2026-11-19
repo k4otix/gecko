@@ -9,8 +9,8 @@
 //! sources, how many claims), never a value.
 
 use gecko_extension_api::{
-    BeliefDraft, ConceptId, DateTime, DerivationMethod, Entrenchment, EpisodeDraft, GraphValue,
-    GraphWrite, MemId, ProvenanceSource, RunContext,
+    ActorId, BeliefDraft, ConceptId, DateTime, DerivationMethod, Entrenchment, EpisodeDraft,
+    GraphValue, GraphWrite, MemId, ProvenanceSource, RunContext,
 };
 
 /// Open-set `origin-kind` discriminator for a run's provenance source (invariant 9:
@@ -681,7 +681,9 @@ fn member_rows_op(body: &str, spec_hash: &str, members: &[ConceptId], at: DateTi
     }
 }
 
-/// Opens a new membership epoch row for each member at `at`.
+/// Opens a new membership epoch row for each member at `at`. Guarded in the write
+/// itself: nothing is inserted for a member that already has an open row, or a row
+/// computed after `at`.
 pub(crate) fn open_membership_op(
     spec_hash: &str,
     members: &[ConceptId],
@@ -690,6 +692,11 @@ pub(crate) fn open_membership_op(
     member_rows_op(
         "match $p isa population, has spec-hash $ph; $ph == $h;
                $c isa concept, has concept-id $cc; $cc == $cid;
+               not { $o isa population-member, links (owning-population: $p, member: $c);
+                     not { $o has valid-to $ovt; }; };
+               not { $s isa population-member, links (owning-population: $p, member: $c),
+                         has computed-at $sca;
+                     $sca > $at; };
          insert (owning-population: $p, member: $c) isa population-member,
              has valid-from == $at, has computed-at == $at;",
         spec_hash,
@@ -699,6 +706,7 @@ pub(crate) fn open_membership_op(
 }
 
 /// Closes each member's open row at `at`: sets `valid-to` and advances `computed-at`.
+/// A row already computed after `at` is left alone.
 pub(crate) fn close_membership_op(
     spec_hash: &str,
     members: &[ConceptId],
@@ -709,6 +717,7 @@ pub(crate) fn close_membership_op(
                $c isa concept, has concept-id $cc; $cc == $cid;
                $pm isa population-member, links (owning-population: $p, member: $c);
                not { $pm has valid-to $vt; };
+               not { $pm has computed-at $ca; $ca > $at; };
          update $pm has valid-to == $at, has computed-at == $at;",
         spec_hash,
         members,
@@ -717,6 +726,7 @@ pub(crate) fn close_membership_op(
 }
 
 /// Advances `computed-at` on each member's open row, leaving its window untouched.
+/// A row already computed after `at` is left alone.
 pub(crate) fn refresh_membership_op(
     spec_hash: &str,
     members: &[ConceptId],
@@ -727,9 +737,189 @@ pub(crate) fn refresh_membership_op(
                $c isa concept, has concept-id $cc; $cc == $cid;
                $pm isa population-member, links (owning-population: $p, member: $c);
                not { $pm has valid-to $vt; };
+               not { $pm has computed-at $ca; $ca > $at; };
          update $pm has computed-at == $at;",
         spec_hash,
         members,
         at,
+    )
+}
+
+// ── Persisted-function reads ──────────────────────────────────────────────────
+
+/// A read query with its `given` row: query text, param names, param values.
+pub(crate) type Read = (String, Vec<String>, Vec<GraphValue>);
+
+/// Matches memory item `b` when `is-superseded($b)` holds.
+pub(crate) fn is_superseded_read(b: &MemId) -> Read {
+    let mut p = Params::new();
+    p.s("bid", b.0.clone());
+    p.read(
+        "match $b isa memory-item, has concept-id $bc; $bc == $bid;
+               true == is-superseded($b);
+         fetch { \"ok\": $bc };",
+    )
+}
+
+/// Matches belief `n` when `gate($n, $agent, $now)` holds.
+pub(crate) fn gate_read(n: &MemId, agent: &ActorId, now: DateTime) -> Read {
+    let mut p = Params::new();
+    p.s("nid", n.0.clone());
+    p.s("aid", agent.0.clone());
+    p.dt("now", now);
+    p.read(
+        "match $b isa belief, has concept-id $bc; $bc == $nid;
+               $ag isa agent, has agent-id $aa; $aa == $aid;
+               true == gate($b, $ag, $now);
+         fetch { \"ok\": $bc };",
+    )
+}
+
+/// Matches beliefs `b1` and `b2` when `contradicts($b1, $b2)` holds.
+pub(crate) fn contradicts_read(b1: &MemId, b2: &MemId) -> Read {
+    let mut p = Params::new();
+    p.s("id1", b1.0.clone());
+    p.s("id2", b2.0.clone());
+    p.read(
+        "match $b1 isa belief, has concept-id $c1; $c1 == $id1;
+               $b2 isa belief, has concept-id $c2; $c2 == $id2;
+               true == contradicts($b1, $b2);
+         fetch { \"ok\": $c1 };",
+    )
+}
+
+/// `retrieval-score($m, $now)` of memory item `m`, with its `last-access`.
+pub(crate) fn retrieval_score_read(m: &MemId, now: DateTime) -> Read {
+    let mut p = Params::new();
+    p.s("mid", m.0.clone());
+    p.dt("now", now);
+    p.read(
+        "match $m isa memory-item, has concept-id $mc; $mc == $mid;
+               let $s in retrieval-score($m, $now);
+         fetch { \"s\": $s, \"la\": $m.last-access };",
+    )
+}
+
+/// `select-for-context($agent, $now)`: each belief id, score and `last-access`.
+pub(crate) fn select_for_context_read(agent: &ActorId, now: DateTime) -> Read {
+    let mut p = Params::new();
+    p.s("aid", agent.0.clone());
+    p.dt("now", now);
+    p.read(
+        "match $ag isa agent, has agent-id $aa; $aa == $aid;
+               let $b, $score in select-for-context($ag, $now);
+               $b has concept-id $bid;
+         fetch { \"id\": $bid, \"score\": $score, \"la\": $b.last-access };",
+    )
+}
+
+/// `population-members($pop)` of the population keyed by `spec_hash`.
+pub(crate) fn population_members_read(spec_hash: &str) -> Read {
+    let mut p = Params::new();
+    p.s("h", spec_hash);
+    p.read(
+        "match $p isa population, has spec-hash $ph; $ph == $h;
+               let $m in population-members($p);
+               $m has concept-id $mid;
+         fetch { \"id\": $mid };",
+    )
+}
+
+/// `blast-radius($r)` of memory item `retracted`.
+pub(crate) fn blast_radius_read(retracted: &MemId) -> Read {
+    let mut p = Params::new();
+    p.s("rid", retracted.0.clone());
+    p.read(
+        "match $r isa memory-item, has concept-id $rc; $rc == $rid;
+               let $m in blast-radius($r);
+               $m has concept-id $mid;
+         fetch { \"id\": $mid };",
+    )
+}
+
+/// `blast-radius-at($r, $at)` of any concept or memory item `retracted`.
+pub(crate) fn blast_radius_at_read(retracted: &ConceptId, at: DateTime) -> Read {
+    let mut p = Params::new();
+    p.s("rid", retracted.0.clone());
+    p.dt("at", at);
+    p.read(
+        "match $r isa okf-concept, has concept-id $rc; $rc == $rid;
+               let $m in blast-radius-at($r, $at);
+               $m has concept-id $mid;
+         fetch { \"id\": $mid };",
+    )
+}
+
+/// `canonical-entity($rec)` of record `rec`.
+pub(crate) fn canonical_entity_read(rec: &ConceptId) -> Read {
+    let mut p = Params::new();
+    p.s("rid", rec.0.clone());
+    p.read(
+        "match $r isa concept, has concept-id $rc; $rc == $rid;
+               let $o in canonical-entity($r);
+               $o has concept-id $oid;
+         fetch { \"id\": $oid };",
+    )
+}
+
+/// `retrieval-provenance-of($b)` of belief `b`.
+pub(crate) fn retrieval_provenance_of_read(b: &MemId) -> Read {
+    let mut p = Params::new();
+    p.s("bid", b.0.clone());
+    p.read(
+        "match $b isa belief, has concept-id $bc; $bc == $bid;
+               let $rv in retrieval-provenance-of($b);
+               $rv has concept-id $rid;
+         fetch { \"id\": $rid };",
+    )
+}
+
+/// `derivation-chain($b)` of memory item `b`.
+pub(crate) fn derivation_chain_read(b: &MemId) -> Read {
+    let mut p = Params::new();
+    p.s("bid", b.0.clone());
+    p.read(
+        "match $b isa memory-item, has concept-id $bc; $bc == $bid;
+               let $m in derivation-chain($b);
+               $m has concept-id $mid;
+         fetch { \"id\": $mid };",
+    )
+}
+
+/// `believed-at($t)`: each belief's id.
+pub(crate) fn believed_at_read(at: DateTime) -> Read {
+    let mut p = Params::new();
+    p.dt("t", at);
+    p.read(
+        "match let $b in believed-at($t);
+               $b has concept-id $bid;
+         fetch { \"id\": $bid };",
+    )
+}
+
+/// `believed-at($t)`: each belief's id and title, for as-of recall.
+pub(crate) fn believed_at_chunks_read(at: DateTime) -> Read {
+    let mut p = Params::new();
+    p.dt("t", at);
+    p.read(
+        "match let $b in believed-at($t);
+               $b has concept-id $bid;
+         fetch { \"id\": $bid, \"title\": $b.title };",
+    )
+}
+
+/// One recall candidate's title, `retrieval-score` and `last-access`, matched only
+/// when it passes `gate` for `actor` at `now`.
+pub(crate) fn gated_candidate_read(cid: &ConceptId, actor: &ActorId, now: DateTime) -> Read {
+    let mut p = Params::new();
+    p.s("cid", cid.0.clone());
+    p.s("aid", actor.0.clone());
+    p.dt("now", now);
+    p.read(
+        "match $b isa belief, has concept-id $bc; $bc == $cid;
+               $ag isa agent, has agent-id $aa; $aa == $aid;
+               true == gate($b, $ag, $now);
+               let $act in retrieval-score($b, $now);
+         fetch { \"title\": $b.title, \"act\": $act, \"la\": $b.last-access };",
     )
 }
