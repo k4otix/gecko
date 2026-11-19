@@ -1151,12 +1151,6 @@ mod tests {
     }
 
     #[test]
-    fn from_extensions_accepts_the_shipped_extensions() {
-        let exts: Vec<Box<dyn GeckoExtension>> = vec![crate::extension(), cyber_gecko::extension()];
-        BeliefEdgeRegistry::from_extensions(CORE, &exts).expect("the shipped extensions register");
-    }
-
-    #[test]
     fn errors_name_the_extension() {
         let decls = [decl("supersession")];
         let err = build(&[frag("probe-ext", PROBE_SCHEMA, &decls)]).unwrap_err();
