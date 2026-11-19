@@ -1597,3 +1597,43 @@ async fn populations_writer_rejects_bad_input_and_writes_nothing() {
 
     fx.drop_db().await;
 }
+
+#[tokio::test]
+async fn blast_radius_at_follows_the_materialized_window() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    seed_concepts(&fx, &["asset/a"]).await;
+    fx.raw_write(&format!(
+        r#"insert
+             $p isa population, has spec-hash "{POP}", has spec-dialect "typeql-3",
+                 has spec-text "match $c isa concept;";
+             $b isa belief, has concept-id "mem/bel/cohort", has belief-state "asserted";
+             scoped (scoped-belief: $b, population: $p);"#
+    ))
+    .await;
+
+    let a = ConceptId::new("asset/a");
+    w.materialize_population(POP, std::slice::from_ref(&a), dt("2026-01-01T00:00:00Z"))
+        .await
+        .unwrap();
+    w.materialize_population(POP, &[], dt("2026-03-01T00:00:00Z"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        w.blast_radius_at(&a, dt("2026-02-01T00:00:00Z"))
+            .await
+            .unwrap(),
+        vec![MemId::new("mem/bel/cohort")],
+        "while a was a member, retracting it sweeps the cohort belief"
+    );
+    assert!(
+        w.blast_radius_at(&a, dt("2026-04-01T00:00:00Z"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "after a left, retracting it sweeps nothing"
+    );
+
+    fx.drop_db().await;
+}

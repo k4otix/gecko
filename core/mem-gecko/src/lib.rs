@@ -218,6 +218,10 @@ mod tests {
         // blast-radius's param is widened to okf-concept so a population member (a
         // `concept`, sibling of memory-item) type-checks as the retractee.
         assert!(schema.contains("fun blast-radius($r: okf-concept) -> { memory-item }"));
+        assert!(
+            schema
+                .contains("fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item }")
+        );
         // Population / resolution functions — present-state fast path and as-of-t variants.
         assert!(schema.contains("fun population-members($pop: population) -> { concept }"));
         assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }"));

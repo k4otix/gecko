@@ -26,13 +26,15 @@
 //! directly against the composed schema and run under `just test-it` / CI's TypeDB job,
 //! exactly as `cyber_detect_test` does. They no longer apply the winning candidates as
 //! Mode-A deltas — those constructs live in the base now; a re-applied type delta would
-//! be a no-op (idempotent `define`) and a re-applied FUNCTION delta would `[FUN5]`
-//! (see `p_redef`), so the vestigial deltas were removed.
+//! be a no-op (idempotent `define`) and a re-applied FUNCTION delta would be
+//! `redefine`d by `apply_schema` (see `shipped_function_mutation_requires_redefine_not_define`),
+//! replacing the shipped body, so the vestigial deltas were removed.
 //!
 //! Probes that remain `#[ignore]` test constructs that were NOT shipped — the C2
 //! `out-entrenches` predicate (`p_disp_1`), the b2 companion (`p_br_3`), the b3
 //! resolution-entry (`p_br_4`/`p_br_5`), and the windowed-blast compositional seam
-//! (`p_br_6`, which stands in for the OWED windowed-blast traversal fn) — kept as manual
+//! (`p_br_6`, the evidence behind the shipped `blast-radius-at`, which
+//! `windowed_blast_radius_traversal_respects_membership_window` tests) — kept as manual
 //! evidence for the owed/rejected work (SPEC-W2-W3 §5). Run them with:
 //!
 //! ```text
@@ -1326,6 +1328,65 @@ async fn p_br_6_windowed_blast_propagation_seam() {
     );
 }
 
+/// **P-BR-6 graduated** — the shipped `blast-radius-at` traversal gates the cohort
+/// edge on the membership window, recursively.
+///
+/// Fixture: member C1 with a CLOSED window [t₀, t₁); cohort belief B scoped to P; D
+/// rests on B. As of t ∈ [t₀, t₁) retracting C1 sweeps B and, recursively, D; as of
+/// t ≥ t₁ it sweeps nothing. A row with no `valid-from` (written before windows) is
+/// never followed as-of-t.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn windowed_blast_radius_traversal_respects_membership_window() {
+    let db = TestDb::new("probe_w2w3");
+    apply_composed_schema(&db).await;
+
+    insert(
+        &db,
+        r#"insert
+             $p isa population, has spec-hash "wbr/pop/P";
+             $c1 isa concept, has concept-id "wbr/c1";
+             $c2 isa concept, has concept-id "wbr/c2";
+             $b isa belief, has concept-id "wbr/B", has belief-state "asserted",
+                 has valid-from 2026-01-01T00:00:00;
+             $d isa belief, has concept-id "wbr/D", has belief-state "asserted";
+             scoped (scoped-belief: $b, population: $p);
+             rests-on (resting: $d, assumption: $b);
+             population-member (owning-population: $p, member: $c1),
+                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;
+             population-member (owning-population: $p, member: $c2);"#,
+    )
+    .await;
+
+    let blast_at = |member: &'static str, t: &'static str| {
+        format!(
+            r#"match
+                 $c isa concept, has concept-id "{member}";
+                 let $m in blast-radius-at($c, {t});
+                 $m has concept-id $cid;
+               select $cid;"#
+        )
+    };
+
+    let in_window = read_concept_ids(&db, &blast_at("wbr/c1", "2026-02-01T00:00:00")).await;
+    assert_eq!(
+        in_window,
+        vec!["wbr/B".to_string(), "wbr/D".to_string()],
+        "inside C1's window the cohort belief and what rests on it are swept"
+    );
+
+    let after = read_concept_ids(&db, &blast_at("wbr/c1", "2026-05-01T00:00:00")).await;
+    assert!(
+        after.is_empty(),
+        "after C1 left, nothing is swept; got {after:?}"
+    );
+
+    let unwindowed = read_concept_ids(&db, &blast_at("wbr/c2", "2026-02-01T00:00:00")).await;
+    assert!(
+        unwindowed.is_empty(),
+        "a membership row without valid-from is not followed as-of-t; got {unwindowed:?}"
+    );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // W3 — population window (C4a) + as-of-t functions (C4b)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1661,22 +1722,20 @@ const REDEF_CHANGED_BLAST: &str = r#"define
       return { $m };
 "#;
 
-/// **P-REDEF** — the §1.4 migration posture: what the production `define` path does when
-/// a persisted function's body changes on a DB where it already exists.
+/// **P-REDEF** — the §1.4 migration posture: a persisted function's body can only be
+/// mutated with `redefine`, so the production apply path emits one.
 ///
-/// From the FOLDED composed schema (`blast-radius` is already the b1 body), re-apply a
-/// CHANGED `blast-radius` body through `apply_schema` — a plain `define fun`, exactly as
-/// `apply_all_schemas` re-runs the shipped schema on an existing database. The observed
-/// outcome (error → `redefine` required / silent old body / accept-and-replace) is the
-/// evidence SPEC-W2-W3 §1.4 must state. The verbatim result is printed for the log.
+/// From the FOLDED composed schema (`blast-radius` is already the b1 body):
+///   1. a raw `define` of a CHANGED body is refused by TypeDB with `[FUN5]` and the
+///      stored body stays in force — the engine fact §1.4 rests on;
+///   2. a byte-identical raw `define` of an existing function is ALSO refused —
+///      `define fun` is not idempotent the way types are;
+///   3. `apply_schema` with the same changed body succeeds and the new body is in
+///      force, because it plans a `redefine` for every function the database holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shipped_function_mutation_requires_redefine_not_define() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
-
-    // Production define path: re-apply the CHANGED body as its own schema transaction.
-    let define_result = apply_delta(&db, REDEF_CHANGED_BLAST).await;
-    eprintln!("P-REDEF: production `define` of an already-defined fun -> {define_result:?}");
 
     // A rests-on-only fixture: the folded b1 body reaches M (rests-on branch); the
     // changed derivation-only body would NOT (M rests on A, no derivation edge).
@@ -1688,73 +1747,54 @@ async fn shipped_function_mutation_requires_redefine_not_define() {
              rests-on (resting: $m, assumption: $a);"#,
     )
     .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
+    let blast_of_a = r#"match
              $a isa belief, has concept-id "redef/A";
              let $x in blast-radius($a);
              $x has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    eprintln!("P-REDEF: blast-radius(A) after the define attempt = {reachable:?}");
+           select $cid;"#;
 
-    match define_result {
-        Err(e) => {
-            // The production `define` path REJECTS a changed body on an existing fun —
-            // the migration posture is: mutating a shipped fun needs `redefine` (or a
-            // fresh DB), never a bare re-`define`. Pin that this is a schema error.
-            let msg = format!("{e:?}");
-            eprintln!("P-REDEF: define REJECTED, verbatim = {msg}");
-            // Pin the SPECIFIC already-defined-function rejection, not any schema error:
-            // the migration posture rests on `define`-of-existing being refused outright.
-            assert!(
-                matches!(e, DbError::Schema(_))
-                    && (msg.contains("FUN5") || msg.contains("already exists")),
-                "a re-define of an existing fun must be refused with [FUN5]/'already exists'; got {msg}"
-            );
-            // The pre-existing (folded b1) body is untouched: it still reaches M via rests-on.
-            assert_eq!(
-                reachable,
-                vec!["redef/M".to_string()],
-                "after a rejected re-define the folded b1 body must remain in force (reaches M via rests-on); got {reachable:?}"
-            );
-        }
-        Ok(()) => {
-            // The production `define` path accepted the re-define. Distinguish
-            // accept-and-replace (changed body in force: empty) from silent-old-body
-            // (folded body in force: {M}). Either way, record which for §1.4.
-            if reachable.is_empty() {
-                eprintln!(
-                    "P-REDEF: define ACCEPTED and REPLACED — changed body in force (empty result)."
-                );
-            } else {
-                eprintln!(
-                    "P-REDEF: define ACCEPTED but SILENTLY kept the old body — blast-radius(A) = {reachable:?}"
-                );
-            }
-            panic!(
-                "P-REDEF observed the production `define` path ACCEPT a re-define \
-                 (result Ok); expected a rejection requiring `redefine`. reachable={reachable:?}"
-            );
-        }
-    }
-
-    // The fold-vs-delta crux: TypeDB does NOT treat `define fun` as idempotent the way it
-    // treats types/owns/relations. Re-applying the folded as-of functions VERBATIM (byte
-    // -identical to what the shipped schema already defines) is STILL refused with [FUN5]
-    // — which is exactly why the now-folded Mode-A as-of probes must read the composed
-    // schema instead of re-applying their delta.
-    let identical = apply_delta(&db, W3_ASOF_FUNCTIONS).await;
-    let msg2 = format!("{identical:?}");
-    eprintln!("P-REDEF: identical re-define of the folded as-of functions -> {msg2}");
+    // 1. Raw `define` of a changed body: refused, stored body untouched.
+    let msg = raw_define_error(&db, REDEF_CHANGED_BLAST).await;
     assert!(
-        matches!(identical, Err(DbError::Schema(_)))
-            && (msg2.contains("FUN5") || msg2.contains("already exists")),
-        "an identical re-define of an existing fun must ALSO be refused with [FUN5]/'already exists' \
-         (define-of-existing-fun is not idempotent); got {msg2}"
+        msg.contains("FUN5") || msg.contains("already exists"),
+        "a raw define of an existing fun must be refused with [FUN5]/'already exists'; got {msg}"
     );
+    assert_eq!(
+        read_concept_ids(&db, blast_of_a).await,
+        vec!["redef/M".to_string()],
+        "after the refused define the folded b1 body must remain in force"
+    );
+
+    // 2. Byte-identical raw `define`: also refused.
+    let msg = raw_define_error(&db, W3_ASOF_FUNCTIONS).await;
+    assert!(
+        msg.contains("FUN5") || msg.contains("already exists"),
+        "an identical raw define of an existing fun must also be refused; got {msg}"
+    );
+
+    // 3. The production apply path lands the changed body.
+    apply_delta(&db, REDEF_CHANGED_BLAST)
+        .await
+        .expect("apply_schema redefines an existing function");
+    assert!(
+        read_concept_ids(&db, blast_of_a).await.is_empty(),
+        "after apply_schema the changed (derivation-only) body must be in force"
+    );
+}
+
+/// Runs `schema` as a raw `define` schema transaction (bypassing `apply_schema`'s
+/// planning) and returns the error it fails with.
+async fn raw_define_error(db: &TestDb, schema: &str) -> String {
+    let mut router = db.router();
+    let tx = router.begin_schema().await.expect("schema tx");
+    let result = match tx.query(schema).await {
+        Ok(_) => tx.commit().await.map(|_| ()),
+        Err(e) => Err(e),
+    };
+    format!(
+        "{:?}",
+        result.expect_err("raw define of an existing fun must fail")
+    )
 }
 
 /// **P-COMP** — the full core → folded-mem → cyber composition is define-clean, and the

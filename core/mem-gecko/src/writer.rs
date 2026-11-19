@@ -543,6 +543,23 @@ impl MemWriter {
         }
     }
 
+    /// `blast-radius-at($r, $t)` — what retracting `retracted` (any concept or memory
+    /// item, e.g. a population member) would undermine as of `at`: the cohort edge is
+    /// followed only while the membership window contains `at`.
+    pub async fn blast_radius_at(&self, retracted: &ConceptId, at: DateTime) -> Result<Vec<MemId>> {
+        let mut p = Params::new();
+        p.s("rid", retracted.0.clone());
+        p.dt("at", at);
+        let (q, v, r) = p.read(
+            "match $r isa okf-concept, has concept-id $rc; $rc == $rid;
+                   let $m in blast-radius-at($r, $at);
+                   $m has concept-id $mid;
+             fetch { \"id\": $mid };",
+        );
+        let docs = self.graph.read(&q, &v, &r).await?;
+        Ok(dedup_mapped(&docs, MemId))
+    }
+
     /// `canonical-entity($rec)` — the transitive closure over **provable**
     /// resolutions (probabilistic ones are never collapsed).
     pub async fn canonical_entity(&self, rec: &ConceptId) -> Result<Vec<ConceptId>> {

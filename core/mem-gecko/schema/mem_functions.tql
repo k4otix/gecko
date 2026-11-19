@@ -171,6 +171,31 @@ define
           not { $pm has valid-to $vt; $vt <= $t; };
       return { $m };
 
+  #   blast-radius as of $t: the rests-on and derivation branches are unchanged, and the
+  #   population-member cohort branch follows only a membership row whose window
+  #   contains $t, so a member that had left the cohort by $t no longer sweeps it.
+  fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r as of time $t — like blast-radius, but the population-member cohort edge is followed only while the membership window contains $t."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              $pm has valid-from $vf; $vf <= $t;
+              not { $pm has valid-to $vt; $vt <= $t; };
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   $pm2 has valid-from $vf2; $vf2 <= $t;
+                   not { $pm2 has valid-to $vt2; $vt2 <= $t; };
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              let $m in blast-radius-at($mid, $t);
+          };
+      return { $m };
+
   fun canonical-entity-at($rec: concept, $t: datetime) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec as of time $t, following provable resolution beliefs whose validity window contains $t."):
       match
           {
