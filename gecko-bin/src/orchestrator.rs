@@ -12,8 +12,8 @@
 //! deliberately, never float to `latest`. Every downloaded byte and the server's
 //! data dir live under the cache root, OUTSIDE the build tree.
 //!
-//! The confirmed 3.12.0 launch invocation (verified against the local
-//! `~/.typedb/server/typedb_server_bin --help` and a real throwaway-port spawn):
+//! The launch invocation (verified against the 3.15.0 server's CLI and a real
+//! spawn):
 //! ```text
 //! typedb_server_bin \
 //!   --server.listen-address 127.0.0.1:<port> \
@@ -40,7 +40,7 @@ use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 
 /// The hard-pinned TypeDB version GECKO orchestrates. A discriminator (like
 /// `model_id`), NOT a moving target: bump deliberately, never float to latest.
-pub const PINNED_TYPEDB: &str = "3.12.0";
+pub const PINNED_TYPEDB: &str = "3.15.0";
 
 /// TypeDB's public package repository — the raw-artifact download host.
 const DIST_HOST: &str = "https://repo.typedb.com/public/public-release/raw/names";
@@ -575,10 +575,10 @@ mod tests {
     }
 
     #[test]
-    fn pinned_version_is_3_12_0() {
+    fn pinned_version_is_3_15_0() {
         // The pin is a hard discriminator — this test guards against an
         // accidental float.
-        assert_eq!(PINNED_TYPEDB, "3.12.0");
+        assert_eq!(PINNED_TYPEDB, "3.15.0");
     }
 
     #[test]
