@@ -13,7 +13,7 @@ use super::scan::{Statement, statements};
 const MEM_EXTENSION: &str = "mem-gecko";
 
 /// The abstract root of every memory node. No non-belief role may be played by it, a
-/// subtype of it, or a supertype of it.
+/// subtype of it, or a supertype of it or of any of its subtypes.
 const MEMORY_ITEM: &str = "memory-item";
 
 /// One extension's schema text and belief-edge declarations, as the registry scans them.
@@ -94,6 +94,10 @@ pub enum RegistryError {
         role: String,
         player: String,
     },
+    #[error(
+        "extension `{extension}` gives `{label}` a supertype, but the core or mem schema introduces that type"
+    )]
+    ReparentedType { extension: String, label: String },
     #[error("extension `{extension}` is not registered; the belief-edge registry needs its schema")]
     MemMissing { extension: String },
 }
@@ -120,6 +124,11 @@ impl BeliefEdgeRegistry {
             .map(ExtensionFragment::statements)
             .collect();
         let hierarchy = Hierarchy::new(core.iter().chain(&mem).chain(ext_stmts.iter().flatten()));
+
+        let base_types = introduced_labels(core.iter().chain(&mem));
+        for (ext, stmts) in extensions.iter().zip(&ext_stmts) {
+            check_no_reparenting(ext.name, stmts, &base_types)?;
+        }
 
         let mut by_relation: HashMap<String, (String, BeliefEdgeDecl)> = HashMap::new();
         for (i, ext) in extensions.iter().enumerate() {
@@ -241,6 +250,35 @@ fn check_shape(extension: &str, decl: &BeliefEdgeDecl) -> Result<(), RegistryErr
     Ok(())
 }
 
+/// Every label a statement introduces with `[define] entity|relation|attribute <label>`.
+fn introduced_labels<'s>(stmts: impl Iterator<Item = &'s Statement>) -> HashSet<&'s str> {
+    stmts
+        .flat_map(|s| ["entity", "relation", "attribute"].map(|kind| s.introduces(kind)))
+        .flatten()
+        .collect()
+}
+
+/// Refuses an extension statement that is about a type in `base_types` and has a `sub`
+/// token: the supertypes of core and mem types are fixed by the schemas that introduce them.
+fn check_no_reparenting(
+    extension: &str,
+    stmts: &[Statement],
+    base_types: &HashSet<&str>,
+) -> Result<(), RegistryError> {
+    for stmt in stmts {
+        if let Some(label) = stmt.first_label()
+            && base_types.contains(label)
+            && stmt.has("sub")
+        {
+            return Err(RegistryError::ReparentedType {
+                extension: extension.to_owned(),
+                label: label.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The declared relation plus every subtype of it the declarer's own fragment defines,
 /// directly or through another such subtype.
 fn own_closure<'s>(relation: &'s str, own: &'s [Statement]) -> HashSet<&'s str> {
@@ -260,8 +298,9 @@ fn own_closure<'s>(relation: &'s str, own: &'s [Statement]) -> HashSet<&'s str> 
     }
 }
 
-/// Refuses `decl` unless the declarer alone mentions the relation and its subtypes, and
-/// defines the relation once cleanly: no `sub` on it and no `as` alongside it.
+/// Refuses `decl` unless the declarer alone mentions the relation and its subtypes, never
+/// alongside `alias`, and defines the relation once cleanly: no `sub` on it and no `as`
+/// alongside it.
 fn check_ownership<'s>(
     extension: &str,
     decl: &BeliefEdgeDecl,
@@ -279,6 +318,15 @@ fn check_ownership<'s>(
             if let Some(label) = closure.iter().find(|l| stmt.has(l)) {
                 return Err(not_owned(format!("{name} also mentions `{label}`")));
             }
+        }
+    }
+    for stmt in own {
+        if stmt.has("alias")
+            && let Some(label) = closure.iter().find(|l| stmt.has(l))
+        {
+            return Err(not_owned(format!(
+                "its schema fragment has a statement with `{label}` and `alias`"
+            )));
         }
     }
     for stmt in own {
@@ -310,6 +358,8 @@ fn check_ownership<'s>(
 /// The `sub` links of every scanned fragment, and which labels some statement introduces.
 struct Hierarchy<'s> {
     parents: HashMap<&'s str, Vec<&'s str>>,
+    /// `memory-item`, every type below it, and every type above any of those.
+    memory_lineage: HashSet<&'s str>,
     introduced: HashSet<&'s str>,
     entities: HashSet<&'s str>,
 }
@@ -318,6 +368,7 @@ impl<'s> Hierarchy<'s> {
     fn new(stmts: impl Iterator<Item = &'s Statement>) -> Self {
         let mut h = Self {
             parents: HashMap::new(),
+            memory_lineage: HashSet::new(),
             introduced: HashSet::new(),
             entities: HashSet::new(),
         };
@@ -336,6 +387,15 @@ impl<'s> Hierarchy<'s> {
                 }
             }
         }
+        h.memory_lineage = h
+            .parents
+            .keys()
+            .copied()
+            .chain([MEMORY_ITEM])
+            .map(|label| h.reachable(label))
+            .filter(|above| above.contains(MEMORY_ITEM))
+            .flatten()
+            .collect();
         h
     }
 
@@ -357,19 +417,18 @@ impl<'s> Hierarchy<'s> {
         seen
     }
 
-    /// Whether `player` is provably neither a memory item, a subtype of one, nor a
-    /// supertype of one. Every type above it must be introduced, ending in an entity root.
+    /// Whether `player` is provably neither a memory item nor a supertype of one. Every
+    /// type above it must be introduced, ending in an entity root.
     fn clear_of_memory_items(&self, player: &'s str) -> bool {
-        if player == MEMORY_ITEM || self.reachable(MEMORY_ITEM).contains(player) {
+        if self.memory_lineage.contains(player) {
             return false;
         }
         self.reachable(player).into_iter().all(|label| {
-            label != MEMORY_ITEM
-                && if self.parents_of(label).is_empty() {
-                    self.entities.contains(label)
-                } else {
-                    self.introduced.contains(label)
-                }
+            if self.parents_of(label).is_empty() {
+                self.entities.contains(label)
+            } else {
+                self.introduced.contains(label)
+            }
         })
     }
 }
@@ -863,14 +922,145 @@ mod tests {
                 .expect("concept is not a memory item");
         }
 
-        // A second supertype added to memory-item makes that type a supertype too.
-        let schema = format!("{PROBE_SCHEMA}  entity probe-root;\n  memory-item sub probe-root;\n");
-        let decls = [decl_with_player("probe-link", "probe-root")];
-        let err = build(&[frag("probe-ext", &schema, &decls)]).unwrap_err();
+        // A second supertype on memory-item makes that type a supertype too.
+        let err = build_with_mem_extra(
+            "define entity probe-root; memory-item sub probe-root;",
+            &[frag(
+                "probe-ext",
+                PROBE_SCHEMA,
+                &[decl_with_player("probe-link", "probe-root")],
+            )],
+        )
+        .unwrap_err();
         assert!(
             matches!(err, RegistryError::MemoryItemPlayer { .. }),
             "{err:?}"
         );
+    }
+
+    /// Builds with `extra` appended to mem's schema text.
+    fn build_with_mem_extra(
+        extra: &str,
+        extensions: &[ExtensionFragment],
+    ) -> Result<BeliefEdgeRegistry, RegistryError> {
+        let mem_text = format!("{}\n;\n{extra}", MemGecko::new().schema());
+        BeliefEdgeRegistry::build(CORE, &mem_text, extensions)
+    }
+
+    #[test]
+    fn refuses_an_ancestor_of_a_memory_item_subtype() {
+        for extra in [
+            "define entity foo; belief sub foo;",
+            "define entity foo; redefine entity belief sub foo;",
+            "define entity top; entity foo sub top; execution-episode sub foo;",
+        ] {
+            for player in ["foo", "belief", "execution-episode"] {
+                let decls = [decl_with_player("probe-link", player)];
+                let err = build_with_mem_extra(extra, &[frag("probe-ext", PROBE_SCHEMA, &decls)])
+                    .unwrap_err();
+                assert!(
+                    matches!(err, RegistryError::MemoryItemPlayer { .. }),
+                    "{extra} / {player}: {err:?}"
+                );
+            }
+            let decls = [decl_with_player("probe-link", "concept")];
+            build_with_mem_extra(extra, &[frag("probe-ext", PROBE_SCHEMA, &decls)])
+                .expect("concept stays clear of memory items");
+        }
+        let decls = [decl_with_player("probe-link", "top")];
+        let err = build_with_mem_extra(
+            "define entity top; entity foo sub top; execution-episode sub foo;",
+            &[frag("probe-ext", PROBE_SCHEMA, &decls)],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, RegistryError::MemoryItemPlayer { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_an_extension_that_reparents_a_core_or_mem_type() {
+        let foo = [decl_with_player("probe-link", "foo")];
+        let concept = [decl("probe-link")];
+        for (extra, migration, decls, label) in [
+            ("  entity foo;\n  belief sub foo;\n", None, &foo, "belief"),
+            (
+                "  entity foo;\n",
+                Some("redefine entity belief sub foo;"),
+                &foo,
+                "belief",
+            ),
+            (
+                "  entity foo;\n  concept sub foo;\n",
+                None,
+                &concept,
+                "concept",
+            ),
+            (
+                "  entity foo;\n  memory-item@abstract, sub foo;\n",
+                None,
+                &foo,
+                "memory-item",
+            ),
+            (
+                "  entity foo;\n  relation supersession sub foo;\n",
+                None,
+                &concept,
+                "supersession",
+            ),
+        ] {
+            let schema = format!("{PROBE_SCHEMA}{extra}");
+            let err = build_with_migration("probe-ext", &schema, migration, decls).unwrap_err();
+            match &err {
+                RegistryError::ReparentedType {
+                    extension,
+                    label: got,
+                } => {
+                    assert_eq!(extension, "probe-ext");
+                    assert_eq!(got, label);
+                }
+                other => panic!("{extra} / {migration:?}: {other:?}"),
+            }
+            assert!(err.to_string().contains(label), "{err}");
+        }
+
+        // An extension that declares nothing is refused as well.
+        let probe = [decl("probe-link")];
+        let err = build(&[
+            frag("probe-ext", PROBE_SCHEMA, &probe),
+            frag("y-ext", "define entity foo; concept sub foo;", &[]),
+        ])
+        .unwrap_err();
+        assert!(
+            matches!(&err, RegistryError::ReparentedType { extension, .. } if extension == "y-ext"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_an_aliased_relation() {
+        // The declared label is the alias of a mem relation.
+        let decls = [decl("foo")];
+        let err = build(&[frag(
+            "x-ext",
+            "define supersession alias foo;\n relation foo, relates claim, relates subject;",
+            &decls,
+        )])
+        .unwrap_err();
+        assert_not_owned(&err, "`alias`");
+
+        // The owner aliases its relation, and another extension extends the alias.
+        let err = build_x_and_y("x-link alias xl;\n", "define xl relates extra;").unwrap_err();
+        assert_not_owned(&err, "`alias`");
+
+        // An alias on the owner's own subtype hides a mention the same way.
+        let err = build_x_and_y(
+            "relation x-sub sub x-link;\n x-sub alias xs;\n",
+            "define xs relates extra;",
+        )
+        .unwrap_err();
+        assert_not_owned(&err, "`alias`");
     }
 
     #[test]
