@@ -579,7 +579,7 @@ seam closed the last raw belief-tier write.
   attrs are the committed allowlist entries §1.2 records, owned by the populations writer,
   "never raw `graph.write`."
 
-### §3.5 — Amendments decided after ratification (D-B, D-D)
+### §3.5 — Amendments decided after ratification (D-B, D-D, pre-GC check)
 
 > **Status: decided by the user on 2026-11-19** (ledger D-B and D-D, from
 > `REVIEW-2026-11.md` §3 points 1, 2 and 5). These amend §3.2 and §3.3; the ratified text above is
@@ -626,6 +626,12 @@ detected. The decision is to retire it structurally, in three steps:
 **Limit.** Extensions are compiled-in, trusted code. These steps prevent an author from reaching
 a raw write path by accident; they do not defend against a deliberately hostile extension. W5a
 (§2) remains the backstop for every belief-tier write, mem's own included.
+
+**Pre-GC check — ratified by the user on 2026-11-20.** A sync refuses to garbage-collect a concept
+that plays a role in a belief-tier relation, with `DbError::BeliefEdgeReferencesRemovedConcept`
+naming each concept ID and the relation that references it, and nothing commits. The fingerprint
+of §2 stays the backstop. The recovery is to restore the removed record or to sync into a fresh
+database; retiring such a record instead of refusing is ledger item O6.
 
 ---
 
@@ -710,7 +716,7 @@ its check.
 >   nothing (INF11/INF6), so the attribute measure reads the schema's owner set once and counts `has`
 >   only for labels in it. The §1.2 disposition table has two classes, *writer-only* and *owed*; an
 >   *allowlisted* class was dropped because it had no entries.
->   Labels with no ledger owner are owned by D-O. The mem path derives b2 before the recall, because
+>   Labels with no other ledger owner are owned by Track M (M1–M6). The mem path derives b2 before the recall, because
 >   recall surfaces beliefs only and would otherwise return no chunks.
 > - **Row 3 deviation.** Since D-D step 1 a bridge holds only `Arc<dyn GraphReader>`, so a stub composed
 >   through `build_host_bridge` cannot write. The remaining raw route is sync-time output
@@ -721,9 +727,7 @@ its check.
 >   (`DbError::BeliefTierWrite`). The residual is a same-count swap, which the fingerprint cannot see.
 >   Each fingerprint is at most three grouped reads, one per measure. Measured guard time with mem and
 >   cyber composed (debug build, near-empty databases, 23 syncs): a median of about 4.3 ms per sync.
-> - **Amendment for the user to ratify: the pre-GC check.** A sync refuses to delete a concept a belief
->   edge references (`DbError::BeliefEdgeReferencesRemovedConcept`). The recovery today is to restore the
->   record or use a fresh database; the follow-on is O6.
+> - **The pre-GC check** ships as `DbError::BeliefEdgeReferencesRemovedConcept`; it is ratified in §3.5.
 >
 > Tracked as ledger items A4 and A10.
 

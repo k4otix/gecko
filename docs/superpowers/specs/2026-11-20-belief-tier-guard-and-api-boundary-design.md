@@ -158,7 +158,7 @@ trait. (b) Call it only for the extension named `mem`: leaves a trait method tha
 - The concept-insert path refuses a `type_hint` that is not a subtype of `concept`, with a schema
   error, before inserting. This closes the route where an importer's `OkfConcept` carries a
   memory-item subtype (`working-set`, mem's `playbook`), on top of the fingerprint catching it.
-- **Pre-GC check (amendment, 2026-11-20, for the user to ratify).** Before garbage collection
+- **Pre-GC check (amendment, ratified by the user 2026-11-20 in SPEC-W5 §3.5).** Before garbage collection
   deletes anything, the sync looks up every concept it would delete that plays a role in a
   belief-tier relation (any relation on the surface). If there is one, it refuses with
   `DbError::BeliefEdgeReferencesRemovedConcept`, which names each concept ID with the relation

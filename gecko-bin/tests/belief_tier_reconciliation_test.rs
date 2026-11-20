@@ -438,29 +438,7 @@ impl LabelDisposition {
 }
 
 /// The ledger items that may own a disposition.
-const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "D-O"];
-
-/// The belief-tier labels no ledger item owns, pending the open decision on owners
-/// for schema-only belief-tier types.
-const D_O_LABELS: &[&str] = &[
-    "rests-on",
-    "prediction-resolution",
-    "resolution",
-    "resolves",
-    "playbook",
-    "working-set",
-    "intention",
-    "learned-constraint",
-    "evidence",
-    "justification",
-    "support",
-    "attack",
-    "goal-hierarchy",
-    "contextualizes",
-    "pivot",
-    "execution",
-    "tool-invocation",
-];
+const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6"];
 
 /// Every belief-tier label no production step reaches, with how it is accounted for.
 const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
@@ -468,14 +446,14 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
         "rests-on",
         LabelDisposition::WriterOnly {
             methods: &["rests_on"],
-            owner: "D-O",
+            owner: "M1",
         },
     ),
     (
         "prediction-resolution",
         LabelDisposition::WriterOnly {
             methods: &["record_prediction", "resolve_prediction"],
-            owner: "D-O",
+            owner: "M2",
         },
     ),
     ("sighting", LabelDisposition::Owed { owner: "A8" }),
@@ -489,24 +467,21 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
         LabelDisposition::Owed { owner: "A5" },
     ),
     ("scoped", LabelDisposition::Owed { owner: "A7" }),
-    ("resolution", LabelDisposition::Owed { owner: "D-O" }),
-    ("resolves", LabelDisposition::Owed { owner: "D-O" }),
-    ("playbook", LabelDisposition::Owed { owner: "D-O" }),
-    ("working-set", LabelDisposition::Owed { owner: "D-O" }),
-    ("intention", LabelDisposition::Owed { owner: "D-O" }),
-    (
-        "learned-constraint",
-        LabelDisposition::Owed { owner: "D-O" },
-    ),
-    ("evidence", LabelDisposition::Owed { owner: "D-O" }),
-    ("justification", LabelDisposition::Owed { owner: "D-O" }),
-    ("support", LabelDisposition::Owed { owner: "D-O" }),
-    ("attack", LabelDisposition::Owed { owner: "D-O" }),
-    ("goal-hierarchy", LabelDisposition::Owed { owner: "D-O" }),
-    ("contextualizes", LabelDisposition::Owed { owner: "D-O" }),
-    ("pivot", LabelDisposition::Owed { owner: "D-O" }),
-    ("execution", LabelDisposition::Owed { owner: "D-O" }),
-    ("tool-invocation", LabelDisposition::Owed { owner: "D-O" }),
+    ("resolution", LabelDisposition::Owed { owner: "M3" }),
+    ("resolves", LabelDisposition::Owed { owner: "M3" }),
+    ("playbook", LabelDisposition::Owed { owner: "M5" }),
+    ("working-set", LabelDisposition::Owed { owner: "M4" }),
+    ("intention", LabelDisposition::Owed { owner: "M4" }),
+    ("learned-constraint", LabelDisposition::Owed { owner: "M6" }),
+    ("evidence", LabelDisposition::Owed { owner: "M1" }),
+    ("justification", LabelDisposition::Owed { owner: "M1" }),
+    ("support", LabelDisposition::Owed { owner: "M1" }),
+    ("attack", LabelDisposition::Owed { owner: "M1" }),
+    ("goal-hierarchy", LabelDisposition::Owed { owner: "M4" }),
+    ("contextualizes", LabelDisposition::Owed { owner: "M6" }),
+    ("pivot", LabelDisposition::Owed { owner: "M5" }),
+    ("execution", LabelDisposition::Owed { owner: "M5" }),
+    ("tool-invocation", LabelDisposition::Owed { owner: "M5" }),
 ];
 
 /// The run context `gecko run` mints for `concept_id`.
@@ -944,17 +919,6 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             disposition.owner()
         );
     }
-    let d_o: BTreeSet<&str> = table
-        .iter()
-        .filter(|(_, d)| d.owner() == "D-O")
-        .map(|(l, _)| *l)
-        .collect();
-    assert_eq!(
-        d_o,
-        D_O_LABELS.iter().copied().collect::<BTreeSet<_>>(),
-        "the D-O dispositions must be exactly D_O_LABELS"
-    );
-
     for (label, disposition) in &table {
         if let LabelDisposition::WriterOnly { methods, .. } = disposition {
             assert!(
