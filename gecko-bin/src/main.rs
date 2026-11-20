@@ -669,6 +669,7 @@ fn print_sync_result(result: &SyncResult) {
     println!("  Concepts updated:  {}", result.concepts_updated);
     println!("  Concepts skipped:  {}", result.concepts_skipped);
     println!("  Concepts deleted:  {}", result.concepts_deleted);
+    println!("  Concepts released: {}", result.concepts_released);
     println!("  Links attempted:    {}", result.links_attempted);
     println!("  Citations attempted: {}", result.citations_attempted);
 }

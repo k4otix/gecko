@@ -31,6 +31,42 @@ pub enum DbError {
 
     #[error("TypeDB query error: {0}")]
     Query(String),
+
+    /// A sync shipped concept IDs that the database already holds outside the
+    /// syncing bundle. `bundle` is the incoming bundle's name; `ids` lists every
+    /// colliding ID, sorted, with the bundle holding it (`None` when no bundle
+    /// contains it).
+    #[error("{}", collision_message(.bundle, .ids))]
+    ConceptIdCollision {
+        bundle: String,
+        ids: Vec<(String, Option<String>)>,
+    },
+}
+
+/// The most colliding IDs a [`DbError::ConceptIdCollision`] message lists.
+const COLLISION_IDS_SHOWN: usize = 20;
+
+/// Renders a concept-ID collision: the first [`COLLISION_IDS_SHOWN`] IDs with
+/// their holders, a count of the rest, and how to resolve it.
+fn collision_message(bundle: &str, ids: &[(String, Option<String>)]) -> String {
+    let shown: Vec<String> = ids
+        .iter()
+        .take(COLLISION_IDS_SHOWN)
+        .map(|(id, holder)| match holder {
+            Some(h) => format!("`{id}` (bundle `{h}`)"),
+            None => format!("`{id}` (no bundle)"),
+        })
+        .collect();
+    let mut list = shown.join(", ");
+    if ids.len() > COLLISION_IDS_SHOWN {
+        list.push_str(&format!(" and {} more", ids.len() - COLLISION_IDS_SHOWN));
+    }
+    format!(
+        "bundle `{bundle}` ships {} concept ID(s) this database already holds outside it: {list}. \
+         Concept IDs must be unique per database: sync this bundle under the name that holds \
+         them, or into a fresh database with `--database`.",
+        ids.len()
+    )
 }
 
 /// TLS mode for TypeDB connections.
@@ -437,5 +473,30 @@ impl WriteTransaction {
     pub async fn commit(self) -> Result<(), DbError> {
         let WriteTransaction { tx, _permit } = self;
         tx.commit().await.map_err(to_db_err(DbError::Transaction))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collision_message_lists_at_most_twenty_ids() {
+        let ids: Vec<(String, Option<String>)> = (0..25)
+            .map(|i| (format!("id{i:02}"), Some("alpha".to_string())))
+            .collect();
+        let msg = collision_message("beta", &ids);
+        assert!(msg.contains("`beta`"), "{msg}");
+        assert!(msg.contains("id00"), "{msg}");
+        assert!(msg.contains("id19"), "{msg}");
+        assert!(!msg.contains("id20"), "{msg}");
+        assert!(msg.contains("and 5 more"), "{msg}");
+        assert!(msg.contains("fresh database"), "{msg}");
+    }
+
+    #[test]
+    fn collision_message_names_an_uncontained_holder() {
+        let msg = collision_message("beta", &[("x".to_string(), None)]);
+        assert!(msg.contains("no bundle"), "{msg}");
     }
 }

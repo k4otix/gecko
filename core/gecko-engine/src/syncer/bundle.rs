@@ -1,8 +1,9 @@
 //! Bundle syncer: maps parsed OKF bundles to TypeDB entities and relations.
 //!
-//! GECKO is single-bundle-scoped: one bundle maps to one TypeDB database, so
-//! concept IDs are plain OKF bundle-relative paths (no namespace prefix) and the
-//! database itself is the isolation boundary between bundles.
+//! Concept IDs are plain OKF bundle-relative paths (no namespace prefix), unique
+//! per database. A database holds one bundle by default and may hold several.
+//! Each sync acts only on the concepts its bundle contains, and refuses concept
+//! IDs that another bundle holds ([`find_collisions`]).
 //!
 //! Writes use TypeDB's parameterized `given` stage (typed, out-of-band values)
 //! instead of string interpolation. This eliminates TypeQL injection and lets us
@@ -46,8 +47,79 @@ pub struct SyncResult {
     pub concepts_updated: usize,
     pub concepts_skipped: usize,
     pub concepts_deleted: usize,
+    /// Concepts this bundle dropped that another bundle still contains: only this
+    /// bundle's containment was removed.
+    pub concepts_released: usize,
     pub links_attempted: usize,
     pub citations_attempted: usize,
+}
+
+/// A concept already in the graph: its stored content hash and the names of
+/// every bundle containing it (sorted, deduplicated; empty when uncontained).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoredConcept {
+    pub hash: Option<String>,
+    pub bundles: Vec<String>,
+}
+
+/// The stored concepts `bundle_name` contains, as the concept-id → file-hash map
+/// [`plan_sync`] diffs against.
+pub fn owned_hashes(
+    bundle_name: &str,
+    stored: &HashMap<String, StoredConcept>,
+) -> HashMap<String, Option<String>> {
+    stored
+        .iter()
+        .filter(|(_, s)| s.bundles.iter().any(|b| b == bundle_name))
+        .map(|(id, s)| (id.clone(), s.hash.clone()))
+        .collect()
+}
+
+/// Every manifest concept ID that is stored but not contained by `bundle_name`,
+/// sorted by ID and paired with a bundle that holds it (`None` when no bundle
+/// contains it).
+///
+/// Only `concept` entities are considered. A manifest ID equal to a memory
+/// item's ID (mem's `mem/…` namespace) is not reported here; it fails at insert
+/// as a TypeDB key violation, so the sync still commits nothing.
+pub fn find_collisions(
+    bundle_name: &str,
+    concepts: &[OkfConcept],
+    stored: &HashMap<String, StoredConcept>,
+) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = concepts
+        .iter()
+        .filter_map(|c| {
+            let s = stored.get(&c.concept_id)?;
+            if s.bundles.iter().any(|b| b == bundle_name) {
+                None
+            } else {
+                Some((c.concept_id.clone(), s.bundles.first().cloned()))
+            }
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Splits the concepts `bundle_name` garbage-collects into `(delete, release)`,
+/// both sorted: a concept only this bundle contains is deleted; one another
+/// bundle also contains is released (only this bundle's containment goes).
+pub fn split_gc(
+    bundle_name: &str,
+    to_delete: &[String],
+    stored: &HashMap<String, StoredConcept>,
+) -> (Vec<String>, Vec<String>) {
+    let (mut release, mut delete): (Vec<String>, Vec<String>) =
+        to_delete.iter().cloned().partition(|id| {
+            stored
+                .get(id)
+                .is_some_and(|s| s.bundles.iter().any(|b| b != bundle_name))
+        });
+    delete.sort();
+    release.sort();
+    (delete, release)
 }
 
 /// Escapes string literals for safe embedding in TypeQL.
@@ -128,34 +200,54 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 
 /// Syncs an OKF bundle into TypeDB within a single write transaction. The
 /// `extension_writes` run in that same transaction after the core writes, so a
-/// failing extension write rolls back the whole sync.
+/// failing extension write rolls back the whole sync. A manifest concept ID that
+/// the database holds outside this bundle fails the sync with
+/// [`DbError::ConceptIdCollision`] before anything is written.
 pub async fn sync_bundle(
     db: &mut TypeDbRouter,
     manifest: &OkfBundle,
     extension_writes: &[GraphWrite],
 ) -> Result<SyncResult, DbError> {
     let tx = db.begin_write().await?;
+    let name = manifest.bundle_name.as_str();
 
-    // 1. Ensure the singleton bundle entity + its metadata.
+    // 1. Read every stored concept with its hash and containing bundles.
+    let stored = fetch_stored_concepts(&tx).await?;
+
+    // 2. Refuse IDs held outside this bundle. Returning drops the transaction
+    //    uncommitted, so nothing is written.
+    let collisions = find_collisions(name, &manifest.concepts, &stored);
+    if !collisions.is_empty() {
+        return Err(DbError::ConceptIdCollision {
+            bundle: name.to_string(),
+            ids: collisions,
+        });
+    }
+
+    // 3. Ensure the bundle entity and its metadata.
     upsert_bundle(&tx, manifest).await?;
 
-    // 2. Read existing (concept-id -> file-hash) to compute the idempotent plan.
-    let existing = fetch_existing_hashes(&tx).await?;
-    let plan = plan_sync(&manifest.concepts, &existing);
+    // 4. Plan against the concepts this bundle contains, and split its orphans
+    //    into those it owns alone and those another bundle also contains.
+    let plan = plan_sync(&manifest.concepts, &owned_hashes(name, &stored));
+    let (gc_delete, gc_release) = split_gc(name, &plan.to_delete, &stored);
     debug!(
         insert = plan.to_insert.len(),
         update = plan.to_update.len(),
         skip = plan.skipped,
-        delete = plan.to_delete.len(),
+        delete = gc_delete.len(),
+        release = gc_release.len(),
         "Computed sync plan"
     );
 
-    // 3. Garbage-collect orphaned concepts: remove each concept's OKF relations
-    //    (so none are left dangling) and then the concept entity.
-    let gc_ids: Vec<&str> = plan.to_delete.iter().map(String::as_str).collect();
-    delete_concepts_gc(&tx, &gc_ids).await?;
+    // 5. Garbage-collect orphans: delete those this bundle owns alone (with their
+    //    OKF relations, so none dangle), and release shared ones from this bundle.
+    let delete_ids: Vec<&str> = gc_delete.iter().map(String::as_str).collect();
+    delete_concepts_gc(&tx, &delete_ids).await?;
+    let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
+    release_containment(&tx, name, &release_ids).await?;
 
-    // 4. Reconcile new + changed concepts. Changed concepts are updated IN PLACE:
+    // 6. Reconcile new + changed concepts. Changed concepts are updated IN PLACE:
     //    the entity is preserved (keeping containment, hierarchy, incoming links,
     //    and extension relations) and only file-derived content is refreshed.
     let update_ids: Vec<&str> = plan
@@ -180,20 +272,20 @@ pub async fn sync_bundle(
         .collect();
     attach_concept_content(&tx, &write_concepts).await?;
 
-    // 5. Containment for written concepts. The not-exists guard makes this a
-    //    no-op for updated concepts, whose containment was preserved.
+    // 7. Containment of written concepts in this bundle. The not-exists guard
+    //    makes this a no-op for updated concepts, whose containment was preserved.
     let write_ids: Vec<&str> = write_concepts
         .iter()
         .map(|c| c.concept_id.as_str())
         .collect();
-    create_containment(&tx, &write_ids).await?;
+    create_containment(&tx, name, &write_ids).await?;
 
-    // 6. Hierarchy, links, citations (idempotent via not-exists guards).
+    // 8. Hierarchy, links, citations (idempotent via not-exists guards).
     create_hierarchy(&tx, manifest).await?;
     let links_attempted = create_links(&tx, manifest).await?;
     let citations_attempted = create_citations(&tx, manifest).await?;
 
-    // 7. Extension writes share the transaction, so they commit or roll back with it.
+    // 9. Extension writes share the transaction, so they commit or roll back with it.
     run_graph_writes(&tx, extension_writes)
         .await
         .map_err(|e| DbError::Query(format!("extension write: {e}")))?;
@@ -206,7 +298,8 @@ pub async fn sync_bundle(
         concepts_inserted: plan.to_insert.len(),
         concepts_updated: plan.to_update.len(),
         concepts_skipped: plan.skipped,
-        concepts_deleted: plan.to_delete.len(),
+        concepts_deleted: gc_delete.len(),
+        concepts_released: gc_release.len(),
         links_attempted,
         citations_attempted,
     };
@@ -215,6 +308,7 @@ pub async fn sync_bundle(
         updated = result.concepts_updated,
         skipped = result.concepts_skipped,
         deleted = result.concepts_deleted,
+        released = result.concepts_released,
         links_attempted = result.links_attempted,
         citations_attempted = result.citations_attempted,
         "Bundle sync complete"
@@ -259,9 +353,8 @@ async fn run_rows(
     Ok(())
 }
 
-/// Ensures the singleton bundle entity exists (keyed on bundle-name) and sets its
-/// provenance metadata once (path/description). GECKO is single-bundle-scoped so
-/// there is exactly one bundle per database.
+/// Ensures this sync's bundle entity exists (keyed on bundle-name) and sets its
+/// provenance metadata once (path/description).
 async fn upsert_bundle(tx: &Transaction, manifest: &OkfBundle) -> Result<(), DbError> {
     run_rows(
         tx,
@@ -302,36 +395,57 @@ async fn upsert_bundle(tx: &Transaction, manifest: &OkfBundle) -> Result<(), DbE
     Ok(())
 }
 
-/// Fetches every stored concept's ID and (optional) content hash.
-async fn fetch_existing_hashes(
+/// Fetches every stored concept with its content hash and the names of the
+/// bundles containing it. The query yields one row per containment (one row with
+/// no bundle for an uncontained concept), so rows are folded by concept ID.
+async fn fetch_stored_concepts(
     tx: &Transaction,
-) -> Result<HashMap<String, Option<String>>, DbError> {
+) -> Result<HashMap<String, StoredConcept>, DbError> {
     let answer = tx
-        .query(r#"match $c isa concept, has concept-id $id; fetch { "id": $id, "hash": $c.file-hash };"#)
+        .query(
+            r#"match $c isa concept, has concept-id $id;
+                     try { $ct isa containment, links (container: $b, member: $c);
+                           $b has bundle-name $bn; };
+               fetch { "id": $id, "hash": $c.file-hash, "bundle": $bn };"#,
+        )
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
+    if !answer.is_document_stream() {
+        return Err(DbError::Query(
+            "stored-concept read did not return documents".to_string(),
+        ));
+    }
 
-    let mut out = HashMap::new();
-    if answer.is_document_stream() {
-        let mut stream = answer.into_documents();
-        while let Some(Ok(doc)) = stream.next().await {
-            let json: serde_json::Value =
-                serde_json::from_str(&doc.into_json().to_string()).unwrap_or_default();
-            if let Some(id) = json.get("id").and_then(|v| v.as_str()) {
-                let hash = json
-                    .get("hash")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
-                out.insert(id.to_string(), hash);
-            }
+    let mut out: HashMap<String, StoredConcept> = HashMap::new();
+    let mut stream = answer.into_documents();
+    while let Some(item) = stream.next().await {
+        let doc = item.map_err(|e| DbError::Query(format!("stored-concept read: {e}")))?;
+        let json = serde_json::to_value(doc.into_json())
+            .map_err(|e| DbError::Query(format!("stored-concept document: {e}")))?;
+        let id = json.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+            DbError::Query(format!(
+                "stored-concept document without a string id: {json}"
+            ))
+        })?;
+        let entry = out.entry(id.to_string()).or_default();
+        if let Some(hash) = json.get("hash").and_then(|v| v.as_str()) {
+            entry.hash = Some(hash.to_string());
         }
+        if let Some(bundle) = json.get("bundle").and_then(|v| v.as_str()) {
+            entry.bundles.push(bundle.to_string());
+        }
+    }
+    for stored in out.values_mut() {
+        stored.bundles.sort();
+        stored.bundles.dedup();
     }
     Ok(out)
 }
 
-/// Garbage-collects concepts that were removed from the bundle. Deletes the OKF
-/// core relations each concept plays (containment, hierarchy, concept-link,
-/// citation) so none are left dangling, then the concept entity itself.
+/// Garbage-collects concepts removed from the bundle. It is given only concepts
+/// this bundle owns alone (see [`split_gc`]). Deletes the OKF core relations
+/// each concept plays (containment, hierarchy, concept-link, citation) so none
+/// are left dangling, then the concept entity itself.
 ///
 /// Extension-defined relations (e.g. mem-gecko `contextualizes`) are intentionally
 /// left untouched — their lifecycle belongs to the extension, not the OKF sync.
@@ -599,17 +713,51 @@ async fn attach_datetime(
     run_rows(tx, &query, &["id", "val"], rows).await
 }
 
-/// Links the given concepts to the (singleton) bundle via containment.
-async fn create_containment(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
-    let rows: Vec<Vec<GivenRowEntry>> = ids.iter().map(|id| vec![str_entry(id)]).collect();
+/// Contains the given concepts in the bundle named `bundle_name`, skipping any
+/// already contained by it.
+async fn create_containment(
+    tx: &Transaction,
+    bundle_name: &str,
+    ids: &[&str],
+) -> Result<(), DbError> {
+    let rows: Vec<Vec<GivenRowEntry>> = ids
+        .iter()
+        .map(|id| vec![str_entry(id), str_entry(bundle_name)])
+        .collect();
     run_rows(
         tx,
-        "given $id: string; \
-         match $b isa bundle; \
+        "given $id: string, $name: string; \
+         match $b isa bundle, has bundle-name $bn; $bn == $name; \
                $c isa concept, has concept-id $cid; $cid == $id; \
                not { $x isa containment, links (container: $b, member: $c); }; \
          insert $ct isa containment, links (container: $b, member: $c);",
-        &["id"],
+        &["id", "name"],
+        rows,
+    )
+    .await
+}
+
+/// Removes only the containment between the bundle named `bundle_name` and each
+/// given concept. Used in place of [`delete_concepts_gc`] for a concept that
+/// another bundle also contains: the concept, its other containments and its
+/// links stay.
+async fn release_containment(
+    tx: &Transaction,
+    bundle_name: &str,
+    ids: &[&str],
+) -> Result<(), DbError> {
+    let rows: Vec<Vec<GivenRowEntry>> = ids
+        .iter()
+        .map(|id| vec![str_entry(id), str_entry(bundle_name)])
+        .collect();
+    run_rows(
+        tx,
+        "given $id: string, $name: string; \
+         match $b isa bundle, has bundle-name $bn; $bn == $name; \
+               $c isa concept, has concept-id $cid; $cid == $id; \
+               $ct isa containment, links (container: $b, member: $c); \
+         delete $ct;",
+        &["id", "name"],
         rows,
     )
     .await
@@ -802,6 +950,70 @@ mod tests {
         let plan = plan_sync(&concepts, &existing);
         assert_eq!(plan.to_update, vec![0]);
         assert_eq!(plan.skipped, 0);
+    }
+
+    fn stored(hash: &str, bundles: &[&str]) -> StoredConcept {
+        StoredConcept {
+            hash: Some(hash.to_string()),
+            bundles: bundles.iter().map(|b| b.to_string()).collect(),
+        }
+    }
+
+    fn three_holders() -> HashMap<String, StoredConcept> {
+        HashMap::from([
+            ("a".to_string(), stored("ha", &["alpha"])),
+            ("b".to_string(), stored("hb", &["beta"])),
+            ("c".to_string(), stored("hc", &[])),
+        ])
+    }
+
+    #[test]
+    fn owned_hashes_keeps_only_this_bundles_concepts() {
+        let owned = owned_hashes("alpha", &three_holders());
+        let keys: Vec<&String> = owned.keys().collect();
+        assert_eq!(keys, vec!["a"]);
+        assert_eq!(owned["a"], Some("ha".to_string()));
+    }
+
+    #[test]
+    fn find_collisions_reports_other_and_uncontained_holders() {
+        let manifest = vec![concept("b", "x"), concept("c", "x"), concept("d", "x")];
+        assert_eq!(
+            find_collisions("alpha", &manifest, &three_holders()),
+            vec![
+                ("b".to_string(), Some("beta".to_string())),
+                ("c".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn concept_contained_by_two_bundles_is_owned_by_both() {
+        let all = HashMap::from([("s".to_string(), stored("hs", &["alpha", "beta"]))]);
+        let manifest = vec![concept("s", "hs")];
+        for bundle in ["alpha", "beta"] {
+            assert!(owned_hashes(bundle, &all).contains_key("s"), "{bundle}");
+            assert!(
+                find_collisions(bundle, &manifest, &all).is_empty(),
+                "{bundle}"
+            );
+        }
+        assert_eq!(
+            find_collisions("gamma", &manifest, &all),
+            vec![("s".to_string(), Some("alpha".to_string()))]
+        );
+    }
+
+    #[test]
+    fn gc_releases_a_shared_concept_and_deletes_an_exclusive_one() {
+        let all = HashMap::from([
+            ("e".to_string(), stored("he", &["alpha"])),
+            ("s".to_string(), stored("hs", &["alpha", "beta"])),
+        ]);
+        assert_eq!(
+            split_gc("alpha", &["e".to_string(), "s".to_string()], &all),
+            (vec!["e".to_string()], vec!["s".to_string()])
+        );
     }
 
     #[test]
