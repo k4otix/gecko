@@ -5,7 +5,8 @@
 //! closure. The **fingerprint** counts, for every surface label, its instances,
 //! its owned attributes and (for relations) its role players, so two
 //! fingerprints of one surface show whether anything in the belief tier changed.
-//! Every query here is a read.
+//! A fingerprint is at most three grouped reads, one per measure, whatever the
+//! surface's size. Every query here is a read.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -26,6 +27,9 @@ pub struct BeliefTierSurface {
     /// Every relation owning a role played by at least one type and only by
     /// types in `entities`.
     pub relations: BTreeSet<String>,
+    /// The labels of `entities` and `relations` that can own an attribute,
+    /// through their own ownership, an inherited one, or a subtype's.
+    pub attribute_owners: BTreeSet<String>,
 }
 
 /// One count a fingerprint records for a surface label.
@@ -207,20 +211,45 @@ pub async fn belief_tier_surface(
              played only by them"
         )));
     }
+    let owners = attribute_owners(tx).await?;
+    let attribute_owners = entities
+        .iter()
+        .chain(&relations)
+        .filter(|l| owners.contains(*l))
+        .cloned()
+        .collect();
     Ok(BeliefTierSurface {
         entities,
         relations,
+        attribute_owners,
     })
 }
 
-/// Runs a `reduce $n = count` read and returns its single integer.
-async fn count(
+/// Counts `measure` for every label in `labels` with one grouped read, adding a
+/// count per label to `counts`. A label with nothing to count has no group in
+/// the answer and is recorded as 0. `pattern` constrains `$x`, which `isa $s`
+/// binds to every instance of the label `$s` or of a subtype of it.
+async fn count_grouped<'a>(
     tx: &Transaction,
-    query: String,
-    label: &str,
+    labels: impl IntoIterator<Item = &'a String>,
+    pattern: &str,
     measure: BeliefTierMeasure,
-) -> Result<u64, DbError> {
-    let what = format!("belief-tier fingerprint of `{label}` {measure}");
+    counts: &mut BTreeMap<(String, BeliefTierMeasure), u64>,
+) -> Result<(), DbError> {
+    let mut branches = Vec::new();
+    for label in labels {
+        validate_schema_label(label)?;
+        counts.insert((label.clone(), measure), 0);
+        branches.push(format!("{{ $s label {label}; }}"));
+    }
+    if branches.is_empty() {
+        return Ok(());
+    }
+    let what = format!("belief-tier fingerprint {measure}");
+    let query = format!(
+        "match {}; $x isa $s{pattern}; reduce $n = count groupby $s;",
+        branches.join(" or ")
+    );
     let answer = tx
         .query(query)
         .await
@@ -229,24 +258,33 @@ async fn count(
         return Err(DbError::Query(format!("{what}: expected a row stream")));
     }
     let mut rows = answer.into_rows();
-    let mut value = None;
-    let mut seen = 0usize;
+    let mut seen = HashSet::new();
     while let Some(item) = rows.next().await {
         let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
-        seen += 1;
-        value = row
+        let label = row
+            .get("s")
+            .map_err(|e| DbError::Query(format!("{what}: column `s`: {e}")))?
+            .and_then(|c| c.try_get_label())
+            .ok_or_else(|| DbError::Query(format!("{what}: column `s` is not a bound type")))?
+            .to_string();
+        if !seen.insert(label.clone()) {
+            return Err(DbError::Query(format!(
+                "{what}: duplicate group for `{label}`"
+            )));
+        }
+        let n = row
             .get("n")
             .map_err(|e| DbError::Query(format!("{what}: column `n`: {e}")))?
-            .and_then(|c| c.try_get_integer());
+            .and_then(|c| c.try_get_integer())
+            .ok_or_else(|| DbError::Query(format!("{what}: column `n` is not a bound integer")))?;
+        let n = u64::try_from(n)
+            .map_err(|_| DbError::Query(format!("{what}: `{label}` negative count {n}")))?;
+        let slot = counts.get_mut(&(label.clone(), measure)).ok_or_else(|| {
+            DbError::Query(format!("{what}: count for `{label}`, which was not asked"))
+        })?;
+        *slot = n;
     }
-    if seen != 1 {
-        return Err(DbError::Query(format!(
-            "{what}: expected exactly one count row, got {seen}"
-        )));
-    }
-    let n = value
-        .ok_or_else(|| DbError::Query(format!("{what}: column `n` is not a bound integer")))?;
-    u64::try_from(n).map_err(|_| DbError::Query(format!("{what}: negative count {n}")))
+    Ok(())
 }
 
 /// Every type label that can own an attribute: a type that owns one itself
@@ -271,9 +309,9 @@ async fn attribute_owners(tx: &Transaction) -> Result<HashSet<String>, DbError> 
 }
 
 /// Counts every surface label's instances and attributes, and each relation's
-/// role players, as `tx` sees them. `isa` includes subtypes, so a supertype
-/// counts its subtypes' instances. An empty surface is a schema error, since its
-/// fingerprint would inspect nothing.
+/// role players, as `tx` sees them, in one grouped read per measure. `isa`
+/// includes subtypes, so a supertype counts its subtypes' instances. An empty
+/// surface is a schema error, since its fingerprint would inspect nothing.
 pub async fn belief_tier_fingerprint(
     tx: &Transaction,
     surface: &BeliefTierSurface,
@@ -284,43 +322,31 @@ pub async fn belief_tier_fingerprint(
                 .to_string(),
         ));
     }
-    let owners = attribute_owners(tx).await?;
+    let all = || surface.entities.union(&surface.relations);
     let mut counts = BTreeMap::new();
-    for label in surface.entities.union(&surface.relations) {
-        validate_schema_label(label)?;
-        let instances = count(
-            tx,
-            format!("match $x isa {label}; reduce $n = count;"),
-            label,
-            BeliefTierMeasure::Instances,
-        )
-        .await?;
-        counts.insert((label.clone(), BeliefTierMeasure::Instances), instances);
-
-        let attributes = if owners.contains(label) {
-            count(
-                tx,
-                format!("match $x isa {label}, has $a; reduce $n = count;"),
-                label,
-                BeliefTierMeasure::Attributes,
-            )
-            .await?
-        } else {
-            0
-        };
-        counts.insert((label.clone(), BeliefTierMeasure::Attributes), attributes);
-
-        if surface.relations.contains(label) {
-            let links = count(
-                tx,
-                format!("match $x isa {label}, links ($p); reduce $n = count;"),
-                label,
-                BeliefTierMeasure::Links,
-            )
-            .await?;
-            counts.insert((label.clone(), BeliefTierMeasure::Links), links);
-        }
+    count_grouped(tx, all(), "", BeliefTierMeasure::Instances, &mut counts).await?;
+    // A label that cannot own an attribute is left out of the read, which would
+    // fail type inference if every label in it were such a label, and keeps its
+    // count of 0.
+    for label in all().filter(|l| !surface.attribute_owners.contains(*l)) {
+        counts.insert((label.clone(), BeliefTierMeasure::Attributes), 0);
     }
+    count_grouped(
+        tx,
+        &surface.attribute_owners,
+        ", has $a",
+        BeliefTierMeasure::Attributes,
+        &mut counts,
+    )
+    .await?;
+    count_grouped(
+        tx,
+        &surface.relations,
+        ", links ($p)",
+        BeliefTierMeasure::Links,
+        &mut counts,
+    )
+    .await?;
     Ok(BeliefTierFingerprint { counts })
 }
 

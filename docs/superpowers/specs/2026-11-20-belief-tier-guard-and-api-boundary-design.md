@@ -179,10 +179,12 @@ trait. (b) Call it only for the extension named `mem`: leaves a trait method tha
 - Labels are interpolated, but they come from the live schema, and each passes
   `validate_schema_label` first.
 - **Cost.** With mem and cyber composed, the surface has 13 entities and 24 relations. One
-  fingerprint is therefore 98 count queries, and a sync runs 196, whatever the bundle's size.
-  Each count scans that label's instances and ownerships, so the cost grows with the belief
-  tier. That is the growth approach (b) was rejected for, but here it costs only counts. The
-  plan measures the overhead on an unchanged-bundle sync.
+  fingerprint is three grouped reads, one per measure, each a disjunction over the surface
+  labels with `reduce … groupby`, so a sync runs six, plus the three schema reads of the
+  surface, whatever the bundle's or the surface's size. Each read scans the belief tier's
+  instances and ownerships, so the cost grows with the belief tier. That is the growth
+  approach (b) was rejected for, but here it costs only counts. The plan measures the overhead
+  on an unchanged-bundle sync.
 
 ### A4 — the rig
 

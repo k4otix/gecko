@@ -141,6 +141,7 @@ async fn fingerprint_of_an_empty_surface_is_an_error() {
     let empty = BeliefTierSurface {
         entities: BTreeSet::new(),
         relations: BTreeSet::new(),
+        attribute_owners: BTreeSet::new(),
     };
     match belief_tier_fingerprint(&tx, &empty).await {
         Err(DbError::Schema(m)) => assert!(m.contains("inspect nothing"), "{m}"),
