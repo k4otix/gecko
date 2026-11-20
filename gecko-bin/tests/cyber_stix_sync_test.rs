@@ -8,7 +8,7 @@
 #![cfg(feature = "cyber")]
 
 use cyber_gecko::CyberGecko;
-use cyber_gecko::stix::{cyber_post_sync, to_okf};
+use cyber_gecko::stix::{cyber_post_sync, to_okf, typed_relation_players};
 use futures_util::StreamExt;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::syncer::bundle::sync_bundle;
@@ -58,7 +58,32 @@ const BUNDLE: &str = r#"{
       "name": "Command",
       "external_references": [
         { "source_name": "mitre-attack", "external_id": "DS0017" }
-      ]
+      ],
+      "x_mitre_platforms": ["Windows"]
+    },
+    {
+      "type": "course-of-action",
+      "id": "course-of-action--00000000-0000-0000-0000-0000000000a8",
+      "name": "Command and Scripting Interpreter Mitigation",
+      "external_references": [
+        { "source_name": "mitre-attack", "external_id": "T1059" }
+      ],
+      "x_mitre_deprecated": true
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--00000000-0000-0000-0000-0000000000a9",
+      "name": "Revoked Technique",
+      "external_references": [
+        { "source_name": "mitre-attack", "external_id": "T1059" }
+      ],
+      "revoked": true
+    },
+    {
+      "type": "x-mitre-analytic",
+      "id": "x-mitre-analytic--00000000-0000-0000-0000-0000000000a7",
+      "name": "Analytic 0001",
+      "x_mitre_platforms": ["Linux"]
     },
     {
       "type": "x-mitre-data-component",
@@ -145,6 +170,22 @@ async fn stix_sync_persists_typed_attributes_and_backbone() {
         1,
         "attack-pattern must carry attack-id"
     );
+    // A deprecated or revoked object reusing a live ATT&CK id is ingested without it.
+    assert_eq!(
+        count(&tx, r#"match $c isa concept, has attack-id "T1059";"#).await,
+        1,
+        "only the live technique may claim T1059"
+    );
+    assert_eq!(
+        count(&tx, "match $c isa course-of-action;").await,
+        1,
+        "the deprecated mitigation is still ingested"
+    );
+    assert_eq!(
+        count(&tx, "match $a isa attack-pattern, has revoked true;").await,
+        1,
+        "the revoked technique is still ingested"
+    );
 
     // kill-chain-phase and both platforms landed as multi-valued typed attributes.
     assert_eq!(
@@ -159,6 +200,17 @@ async fn stix_sync_persists_typed_attributes_and_backbone() {
         count(&tx, r#"match $a isa attack-pattern, has platform $p;"#).await,
         2,
         "both x_mitre_platforms values must persist"
+    );
+    assert_eq!(
+        count(&tx, r#"match $d isa data-source, has platform "Windows";"#).await,
+        1,
+        "a data source's x_mitre_platforms must persist"
+    );
+    // An analytic has no platform-owning subtype, so it is ingested without one.
+    assert_eq!(
+        count(&tx, r#"match $c isa concept, has platform "Linux";"#).await,
+        1,
+        "only the attack-pattern carries Linux; the analytic's platforms are not written"
     );
 
     // indicator's valid-until parsed to a real datetime typed attribute.
@@ -214,4 +266,94 @@ async fn to_okf_is_content_hash_stable() {
 fn to_okf_rejects_non_bundle() {
     let err = to_okf(r#"{"type":"indicator","objects":[]}"#).unwrap_err();
     assert!(err.contains("bundle"), "got: {err}");
+}
+
+/// A tool that uses a technique, and a detection strategy that detects one (an
+/// ATT&CK shape the cyber schema does not model as a typed relation).
+const SHAPES_BUNDLE: &str = r#"{
+  "type": "bundle",
+  "objects": [
+    { "type": "attack-pattern", "id": "attack-pattern--00000000-0000-0000-0000-0000000001a1", "name": "T" },
+    { "type": "tool", "id": "tool--00000000-0000-0000-0000-0000000001b2", "name": "Tool" },
+    { "type": "x-mitre-detection-strategy", "id": "x-mitre-detection-strategy--00000000-0000-0000-0000-0000000001c3", "name": "Strategy" },
+    { "type": "relationship", "id": "relationship--00000000-0000-0000-0000-000000000201",
+      "relationship_type": "uses",
+      "source_ref": "tool--00000000-0000-0000-0000-0000000001b2",
+      "target_ref": "attack-pattern--00000000-0000-0000-0000-0000000001a1" },
+    { "type": "relationship", "id": "relationship--00000000-0000-0000-0000-000000000202",
+      "relationship_type": "detects",
+      "source_ref": "x-mitre-detection-strategy--00000000-0000-0000-0000-0000000001c3",
+      "target_ref": "attack-pattern--00000000-0000-0000-0000-0000000001a1" }
+  ]
+}"#;
+
+async fn apply_cyber_schema(db: &mut gecko_engine::db::router::TypeDbRouter) {
+    db.apply_schema(include_str!(
+        "../../core/gecko-engine/schema/core_schema.tql"
+    ))
+    .await
+    .expect("apply core schema");
+    for ext in [
+        Box::new(MemGecko::new()) as Box<dyn GeckoExtension>,
+        Box::new(CyberGecko::new()),
+    ] {
+        db.apply_schema(ext.schema())
+            .await
+            .unwrap_or_else(|e| panic!("apply {} schema: {e}", ext.name()));
+    }
+}
+
+#[tokio::test]
+async fn stix_sync_links_tool_uses_and_records_unmodeled_shapes_as_links() {
+    let test_db = TestDb::new("gecko_test_stix_shapes");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+
+    let (manifest, typed_rels) = to_okf(SHAPES_BUNDLE).expect("to_okf");
+    assert_eq!(typed_rels.len(), 1, "only the tool-uses relation is typed");
+    assert!(
+        manifest.links.iter().any(|l| l.link_text == "detects"),
+        "the strategy-detects relation is kept as a concept-link"
+    );
+    sync_bundle(&mut db, &manifest, &cyber_post_sync(&typed_rels))
+        .await
+        .expect("sync_bundle");
+
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(
+        count(&tx, "match $t isa tool; $r isa uses, links (user: $t);").await,
+        1
+    );
+    assert_eq!(count(&tx, "match $r isa requires-evidence;").await, 0);
+}
+
+#[tokio::test]
+async fn typed_relation_players_match_the_schema() {
+    let test_db = TestDb::new("gecko_test_stix_players");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+    let tx = db.begin_read().await.expect("begin read");
+
+    for (relation, role, players) in typed_relation_players() {
+        assert_eq!(
+            count(
+                &tx,
+                &format!("match $t sub cyber-object; $t plays {relation}:{role};")
+            )
+            .await,
+            players.len(),
+            "{relation}:{role} players in the schema differ from the adapter's {players:?}"
+        );
+        for player in players {
+            assert_eq!(
+                count(
+                    &tx,
+                    &format!("match $t label {player}; $t plays {relation}:{role};")
+                )
+                .await,
+                1,
+                "{player} must play {relation}:{role}"
+            );
+        }
+    }
 }
