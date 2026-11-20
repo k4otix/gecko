@@ -11,7 +11,9 @@
 //! Idempotency is content-hash based ([`plan_sync`]): unchanged concepts are
 //! skipped, changed ones updated **in place** (the entity is preserved so its
 //! containment, hierarchy, incoming links, and any extension-created relations
-//! survive an edit), and orphaned ones garbage-collected.
+//! survive an edit). Orphans this bundle owns alone are garbage-collected;
+//! orphans another bundle also contains are released (only this bundle's
+//! containment is removed).
 //!
 //! # Record-path guardrail (invariants 1, 2 & 8)
 //!
@@ -763,29 +765,40 @@ async fn release_containment(
     .await
 }
 
-/// Creates directory-hierarchy edges between concepts.
+/// Creates directory-hierarchy edges between concepts of this bundle. An edge
+/// whose parent or child is not in this bundle stays unresolved.
 async fn create_hierarchy(tx: &Transaction, manifest: &OkfBundle) -> Result<(), DbError> {
     let rows: Vec<Vec<GivenRowEntry>> = manifest
         .hierarchy
         .iter()
         .filter(|e| !e.parent_id.is_empty())
-        .map(|e| vec![str_entry(&e.parent_id), str_entry(&e.child_id)])
+        .map(|e| {
+            vec![
+                str_entry(&e.parent_id),
+                str_entry(&e.child_id),
+                str_entry(&manifest.bundle_name),
+            ]
+        })
         .collect();
     run_rows(
         tx,
-        "given $parent: string, $child: string; \
-         match $p isa concept, has concept-id $pid; $pid == $parent; \
+        "given $parent: string, $child: string, $name: string; \
+         match $b isa bundle, has bundle-name $bn; $bn == $name; \
+               $p isa concept, has concept-id $pid; $pid == $parent; \
                $c isa concept, has concept-id $cid; $cid == $child; \
+               $m1 isa containment, links (container: $b, member: $p); \
+               $m2 isa containment, links (container: $b, member: $c); \
                not { $h isa hierarchy, links (parent: $p, child: $c); }; \
          insert $nh isa hierarchy, links (parent: $p, child: $c);",
-        &["parent", "child"],
+        &["parent", "child", "name"],
         rows,
     )
     .await
 }
 
-/// Creates internal concept-to-concept links. Returns the number of links
-/// attempted (links whose target is missing are tolerated and skipped by TypeDB).
+/// Creates internal concept-to-concept links within this bundle. A link whose
+/// source or target is not in this bundle stays unresolved (OKF v0.2 §6.1).
+/// Returns the number of links attempted.
 async fn create_links(tx: &Transaction, manifest: &OkfBundle) -> Result<usize, DbError> {
     let rows: Vec<Vec<GivenRowEntry>> = manifest
         .links
@@ -795,18 +808,22 @@ async fn create_links(tx: &Transaction, manifest: &OkfBundle) -> Result<usize, D
                 str_entry(&l.source_id),
                 str_entry(&l.target_id),
                 str_entry(&l.link_text),
+                str_entry(&manifest.bundle_name),
             ]
         })
         .collect();
     let attempted = rows.len();
     run_rows(
         tx,
-        "given $src: string, $tgt: string, $txt: string; \
-         match $s isa concept, has concept-id $sid; $sid == $src; \
+        "given $src: string, $tgt: string, $txt: string, $name: string; \
+         match $b isa bundle, has bundle-name $bn; $bn == $name; \
+               $s isa concept, has concept-id $sid; $sid == $src; \
                $t isa concept, has concept-id $tid; $tid == $tgt; \
+               $m1 isa containment, links (container: $b, member: $s); \
+               $m2 isa containment, links (container: $b, member: $t); \
                not { $l isa concept-link, links (source: $s, target: $t); }; \
          insert $nl isa concept-link, links (source: $s, target: $t), has link-text == $txt;",
-        &["src", "tgt", "txt"],
+        &["src", "tgt", "txt", "name"],
         rows,
     )
     .await?;

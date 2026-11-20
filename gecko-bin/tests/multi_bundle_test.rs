@@ -400,3 +400,46 @@ async fn shared_legacy_concept_is_released_not_deleted() {
         set(["tables", "tables/x", "notes/a1"])
     );
 }
+
+fn expected_links() -> BTreeSet<(String, String)> {
+    pair_set([("notes/a1", "tables/x"), ("notes/b1", "notes/b2")])
+}
+
+#[tokio::test]
+async fn link_does_not_cross_bundles() {
+    let (db, alpha, beta) = setup("gecko_test_mb_link").await;
+    sync_dir(&db, alpha.path()).await.expect("sync alpha");
+    sync_dir(&db, beta.path()).await.expect("sync beta");
+
+    assert_eq!(links(&db).await, expected_links());
+    assert_eq!(hierarchy(&db).await, pair_set([("tables", "tables/x")]));
+}
+
+#[tokio::test]
+async fn link_does_not_cross_bundles_in_either_order() {
+    let (db, alpha, beta) = setup("gecko_test_mb_link_rev").await;
+    sync_dir(&db, beta.path()).await.expect("sync beta");
+    sync_dir(&db, alpha.path()).await.expect("sync alpha");
+    sync_dir(&db, beta.path()).await.expect("re-sync beta");
+
+    assert_eq!(links(&db).await, expected_links());
+    assert_eq!(hierarchy(&db).await, pair_set([("tables", "tables/x")]));
+}
+
+#[tokio::test]
+async fn updated_concept_relinks_within_its_bundle() {
+    let (db, alpha, beta) = setup("gecko_test_mb_relink").await;
+    sync_dir(&db, alpha.path()).await.expect("sync alpha");
+    sync_dir(&db, beta.path()).await.expect("sync beta");
+
+    fs::write(
+        alpha.path().join("notes/a1.md"),
+        note("A1 renamed", "See [x](/tables/x.md)."),
+    )
+    .unwrap();
+    let r = sync_dir(&db, alpha.path()).await.expect("re-sync alpha");
+    assert_eq!(r.concepts_updated, 1);
+
+    assert_eq!(links(&db).await, expected_links());
+    assert_eq!(count(&db, "match $l isa concept-link;").await, 2);
+}
