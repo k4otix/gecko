@@ -443,3 +443,261 @@ async fn updated_concept_relinks_within_its_bundle() {
     assert_eq!(links(&db).await, expected_links());
     assert_eq!(count(&db, "match $l isa concept-link;").await, 2);
 }
+
+/// `gecko sync-stix` driven through the binary, one STIX file per bundle name.
+#[cfg(feature = "cyber")]
+mod cli {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    const MITRE_IDENTITY: &str = r#"{
+      "type": "identity",
+      "id": "identity--c78cb6e5-0c4b-4611-8297-d1b8b55e40b5",
+      "name": "The MITRE Corporation"
+    }"#;
+
+    /// A STIX bundle JSON document holding `objects` (comma-joined JSON objects).
+    fn stix(objects: &[&str]) -> String {
+        format!(r#"{{"type":"bundle","objects":[{}]}}"#, objects.join(","))
+    }
+
+    const T1059: &str = r#"{
+      "type": "attack-pattern",
+      "id": "attack-pattern--00000000-0000-0000-0000-0000000000a1",
+      "name": "Command and Scripting Interpreter",
+      "external_references": [{ "source_name": "mitre-attack", "external_id": "T1059" }]
+    }"#;
+    const DATA_SOURCE: &str = r#"{
+      "type": "x-mitre-data-source",
+      "id": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5",
+      "name": "Command",
+      "external_references": [{ "source_name": "mitre-attack", "external_id": "DS0017" }]
+    }"#;
+    const DATA_COMPONENT: &str = r#"{
+      "type": "x-mitre-data-component",
+      "id": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
+      "name": "Command Execution",
+      "x_mitre_data_source_ref": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5"
+    }"#;
+    const DETECTS: &str = r#"{
+      "type": "relationship",
+      "id": "relationship--00000000-0000-0000-0000-000000000103",
+      "relationship_type": "detects",
+      "source_ref": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
+      "target_ref": "attack-pattern--00000000-0000-0000-0000-0000000000a1"
+    }"#;
+    const T1404: &str = r#"{
+      "type": "attack-pattern",
+      "id": "attack-pattern--00000000-0000-0000-0000-0000000000b1",
+      "name": "Exploit OS Vulnerability",
+      "external_references": [{ "source_name": "mitre-attack", "external_id": "T1404" }]
+    }"#;
+    const T1003: &str = r#"{
+      "type": "attack-pattern",
+      "id": "attack-pattern--00000000-0000-0000-0000-0000000000c1",
+      "name": "OS Credential Dumping",
+      "external_references": [{ "source_name": "mitre-attack", "external_id": "T1003" }]
+    }"#;
+    const MALWARE: &str = r#"{
+      "type": "malware",
+      "id": "malware--00000000-0000-0000-0000-0000000000c2",
+      "name": "Dumper",
+      "is_family": true
+    }"#;
+
+    const DATA_SOURCE_ID: &str = "stix/x-mitre-data-source/00000000-0000-0000-0000-0000000000e5";
+    const IDENTITY_ID: &str = "stix/identity/c78cb6e5-0c4b-4611-8297-d1b8b55e40b5";
+
+    fn enterprise() -> String {
+        stix(&[MITRE_IDENTITY, T1059, DATA_SOURCE, DATA_COMPONENT, DETECTS])
+    }
+
+    /// `ENTERPRISE` without its data source (and so without the `detects` edge to it).
+    fn enterprise_next() -> String {
+        stix(&[MITRE_IDENTITY, T1059])
+    }
+
+    fn mobile() -> String {
+        stix(&[MITRE_IDENTITY, T1404])
+    }
+
+    fn other() -> String {
+        stix(&[T1003, MALWARE])
+    }
+
+    /// Writes a `gecko.toml` that targets the local TypeDB with the cyber extension
+    /// enabled and no semantic index.
+    fn write_config(dir: &Path) -> PathBuf {
+        let path = dir.join("gecko.toml");
+        fs::write(
+            &path,
+            "[typedb]\nendpoint = \"localhost:1729\"\nmode = \"external\"\n\n[extensions]\nenabled = [\"cyber\"]\n",
+        )
+        .unwrap();
+        path
+    }
+
+    fn gecko(config: &Path) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gecko"));
+        cmd.arg("--config").arg(config);
+        cmd
+    }
+
+    fn run_ok(cmd: &mut Command) -> String {
+        let out = cmd.output().expect("spawn gecko");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "expected success\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        stdout
+    }
+
+    /// Asserts failure and returns stdout + stderr (the tracing `error!` line is on stdout).
+    fn run_err(cmd: &mut Command) -> String {
+        let out = cmd.output().expect("spawn gecko");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!out.status.success(), "expected failure\n{combined}");
+        combined
+    }
+
+    fn write_stix(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// Concept IDs contained by the bundle named `bundle`.
+    fn members_of(rows: &BTreeSet<(String, String)>, bundle: &str) -> BTreeSet<String> {
+        rows.iter()
+            .filter(|(_, b)| b == bundle)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sync_stix_bundle_name_override() {
+        let db = TestDb::new("gecko_test_stix_override");
+        let dir = TempDir::new().unwrap();
+        let config = write_config(dir.path());
+        let enterprise_file = write_stix(dir.path(), "enterprise.json", &enterprise());
+        let next_file = write_stix(dir.path(), "enterprise-next.json", &enterprise_next());
+        let other_file = write_stix(dir.path(), "other.json", &other());
+
+        run_ok(
+            gecko(&config)
+                .args(["--database", &db.name, "sync-stix"])
+                .arg(&enterprise_file),
+        );
+        assert_eq!(
+            bundle_names(&db).await,
+            BTreeSet::from(["stix-sync".to_string()])
+        );
+        let enterprise_ids = concept_ids(&db).await;
+
+        run_ok(
+            gecko(&config)
+                .args(["--database", &db.name, "sync-stix"])
+                .arg(&other_file)
+                .args(["--bundle-name", "other-intel"]),
+        );
+        assert_eq!(
+            bundle_names(&db).await,
+            BTreeSet::from(["stix-sync".to_string(), "other-intel".to_string()])
+        );
+        let rows = membership(&db).await;
+        let other_ids = BTreeSet::from([
+            "stix/attack-pattern/00000000-0000-0000-0000-0000000000c1".to_string(),
+            "stix/malware/00000000-0000-0000-0000-0000000000c2".to_string(),
+        ]);
+        assert_eq!(members_of(&rows, "other-intel"), other_ids);
+        assert_eq!(members_of(&rows, "stix-sync"), enterprise_ids);
+
+        let paths = strings(
+            &db,
+            r#"match $b isa bundle, has bundle-name "other-intel", has bundle-path $p;
+               fetch { "a": $p };"#,
+        )
+        .await;
+        let expected = fs::canonicalize(&other_file)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(paths, BTreeSet::from([expected]));
+
+        run_ok(
+            gecko(&config)
+                .args(["--database", &db.name, "sync-stix"])
+                .arg(&next_file),
+        );
+        let after = membership(&db).await;
+        assert!(!after.iter().any(|(id, _)| id == DATA_SOURCE_ID));
+        let kept = members_of(&after, "stix-sync");
+        assert!(!kept.is_empty());
+        assert_eq!(
+            kept,
+            enterprise_ids
+                .iter()
+                .filter(|id| id.as_str() != DATA_SOURCE_ID && !id.contains("-0000000000f6"))
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(members_of(&after, "other-intel"), other_ids);
+    }
+
+    #[tokio::test]
+    async fn second_attack_domain_is_refused() {
+        let db = TestDb::new("gecko_test_stix_refuse");
+        let dir = TempDir::new().unwrap();
+        let config = write_config(dir.path());
+        let enterprise_file = write_stix(dir.path(), "enterprise.json", &enterprise());
+        let mobile_file = write_stix(dir.path(), "mobile.json", &mobile());
+
+        run_ok(
+            gecko(&config)
+                .args(["--database", &db.name, "sync-stix"])
+                .arg(&enterprise_file)
+                .args(["--bundle-name", "attack-enterprise"]),
+        );
+        let before = concept_ids(&db).await;
+
+        let output = run_err(
+            gecko(&config)
+                .args(["--database", &db.name, "sync-stix"])
+                .arg(&mobile_file)
+                .args(["--bundle-name", "attack-mobile"]),
+        );
+        assert!(output.contains(IDENTITY_ID), "{output}");
+        assert!(output.contains("attack-enterprise"), "{output}");
+        assert_eq!(
+            bundle_names(&db).await,
+            BTreeSet::from(["attack-enterprise".to_string()])
+        );
+        assert_eq!(concept_ids(&db).await, before);
+    }
+
+    #[tokio::test]
+    async fn bundle_name_override_selects_the_default_database() {
+        let target = TestDb::new("gecko_test_stix_name");
+        let dir = TempDir::new().unwrap();
+        let config = write_config(dir.path());
+        let other_file = write_stix(dir.path(), "other.json", &other());
+
+        run_ok(
+            gecko(&config)
+                .arg("sync-stix")
+                .arg(&other_file)
+                .args(["--bundle-name", &target.name]),
+        );
+        assert_eq!(
+            bundle_names(&target).await,
+            BTreeSet::from([target.name.clone()])
+        );
+    }
+}

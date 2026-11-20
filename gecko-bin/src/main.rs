@@ -116,6 +116,11 @@ enum Commands {
     SyncStix {
         /// Path to the STIX bundle JSON file
         bundle_path: PathBuf,
+        /// The bundle name to import under, default `stix-sync`. Several imports
+        /// share a database when each has its own name and they pass the same
+        /// `--database`; without `--database`, the database is named after the bundle.
+        #[arg(long)]
+        bundle_name: Option<String>,
     },
 
     /// Run an ad-hoc TypeQL read query
@@ -229,6 +234,25 @@ fn resolve_db(explicit: &Option<String>, derived: Option<&str>) -> String {
         .unwrap_or_else(|| "gecko".to_string())
 }
 
+/// Names a converted STIX bundle: `bundle_name` (when given) replaces the default
+/// name, and the STIX file's canonical path becomes the recorded `bundle-path`.
+#[cfg(feature = "cyber")]
+fn apply_stix_naming(
+    manifest: &mut OkfBundle,
+    bundle_name: Option<&str>,
+    stix_file: &Path,
+) -> Result<()> {
+    if let Some(name) = bundle_name {
+        anyhow::ensure!(!name.trim().is_empty(), "--bundle-name must not be empty");
+        manifest.bundle_name = name.to_string();
+    }
+    manifest.bundle_path = std::fs::canonicalize(stix_file)
+        .context("Failed to resolve STIX file path")?
+        .to_string_lossy()
+        .into_owned();
+    Ok(())
+}
+
 /// Maps the `--tls` flag (and optional `--ca-cert`) to a [`TlsMode`]. Shared by
 /// `make_config`, `gecko doctor`'s typedb check, and the orchestrator's readiness
 /// probe so all three connect with the same TLS posture.
@@ -323,13 +347,17 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_sync(config, &extensions, manifest).await
         }
         #[cfg(feature = "cyber")]
-        Commands::SyncStix { bundle_path } => {
+        Commands::SyncStix {
+            bundle_path,
+            bundle_name,
+        } => {
             let extensions = build_extensions(&cfg)?;
             println!("Parsing STIX bundle at {}...", bundle_path.display());
             let bundle_json =
                 std::fs::read_to_string(bundle_path).context("Failed to read STIX JSON")?;
-            let (manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
+            let (mut manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
                 .map_err(|e| anyhow::anyhow!("STIX parse error: {}", e))?;
+            apply_stix_naming(&mut manifest, bundle_name.as_deref(), bundle_path)?;
             let config = make_config(
                 &cli,
                 &address,
@@ -1164,5 +1192,47 @@ mod tests {
             format!("{err:#}").contains("declares no belief edges"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[cfg(feature = "cyber")]
+    fn stix_manifest_and_file() -> (OkfBundle, tempfile::TempDir, PathBuf) {
+        let (manifest, _) = cyber_gecko::stix::to_okf(r#"{"type":"bundle","objects":[]}"#)
+            .expect("empty STIX bundle converts");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("attack.json");
+        std::fs::write(&file, "{}").unwrap();
+        (manifest, dir, file)
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_naming_keeps_the_default_name() {
+        let (mut manifest, _dir, file) = stix_manifest_and_file();
+        apply_stix_naming(&mut manifest, None, &file).unwrap();
+        assert_eq!(manifest.bundle_name, "stix-sync");
+        assert_eq!(
+            manifest.bundle_path,
+            std::fs::canonicalize(&file).unwrap().to_string_lossy()
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_naming_overrides_the_name_and_records_the_file_path() {
+        let (mut manifest, _dir, file) = stix_manifest_and_file();
+        apply_stix_naming(&mut manifest, Some("attack-mobile"), &file).unwrap();
+        assert_eq!(manifest.bundle_name, "attack-mobile");
+        assert_eq!(
+            manifest.bundle_path,
+            std::fs::canonicalize(&file).unwrap().to_string_lossy()
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_naming_refuses_an_empty_bundle_name() {
+        let (mut manifest, _dir, file) = stix_manifest_and_file();
+        let err = apply_stix_naming(&mut manifest, Some("  "), &file).unwrap_err();
+        assert!(format!("{err:#}").contains("--bundle-name"), "{err:#}");
     }
 }
