@@ -41,8 +41,8 @@ The fix lets several bundles share a database while keeping what the July decisi
 4. **STIX imports keep their bundle name, with an override.** `sync-stix` keeps the bundle name
    `stix-sync` by default, so existing cyber databases and the default database are unchanged, and
    gains `--bundle-name <name>` to override it. Re-importing a newer ATT&CK release replaces the
-   previous one, subject to the belief-edge guard of the follow-up belief-tier PR (a re-import
-   whose garbage collection would delete a record a belief edge references is refused). The bundle's `bundle-path` becomes the real file path for new imports (it is
+   previous one, unless the pre-GC check refuses because a belief edge references a concept the new
+   release drops (see the belief-tier guard spec). The bundle's `bundle-path` becomes the real file path for new imports (it is
    set-once, so existing databases keep `stix-sync`). Two ATT&CK domains (Enterprise and Mobile)
    cannot share a database: they ship the same MITRE `identity` and `marking-definition` objects,
    and some groups and software, under the same STIX ids, so the second import is refused as a
