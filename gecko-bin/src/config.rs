@@ -336,7 +336,7 @@ pub fn check_extension_schemas(
 ) -> Result<mem_gecko::BeliefEdgeRegistry> {
     mem_gecko::BeliefEdgeRegistry::from_extensions(core_schema, extensions)
         .map_err(anyhow::Error::new)
-        .context("belief-edge declarations")
+        .context("extension schema check")
 }
 
 /// An extension whose migration undefines the `belief` type, for registry-refusal tests.

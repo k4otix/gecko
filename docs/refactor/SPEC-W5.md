@@ -697,7 +697,7 @@ its check.
 > quoted strings removed) holding a write verb (`insert`/`put`/`update`/`delete`) and a surface
 > label after `isa` or directly before `(`, which also catches anonymous-relation inserts. The
 > positive control asserts that `core/mem-gecko/src/tql.rs` shows `belief` and `supersession`
-> hits; every other file must show none. Tracked as ledger item A3.
+> hits; every other file must show none. Known limit: the unit is a single string literal, so a write assembled across `concat!`/`format!` pieces is not seen. Tracked as ledger item A3.
 
 ---
 

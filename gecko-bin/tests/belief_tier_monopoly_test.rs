@@ -307,7 +307,13 @@ fn unit_hits(unit: &Unit, surface: &BTreeSet<String>) -> Vec<(usize, String)> {
         if !surface.contains(label) {
             continue;
         }
-        let after_isa = idx > 0 && matches!(&toks[idx - 1], Tok::Label(p, _) if p == "isa");
+        // `isa` or the exact-type form `isa!`.
+        let before = if idx > 0 && matches!(&toks[idx - 1], Tok::Punct('!')) {
+            idx.checked_sub(2)
+        } else {
+            idx.checked_sub(1)
+        };
+        let after_isa = before.is_some_and(|b| matches!(&toks[b], Tok::Label(p, _) if p == "isa"));
         let before_paren = matches!(toks.get(idx + 1), Some(Tok::Punct('(')));
         if after_isa || before_paren {
             hits.push((*line, label.clone()));
@@ -617,7 +623,7 @@ mod detector {
     }
 
     #[test]
-    fn flags_todays_cyber_claim_and_disposition_literals() {
+    fn flags_the_pre_seam_cyber_literals() {
         let claim = r#"    let op = GraphWrite::single(
         "given $l: string, $tech: string, $b: string; \
          match $lc isa concept, has concept-id $lcid; $lcid == $l; \
@@ -643,6 +649,16 @@ mod detector {
         let disp_hits = belief_tier_hits(disposition, SourceKind::Rust, &s);
         assert!(!disp_hits.is_empty(), "disposition literal must be flagged");
         assert!(labels(&disp_hits).contains(&"alert-disposition"));
+    }
+
+    #[test]
+    fn flags_an_isa_bang_delete() {
+        let hits = belief_tier_hits(
+            "match $b isa! belief; delete $b;",
+            SourceKind::Tql,
+            &surface(),
+        );
+        assert_eq!(labels(&hits), vec!["belief"], "{hits:?}");
     }
 
     #[test]

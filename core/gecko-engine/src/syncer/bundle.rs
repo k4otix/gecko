@@ -196,7 +196,7 @@ pub async fn sync_bundle(
     // 7. Extension writes share the transaction, so they commit or roll back with it.
     run_graph_writes(&tx, extension_writes)
         .await
-        .map_err(|e| DbError::Transaction(e.to_string()))?;
+        .map_err(|e| DbError::Query(format!("extension write: {e}")))?;
 
     tx.commit()
         .await

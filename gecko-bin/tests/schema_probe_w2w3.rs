@@ -1914,8 +1914,8 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
 // INTROSPECTION-DERIVED, not a hand list: a relation is on the surface iff it owns
 // at least one role played EXCLUSIVELY by `memory-item` subtypes. An introspected
 // surface catches a new belief-edge relation the instant its schema lands — cyber's
-// `technique-detection`/`alert-disposition` (the raw-`graph.write` breach at
-// `extensions/cyber-gecko/src/detect/mod.rs:142,196`) today, and W2's
+// `technique-detection`/`alert-disposition` (written by cyber through the
+// belief-edge seam) today, and W2's
 // `divergence-precedence` the day W2 lands — whereas INVARIANTS §8.4's hand-list
 // misses `divergence-precedence` (and even omits `resolves`/`scoped`).
 //
@@ -1952,8 +1952,8 @@ async fn p_w5_1_folded_surface_contains_divergence_precedence() {
         surface.contains("divergence-precedence"),
         "the folded surface must contain divergence-precedence (belief plays :prevailing/:overridden); got {surface:?}"
     );
-    // cyber's belief-referencing relations are on the surface without a hand list — the
-    // raw-graph.write breach (detect/mod.rs:142,196) is caught by introspection.
+    // cyber's belief-referencing relations are on the surface without a hand list;
+    // cyber writes them through the belief-edge seam.
     assert!(
         surface.contains("technique-detection") && surface.contains("alert-disposition"),
         "surface must include cyber's technique-detection/alert-disposition; got {surface:?}"

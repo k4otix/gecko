@@ -1,6 +1,6 @@
 # Cyber onto the belief-edge seam, read-only extension handles, undefine/redefine refusal, and the W5a static lint (ledger A2, A9, A12, A3) — design
 
-**Status:** draft for the user's approval (builder check done; its one open question answered). Owning spec: SPEC-W5 §2.1, §3.3 and §3.5 (D-B, D-D
+**Status:** approved (builder check done; its one open question answered). Owning spec: SPEC-W5 §2.1, §3.3 and §3.5 (D-B, D-D
 steps 1–2). Builds on the A1 seam (`docs/superpowers/specs/2026-11-19-belief-edge-seam-design.md`,
 merged in #54).
 

@@ -28,7 +28,7 @@ constructor the Assembler can register:
 | `belief_edges()` | Declares the relations this extension writes alongside a belief, through `BeliefEdgeWriter`. |
 | `host_imports()` | Declares the callable host functions (`HostImportDef { name, description }`). |
 | `call_import(name, args)` | **Synchronous** dispatch for host imports that need nothing but their arguments. |
-| `inject_epistemic_host_fns(ctx, writer)` | Optional hook to bind the belief-write path into the sandbox (mem uses it). |
+| `inject_epistemic_host_fns(ctx, writer)` | Mem's hook that binds the belief-write path into the sandbox; other extensions do not use it. |
 
 Register it in the Assembler (`build_extensions` in `gecko-bin/src/main.rs`), and
 build the extension only inside the CLI arms that use it — a typo in
@@ -67,7 +67,7 @@ build the extension only inside the CLI arms that use it — a typo in
 - **No modifying core or mem.** The registry refuses an extension fragment or migration
   that `undefine`s or `redefine`s anything core or mem introduces, or that defines a
   function with a core or mem function name. It runs before any extension schema is
-  applied (`schema-init`, `sync`, `sync-stix`, `run`).
+  applied (`schema-init`, `sync`, `sync-stix`) and again when `run` builds the bridge.
 - **Changing your own functions.** Edit them in your `define` fragment; the engine
   redefines changed functions itself. An explicit `redefine fun` whose body names a core
   or mem type is refused.
@@ -177,7 +177,7 @@ there, next to mem's and cyber's.
 ## Checklist for a new extension
 
 1. Crate under `extensions/<name>/`, depending on `gecko-extension-api` and (if it
-   needs the graph/writer bridge) `gecko-engine`.
+   needs the graph-reader/belief-edge bridge) `gecko-engine`.
 2. Implement `GeckoExtension`; return your schema fragment from `schema()`.
 3. Validate the schema against live TypeDB (a schema-init test on a throwaway DB).
 4. Plain imports → `call_import`. Graph-read/belief/identity imports → a host
