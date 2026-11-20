@@ -47,9 +47,9 @@ define
     owns link-text @card(0..1);
 
   # ── Concrete operational types ──────────────────────────────
-  # Single-bundle-scoped: one bundle per database, keyed on its declared name
+  # Several bundles may share a database; each is keyed on its declared name
   # (from bundle.json). bundle-path is machine-local provenance, not identity.
-  entity bundle @doc("The single OKF documentation bundle ingested into this database, keyed by its declared name; bundle-path is machine-local provenance, not identity."),
+  entity bundle @doc("An OKF documentation bundle synced into this database, keyed by its declared name and containing its concepts; several bundles may share a database, and bundle-path is machine-local provenance, not identity."),
     owns bundle-name @key,
     owns bundle-path @card(0..1),
     owns title @card(0..1),

@@ -597,17 +597,23 @@ async fn apply_all_schemas(
     extensions: &[Box<dyn GeckoExtension>],
     custom_schema: Option<PathBuf>,
 ) -> Result<()> {
-    let core_schema = if let Some(path) = custom_schema {
-        tokio::fs::read_to_string(&path)
+    // A custom core schema may still carry text a migration replaces, which the
+    // migration would then make `define` refuse, so only the embedded one migrates.
+    let (core_schema, core_migrations) = if let Some(path) = custom_schema {
+        let text = tokio::fs::read_to_string(&path)
             .await
-            .with_context(|| format!("Failed to read schema file: {}", path.display()))?
+            .with_context(|| format!("Failed to read schema file: {}", path.display()))?;
+        (text, &[][..])
     } else {
-        gecko_engine::db::CORE_SCHEMA.to_string()
+        (
+            gecko_engine::db::CORE_SCHEMA.to_string(),
+            gecko_engine::db::CORE_MIGRATIONS,
+        )
     };
 
     check_extension_schemas(&core_schema, extensions)?;
 
-    db.apply_schema(&core_schema)
+    db.apply_schema_with_migrations(&core_schema, core_migrations)
         .await
         .context("Failed to apply core schema")?;
     info!("Core schema applied");
