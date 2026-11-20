@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use gecko_extension_api::{BeliefEdgeDecl, GeckoExtension, SchemaMigration};
 
-use super::scan::{Statement, statements};
+use super::scan::{Mode, Statement, statements};
 
 /// The name mem's extension registers under; its schema is scanned as mem's fragment.
 const MEM_EXTENSION: &str = "mem-gecko";
@@ -106,8 +106,26 @@ pub enum RegistryError {
         "extension `{extension}` renames a type or role with `label` in its schema or a migration; the belief-edge registry resolves types by their declared labels"
     )]
     RenameUnsupported { extension: String },
+    #[error("extension `{extension}` {}", modifies_base_detail(.mode, .label))]
+    ModifiesBase {
+        extension: String,
+        mode: &'static str,
+        label: String,
+    },
     #[error("extension `{extension}` is not registered; the belief-edge registry needs its schema")]
     MemMissing { extension: String },
+}
+
+/// The tail of the `ModifiesBase` message for `mode`.
+fn modifies_base_detail(mode: &str, label: &str) -> String {
+    match mode {
+        "define" => format!(
+            "defines a function named like core or mem function `{label}`; an extension may change only its own schema"
+        ),
+        _ => format!(
+            "{mode}s core or mem type or function `{label}`; an extension may change only its own schema"
+        ),
+    }
 }
 
 /// The belief-edge relations each extension owns and may write.
@@ -134,6 +152,11 @@ impl BeliefEdgeRegistry {
         let hierarchy = Hierarchy::new(core.iter().chain(&mem).chain(ext_stmts.iter().flatten()));
 
         let base_types = introduced_labels(core.iter().chain(&mem));
+        let base_fns: HashSet<&str> = core
+            .iter()
+            .chain(&mem)
+            .filter_map(Statement::introduces_function)
+            .collect();
         for (ext, stmts) in extensions.iter().zip(&ext_stmts) {
             // No rule resolves an alias to the type it names, so none is allowed.
             if stmts.iter().any(|s| s.has("alias")) {
@@ -147,6 +170,7 @@ impl BeliefEdgeRegistry {
                     extension: ext.name.to_owned(),
                 });
             }
+            check_no_base_modification(ext.name, stmts, &base_types, &base_fns)?;
             check_no_reparenting(ext.name, stmts, &base_types)?;
         }
 
@@ -276,6 +300,41 @@ fn introduced_labels<'s>(stmts: impl Iterator<Item = &'s Statement>) -> HashSet<
         .flat_map(|s| ["entity", "relation", "attribute"].map(|kind| s.introduces(kind)))
         .flatten()
         .collect()
+}
+
+/// Refuses an extension statement that defines a function named like one in `base_fns`, and
+/// any `undefine` or `redefine` statement that names a type in `base_types` or a function in
+/// `base_fns`: an extension may change only its own schema.
+fn check_no_base_modification(
+    extension: &str,
+    stmts: &[Statement],
+    base_types: &HashSet<&str>,
+    base_fns: &HashSet<&str>,
+) -> Result<(), RegistryError> {
+    let refuse = |mode: Mode, label: &str| RegistryError::ModifiesBase {
+        extension: extension.to_owned(),
+        mode: match mode {
+            Mode::Define => "define",
+            Mode::Redefine => "redefine",
+            Mode::Undefine => "undefine",
+        },
+        label: label.to_owned(),
+    };
+    for stmt in stmts {
+        if let Some(name) = stmt.introduces_function()
+            && base_fns.contains(name)
+        {
+            return Err(refuse(stmt.mode(), name));
+        }
+        if stmt.mode() != Mode::Define
+            && let Some(token) = stmt
+                .tokens()
+                .find(|t| base_types.contains(t) || base_fns.contains(t))
+        {
+            return Err(refuse(stmt.mode(), token));
+        }
+    }
+    Ok(())
 }
 
 /// Refuses an extension statement that is about a type in `base_types` and has a `sub`
@@ -522,6 +581,134 @@ mod tests {
     fn build(extensions: &[ExtensionFragment]) -> Result<BeliefEdgeRegistry, RegistryError> {
         let mem = MemGecko::new();
         BeliefEdgeRegistry::build(CORE, mem.schema(), extensions)
+    }
+
+    #[test]
+    fn refuses_an_extension_that_modifies_a_base_type_or_function() {
+        let decls = [decl("probe-link")];
+        let rows: [(&str, &str, &str); 11] = [
+            ("undefine belief;", "undefine", "belief"),
+            (
+                "undefine owns confidence from belief;",
+                "undefine",
+                "confidence",
+            ),
+            (
+                "undefine plays probe-link:claim from belief;",
+                "undefine",
+                "belief",
+            ),
+            (
+                "undefine @abstract from memory-item;",
+                "undefine",
+                "memory-item",
+            ),
+            ("undefine fun believed-at;", "undefine", "believed-at"),
+            (
+                "redefine attribute confidence value string;",
+                "redefine",
+                "confidence",
+            ),
+            (
+                "redefine belief owns confidence @card(1);",
+                "redefine",
+                "belief",
+            ),
+            (
+                "redefine\nfun believed-at($t: datetime) -> { belief }:\n match $b isa belief;\n return { $b };",
+                "redefine",
+                "believed-at",
+            ),
+            (
+                "redefine probe-link owns confidence @card(1);",
+                "redefine",
+                "confidence",
+            ),
+            (
+                "redefine probe-link relates evidence @card(0..1);",
+                "redefine",
+                "evidence",
+            ),
+            (
+                "define\nfun believed-at($b: belief) -> boolean:\n match $b isa belief;\n return check;",
+                "define",
+                "believed-at",
+            ),
+        ];
+        for (text, mode, label) in rows {
+            let migration = [SchemaMigration {
+                id: "probe/modify",
+                applies_when: "",
+                tql: text,
+            }];
+            let fragment = if text.contains("probe-link") {
+                ExtensionFragment {
+                    name: "probe-ext",
+                    schema: PROBE_SCHEMA,
+                    migrations: &migration,
+                    decls: &decls,
+                }
+            } else {
+                frag("probe-ext", text, &[])
+            };
+            match build(&[fragment]) {
+                Err(RegistryError::ModifiesBase {
+                    extension,
+                    mode: got_mode,
+                    label: got_label,
+                }) => {
+                    assert_eq!(extension, "probe-ext", "{text}");
+                    assert_eq!(got_mode, mode, "{text}");
+                    assert_eq!(got_label, label, "{text}");
+                }
+                other => panic!("{text}: expected ModifiesBase, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_an_extension_that_modifies_only_its_own_types() {
+        let decls = [decl("probe-link")];
+        let migrations = [
+            SchemaMigration {
+                id: "probe/undefine",
+                applies_when: "",
+                tql: "undefine owns probe-note from probe-link;",
+            },
+            SchemaMigration {
+                id: "probe/redefine",
+                applies_when: "",
+                tql: "redefine relation probe-link @abstract;",
+            },
+        ];
+        let fragment = ExtensionFragment {
+            name: "probe-ext",
+            schema: PROBE_SCHEMA,
+            migrations: &migrations,
+            decls: &decls,
+        };
+        build(&[fragment]).expect("builds");
+    }
+
+    #[test]
+    fn refuses_an_explicit_redefine_of_an_own_function_whose_body_names_a_base_type() {
+        let text = "redefine\nfun probe-fn() -> boolean:\n match $b isa belief, has belief-state \"asserted\";\n return check;";
+        match build(&[frag("probe-ext", text, &[])]) {
+            Err(RegistryError::ModifiesBase { mode, label, .. }) => {
+                assert_eq!(mode, "redefine");
+                assert_eq!(label, "belief");
+            }
+            other => panic!("expected ModifiesBase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_of_a_base_type_still_reports_rename_unsupported() {
+        let err = build(&[frag("probe-ext", "redefine belief label idea;", &[])]).unwrap_err();
+        assert!(
+            matches!(err, RegistryError::RenameUnsupported { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -844,7 +1031,6 @@ mod tests {
     #[test]
     fn refuses_a_subtype_relation() {
         let decls = [decl("my-edge")];
-        let base = "define relation my-edge, relates claim, relates subject;";
         for (schema, migration) in [
             (
                 "define relation my-edge sub supersession, relates claim, relates subject;",
@@ -854,7 +1040,6 @@ mod tests {
                 "define relation my-edge, relates claim, relates subject; my-edge sub supersession;",
                 None,
             ),
-            (base, Some("redefine relation my-edge sub supersession;")),
             (
                 "define relation my-edge @doc('a;b'), sub supersession, relates claim;",
                 None,
@@ -971,10 +1156,6 @@ mod tests {
                 None,
             ),
             (
-                "  entity sighting;\n",
-                Some("redefine entity sighting sub execution-episode;"),
-            ),
-            (
                 "  entity Mid sub execution-episode;\n  entity sighting sub Mid;\n",
                 None,
             ),
@@ -1068,12 +1249,6 @@ mod tests {
         let concept = [decl("probe-link")];
         for (extra, migration, decls, label) in [
             ("  entity foo;\n  belief sub foo;\n", None, &foo, "belief"),
-            (
-                "  entity foo;\n",
-                Some("redefine entity belief sub foo;"),
-                &foo,
-                "belief",
-            ),
             (
                 "  entity foo;\n  concept sub foo;\n",
                 None,
