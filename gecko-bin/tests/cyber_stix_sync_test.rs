@@ -117,13 +117,10 @@ async fn stix_sync_persists_typed_attributes_and_backbone() {
 
     // Map the STIX bundle and sync it through the record path.
     let (manifest, typed_rels) = to_okf(BUNDLE).expect("to_okf");
-    sync_bundle(&mut db, &manifest).await.expect("sync_bundle");
-
-    let tx = db.begin_write().await.expect("begin write");
-    cyber_post_sync(&tx, &typed_rels)
+    let writes = cyber_post_sync(&typed_rels);
+    sync_bundle(&mut db, &manifest, &writes)
         .await
-        .expect("cyber_post_sync");
-    tx.commit().await.expect("commit post-sync");
+        .expect("sync_bundle");
 
     let tx = db.begin_read().await.expect("begin read");
 
@@ -184,6 +181,24 @@ async fn stix_sync_persists_typed_attributes_and_backbone() {
         1,
         "x_mitre_data_source_ref must synthesize an evidence-of relation"
     );
+
+    // Re-syncing the same bundle is idempotent: relation counts do not change.
+    sync_bundle(&mut db, &manifest, &writes)
+        .await
+        .expect("second sync_bundle");
+    let tx = db.begin_read().await.expect("begin read after resync");
+    for (label, expected) in [
+        ("uses", 1),
+        ("indicates", 1),
+        ("requires-evidence", 1),
+        ("evidence-of", 1),
+    ] {
+        assert_eq!(
+            count(&tx, &format!("match $r isa {label};")).await,
+            expected,
+            "{label} count must be unchanged after a second sync"
+        );
+    }
 }
 
 #[tokio::test]

@@ -86,10 +86,9 @@ async fn detect_bridge_claims_disposes_and_reports() {
 
         // Sync the ATT&CK backbone.
         let (manifest, typed_rels) = to_okf(BUNDLE).expect("to_okf");
-        sync_bundle(&mut db, &manifest).await.expect("sync_bundle");
-        let tx = db.begin_write().await.expect("write");
-        cyber_post_sync(&tx, &typed_rels).await.expect("post_sync");
-        tx.commit().await.expect("commit");
+        sync_bundle(&mut db, &manifest, &cyber_post_sync(&typed_rels))
+            .await
+            .expect("sync_bundle");
 
         // Seed the detection-logic concept (a plain concept the claim references).
         let tx = db.begin_write().await.expect("write");

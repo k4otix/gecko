@@ -28,8 +28,8 @@ use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
 use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
 
 use gecko_extension_api::{
-    ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
-    RunContext, SandboxCtx, SemanticIndex,
+    ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, GraphWrite,
+    ProvenanceSource, RunContext, SandboxCtx, SemanticIndex,
 };
 #[cfg(feature = "real-embedder")]
 use gecko_semantic_index::CandleEmbedder;
@@ -343,18 +343,10 @@ async fn run(cli: Cli) -> Result<()> {
                 config.database
             );
 
-            let (mut db, result) = sync_manifest(config, &extensions, &manifest).await?;
-            print_sync_result(&result);
-
+            let writes = cyber_gecko::stix::cyber_post_sync(&typed_rels);
             println!("Linking {} typed relations...", typed_rels.len());
-            let tx = db
-                .begin_write()
-                .await
-                .context("Failed to begin write transaction")?;
-            cyber_gecko::stix::cyber_post_sync(&tx, &typed_rels)
-                .await
-                .map_err(|e| anyhow::anyhow!("Post sync failed: {}", e))?;
-            tx.commit().await.context("Failed to commit post sync")?;
+            let result = sync_manifest(config, &extensions, &manifest, &writes).await?;
+            print_sync_result(&result);
 
             Ok(())
         }
@@ -652,23 +644,23 @@ async fn cmd_schema_init(
     Ok(())
 }
 
-/// Sync a parsed OKF bundle. The bundle's database is ensured (schema applied,
-/// idempotently) so the single-bundle-per-database flow works from one command.
-/// Ensures the database schema and syncs a parsed bundle, returning the open
-/// router (for any extension post-sync step) alongside the sync counts.
+/// Ensures the bundle's database schema (applied idempotently, so the
+/// single-bundle-per-database flow works from one command) and syncs a parsed
+/// bundle, running `extension_writes` in the same transaction.
 async fn sync_manifest(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
     manifest: &OkfBundle,
-) -> Result<(TypeDbRouter, SyncResult)> {
+    extension_writes: &[GraphWrite],
+) -> Result<SyncResult> {
     let mut db = TypeDbRouter::new(config);
     apply_all_schemas(&mut db, extensions, None)
         .await
         .context("Failed to ensure database schema")?;
-    let result = sync_bundle(&mut db, manifest)
+    let result = sync_bundle(&mut db, manifest, extension_writes)
         .await
         .context("Failed to sync bundle")?;
-    Ok((db, result))
+    Ok(result)
 }
 
 fn print_sync_result(result: &SyncResult) {
@@ -693,7 +685,7 @@ async fn cmd_sync(
         config.database
     );
 
-    let (_db, result) = sync_manifest(config, extensions, &manifest).await?;
+    let result = sync_manifest(config, extensions, &manifest, &[]).await?;
     print_sync_result(&result);
 
     Ok(())

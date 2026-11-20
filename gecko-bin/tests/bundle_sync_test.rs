@@ -11,6 +11,7 @@ use cyber_gecko::CyberGecko;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::syncer::bundle::sync_bundle;
+use gecko_extension_api::GraphWrite;
 use mem_gecko::MemGecko;
 
 mod common;
@@ -66,7 +67,7 @@ async fn test_bundle_sync() {
 
     let bundle = parse_bundle(temp_dir.path()).expect("Failed to parse bundle");
 
-    let result = sync_bundle(&mut db, &bundle)
+    let result = sync_bundle(&mut db, &bundle, &[])
         .await
         .expect("Failed to sync bundle");
     assert_eq!(result.concepts_inserted, 1);
@@ -76,7 +77,7 @@ async fn test_bundle_sync() {
 
     // Re-syncing an unchanged bundle must be idempotent: the concept's
     // content hash matches, so it is skipped rather than re-inserted.
-    let result2 = sync_bundle(&mut db, &bundle)
+    let result2 = sync_bundle(&mut db, &bundle, &[])
         .await
         .expect("Failed to re-sync bundle");
     assert_eq!(
@@ -106,7 +107,7 @@ The body has changed.
     )
     .unwrap();
     let edited = parse_bundle(temp_dir.path()).expect("Failed to re-parse bundle");
-    let result3 = sync_bundle(&mut db, &edited)
+    let result3 = sync_bundle(&mut db, &edited, &[])
         .await
         .expect("Failed to sync edited bundle");
     assert_eq!(result3.concepts_updated, 1, "edited concept should update");
@@ -151,5 +152,43 @@ The body has changed.
             .await
             .len();
         assert_eq!(n, expected, "{msg}");
+    }
+}
+
+#[tokio::test]
+async fn failing_extension_write_rolls_back_the_whole_sync() {
+    let test_db = TestDb::new("gecko_test_sync_rollback");
+    let mut db = test_db.router();
+
+    let core_schema = include_str!("../../core/gecko-engine/schema/core_schema.tql");
+    db.apply_schema(core_schema)
+        .await
+        .expect("Failed to apply core schema");
+    db.apply_schema(MemGecko::new().schema())
+        .await
+        .expect("Failed to apply mem schema");
+
+    let temp_dir = TempDir::new().unwrap();
+    create_test_bundle(temp_dir.path());
+    let bundle = parse_bundle(temp_dir.path()).expect("Failed to parse bundle");
+
+    let bad = [GraphWrite::plain("insert $x isa no-such-type;")];
+    let result = sync_bundle(&mut db, &bundle, &bad).await;
+    assert!(
+        result.is_err(),
+        "a failing extension write must fail the sync"
+    );
+
+    for typeql in ["match $c isa concept;", "match $b isa bundle;"] {
+        let tx = db.begin_read().await.expect("Failed to begin read");
+        let n = tx
+            .query(typeql)
+            .await
+            .expect("count query failed")
+            .into_rows()
+            .collect::<Vec<_>>()
+            .await
+            .len();
+        assert_eq!(n, 0, "rolled-back sync must leave nothing for: {typeql}");
     }
 }

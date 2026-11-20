@@ -93,6 +93,39 @@ async fn check_row_count(
     Ok(())
 }
 
+/// Runs `ops` in order inside `tx`, which the caller owns and commits. Ops with no
+/// rows are skipped; an op with no `vars` runs its query text as-is; otherwise its
+/// rows are bound through a `given` stage. Any failure, including an
+/// `expect_rows` mismatch, is returned so the caller can drop `tx` uncommitted
+/// and roll back every op.
+pub async fn run_graph_writes(
+    tx: &typedb_driver::Transaction,
+    ops: &[GraphWrite],
+) -> Result<(), EpistemicError> {
+    for (index, op) in ops.iter().enumerate() {
+        if op.rows.is_empty() {
+            continue; // no-op, matching the syncer's `run_rows` convention.
+        }
+        let answer = if op.vars.is_empty() {
+            // Parameterless write: run the query text as-is.
+            tx.query(&op.query).await.map_err(store_err)?
+        } else {
+            let mut given = GivenRows::new(op.vars.clone(), op.rows.len());
+            for row in &op.rows {
+                let entries: Vec<GivenRowEntry> = row.iter().map(entry).collect();
+                given.push_row(entries).map_err(store_err)?;
+            }
+            tx.query_with_rows(&op.query, given)
+                .await
+                .map_err(store_err)?
+        };
+        if let Some(per_row) = op.expect_rows {
+            check_row_count(answer, index, per_row * op.rows.len(), &op.query).await?;
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl GraphStore for RouterGraphStore {
     async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError> {
@@ -103,28 +136,7 @@ impl GraphStore for RouterGraphStore {
             .await
             .map_err(store_err)?;
         let tx = wtx.transaction();
-        for (index, op) in ops.iter().enumerate() {
-            if op.rows.is_empty() {
-                continue; // no-op, matching the syncer's `run_rows` convention.
-            }
-            let answer = if op.vars.is_empty() {
-                // Parameterless write: run the query text as-is.
-                tx.query(&op.query).await.map_err(store_err)?
-            } else {
-                let mut given = GivenRows::new(op.vars.clone(), op.rows.len());
-                for row in &op.rows {
-                    let entries: Vec<GivenRowEntry> = row.iter().map(entry).collect();
-                    given.push_row(entries).map_err(store_err)?;
-                }
-                tx.query_with_rows(&op.query, given)
-                    .await
-                    .map_err(store_err)?
-            };
-            if let Some(per_row) = op.expect_rows {
-                // Returning here drops `wtx` uncommitted, rolling back every op.
-                check_row_count(answer, index, per_row * op.rows.len(), &op.query).await?;
-            }
-        }
+        run_graph_writes(tx, ops).await?;
         wtx.commit().await.map_err(store_err)?;
         Ok(())
     }

@@ -33,6 +33,9 @@ use typedb_driver::Transaction;
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
+use gecko_extension_api::GraphWrite;
+
+use crate::db::graph_store::run_graph_writes;
 use crate::db::router::{DbError, TypeDbRouter};
 use crate::okf::types::{OkfBundle, OkfConcept, TypedAttrValue};
 
@@ -123,10 +126,13 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
     plan
 }
 
-/// Syncs an OKF bundle into TypeDB within a single write transaction.
+/// Syncs an OKF bundle into TypeDB within a single write transaction. The
+/// `extension_writes` run in that same transaction after the core writes, so a
+/// failing extension write rolls back the whole sync.
 pub async fn sync_bundle(
     db: &mut TypeDbRouter,
     manifest: &OkfBundle,
+    extension_writes: &[GraphWrite],
 ) -> Result<SyncResult, DbError> {
     let tx = db.begin_write().await?;
 
@@ -186,6 +192,11 @@ pub async fn sync_bundle(
     create_hierarchy(&tx, manifest).await?;
     let links_attempted = create_links(&tx, manifest).await?;
     let citations_attempted = create_citations(&tx, manifest).await?;
+
+    // 7. Extension writes share the transaction, so they commit or roll back with it.
+    run_graph_writes(&tx, extension_writes)
+        .await
+        .map_err(|e| DbError::Transaction(e.to_string()))?;
 
     tx.commit()
         .await

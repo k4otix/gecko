@@ -77,7 +77,7 @@ const y = 2;
         .expect("Failed to apply core schema");
 
     // 4. Sync the bundle
-    let _sync_result = sync_bundle(&mut db, &manifest)
+    let _sync_result = sync_bundle(&mut db, &manifest, &[])
         .await
         .expect("Failed to sync bundle");
 
