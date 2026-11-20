@@ -719,9 +719,8 @@ its check.
 > - **Row 8** is discharged: the reconciliation is green with cyber on the seam.
 > - **Detection became prevention.** `sync_bundle` refuses a belief-tier change in production
 >   (`DbError::BeliefTierWrite`). The residual is a same-count swap, which the fingerprint cannot see.
->   Measured cost on an unchanged-bundle sync with mem and cyber composed (debug build, 5 runs): about
->   25.4 ms with the guard against about 4.8 ms without it, so roughly 20.6 ms per sync (mem only:
->   18-20.5 ms).
+>   Each fingerprint is at most three grouped reads, one per measure. Measured guard time with mem and
+>   cyber composed (debug build, near-empty databases, 23 syncs): a median of about 4.3 ms per sync.
 > - **Amendment for the user to ratify: the pre-GC check.** A sync refuses to delete a concept a belief
 >   edge references (`DbError::BeliefEdgeReferencesRemovedConcept`). The recovery today is to restore the
 >   record or use a fresh database; the follow-on is O6.
