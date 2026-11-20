@@ -680,8 +680,8 @@ async fn cmd_schema_init(
 }
 
 /// Ensures the bundle's database schema (applied idempotently, so one command
-/// serves a fresh database or a shared one) and syncs a parsed
-/// bundle, running `extension_writes` in the same transaction.
+/// serves a fresh database or a shared one) and syncs a parsed bundle, running
+/// `extension_writes` in the same transaction.
 async fn sync_manifest(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
@@ -900,9 +900,10 @@ struct FetchedPlaybook {
 /// Fetches a concept's single code-block, engine, and granted scopes from the graph.
 ///
 /// Concept IDs are exact bundle-relative paths (unique across the bundles of one
-/// database), and each concept has exactly one executable program (its engine-matched code fences were
-/// concatenated at parse time), so there is no ambiguity to resolve. `code` and
-/// `scopes` are list projections to tolerate the 0-or-1 / 0-or-N cardinalities.
+/// database), and each concept has exactly one executable program (its
+/// engine-matched code fences were concatenated at parse time), so there is no
+/// ambiguity to resolve. `code` and `scopes` are list projections to tolerate the
+/// 0-or-1 / 0-or-N cardinalities.
 async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<FetchedPlaybook> {
     let tx = db
         .begin_read()

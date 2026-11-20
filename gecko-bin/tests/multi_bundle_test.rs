@@ -85,17 +85,15 @@ async fn raw_write(db: &TestDb, query: &str) {
 async fn count(db: &TestDb, query: &str) -> usize {
     let mut router = db.router();
     let tx = router.begin_read().await.expect("begin read");
-    let rows = tx
-        .query(query)
+    tx.query(query)
         .await
         .expect("count query")
         .into_rows()
-        .collect::<Vec<_>>()
-        .await;
-    rows.into_iter()
-        .map(|r| r.expect("count row"))
-        .collect::<Vec<_>>()
-        .len()
+        .map(|r| {
+            r.expect("count row");
+        })
+        .count()
+        .await
 }
 
 /// Runs a fetch query and returns each document as JSON.
@@ -442,6 +440,7 @@ async fn updated_concept_relinks_within_its_bundle() {
 
     assert_eq!(links(&db).await, expected_links());
     assert_eq!(count(&db, "match $l isa concept-link;").await, 2);
+    assert_eq!(hierarchy(&db).await, pair_set([("tables", "tables/x")]));
 }
 
 /// `gecko sync-stix` driven through the binary, one STIX file per bundle name.

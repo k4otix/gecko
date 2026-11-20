@@ -76,9 +76,9 @@ S1 ✅ ─► A4 + A10 ─► S2 (needs D-L) ─► S3 (needs D-M)
                            S4 alongside S2 (the full-bundle check S2 is accepted against)
 ```
 
-Recommended next: **A4 + A10** (following **O1**) together (both harden the extension boundary, and A10 moves the
-OKF import types the STIX adapter is built on, so the adapter rework in S2/S3 lands once, on
-the final imports). **D-L** can be settled in parallel so **S2** starts right after.
+Recommended next, now that **O1** has landed: **A4 + A10** together (both harden the extension boundary, and A10
+moves the OKF import types the STIX adapter is built on, so the adapter rework in S2/S3 lands once, on the final
+imports). **D-L** can be settled in parallel so **S2** starts right after.
 
 ---
 
@@ -156,7 +156,7 @@ extensions, so it informs S3, not S2.
 | **S2** | **Model ATT&CK's current detection data.** Detection strategies and analytics get cyber subtypes (analytics own `platform`); `requires-evidence` (data component → technique) is derived from strategy → analytics → log-source data components, as a sync-time `GraphWrite` (A9's neutral path); `evidence-of` is either dropped, kept only for pre-current bundles, or re-sourced, per D-L. `blinded-detections()` and `cyber_detect_test`'s fixtures move to the current shape | — (design owed, D-L) | schema + adapter + cyber functions | D-L; after A10 so the adapter rework lands on the final OKF imports |
 | **S3** | **STIX core coverage.** Relationship types dropped today: `subtechnique-of` (481), `revoked-by` (157); object types ingested as bare `cyber-object`: `x-mitre-tactic`, `x-mitre-matrix`, `x-mitre-collection`, `identity`, `marking-definition`; `kill_chain_phases` and `external_references` flattened to attributes. typedb-cti is the reference for these shapes | — (design owed, D-M) | schema + adapter | D-M; after S2 |
 | **S4** | **Real-bundle regression check.** Record which ATT&CK release the adapter is validated against, and add an opt-in check (Tier-3 style: the bundle is a runtime asset, never in the build tree) that imports the full bundle twice and asserts the re-sync leaves every relation count unchanged. The S1 timing is the baseline | — | test (opt-in) | Lands with S2, which it accepts |
-| **S5** | **Objects shared across STIX imports.** Two ATT&CK domains (Enterprise and Mobile) cannot share a database. They ship the same MITRE `identity` and `marking-definition` objects, and some groups and software, under the same STIX ids, so the second import is refused as a concept-ID collision (O1). Under the default bundle name `stix-sync`, a second domain replaces the first instead, subject to the belief-edge guard of the belief-tier PR (A4 + A10): a re-import whose garbage collection would delete a record a belief edge references is refused. Sharing objects across imports needs a design: an object held by several imports (multi-containment ownership, collected only when no import holds it) and `attack-id` uniqueness across domains. | design + engine + adapter | O1; the design |
+| **S5** | **Objects shared across STIX imports.** Two ATT&CK domains (Enterprise and Mobile) cannot share a database. They ship the same MITRE `identity` and `marking-definition` objects, and some groups and software, under the same STIX ids, so the second import is refused as a concept-ID collision (O1). Under the default bundle name `stix-sync`, a second domain replaces the first instead, subject to the belief-edge guard of the belief-tier PR (A4 + A10): a re-import whose garbage collection would delete a record a belief edge references is refused. Sharing objects across imports needs a design: an object held by several imports (multi-containment ownership, collected only when no import holds it) and `attack-id` uniqueness across domains. | — (design owed) | design + engine + adapter | O1; the design |
 
 ---
 

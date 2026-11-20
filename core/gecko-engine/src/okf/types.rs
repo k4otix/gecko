@@ -151,9 +151,10 @@ pub struct HierarchyEdge {
 /// By default one bundle maps to one TypeDB database; bundles may share a database
 /// with `--database`. Concept IDs are pure OKF bundle-relative paths (e.g.
 /// `tables/orders`) with no namespace prefix, and must not collide across the
-/// bundles of one database. `bundle_name`/`bundle_description` are metadata sourced from
-/// an optional `bundle.json` manifest (falling back to the directory name); they
-/// identify the bundle entity but are NOT used to namespace concept IDs.
+/// bundles of one database. `bundle_name`/`bundle_description` are metadata
+/// sourced from an optional `bundle.json` manifest (falling back to the directory
+/// name); they identify the bundle entity but are NOT used to namespace concept
+/// IDs.
 #[derive(Debug, Clone)]
 pub struct OkfBundle {
     pub bundle_path: String,

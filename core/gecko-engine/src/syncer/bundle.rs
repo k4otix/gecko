@@ -3,7 +3,7 @@
 //! Concept IDs are plain OKF bundle-relative paths (no namespace prefix), unique
 //! per database. A database holds one bundle by default and may hold several.
 //! Each sync acts only on the concepts its bundle contains, and refuses concept
-//! IDs that another bundle holds ([`find_collisions`]).
+//! IDs that another bundle holds or that no bundle contains ([`find_collisions`]).
 //!
 //! Writes use TypeDB's parameterized `given` stage (typed, out-of-band values)
 //! instead of string interpolation. This eliminates TypeQL injection and lets us
@@ -715,6 +715,13 @@ async fn attach_datetime(
     run_rows(tx, &query, &["id", "val"], rows).await
 }
 
+/// The `(id, name)` given rows pairing each concept ID with the bundle name.
+fn containment_rows(bundle_name: &str, ids: &[&str]) -> Vec<Vec<GivenRowEntry>> {
+    ids.iter()
+        .map(|id| vec![str_entry(id), str_entry(bundle_name)])
+        .collect()
+}
+
 /// Contains the given concepts in the bundle named `bundle_name`, skipping any
 /// already contained by it.
 async fn create_containment(
@@ -722,10 +729,7 @@ async fn create_containment(
     bundle_name: &str,
     ids: &[&str],
 ) -> Result<(), DbError> {
-    let rows: Vec<Vec<GivenRowEntry>> = ids
-        .iter()
-        .map(|id| vec![str_entry(id), str_entry(bundle_name)])
-        .collect();
+    let rows = containment_rows(bundle_name, ids);
     run_rows(
         tx,
         "given $id: string, $name: string; \
@@ -748,10 +752,7 @@ async fn release_containment(
     bundle_name: &str,
     ids: &[&str],
 ) -> Result<(), DbError> {
-    let rows: Vec<Vec<GivenRowEntry>> = ids
-        .iter()
-        .map(|id| vec![str_entry(id), str_entry(bundle_name)])
-        .collect();
+    let rows = containment_rows(bundle_name, ids);
     run_rows(
         tx,
         "given $id: string, $name: string; \
