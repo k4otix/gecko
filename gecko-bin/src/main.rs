@@ -120,6 +120,9 @@ enum Commands {
         /// The bundle name to import under, default `stix-sync`. Several imports
         /// share a database when each has its own name and they pass the same
         /// `--database`; without `--database`, the database is named after the bundle.
+        /// A re-import under the same name replaces the previous one, unless a
+        /// belief edge references a record the new import drops, in which case the
+        /// import is refused.
         #[arg(long)]
         bundle_name: Option<String>,
     },
@@ -692,9 +695,14 @@ async fn sync_manifest(
     apply_all_schemas(&mut db, extensions, None)
         .await
         .context("Failed to ensure database schema")?;
-    let result = sync_bundle(&mut db, manifest, extension_writes)
-        .await
-        .context("Failed to sync bundle")?;
+    let result = sync_bundle(
+        &mut db,
+        manifest,
+        extension_writes,
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .context("Failed to sync bundle")?;
     Ok(result)
 }
 

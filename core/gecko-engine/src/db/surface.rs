@@ -272,11 +272,18 @@ async fn attribute_owners(tx: &Transaction) -> Result<HashSet<String>, DbError> 
 
 /// Counts every surface label's instances and attributes, and each relation's
 /// role players, as `tx` sees them. `isa` includes subtypes, so a supertype
-/// counts its subtypes' instances.
+/// counts its subtypes' instances. An empty surface is a schema error, since its
+/// fingerprint would inspect nothing.
 pub async fn belief_tier_fingerprint(
     tx: &Transaction,
     surface: &BeliefTierSurface,
 ) -> Result<BeliefTierFingerprint, DbError> {
+    if surface.entities.is_empty() && surface.relations.is_empty() {
+        return Err(DbError::Schema(
+            "belief-tier fingerprint: the surface names no type, so it would inspect nothing"
+                .to_string(),
+        ));
+    }
     let owners = attribute_owners(tx).await?;
     let mut counts = BTreeMap::new();
     for label in surface.entities.union(&surface.relations) {

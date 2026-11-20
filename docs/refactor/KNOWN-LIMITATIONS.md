@@ -50,6 +50,22 @@ proven through the real sandbox against live TypeDB.
   `core/js-sandbox/src/main.rs` you must `just build-guest` and re-commit the wasm
   (see `docs/refactor/guest-wasm.md`).
 
+## Sync guard
+
+- **Same-count residual.** `sync_bundle` fingerprints the belief tier (instance,
+  attribute-ownership and role-player counts per belief-tier label) at the start
+  and end of its transaction and refuses any difference. A change that keeps
+  every count is not seen: a belief-tier attribute value replaced in place, or one
+  instance deleted and an identical-shape one inserted.
+- **Pre-GC refusal.** A sync refuses to garbage-collect a concept that plays a
+  role in a belief-tier relation (`DbError::BeliefEdgeReferencesRemovedConcept`),
+  and deletes nothing. This fires when a playbook a belief cites is renamed or
+  deleted, and when an ATT&CK re-import drops a technique a belief claims.
+  Recovery today: restore the removed concept's file (or keep the record in the
+  import), or sync into a fresh database. Superseding the belief does not help,
+  since the edge stays in the graph. Retiring rather than deleting such a record
+  is ledger item O6.
+
 ## Consolidation ("dreaming") daemon is a scaffold
 
 `core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait + a wired

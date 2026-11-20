@@ -57,7 +57,7 @@ async fn no_drag_sync_creates_records_and_zero_epistemic_apparatus() {
     // sync_bundle over the plain engine writer. No EpistemicWriter, no index — the
     // sync path constructs neither, which is *why* zero index upserts are possible.
     let manifest = parse_bundle(std::path::Path::new(SAMPLE_BUNDLE)).expect("parse sample-bundle");
-    let result = sync_bundle(&mut db, &manifest, &[])
+    let result = sync_bundle(&mut db, &manifest, &[], mem_gecko::BELIEF_TIER_ROOT)
         .await
         .expect("sync sample-bundle");
 

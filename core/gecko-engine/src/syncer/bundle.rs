@@ -26,6 +26,10 @@
 //! revisable — is populated exclusively by the epistemic writer in `mem-gecko`,
 //! never here. The test `syncer_stays_on_the_record_path` enforces that this
 //! module names none of those belief/accelerator types.
+//!
+//! Every sync fingerprints the belief tier at the start and end of its
+//! transaction and refuses to commit when any count changed. A concept that a
+//! belief edge references is never garbage-collected: the sync is refused instead.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,6 +37,7 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use tracing::{debug, info};
 use typedb_driver::Transaction;
+use typedb_driver::answer::ConceptRow;
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
@@ -40,6 +45,7 @@ use gecko_extension_api::GraphWrite;
 
 use crate::db::graph_store::run_graph_writes;
 use crate::db::router::{DbError, TypeDbRouter};
+use crate::db::surface::{BeliefTierSurface, belief_tier_fingerprint, belief_tier_surface};
 use crate::db::validate_schema_label;
 use crate::okf::types::{OkfBundle, OkfConcept, TypedAttrValue};
 
@@ -184,13 +190,29 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 /// failing extension write rolls back the whole sync. A manifest concept ID that
 /// the database holds outside this bundle fails the sync with
 /// [`DbError::ConceptIdCollision`] before anything is written.
+///
+/// `belief_tier_root` names the root type of the belief tier, which the schema
+/// must contain (otherwise [`DbError::Schema`]). A concept the sync would
+/// garbage-collect that plays a role in a belief-tier relation stops the sync
+/// before any delete with [`DbError::BeliefEdgeReferencesRemovedConcept`]; the
+/// recovery is to restore the removed concept's file, or to sync into a fresh
+/// database. Otherwise the sync is refused with [`DbError::BeliefTierWrite`] when
+/// any belief-tier label's instance, attribute-ownership or role-player count
+/// differs between the start of the transaction and just before commit. The
+/// guard does not see a same-count swap: a value replaced in place, or one
+/// instance deleted and an identical-shape one inserted.
 pub async fn sync_bundle(
     db: &mut TypeDbRouter,
     manifest: &OkfBundle,
     extension_writes: &[GraphWrite],
+    belief_tier_root: &str,
 ) -> Result<SyncResult, DbError> {
     let tx = db.begin_write().await?;
     let name = manifest.bundle_name.as_str();
+
+    // 0. Fingerprint the belief tier before anything is read or written.
+    let surface = belief_tier_surface(&tx, belief_tier_root).await?;
+    let before = belief_tier_fingerprint(&tx, &surface).await?;
 
     // 1. Read every stored concept with its hash and containing bundles.
     let stored = fetch_stored_concepts(&tx).await?;
@@ -221,9 +243,14 @@ pub async fn sync_bundle(
         "Computed sync plan"
     );
 
-    // 5. Garbage-collect orphans: delete those this bundle owns alone (with their
-    //    OKF relations, so none dangle), and release shared ones from this bundle.
+    // 5. Refuse to delete a concept a belief edge references, then garbage-collect
+    //    orphans: delete those this bundle owns alone (with their OKF relations,
+    //    so none dangle), and release shared ones from this bundle.
     let delete_ids: Vec<&str> = gc_delete.iter().map(String::as_str).collect();
+    let references = belief_edge_references(&tx, &delete_ids, &surface).await?;
+    if !references.is_empty() {
+        return Err(DbError::BeliefEdgeReferencesRemovedConcept { references });
+    }
     delete_concepts_gc(&tx, &delete_ids).await?;
     let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
     release_containment(&tx, name, &release_ids).await?;
@@ -243,15 +270,23 @@ pub async fn sync_bundle(
         .iter()
         .map(|&i| &manifest.concepts[i])
         .collect();
-    insert_concept_entities(&tx, &new_concepts).await?;
-
     let write_concepts: Vec<&OkfConcept> = plan
         .to_insert
         .iter()
         .chain(plan.to_update.iter())
         .map(|&i| &manifest.concepts[i])
         .collect();
-    attach_concept_content(&tx, &write_concepts).await?;
+    let concept_types = if write_concepts
+        .iter()
+        .any(|c| c.type_hint.as_deref().is_some_and(|t| t != "concept"))
+    {
+        Some(concept_subtypes(&tx).await?)
+    } else {
+        None
+    };
+
+    insert_concept_entities(&tx, &new_concepts, concept_types.as_ref()).await?;
+    attach_concept_content(&tx, &write_concepts, concept_types.as_ref()).await?;
 
     // 7. Containment of written concepts in this bundle. The not-exists guard
     //    makes this a no-op for updated concepts, whose containment was preserved.
@@ -270,6 +305,14 @@ pub async fn sync_bundle(
     run_graph_writes(&tx, extension_writes)
         .await
         .map_err(|e| DbError::Query(format!("extension write: {e}")))?;
+
+    // 10. Refuse to commit any change to the belief tier. Returning drops the
+    //     transaction uncommitted.
+    let after = belief_tier_fingerprint(&tx, &surface).await?;
+    let changes = before.changes_to(&after);
+    if !changes.is_empty() {
+        return Err(DbError::BeliefTierWrite { changes });
+    }
 
     tx.commit()
         .await
@@ -423,6 +466,100 @@ async fn fetch_stored_concepts(
     Ok(out)
 }
 
+/// The string in column `col` of `row`, or a query error naming `what`.
+fn row_string(row: &ConceptRow, col: &str, what: &str) -> Result<String, DbError> {
+    row.get(col)
+        .map_err(|e| DbError::Query(format!("{what}: column `{col}`: {e}")))?
+        .ok_or_else(|| DbError::Query(format!("{what}: column `{col}` is unbound")))?
+        .try_get_string()
+        .map(str::to_string)
+        .ok_or_else(|| DbError::Query(format!("{what}: column `{col}` is not a string")))
+}
+
+/// Every `(concept_id, relation_label)` pair, sorted and deduplicated, in which
+/// one of the concepts `ids` plays a role in a relation of `surface`.
+async fn belief_edge_references(
+    tx: &Transaction,
+    ids: &[&str],
+    surface: &BeliefTierSurface,
+) -> Result<Vec<(String, String)>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let what = "belief-edge reference read";
+    let mut given = GivenRows::new(vec!["id".to_string()], ids.len());
+    for id in ids {
+        given
+            .push_row(vec![str_entry(id)])
+            .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    }
+    let answer = tx
+        .query_with_rows(
+            "given $id: string; \
+             match $c isa concept, has concept-id $cid; $cid == $id; \
+                   $r isa! $rt, links ($c); let $rl = label($rt); \
+             select $cid, $rl;",
+            given,
+        )
+        .await
+        .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    if !answer.is_row_stream() {
+        return Err(DbError::Query(format!("{what}: expected a row stream")));
+    }
+    let mut rows = answer.into_rows();
+    let mut out = Vec::new();
+    while let Some(item) = rows.next().await {
+        let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+        let relation = row_string(&row, "rl", what)?;
+        if surface.relations.contains(&relation) {
+            out.push((row_string(&row, "cid", what)?, relation));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// The labels of `concept` and every subtype of it in the schema.
+async fn concept_subtypes(tx: &Transaction) -> Result<HashSet<String>, DbError> {
+    let what = "concept subtype read";
+    let answer = tx
+        .query("match $t sub concept; let $l = label($t); select $l;")
+        .await
+        .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    if !answer.is_row_stream() {
+        return Err(DbError::Query(format!("{what}: expected a row stream")));
+    }
+    let mut rows = answer.into_rows();
+    let mut out = HashSet::new();
+    while let Some(item) = rows.next().await {
+        let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+        out.insert(row_string(&row, "l", what)?);
+    }
+    Ok(out)
+}
+
+/// Checks that `type_name` is a valid label naming `concept` or one of its
+/// subtypes. `concept_types` is `None` only when no written concept carries a
+/// `type_hint` other than `concept`.
+fn check_concept_type(
+    type_name: &str,
+    concept_types: Option<&HashSet<String>>,
+) -> Result<(), DbError> {
+    validate_schema_label(type_name)?;
+    let known = match concept_types {
+        Some(types) => types.contains(type_name),
+        None => type_name == "concept",
+    };
+    if known {
+        Ok(())
+    } else {
+        Err(DbError::Schema(format!(
+            "type_hint {type_name:?} is not a subtype of `concept`"
+        )))
+    }
+}
+
 /// Garbage-collects concepts removed from the bundle. It is given only concepts
 /// this bundle owns alone (see [`split_gc`]). Deletes the OKF core relations
 /// each concept plays (containment, hierarchy, concept-link, citation) so none
@@ -508,21 +645,24 @@ async fn clear_concept_content(tx: &Transaction, ids: &[&str]) -> Result<(), DbE
     .await
 }
 
-/// Inserts the entity and concept-id key for brand-new concepts. Their content
+/// Inserts the entity and concept-id key for brand-new concepts, as the subtype
+/// each one's `type_hint` names (which must be in `concept_types`). Their content
 /// is attached separately by [`attach_concept_content`].
 async fn insert_concept_entities(
     tx: &Transaction,
     concepts: &[&OkfConcept],
+    concept_types: Option<&HashSet<String>>,
 ) -> Result<(), DbError> {
-    use std::collections::HashMap;
     let mut grouped: HashMap<&str, Vec<&OkfConcept>> = HashMap::new();
     for c in concepts {
         let type_name = c.type_hint.as_deref().unwrap_or("concept");
         grouped.entry(type_name).or_default().push(c);
     }
+    for type_name in grouped.keys() {
+        check_concept_type(type_name, concept_types)?;
+    }
 
     for (type_name, type_concepts) in grouped {
-        validate_schema_label(type_name)?;
         let rows: Vec<Vec<GivenRowEntry>> = type_concepts
             .iter()
             .map(|c| vec![str_entry(&c.concept_id)])
@@ -538,7 +678,11 @@ async fn insert_concept_entities(
 /// already exists. Used for new concepts (after [`insert_concept_entities`]) and
 /// for updated concepts (after [`clear_concept_content`]), batched by attribute
 /// kind — one query each regardless of concept count.
-async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<(), DbError> {
+async fn attach_concept_content(
+    tx: &Transaction,
+    concepts: &[&OkfConcept],
+    concept_types: Option<&HashSet<String>>,
+) -> Result<(), DbError> {
     if concepts.is_empty() {
         return Ok(());
     }
@@ -594,7 +738,7 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
 
     // Extension-declared typed attributes (e.g. cyber-gecko's stix-id, ioc-value).
-    attach_typed_attributes(tx, concepts).await?;
+    attach_typed_attributes(tx, concepts, concept_types).await?;
 
     Ok(())
 }
@@ -605,11 +749,12 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
 /// subtype (its `type_hint`) rather than the generic `concept`, because a typed
 /// attribute is owned by that subtype and TypeDB would reject `has <attr>` on the
 /// too-general `concept` type. Both interpolated labels are extension-supplied,
-/// so each is validated as a TypeQL identifier; values flow through the
-/// parameterized `given` stage.
+/// so each is validated as a TypeQL identifier and the subtype must be in
+/// `concept_types`; values flow through the parameterized `given` stage.
 async fn attach_typed_attributes(
     tx: &Transaction,
     concepts: &[&OkfConcept],
+    concept_types: Option<&HashSet<String>>,
 ) -> Result<(), DbError> {
     // Keyed on (entity subtype, attribute name); value carries the TypeQL value
     // type and the accumulated rows.
@@ -635,9 +780,12 @@ async fn attach_typed_attributes(
         }
     }
 
-    for ((type_name, attr), (val_type, rows)) in groups {
-        validate_schema_label(type_name)?;
+    for (type_name, attr) in groups.keys() {
+        check_concept_type(type_name, concept_types)?;
         validate_schema_label(attr)?;
+    }
+
+    for ((type_name, attr), (val_type, rows)) in groups {
         let query = format!(
             "given $id: string, $val: {val_type}; \
              match $c isa {type_name}, has concept-id $cid; $cid == $id; \

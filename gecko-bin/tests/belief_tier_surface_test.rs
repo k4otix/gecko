@@ -8,7 +8,8 @@ use std::collections::BTreeSet;
 use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::router::DbError;
 use gecko_engine::db::surface::{
-    BeliefTierChange, BeliefTierMeasure, belief_tier_fingerprint, belief_tier_surface,
+    BeliefTierChange, BeliefTierMeasure, BeliefTierSurface, belief_tier_fingerprint,
+    belief_tier_surface,
 };
 use gecko_extension_api::GeckoExtension;
 use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
@@ -102,6 +103,21 @@ async fn surface_without_the_root_is_an_error() {
             "the schema error must name the root; got {m:?}"
         ),
         other => panic!("expected a schema error naming the root; got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fingerprint_of_an_empty_surface_is_an_error() {
+    let db = schema_db("gecko_test_surface", true).await;
+    let mut router = db.router();
+    let tx = router.begin_read().await.expect("read tx");
+    let empty = BeliefTierSurface {
+        entities: BTreeSet::new(),
+        relations: BTreeSet::new(),
+    };
+    match belief_tier_fingerprint(&tx, &empty).await {
+        Err(DbError::Schema(m)) => assert!(m.contains("inspect nothing"), "{m}"),
+        other => panic!("expected a schema error for an empty surface; got {other:?}"),
     }
 }
 

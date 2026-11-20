@@ -159,7 +159,14 @@ Notes and invariants:
   transaction or not at all. Only mem holds a `GraphStore`.
 - **Import-time writes.** An import-time post-sync step (e.g. cyber's
   `cyber_post_sync`) returns a `Vec<GraphWrite>`, which the engine runs inside the
-  sync transaction.
+  sync transaction. The sync is guarded: a sync whose writes (or whose importer's
+  concepts) change any belief-tier type's instance, attribute or link count is
+  refused with `DbError::BeliefTierWrite` and commits nothing. A concept's
+  `type_hint` must name a `concept` subtype. Garbage collection refuses to delete a
+  concept a belief edge references (`DbError::BeliefEdgeReferencesRemovedConcept`),
+  so a re-import that drops a referenced record is refused. Recovery: keep or
+  restore the record, or import into a fresh database. "Retire, not delete" is
+  ledger item O6.
 - **Multi-thread runtime required.** `block_in_place` panics on a current-thread
   runtime; the binary and sandbox both run multi-thread.
 - **Still never fabricate.** Validate arguments and refuse to act on references that

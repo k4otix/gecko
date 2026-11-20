@@ -92,9 +92,14 @@ async fn seed_detection_graph(test_db: &TestDb) {
     apply_schemas(test_db).await;
     let mut db = test_db.router();
     let (manifest, typed_rels) = to_okf(BUNDLE).expect("to_okf");
-    sync_bundle(&mut db, &manifest, &cyber_post_sync(&typed_rels))
-        .await
-        .expect("sync_bundle");
+    sync_bundle(
+        &mut db,
+        &manifest,
+        &cyber_post_sync(&typed_rels),
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync_bundle");
 
     let dir = TempDir::new().expect("tempdir");
     fs::create_dir_all(dir.path().join("playbooks")).expect("playbooks dir");
@@ -109,7 +114,7 @@ async fn seed_detection_graph(test_db: &TestDb) {
     )
     .expect("write playbook");
     let playbooks = parse_bundle(dir.path()).expect("parse playbook bundle");
-    sync_bundle(&mut db, &playbooks, &[])
+    sync_bundle(&mut db, &playbooks, &[], mem_gecko::BELIEF_TIER_ROOT)
         .await
         .expect("sync playbook bundle");
 }
