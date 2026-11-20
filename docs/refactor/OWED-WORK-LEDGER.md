@@ -3,7 +3,7 @@
 > **Status: living working-surface** (not a ratified spec — it tracks, it does not decide).
 > The source of truth for each item is its owning document's cited section; this ledger is the
 > index and the sequencing. Last reconciled on 2026-11-20 against PR #57 (cyber seam migration)
-> and PR #58 (current ATT&CK import, in review); the evidence for every review-sourced item is in
+> and PR #58 (current ATT&CK import); the evidence for every review-sourced item is in
 > [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
 >
 > **Ratification provenance:** SPEC-W2-W3 decisions @`11d7ab1`; SPEC-W5 as-design @`95f0d6e`;
@@ -37,7 +37,7 @@ references in specs and commit messages still resolve.
   at schema time (**A12** ✅); the W5a static lint is green (**A3** ✅). **A10** is partial.
 - **Found while timing a full ATT&CK import:** the cyber schema and STIX adapter were written
   for ATT&CK's earlier data model and could not import the current Enterprise bundle. The
-  import fix is in review (**S1**, PR #58); modelling ATT&CK's current detection data is owed
+  import fix landed in PR #58 (**S1** ✅); modelling ATT&CK's current detection data is owed
   (**S2**); until it lands, cyber's `blinded` check reports nothing on current data.
 
 ## Sequence
@@ -65,7 +65,7 @@ C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I 
 U1 ✅ ──────────────► server + driver on 3.15.0
 A12 ✅ ────────────► extension undefine/redefine of core/mem refused at schema time
 
-S1 (PR #58) ─► A4 + A10 ─► S2 (needs D-L) ─► S3 (needs D-M)
+S1 ✅ ─► A4 + A10 ─► S2 (needs D-L) ─► S3 (needs D-M)
                            S4 alongside S2 (the full-bundle check S2 is accepted against)
 ```
 
@@ -124,9 +124,16 @@ Tests owed with these items (names reserved by the specs):
 
 ## Track S — STIX/ATT&CK ingest (cyber-gecko)
 
-The cyber schema and STIX adapter were written in-house (no recorded upstream source) for
-ATT&CK's earlier data model: data components that `detects` a technique and point at their
-data source through `x_mitre_data_source_ref`. Current Enterprise ATT&CK instead links a
+**Design of record:** the maintainer's *cyber-gecko Implementation Plan — detect-first, against
+the shipped substrate* (2026-07-10, kept outside the repo), implemented in PR #11. Its
+relationship typing is an extraction of the STIX 2.1 spec's Appendix B (relationship
+summary), cut to what detect consumes; its §C1.3 data-source plane is ATT&CK's earlier data
+model: data components that `detects` a technique and point at their data source through
+`x_mitre_data_source_ref`. It cites no ATT&CK release and no upstream TypeQL schema. Its C2
+acceptance criterion — syncing MITRE's enterprise-attack bundle yields matching
+`attack-pattern`/`data-source`/`data-component` counts with `requires-evidence` edges, and an
+SRO outside the typed subset lands as a `concept-link` — was never run against the real bundle
+(the tests used a hand-built fixture); running it surfaced S1. Current Enterprise ATT&CK instead links a
 technique to data components through a detection strategy (`detects`) and its analytics
 (`x_mitre_analytic_refs`, then each analytic's `x_mitre_log_source_references[].x_mitre_data_component_ref`),
 and its data components no longer reference a data source. So `requires-evidence` and
@@ -138,7 +145,7 @@ extensions, so it informs S3, not S2.
 
 | ID | Item | Owning section | Type | Blocked on |
 |---|---|---|---|---|
-| **S1** | **The current Enterprise ATT&CK bundle imports — in review, PR #58.** `data-source` owns `platform` and the adapter writes platforms only on subtypes that own it; deprecated and revoked objects (224 reused ids) are ingested without the unique `attack-id`; `tool` plays `uses:user`; each relation shape lists its role-player subtypes and a relation whose ends cannot play its roles is kept as a concept-link (706 strategy→`detects` today). Full bundle: 4,877 concepts and 20,478 typed relations in one transaction, 148 s first sync and 1.2 s re-sync, counts unchanged (debug build, local 3.15.0) | — | adapter + schema | — (merge). ✅ when merged: `stix_sync_persists_typed_attributes_and_backbone`, `stix_sync_links_tool_uses_and_records_unmodeled_shapes_as_links`, `typed_relation_players_match_the_schema` |
+| **S1** ✅ | **The current Enterprise ATT&CK bundle imports — LANDED in PR #58.** `data-source` owns `platform` and the adapter writes platforms only on subtypes that own it; deprecated and revoked objects (224 reused ids) are ingested without the unique `attack-id`; `tool` plays `uses:user`; each relation shape lists its role-player subtypes and a relation whose ends cannot play its roles is kept as a concept-link (706 strategy→`detects` today). Full bundle: 4,877 concepts and 20,478 typed relations in one transaction, 148 s first sync and 1.2 s re-sync, counts unchanged (debug build, local 3.15.0) | — | adapter + schema | ✅ `stix_sync_persists_typed_attributes_and_backbone`, `stix_sync_links_tool_uses_and_records_unmodeled_shapes_as_links`, `typed_relation_players_match_the_schema` |
 | **S2** | **Model ATT&CK's current detection data.** Detection strategies and analytics get cyber subtypes (analytics own `platform`); `requires-evidence` (data component → technique) is derived from strategy → analytics → log-source data components, as a sync-time `GraphWrite` (A9's neutral path); `evidence-of` is either dropped, kept only for pre-current bundles, or re-sourced, per D-L. `blinded-detections()` and `cyber_detect_test`'s fixtures move to the current shape | — (design owed, D-L) | schema + adapter + cyber functions | D-L; after A10 so the adapter rework lands on the final OKF imports |
 | **S3** | **STIX core coverage.** Relationship types dropped today: `subtechnique-of` (481), `revoked-by` (157); object types ingested as bare `cyber-object`: `x-mitre-tactic`, `x-mitre-matrix`, `x-mitre-collection`, `identity`, `marking-definition`; `kill_chain_phases` and `external_references` flattened to attributes. typedb-cti is the reference for these shapes | — (design owed, D-M) | schema + adapter | D-M; after S2 |
 | **S4** | **Real-bundle regression check.** Record which ATT&CK release the adapter is validated against, and add an opt-in check (Tier-3 style: the bundle is a runtime asset, never in the build tree) that imports the full bundle twice and asserts the re-sync leaves every relation count unchanged. The S1 timing is the baseline | — | test (opt-in) | Lands with S2, which it accepts |
