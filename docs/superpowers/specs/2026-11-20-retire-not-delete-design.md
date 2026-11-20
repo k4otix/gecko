@@ -1,6 +1,6 @@
 # Retire, not delete (ledger O6) — short design
 
-Approved by the user 2026-11-20. Stacked on `feat/belief-tier-guard` (PR #63),
+Approved by the user 2026-11-20. Built on `main` after PR #63,
 whose pre-GC refusal this replaces.
 
 ## Intent

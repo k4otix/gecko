@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Branch `feat/retire-not-delete`, stacked on `feat/belief-tier-guard` (PR #63).
+- Branch `feat/retire-not-delete`, off `main` (which has #63, #65 and #66). Line numbers below are from before the rebase; locate code by name.
 - All TQL values go through `given` rows; any interpolated type label must first pass `crate::db::validate_schema_label`.
 - Comments and `@doc` strings are greenfield (describe what the code does now; no "used to", no plan tags like O6).
 - Never `#[allow(dead_code)]`. Never default a missing/invalid field to success.
@@ -23,7 +23,7 @@
 
 ## Review Focus
 
-1. A live file that still links (markdown link or hierarchy) to the retired concept's old path must not recreate an incoming `concept-link`/`hierarchy` to it — `linker.rs` emits links to any resolved path, and on this branch `create_links`/`create_hierarchy` match ends by containment, which a retired concept keeps. Pinned in Task 2 (`retired_concept_gets_no_new_links_from_live_files`) and by the cyber test dropping the object from the STIX JSON.
+1. A live file that still links (markdown link or hierarchy) to the retired concept's old path must not recreate an incoming `concept-link`/`hierarchy` to it — `linker.rs` emits links to any resolved path, and a retired concept keeps its containment. `create_links`/`create_hierarchy` already skip rows whose ends are not both manifest IDs (`bundle_ids`, from #65); the test pins that this keeps holding. Pinned in Task 2 (`retired_concept_gets_no_new_links_from_live_files`) and by the cyber test dropping the object from the STIX JSON.
 2. Re-syncing an unchanged bundle with a still-referenced retired concept must report `concepts_retired == 0`, `concepts_deleted == 0`, and keep the first `retired-at`. Pinned in Task 2.
 3. A concept dropped by bundle A but still contained by bundle B is released, not retired, even if a belief references it. Pinned in Task 2.
 4. Retiring a concept whose type requires attributes (cyber `observable`: `ioc-value`/`ioc-type @card(1)`) commits and keeps them. Pinned in Task 3.
@@ -104,7 +104,6 @@ entity p,
   - `fetch_stored_concepts`: fetch `"retired": $c.retired-at`; `entry.retired = true` only when the value is non-null (as `hash` is read at :450). `stored()` unit helper sets `retired: false`.
   - `sync_bundle`: read `required_attributes(&db.schema_text().await?)` before `begin_write`. Step 5: partition `gc_delete` by membership in `belief_edge_references`; `retire_concepts(&tx, <referenced ids not stored.retired>, &surface, &required, Utc::now())`; `delete_concepts_gc(&tx, <unreferenced ids>)`. Already-retired referenced concepts get no writes. `concepts_retired` = newly retired; add `retired` to the completion `info!`.
   - `retire_concepts`: read each concept's exact type (`isa! $t`, `label($t)`); delete every attribute except `concept-id` and the labels `required[type]` names (validate each label; one parameterized delete per concept type, excluding those labels with `not { $a isa <label>; }` clauses); read every relation each concept plays (the `isa! $rt, links ($c); let $rl = label($rt)` shape of `belief_edge_references`) and delete each whose label is neither `containment` nor in `surface.relations`, one delete per distinct label (`$r isa! <label>, links ($c); delete $r;`); then insert `has retired-at == $at` (`dt_entry`). A concept type missing from `required` is a `DbError::Schema` naming it.
-  - `create_hierarchy` / `create_links`: skip rows whose two ends are not both manifest concept IDs (`HashSet<&str>` of `manifest.concepts` IDs); `links_attempted` counts rows after this filter.
   - Remove `DbError::BeliefEdgeReferencesRemovedConcept` and its message. Rewrite for the retire behaviour: the module doc's last sentence (:31-32), `sync_bundle`'s doc (:196-205), the step-5 comment (:261), `delete_concepts_gc`'s doc where it mentions belief edges, and the `sync-stix --bundle-name` help ("…a record a belief edge references is retired rather than deleted").
   - `print_sync_result`: add `  Concepts retired:  {}` after the released line.
 
