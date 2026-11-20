@@ -36,9 +36,9 @@ pub enum ParseError {
 
 /// Derives a concept ID from a file path relative to the bundle root.
 ///
-/// GECKO is single-bundle-scoped (one bundle per TypeDB database), so the concept
-/// ID is the pure OKF bundle-relative path with the `.md` extension removed and no
-/// namespace prefix — matching the OKF spec exactly.
+/// The concept ID is the pure OKF bundle-relative path with the `.md` extension
+/// removed and no namespace prefix, matching the OKF spec exactly. IDs must not
+/// collide across the bundles that share a database; a colliding sync is refused.
 ///
 /// # Example
 /// ```
@@ -229,7 +229,8 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
 
     // Bundle identity/metadata comes from an optional `bundle.json` manifest,
     // falling back to the directory name. This is metadata only — concept IDs are
-    // NOT namespaced by it (GECKO is single-bundle-scoped, one bundle per database).
+    // NOT namespaced by it (IDs are plain bundle-relative paths and must not collide
+    // across the bundles of one database).
     let (bundle_name, bundle_description) = read_bundle_manifest(&bundle_root);
 
     let mut concepts = Vec::new();
@@ -311,8 +312,8 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
 }
 
 /// Reads a bundle's declared name (from `bundle.json`, falling back to the
-/// directory name) without parsing the whole bundle. Used to derive the target
-/// database in the single-bundle-per-database workflow.
+/// directory name) without parsing the whole bundle. Used to derive the default
+/// target database, one per bundle.
 pub fn bundle_name(bundle_root_path: &Path) -> Result<String, ParseError> {
     let bundle_root = bundle_root_path
         .canonicalize()

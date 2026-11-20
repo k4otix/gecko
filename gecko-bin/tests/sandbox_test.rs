@@ -49,7 +49,7 @@ const y = 2;
 
     // 2. Parse the bundle
     let manifest = parse_bundle(bundle_path).expect("Failed to parse bundle");
-    // Single-bundle-scoped: concept IDs are bundle-relative paths with no prefix.
+    // Concept IDs are plain bundle-relative paths with no prefix.
     let expected_id = "playbooks/test_playbook";
 
     assert_eq!(manifest.concepts.len(), 1);

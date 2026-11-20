@@ -49,8 +49,9 @@ struct Cli {
     #[arg(long, global = true)]
     address: Option<String>,
 
-    /// TypeDB database name. Defaults to the bundle's declared name (from
-    /// bundle.json) for `init`/`sync`, otherwise "gecko". One database per bundle.
+    /// TypeDB database name. Defaults to the bundle's declared name for
+    /// `schema-init`/`sync`/`sync-stix`, otherwise "gecko". One database per bundle
+    /// by default; pass the same `--database` to sync several bundles into one.
     #[arg(long, global = true)]
     database: Option<String>,
 
@@ -678,8 +679,8 @@ async fn cmd_schema_init(
     Ok(())
 }
 
-/// Ensures the bundle's database schema (applied idempotently, so the
-/// single-bundle-per-database flow works from one command) and syncs a parsed
+/// Ensures the bundle's database schema (applied idempotently, so one command
+/// serves a fresh database or a shared one) and syncs a parsed
 /// bundle, running `extension_writes` in the same transaction.
 async fn sync_manifest(
     config: DbConfig,
@@ -898,8 +899,8 @@ struct FetchedPlaybook {
 
 /// Fetches a concept's single code-block, engine, and granted scopes from the graph.
 ///
-/// Single-bundle-scoped: concept IDs are exact bundle-relative paths, and each
-/// concept has exactly one executable program (its engine-matched code fences were
+/// Concept IDs are exact bundle-relative paths (unique across the bundles of one
+/// database), and each concept has exactly one executable program (its engine-matched code fences were
 /// concatenated at parse time), so there is no ambiguity to resolve. `code` and
 /// `scopes` are list projections to tolerate the 0-or-1 / 0-or-N cardinalities.
 async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<FetchedPlaybook> {

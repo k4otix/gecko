@@ -118,7 +118,7 @@ gecko run playbooks/hello_js
 gecko query 'match $c isa concept, has concept-id $id; fetch {"id": $id};'
 ```
 
-Concept IDs are bundle-relative (GECKO is single-bundle-scoped: one bundle per database), e.g. `playbooks/hello_js`.
+Concept IDs are plain bundle-relative OKF paths, e.g. `playbooks/hello_js`. One bundle per database by default (`sync` picks the database from `bundle.json`'s name); bundles may share a database with `--database`, and a sync whose concept IDs collide with another bundle's is refused.
 
 ## Epistemic Memory & Semantic Retrieval
 

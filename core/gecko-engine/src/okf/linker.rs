@@ -114,8 +114,8 @@ pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
     // Strip trailing .md
     let path_part = path_part.strip_suffix(".md").unwrap_or(path_part);
 
-    // GECKO is single-bundle-scoped, so concept IDs are plain bundle-relative
-    // paths. The source directory is everything before the last `/`.
+    // Concept IDs are plain bundle-relative paths, and a link resolves only within
+    // its own bundle at sync time. The source directory is everything before the last `/`.
     let source_dir = match source_concept_id.rfind('/') {
         Some(idx) => &source_concept_id[..idx],
         None => "", // root-level concept
