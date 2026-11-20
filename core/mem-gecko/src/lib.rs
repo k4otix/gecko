@@ -8,11 +8,7 @@
 
 use std::sync::LazyLock;
 
-use std::sync::Arc;
-
-use gecko_extension_api::{
-    EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx, SchemaMigration,
-};
+use gecko_extension_api::{GeckoExtension, HostImportDef, SchemaMigration};
 
 pub mod belief_edge;
 pub mod consolidation;
@@ -101,16 +97,6 @@ impl GeckoExtension for MemGecko {
         Err(format!(
             "mem-gecko exposes no plain host imports; use the mem.* bindings (name: {name})"
         ))
-    }
-
-    /// mem is the epistemic substrate: it binds the host-constructed writer into the
-    /// activation context so the engine's sandbox bridge routes the mem host fns
-    /// (`remember`/`derive`/`supersede`/`contest`) to it. Because mem is always
-    /// registered (forced-on, first), this hook always runs — but only ever with a
-    /// writer the host built, and every dispatched call is stamped with a host-minted
-    /// [`RunContext`](gecko_extension_api::RunContext) (invariant 2).
-    fn inject_epistemic_host_fns(&self, ctx: &mut SandboxCtx, writer: Arc<dyn EpistemicWriter>) {
-        ctx.set_epistemic_writer(writer);
     }
 }
 

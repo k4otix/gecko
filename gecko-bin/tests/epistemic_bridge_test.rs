@@ -1,26 +1,18 @@
-//! The activation hook delivers a working [`EpistemicWriter`] to extensions, and
-//! the mem host-fn bridge enforces host-stamped run identity end-to-end at the
+//! The mem host-fn bridge enforces host-stamped run identity end-to-end at the
 //! dispatch level.
 //!
-//! Two properties against a live graph (`localhost:1729`, admin/password):
-//!
-//! 1. **mem through the real bridge.** The engine's
-//!    [`epistemic_extension_callback`] — the SAME [`ExtensionCallback`] `cmd_run`
-//!    wires into the wasm pipeline — is invoked exactly as the sandbox host bridge
-//!    would call it (`cb("mem", "remember", args)`). It produces a run-stamped
-//!    episode in the graph, and a `run_id` the sandbox tries to smuggle in the
-//!    payload is **ignored** in favour of the host-minted one (invariant 2: the
-//!    sandbox cannot forge or omit `run_id`).
-//! 2. **The hook delivers a working writer to a domain extension.** A test-double
-//!    domain extension's [`inject_epistemic_host_fns`] override receives the injected
-//!    [`EpistemicWriter`]; using it, `assert_belief` produces a run-stamped belief.
+//! Against a live graph (`localhost:1729`, admin/password), the engine's
+//! [`epistemic_extension_callback`] — the SAME [`ExtensionCallback`] `cmd_run`
+//! wires into the wasm pipeline — is invoked exactly as the sandbox host bridge
+//! would call it (`cb("mem", "remember", args)`). It produces a run-stamped
+//! episode in the graph, and a `run_id` the sandbox tries to smuggle in the
+//! payload is **ignored** in favour of the host-minted one (invariant 2: the
+//! sandbox cannot forge or omit `run_id`).
 //!
 //! [`epistemic_extension_callback`]: gecko_engine::sandbox::mem_host::epistemic_extension_callback
 //! [`ExtensionCallback`]: gecko_engine::sandbox::engine::ExtensionCallback
-//! [`inject_epistemic_host_fns`]: gecko_extension_api::GeckoExtension::inject_epistemic_host_fns
 
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 
 use futures_util::StreamExt;
 use serde_json::json;
@@ -31,8 +23,7 @@ use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::sandbox::engine::ExtensionCallback;
 use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
 use gecko_extension_api::{
-    ActorId, BeliefDraft, ConceptId, DerivationMethod, EpistemicWriter, GeckoExtension,
-    HostImportDef, ProvenanceSource, RunContext, SandboxCtx, Visibility,
+    ActorId, ConceptId, EpistemicWriter, GeckoExtension, ProvenanceSource, RunContext,
 };
 use mem_gecko::{MemGecko, MemWriter};
 use uuid::Uuid;
@@ -95,29 +86,6 @@ impl Fixture {
         }
         out
     }
-
-    /// The `run-id` stamped on belief `concept_id`.
-    async fn belief_run_id(&self, concept_id: &str) -> Option<String> {
-        let mut router = self.shared.lock().await;
-        let tx = router.begin_read().await.expect("read tx");
-        let query = format!(
-            r#"match $b isa belief, has concept-id "{concept_id}";
-                     (memory: $b, origin: $run) isa source-link;
-                     $run isa doc-run, has run-id $rid;
-               fetch {{ "run": $rid }};"#
-        );
-        let answer = tx.query(&query).await.expect("run-id query");
-        let mut out = None;
-        if answer.is_document_stream() {
-            let mut docs = answer.into_documents();
-            if let Some(Ok(doc)) = docs.next().await {
-                let json: serde_json::Value =
-                    serde_json::from_str(&doc.into_json().to_string()).unwrap();
-                out = json.get("run").and_then(|v| v.as_str()).map(str::to_string);
-            }
-        }
-        out
-    }
 }
 
 impl Drop for Fixture {
@@ -141,41 +109,11 @@ impl Drop for Fixture {
     }
 }
 
-/// A domain extension test-double: captures the writer the activation hook delivers.
-#[derive(Default)]
-struct DomainDouble {
-    received: StdMutex<Option<Arc<dyn EpistemicWriter>>>,
-}
-
-impl GeckoExtension for DomainDouble {
-    fn name(&self) -> &str {
-        "domain-double"
-    }
-    fn schema(&self) -> &str {
-        ""
-    }
-    fn host_imports(&self) -> Vec<HostImportDef> {
-        vec![]
-    }
-    fn inject_epistemic_host_fns(&self, _ctx: &mut SandboxCtx, writer: Arc<dyn EpistemicWriter>) {
-        *self.received.lock().unwrap() = Some(writer);
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mem_host_fn_through_bridge_is_run_stamped_and_ignores_forged_run_id() {
     let fx = Fixture::new().await;
 
-    // Activation: build mem's writer, run the injection hooks over the activated set
-    // (mem forced-on). mem binds the writer into the sandbox context.
     let writer = fx.writer();
-    let mut ctx = SandboxCtx::new();
-    let mem = MemGecko::new();
-    mem.inject_epistemic_host_fns(&mut ctx, writer.clone());
-    assert!(
-        ctx.has_epistemic_writer(),
-        "mem's hook must bind the writer into the sandbox context"
-    );
 
     // The host mints exactly one RunContext for the run, bound to the exec-doc.
     let run_ctx = RunContext::new(
@@ -191,7 +129,6 @@ async fn mem_host_fn_through_bridge_is_run_stamped_and_ignores_forged_run_id() {
 
     // Build the SAME bridge cmd_run wires into the pipeline.
     let base: ExtensionCallback = Arc::new(|_e, _f, _a| Err("base: no such extension".to_string()));
-    let writer = ctx.epistemic_writer().unwrap();
     let reader = writer.clone().as_epistemic_reader();
     let cb = epistemic_extension_callback(run_ctx, writer, reader, base);
 
@@ -227,59 +164,5 @@ async fn mem_host_fn_through_bridge_is_run_stamped_and_ignores_forged_run_id() {
     assert_ne!(
         stored, forged_run_id,
         "the sandbox-smuggled run_id must be ignored (invariant 2)"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hook_delivers_working_writer_to_domain_extension() {
-    let fx = Fixture::new().await;
-    let writer = fx.writer();
-
-    // The domain extension receives the writer through the activation hook.
-    let domain = DomainDouble::default();
-    let mut ctx = SandboxCtx::new();
-    domain.inject_epistemic_host_fns(&mut ctx, writer.clone());
-
-    let received = domain
-        .received
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("the hook must deliver the writer to the domain extension");
-
-    // Using the writer it received, a domain host-fn reaches assert_belief and
-    // produces a run-stamped belief in the live graph.
-    let run_ctx = RunContext::new(
-        ActorId::new("agent-7"),
-        ProvenanceSource::ExecutableDoc {
-            concept_id: ConceptId::new("playbooks/domain"),
-        },
-        chrono::Utc::now(),
-    );
-    let belief_id = received
-        .assert_belief(
-            &run_ctx,
-            BeliefDraft {
-                text: "the domain concluded X".to_string(),
-                owner: run_ctx.actor.clone(),
-                visibility: Visibility::Private,
-                confidence: Some(0.8),
-                entrenchment: None,
-            },
-            &[],
-            DerivationMethod::LlmSynthesis,
-        )
-        .await
-        .expect("domain writer.assert_belief succeeds");
-    assert!(belief_id.0.starts_with("mem/bel/"));
-
-    let stored = fx
-        .belief_run_id(&belief_id.0)
-        .await
-        .expect("belief has a run stamp");
-    assert_eq!(
-        stored,
-        run_ctx.run_id.to_string(),
-        "belief must carry the host-minted run_id"
     );
 }

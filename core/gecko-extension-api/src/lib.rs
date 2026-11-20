@@ -16,11 +16,10 @@
 //! The host mediates every capability. **Registration is the gate**: an
 //! extension that `gecko-bin` registers gets its [`host_imports`] loaded and its
 //! write-paths opened; an unregistered one gets neither. Extensions never expose
-//! a write-path that bypasses host mediation.
+//! a write-path that bypasses host mediation. The host hands no extension mem's
+//! [`EpistemicWriter`]: `gecko-bin` binds it to mem's own sandbox bridge alone.
 //!
 //! [`host_imports`]: GeckoExtension::host_imports
-
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +35,6 @@ pub mod graph;
 pub mod ids;
 pub mod okf;
 pub mod provenance;
-pub mod sandbox_ctx;
 pub mod semantic;
 
 pub use belief_edge::{
@@ -50,7 +48,6 @@ pub use error::EpistemicError;
 pub use graph::{GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
-pub use sandbox_ctx::SandboxCtx;
 pub use semantic::{BeliefState, Embedder, Entrenchment, FilterMeta, SemanticIndex, Visibility};
 
 /// Host-imported function definition exposed to sandboxed scripts.
@@ -144,18 +141,4 @@ pub trait GeckoExtension: Send + Sync {
     ) -> Result<serde_json::Value, String> {
         Err(format!("Import '{name}' not implemented"))
     }
-
-    /// Activation hook: called during `build_extensions` for each **enabled**
-    /// extension, handed a host-constructed [`EpistemicWriter`].
-    ///
-    /// Registration is the activation gate (invariant 3) — a disabled extension's
-    /// hook is never called, so there is **no second trait**. The default is a
-    /// no-op: non-epistemic extensions (`cyber-gecko`) inherit it and leave the
-    /// context untouched. An epistemic extension (the `mem` substrate) overrides it
-    /// to bind the writer into the [`SandboxCtx`] via
-    /// [`set_epistemic_writer`](SandboxCtx::set_epistemic_writer), which the engine's
-    /// sandbox bridge then routes the mem host fns to — each stamped with a
-    /// host-minted [`RunContext`](crate::RunContext) the sandbox cannot forge
-    /// (invariant 2).
-    fn inject_epistemic_host_fns(&self, _ctx: &mut SandboxCtx, _writer: Arc<dyn EpistemicWriter>) {}
 }

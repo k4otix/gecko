@@ -28,7 +28,6 @@ constructor the Assembler can register:
 | `belief_edges()` | Declares the relations this extension writes alongside a belief, through `BeliefEdgeWriter`. |
 | `host_imports()` | Declares the callable host functions (`HostImportDef { name, description }`). |
 | `call_import(name, args)` | **Synchronous** dispatch for host imports that need nothing but their arguments. |
-| `inject_epistemic_host_fns(ctx, writer)` | Mem's hook that binds the belief-write path into the sandbox; other extensions do not use it. |
 
 Register it in the Assembler (`build_extensions` in `gecko-bin/src/main.rs`), and
 build the extension only inside the CLI arms that use it — a typo in
