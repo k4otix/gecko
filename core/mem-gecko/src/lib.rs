@@ -8,11 +8,7 @@
 
 use std::sync::LazyLock;
 
-use std::sync::Arc;
-
-use gecko_extension_api::{
-    EpistemicWriter, GeckoExtension, HostImportDef, SandboxCtx, SchemaMigration,
-};
+use gecko_extension_api::{GeckoExtension, HostImportDef, SchemaMigration};
 
 pub mod belief_edge;
 pub mod consolidation;
@@ -52,6 +48,9 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
     applies_when: "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, with a staleness marker.\")",
     tql: "redefine relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\");",
 }];
+
+/// The root type of the belief tier mem's writer owns.
+pub const BELIEF_TIER_ROOT: &str = "memory-item";
 
 /// Cognitive memory extension.
 pub struct MemGecko;
@@ -101,16 +100,6 @@ impl GeckoExtension for MemGecko {
         Err(format!(
             "mem-gecko exposes no plain host imports; use the mem.* bindings (name: {name})"
         ))
-    }
-
-    /// mem is the epistemic substrate: it binds the host-constructed writer into the
-    /// activation context so the engine's sandbox bridge routes the mem host fns
-    /// (`remember`/`derive`/`supersede`/`contest`) to it. Because mem is always
-    /// registered (forced-on, first), this hook always runs — but only ever with a
-    /// writer the host built, and every dispatched call is stamped with a host-minted
-    /// [`RunContext`](gecko_extension_api::RunContext) (invariant 2).
-    fn inject_epistemic_host_fns(&self, ctx: &mut SandboxCtx, writer: Arc<dyn EpistemicWriter>) {
-        ctx.set_epistemic_writer(writer);
     }
 }
 

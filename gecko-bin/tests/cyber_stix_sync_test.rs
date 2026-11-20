@@ -143,7 +143,7 @@ async fn stix_sync_persists_typed_attributes_and_backbone() {
     // Map the STIX bundle and sync it through the record path.
     let (manifest, typed_rels) = to_okf(BUNDLE).expect("to_okf");
     let writes = cyber_post_sync(&typed_rels);
-    sync_bundle(&mut db, &manifest, &writes)
+    sync_bundle(&mut db, &manifest, &writes, mem_gecko::BELIEF_TIER_ROOT)
         .await
         .expect("sync_bundle");
 
@@ -235,7 +235,7 @@ async fn stix_sync_persists_typed_attributes_and_backbone() {
     );
 
     // Re-syncing the same bundle is idempotent: relation counts do not change.
-    sync_bundle(&mut db, &manifest, &writes)
+    sync_bundle(&mut db, &manifest, &writes, mem_gecko::BELIEF_TIER_ROOT)
         .await
         .expect("second sync_bundle");
     let tx = db.begin_read().await.expect("begin read after resync");
@@ -315,9 +315,14 @@ async fn stix_sync_links_tool_uses_and_records_unmodeled_shapes_as_links() {
         manifest.links.iter().any(|l| l.link_text == "detects"),
         "the strategy-detects relation is kept as a concept-link"
     );
-    sync_bundle(&mut db, &manifest, &cyber_post_sync(&typed_rels))
-        .await
-        .expect("sync_bundle");
+    sync_bundle(
+        &mut db,
+        &manifest,
+        &cyber_post_sync(&typed_rels),
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync_bundle");
 
     let tx = db.begin_read().await.expect("begin read");
     assert_eq!(

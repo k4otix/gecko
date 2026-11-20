@@ -26,6 +26,10 @@
 //! revisable — is populated exclusively by the epistemic writer in `mem-gecko`,
 //! never here. The test `syncer_stays_on_the_record_path` enforces that this
 //! module names none of those belief/accelerator types.
+//!
+//! Every sync fingerprints the belief tier at the start and end of its
+//! transaction and refuses to commit when any count changed. A concept that a
+//! belief edge references is never garbage-collected: the sync is refused instead.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,6 +37,7 @@ use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use tracing::{debug, info};
 use typedb_driver::Transaction;
+use typedb_driver::answer::ConceptRow;
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
@@ -40,6 +45,8 @@ use gecko_extension_api::GraphWrite;
 
 use crate::db::graph_store::run_graph_writes;
 use crate::db::router::{DbError, TypeDbRouter};
+use crate::db::surface::{BeliefTierSurface, belief_tier_fingerprint, belief_tier_surface};
+use crate::db::validate_schema_label;
 use crate::okf::types::{OkfBundle, OkfConcept, TypedAttrValue};
 
 /// Results of a bundle sync operation.
@@ -133,28 +140,6 @@ pub fn escape_tql(val: &str) -> String {
     val.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Validates a TypeDB type or attribute label before it is interpolated into
-/// query text. Values always flow through parameterized `given` stages, but a
-/// schema *label* (an entity subtype from a concept's `type_hint`, or a typed
-/// attribute name) is part of the query grammar and cannot be parameterized, so
-/// an extension-supplied label must be constrained to the TypeQL identifier
-/// charset first — otherwise a crafted label would be an injection vector.
-fn validate_schema_label(label: &str) -> Result<(), DbError> {
-    let valid = !label.is_empty()
-        && !label.starts_with(|c: char| c.is_ascii_digit())
-        && label
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if valid {
-        Ok(())
-    } else {
-        Err(DbError::Schema(format!(
-            "invalid schema label {label:?}: must be a non-empty TypeQL identifier \
-             (ASCII alphanumeric, '-' or '_', no leading digit)"
-        )))
-    }
-}
-
 /// Per-concept disposition relative to what is already in the graph, computed by
 /// comparing content hashes. Pure and unit-tested — no database access.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -204,14 +189,32 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 /// `extension_writes` run in that same transaction after the core writes, so a
 /// failing extension write rolls back the whole sync. A manifest concept ID that
 /// the database holds outside this bundle fails the sync with
-/// [`DbError::ConceptIdCollision`] before anything is written.
+/// [`DbError::ConceptIdCollision`] before anything is written, as does a written
+/// concept whose `type_hint` is not `concept` or a subtype of it, with
+/// [`DbError::Schema`].
+///
+/// `belief_tier_root` names the root type of the belief tier, which the schema
+/// must contain (otherwise [`DbError::Schema`]). A concept the sync would
+/// garbage-collect that plays a role in a belief-tier relation stops the sync
+/// before any delete with [`DbError::BeliefEdgeReferencesRemovedConcept`]; the
+/// recovery is to restore the removed concept's file, or to sync into a fresh
+/// database. Otherwise the sync is refused with [`DbError::BeliefTierWrite`] when
+/// any belief-tier label's instance, attribute-ownership or role-player count
+/// differs between the start of the transaction and just before commit. The
+/// guard does not see a same-count swap: a value replaced in place, or one
+/// instance deleted and an identical-shape one inserted.
 pub async fn sync_bundle(
     db: &mut TypeDbRouter,
     manifest: &OkfBundle,
     extension_writes: &[GraphWrite],
+    belief_tier_root: &str,
 ) -> Result<SyncResult, DbError> {
     let tx = db.begin_write().await?;
     let name = manifest.bundle_name.as_str();
+
+    // 0. Fingerprint the belief tier before anything is read or written.
+    let surface = belief_tier_surface(&tx, belief_tier_root).await?;
+    let before = belief_tier_fingerprint(&tx, &surface).await?;
 
     // 1. Read every stored concept with its hash and containing bundles.
     let stored = fetch_stored_concepts(&tx).await?;
@@ -226,10 +229,7 @@ pub async fn sync_bundle(
         });
     }
 
-    // 3. Ensure the bundle entity and its metadata.
-    upsert_bundle(&tx, manifest).await?;
-
-    // 4. Plan against the concepts this bundle contains, and split its orphans
+    // 3. Plan against the concepts this bundle contains, and split its orphans
     //    into those it owns alone and those another bundle also contains.
     let plan = plan_sync(&manifest.concepts, &owned_hashes(name, &stored));
     let (gc_delete, gc_release) = split_gc(name, &plan.to_delete, &stored);
@@ -241,10 +241,31 @@ pub async fn sync_bundle(
         release = gc_release.len(),
         "Computed sync plan"
     );
+    let new_concepts: Vec<&OkfConcept> = plan
+        .to_insert
+        .iter()
+        .map(|&i| &manifest.concepts[i])
+        .collect();
+    let write_concepts: Vec<&OkfConcept> = plan
+        .to_insert
+        .iter()
+        .chain(plan.to_update.iter())
+        .map(|&i| &manifest.concepts[i])
+        .collect();
+    // Refuse a type_hint outside `concept`'s closure before anything is written.
+    check_type_hints(&tx, &write_concepts).await?;
 
-    // 5. Garbage-collect orphans: delete those this bundle owns alone (with their
-    //    OKF relations, so none dangle), and release shared ones from this bundle.
+    // 4. Ensure the bundle entity and its metadata.
+    upsert_bundle(&tx, manifest).await?;
+
+    // 5. Refuse to delete a concept a belief edge references, then garbage-collect
+    //    orphans: delete those this bundle owns alone (with their OKF relations,
+    //    so none dangle), and release shared ones from this bundle.
     let delete_ids: Vec<&str> = gc_delete.iter().map(String::as_str).collect();
+    let references = belief_edge_references(&tx, &delete_ids, &surface).await?;
+    if !references.is_empty() {
+        return Err(DbError::BeliefEdgeReferencesRemovedConcept { references });
+    }
     delete_concepts_gc(&tx, &delete_ids).await?;
     let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
     release_containment(&tx, name, &release_ids).await?;
@@ -259,19 +280,7 @@ pub async fn sync_bundle(
         .collect();
     clear_concept_content(&tx, &update_ids).await?;
 
-    let new_concepts: Vec<&OkfConcept> = plan
-        .to_insert
-        .iter()
-        .map(|&i| &manifest.concepts[i])
-        .collect();
     insert_concept_entities(&tx, &new_concepts).await?;
-
-    let write_concepts: Vec<&OkfConcept> = plan
-        .to_insert
-        .iter()
-        .chain(plan.to_update.iter())
-        .map(|&i| &manifest.concepts[i])
-        .collect();
     attach_concept_content(&tx, &write_concepts).await?;
 
     // 7. Containment of written concepts in this bundle. The not-exists guard
@@ -291,6 +300,14 @@ pub async fn sync_bundle(
     run_graph_writes(&tx, extension_writes)
         .await
         .map_err(|e| DbError::Query(format!("extension write: {e}")))?;
+
+    // 10. Refuse to commit any change to the belief tier. Returning drops the
+    //     transaction uncommitted.
+    let after = belief_tier_fingerprint(&tx, &surface).await?;
+    let changes = before.changes_to(&after);
+    if !changes.is_empty() {
+        return Err(DbError::BeliefTierWrite { changes });
+    }
 
     tx.commit()
         .await
@@ -444,6 +461,103 @@ async fn fetch_stored_concepts(
     Ok(out)
 }
 
+/// The string in column `col` of `row`, or a query error naming `what`.
+fn row_string(row: &ConceptRow, col: &str, what: &str) -> Result<String, DbError> {
+    row.get(col)
+        .map_err(|e| DbError::Query(format!("{what}: column `{col}`: {e}")))?
+        .ok_or_else(|| DbError::Query(format!("{what}: column `{col}` is unbound")))?
+        .try_get_string()
+        .map(str::to_string)
+        .ok_or_else(|| DbError::Query(format!("{what}: column `{col}` is not a string")))
+}
+
+/// Every `(concept_id, relation_label)` pair, sorted and deduplicated, in which
+/// one of the concepts `ids` plays a role in a relation of `surface`.
+async fn belief_edge_references(
+    tx: &Transaction,
+    ids: &[&str],
+    surface: &BeliefTierSurface,
+) -> Result<Vec<(String, String)>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let what = "belief-edge reference read";
+    let mut given = GivenRows::new(vec!["id".to_string()], ids.len());
+    for id in ids {
+        given
+            .push_row(vec![str_entry(id)])
+            .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    }
+    let answer = tx
+        .query_with_rows(
+            "given $id: string; \
+             match $c isa concept, has concept-id $cid; $cid == $id; \
+                   $r isa! $rt, links ($c); let $rl = label($rt); \
+             select $cid, $rl;",
+            given,
+        )
+        .await
+        .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    if !answer.is_row_stream() {
+        return Err(DbError::Query(format!("{what}: expected a row stream")));
+    }
+    let mut rows = answer.into_rows();
+    let mut out = Vec::new();
+    while let Some(item) = rows.next().await {
+        let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+        let relation = row_string(&row, "rl", what)?;
+        if surface.relations.contains(&relation) {
+            out.push((row_string(&row, "cid", what)?, relation));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// The labels of `concept` and every subtype of it in the schema.
+async fn concept_subtypes(tx: &Transaction) -> Result<HashSet<String>, DbError> {
+    let what = "concept subtype read";
+    let answer = tx
+        .query("match $t sub concept; let $l = label($t); select $l;")
+        .await
+        .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    if !answer.is_row_stream() {
+        return Err(DbError::Query(format!("{what}: expected a row stream")));
+    }
+    let mut rows = answer.into_rows();
+    let mut out = HashSet::new();
+    while let Some(item) = rows.next().await {
+        let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+        out.insert(row_string(&row, "l", what)?);
+    }
+    Ok(out)
+}
+
+/// Checks that every written concept's `type_hint` is a valid label naming
+/// `concept` or one of its subtypes. The subtype closure is read once, and only
+/// when some hint names a type other than `concept`.
+async fn check_type_hints(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<(), DbError> {
+    let hints: HashSet<&str> = concepts
+        .iter()
+        .map(|c| c.type_hint.as_deref().unwrap_or("concept"))
+        .filter(|&t| t != "concept")
+        .collect();
+    if hints.is_empty() {
+        return Ok(());
+    }
+    let concept_types = concept_subtypes(tx).await?;
+    for type_name in hints {
+        validate_schema_label(type_name)?;
+        if !concept_types.contains(type_name) {
+            return Err(DbError::Schema(format!(
+                "type_hint {type_name:?} is not a subtype of `concept`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Garbage-collects concepts removed from the bundle. It is given only concepts
 /// this bundle owns alone (see [`split_gc`]). Deletes the OKF core relations
 /// each concept plays (containment, hierarchy, concept-link, citation) so none
@@ -529,21 +643,23 @@ async fn clear_concept_content(tx: &Transaction, ids: &[&str]) -> Result<(), DbE
     .await
 }
 
-/// Inserts the entity and concept-id key for brand-new concepts. Their content
-/// is attached separately by [`attach_concept_content`].
+/// Inserts the entity and concept-id key for brand-new concepts, as the subtype
+/// each one's `type_hint` names (already checked by [`check_type_hints`]). Their
+/// content is attached separately by [`attach_concept_content`].
 async fn insert_concept_entities(
     tx: &Transaction,
     concepts: &[&OkfConcept],
 ) -> Result<(), DbError> {
-    use std::collections::HashMap;
     let mut grouped: HashMap<&str, Vec<&OkfConcept>> = HashMap::new();
     for c in concepts {
         let type_name = c.type_hint.as_deref().unwrap_or("concept");
         grouped.entry(type_name).or_default().push(c);
     }
+    for type_name in grouped.keys() {
+        validate_schema_label(type_name)?;
+    }
 
     for (type_name, type_concepts) in grouped {
-        validate_schema_label(type_name)?;
         let rows: Vec<Vec<GivenRowEntry>> = type_concepts
             .iter()
             .map(|c| vec![str_entry(&c.concept_id)])
@@ -626,7 +742,8 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
 /// subtype (its `type_hint`) rather than the generic `concept`, because a typed
 /// attribute is owned by that subtype and TypeDB would reject `has <attr>` on the
 /// too-general `concept` type. Both interpolated labels are extension-supplied,
-/// so each is validated as a TypeQL identifier; values flow through the
+/// so each is validated as a TypeQL identifier (the subtype was checked against
+/// `concept`'s closure by [`check_type_hints`]); values flow through the
 /// parameterized `given` stage.
 async fn attach_typed_attributes(
     tx: &Transaction,
@@ -656,9 +773,12 @@ async fn attach_typed_attributes(
         }
     }
 
-    for ((type_name, attr), (val_type, rows)) in groups {
+    for (type_name, attr) in groups.keys() {
         validate_schema_label(type_name)?;
         validate_schema_label(attr)?;
+    }
+
+    for ((type_name, attr), (val_type, rows)) in groups {
         let query = format!(
             "given $id: string, $val: {val_type}; \
              match $c isa {type_name}, has concept-id $cid; $cid == $id; \

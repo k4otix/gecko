@@ -29,7 +29,7 @@ use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
 
 use gecko_extension_api::{
     ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, GraphWrite,
-    ProvenanceSource, RunContext, SandboxCtx, SemanticIndex,
+    ProvenanceSource, RunContext, SemanticIndex,
 };
 #[cfg(feature = "real-embedder")]
 use gecko_semantic_index::CandleEmbedder;
@@ -120,6 +120,9 @@ enum Commands {
         /// The bundle name to import under, default `stix-sync`. Several imports
         /// share a database when each has its own name and they pass the same
         /// `--database`; without `--database`, the database is named after the bundle.
+        /// A re-import under the same name replaces the previous one, unless a
+        /// belief edge references a record the new import drops, in which case the
+        /// import is refused.
         #[arg(long)]
         bundle_name: Option<String>,
     },
@@ -692,9 +695,14 @@ async fn sync_manifest(
     apply_all_schemas(&mut db, extensions, None)
         .await
         .context("Failed to ensure database schema")?;
-    let result = sync_bundle(&mut db, manifest, extension_writes)
-        .await
-        .context("Failed to sync bundle")?;
+    let result = sync_bundle(
+        &mut db,
+        manifest,
+        extension_writes,
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .context("Failed to sync bundle")?;
     Ok(result)
 }
 
@@ -984,11 +992,11 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
 }
 
 /// Builds the sandbox host-call bridge for a run. Constructs mem's epistemic writer
-/// over its own graph connection and injects it into each activated extension; when
-/// an epistemic writer is present it wraps the base import dispatcher so `mem.*`
-/// host fns reach the writer stamped with a host-minted `RunContext` (invariant 2:
-/// the sandbox cannot forge or omit `run_id`/`actor`/`source`). Registration is the
-/// gate — only these extensions' imports are reachable from the sandbox.
+/// over its own graph connection and hands it only to mem's bridge, which stamps
+/// every `mem.*` host fn with one host-minted `RunContext` (invariant 2: the sandbox
+/// cannot forge or omit `run_id`/`actor`/`source`). When cyber is activated, its
+/// bridge folds on top. No extension receives the writer. Registration is the gate:
+/// only the activated extensions' imports are reachable from the sandbox.
 async fn build_host_bridge(
     concept_id: &str,
     cfg: &GeckoConfig,
@@ -1003,13 +1011,9 @@ async fn build_host_bridge(
     let edges = check_extension_schemas(gecko_engine::db::CORE_SCHEMA, &extensions)?;
     let mem_writer = build_epistemic_writer(store.clone(), cfg, edges).await?;
     let writer: std::sync::Arc<dyn EpistemicWriter> = mem_writer.clone();
-
-    // mem (forced-on, first) binds the writer into the sandbox context; other
-    // extensions inherit the no-op.
-    let mut sandbox_ctx = SandboxCtx::new();
-    for ext in &extensions {
-        ext.inject_epistemic_host_fns(&mut sandbox_ctx, writer.clone());
-    }
+    // mem's writer is also a reader, so the `mem.recall` reader bridge is wired from
+    // the same object (shared per-run scratch). See docs/refactor/KNOWN-LIMITATIONS.md.
+    let reader = writer.clone().as_epistemic_reader();
 
     // Whether the cyber extension is activated for this run (its detect host
     // imports get a dedicated graph-reader/belief-edge bridge below).
@@ -1027,47 +1031,36 @@ async fn build_host_bridge(
             Err(format!("Extension '{ext_name}' not found"))
         });
 
-    // If an epistemic extension was activated, wrap the base bridge so mem host fns
-    // (`remember`/`derive`/`supersede`/`contest`) reach the injected writer — each
-    // stamped with a host-minted RunContext bound to the executing concept
-    // (`ExecutableDoc`). Exactly one RunContext is minted per run.
-    let ext_cb = match sandbox_ctx.epistemic_writer() {
-        Some(writer) => {
-            let run_ctx = RunContext::new(
-                ActorId::new("system"),
-                ProvenanceSource::ExecutableDoc {
-                    concept_id: ConceptId::new(concept_id),
-                },
-                chrono::Utc::now(),
-            );
-            // mem's writer is also a reader, so wire the `mem.recall` reader bridge
-            // from the same object (shared per-run scratch). See
-            // docs/refactor/KNOWN-LIMITATIONS.md.
-            let reader = writer.clone().as_epistemic_reader();
-            let mem_cb =
-                epistemic_extension_callback(run_ctx.clone(), writer.clone(), reader, base_cb);
+    // Exactly one host-minted RunContext per run, bound to the executing concept
+    // (`ExecutableDoc`).
+    let run_ctx = RunContext::new(
+        ActorId::new("system"),
+        ProvenanceSource::ExecutableDoc {
+            concept_id: ConceptId::new(concept_id),
+        },
+        chrono::Utc::now(),
+    );
+    // Wraps the base bridge so mem host fns
+    // (`remember`/`derive`/`supersede`/`contest`/`recall`) reach mem's writer.
+    let mem_cb = epistemic_extension_callback(run_ctx.clone(), writer, reader, base_cb);
 
-            // cyber's detect host imports read the graph and write beliefs with
-            // cyber's declared edges through their own bridge, wrapping mem's so a
-            // non-detect call falls through to it (and then to the base dispatcher).
-            #[cfg(feature = "cyber")]
-            let mem_cb = if cyber_active {
-                let cyber_edges = cyber_bridge_handles(&mem_writer)?;
-                cyber_gecko::detect::cyber_extension_callback(
-                    store.clone() as std::sync::Arc<dyn gecko_extension_api::GraphReader>,
-                    cyber_edges,
-                    run_ctx,
-                    mem_cb,
-                )
-            } else {
-                mem_cb
-            };
-
-            mem_cb
-        }
-        None => base_cb,
+    // cyber's detect host imports read the graph and write beliefs with cyber's
+    // declared edges through their own bridge, wrapping mem's so a non-detect call
+    // falls through to it (and then to the base dispatcher).
+    #[cfg(feature = "cyber")]
+    let mem_cb = if cyber_active {
+        let cyber_edges = cyber_bridge_handles(&mem_writer)?;
+        cyber_gecko::detect::cyber_extension_callback(
+            store.clone() as std::sync::Arc<dyn gecko_extension_api::GraphReader>,
+            cyber_edges,
+            run_ctx,
+            mem_cb,
+        )
+    } else {
+        mem_cb
     };
-    Ok(ext_cb)
+
+    Ok(mem_cb)
 }
 
 /// The belief-edge writer bound to cyber-gecko's declared edges, for the detect

@@ -22,10 +22,9 @@
 
 use std::sync::Arc;
 
-use gecko_engine::sandbox::engine::ExtensionCallback;
 use gecko_extension_api::{
-    BeliefDraft, BeliefEdge, BeliefEdgeWriter, DerivationMethod, GraphReader, GraphValue, MemId,
-    RunContext, Visibility,
+    BeliefDraft, BeliefEdge, BeliefEdgeWriter, DerivationMethod, ExtensionCallback, GraphReader,
+    GraphValue, MemId, RunContext, Visibility,
 };
 use serde_json::{Value, json};
 

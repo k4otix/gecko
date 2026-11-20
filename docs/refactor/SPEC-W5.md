@@ -579,7 +579,7 @@ seam closed the last raw belief-tier write.
   attrs are the committed allowlist entries §1.2 records, owned by the populations writer,
   "never raw `graph.write`."
 
-### §3.5 — Amendments decided after ratification (D-B, D-D)
+### §3.5 — Amendments decided after ratification (D-B, D-D, pre-GC check)
 
 > **Status: decided by the user on 2026-11-19** (ledger D-B and D-D, from
 > `REVIEW-2026-11.md` §3 points 1, 2 and 5). These amend §3.2 and §3.3; the ratified text above is
@@ -626,6 +626,12 @@ detected. The decision is to retire it structurally, in three steps:
 **Limit.** Extensions are compiled-in, trusted code. These steps prevent an author from reaching
 a raw write path by accident; they do not defend against a deliberately hostile extension. W5a
 (§2) remains the backstop for every belief-tier write, mem's own included.
+
+**Pre-GC check — ratified by the user on 2026-11-20.** A sync refuses to garbage-collect a concept
+that plays a role in a belief-tier relation, with `DbError::BeliefEdgeReferencesRemovedConcept`
+naming each concept ID and the relation that references it, and nothing commits. The fingerprint
+of §2 stays the backstop. The recovery is to restore the removed record or to sync into a fresh
+database; retiring such a record instead of refusing is ledger item O6.
 
 ---
 
@@ -698,6 +704,32 @@ its check.
 > label after `isa` or directly before `(`, which also catches anonymous-relation inserts. The
 > positive control asserts that `core/mem-gecko/src/tql.rs` shows `belief` and `supersession`
 > hits; every other file must show none. Known limit: the unit is a single string literal, so a write assembled across `concat!`/`format!` pieces is not seen. Tracked as ledger item A3.
+>
+> **Implementation note (2026-11-20, not ratified text) — rows 2, 3 and 8.**
+>
+> - **Row 2** ships in `gecko-bin/tests/belief_tier_reconciliation_test.rs` (`cyber`, live TypeDB). The
+>   production database is driven only through the `gecko` binary. The expectation is a reference
+>   database driven by in-process `MemWriter` and `edge_writer_for("cyber-gecko")` calls, which keeps
+>   §2.2 row 1 literally: the harness's own MemWriter calls are the accounting. The measure is the
+>   production fingerprint: per label, instance, attribute-ownership and role-player counts. On
+>   TypeDB 3.15 a direct `has $a` count and a per-label `owns` read both error on a label that owns
+>   nothing (INF11/INF6), so the attribute measure reads the schema's owner set once and counts `has`
+>   only for labels in it. The §1.2 disposition table has two classes, *writer-only* and *owed*; an
+>   *allowlisted* class was dropped because it had no entries.
+>   Labels with no other ledger owner are owned by Track M (M1–M6). The mem path derives b2 before the recall, because
+>   recall surfaces beliefs only and would otherwise return no chunks.
+> - **Row 3 deviation.** Since D-D step 1 a bridge holds only `Arc<dyn GraphReader>`, so a stub composed
+>   through `build_host_bridge` cannot write. The remaining raw route is sync-time output
+>   (`extension_writes`, an importer's `type_hint`), which the test drives, through the guard and around
+>   it. This applies D-D and needs no separate ratification.
+> - **Row 8** is discharged: the reconciliation is green with cyber on the seam.
+> - **Detection became prevention.** `sync_bundle` refuses a belief-tier change in production
+>   (`DbError::BeliefTierWrite`). The residual is a same-count swap, which the fingerprint cannot see.
+>   Each fingerprint is at most three grouped reads, one per measure. Measured guard time with mem and
+>   cyber composed (debug build, near-empty databases, 23 syncs): a median of about 4.3 ms per sync.
+> - **The pre-GC check** ships as `DbError::BeliefEdgeReferencesRemovedConcept`; it is ratified in §3.5.
+>
+> Tracked as ledger items A4 and A10.
 
 ---
 

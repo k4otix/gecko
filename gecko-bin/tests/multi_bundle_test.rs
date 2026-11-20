@@ -70,7 +70,7 @@ async fn apply_schemas(db: &TestDb) {
 
 async fn sync_dir(db: &TestDb, dir: &Path) -> Result<SyncResult, DbError> {
     let bundle = parse_bundle(dir).expect("parse bundle");
-    sync_bundle(&mut db.router(), &bundle, &[]).await
+    sync_bundle(&mut db.router(), &bundle, &[], mem_gecko::BELIEF_TIER_ROOT).await
 }
 
 /// Runs a raw write query and commits it.

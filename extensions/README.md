@@ -28,7 +28,6 @@ constructor the Assembler can register:
 | `belief_edges()` | Declares the relations this extension writes alongside a belief, through `BeliefEdgeWriter`. |
 | `host_imports()` | Declares the callable host functions (`HostImportDef { name, description }`). |
 | `call_import(name, args)` | **Synchronous** dispatch for host imports that need nothing but their arguments. |
-| `inject_epistemic_host_fns(ctx, writer)` | Mem's hook that binds the belief-write path into the sandbox; other extensions do not use it. |
 
 Register it in the Assembler (`build_extensions` in `gecko-bin/src/main.rs`), and
 build the extension only inside the CLI arms that use it — a typo in
@@ -160,7 +159,14 @@ Notes and invariants:
   transaction or not at all. Only mem holds a `GraphStore`.
 - **Import-time writes.** An import-time post-sync step (e.g. cyber's
   `cyber_post_sync`) returns a `Vec<GraphWrite>`, which the engine runs inside the
-  sync transaction.
+  sync transaction. The sync is guarded: a sync whose writes (or whose importer's
+  concepts) change any belief-tier type's instance, attribute or link count is
+  refused with `DbError::BeliefTierWrite` and commits nothing. A concept's
+  `type_hint` must name a `concept` subtype. Garbage collection refuses to delete a
+  concept a belief edge references (`DbError::BeliefEdgeReferencesRemovedConcept`),
+  so a re-import that drops a referenced record is refused. Recovery: keep or
+  restore the record, or import into a fresh database. "Retire, not delete" is
+  ledger item O6.
 - **Multi-thread runtime required.** `block_in_place` panics on a current-thread
   runtime; the binary and sandbox both run multi-thread.
 - **Still never fabricate.** Validate arguments and refuse to act on references that
@@ -168,16 +174,18 @@ Notes and invariants:
 
 ### Why the bridge is wired in the binary, not the trait
 
-`ExtensionCallback` lives in `gecko-engine`, which depends on `gecko-extension-api`
-(where `GeckoExtension` lives) — not the other way around. A trait method returning
-`ExtensionCallback` would invert that dependency, so the bridge is composed in
-`build_host_bridge` instead. Adding a new bridged extension means adding one fold
-there, next to mem's and cyber's.
+`ExtensionCallback` lives in `gecko-extension-api`, beside `GeckoExtension`, so an
+extension can define its bridge without depending on the engine. The bridge is
+still composed in `build_host_bridge`, because the host owns everything a bridge
+captures: the `GraphReader`, the `BeliefEdgeWriter` bound to the extension, and the
+`RunContext`. Adding a new bridged extension means adding one fold there, next to
+mem's and cyber's.
 
 ## Checklist for a new extension
 
-1. Crate under `extensions/<name>/`, depending on `gecko-extension-api` and (if it
-   needs the graph-reader/belief-edge bridge) `gecko-engine`.
+1. Crate under `extensions/<name>/`, depending only on `gecko-extension-api` —
+   never `gecko-engine` or `typedb-driver`. CI enforces this with
+   `scripts/check-extension-deps.sh`.
 2. Implement `GeckoExtension`; return your schema fragment from `schema()`.
 3. Validate the schema against live TypeDB (a schema-init test on a throwaway DB).
 4. Plain imports → `call_import`. Graph-read/belief/identity imports → a host

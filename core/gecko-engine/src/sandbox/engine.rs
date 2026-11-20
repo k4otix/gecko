@@ -7,21 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::okf::types::ScriptEngine;
 
-// The host-import descriptor is part of the extension contract, so it lives in
-// `gecko-extension-api`. Re-exported here under the
-// `gecko_engine::sandbox::engine::HostImportDef` path used across the engine.
-pub use gecko_extension_api::HostImportDef;
+// The host-import descriptor and the extension-call bridge are part of the
+// extension contract, so they live in `gecko-extension-api`. Re-exported here
+// under the `gecko_engine::sandbox::engine` paths used across the engine.
+pub use gecko_extension_api::{ExtensionCallback, HostImportDef};
 
 /// Collection of host-imported functions available to a sandbox.
 #[derive(Debug, Clone, Default)]
 pub struct HostImports {
     pub definitions: Vec<HostImportDef>,
 }
-
-/// Callback for executing extension host imports.
-pub type ExtensionCallback = std::sync::Arc<
-    dyn Fn(&str, &str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync,
->;
 
 /// Result of a sandboxed script execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

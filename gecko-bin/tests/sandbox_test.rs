@@ -3,11 +3,13 @@ use std::fs;
 use tempfile::TempDir;
 use uuid::Uuid;
 
+use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::ScriptEngine;
 use gecko_engine::sandbox::engine::HostImports;
 use gecko_engine::sandbox::wasm_executor::WasmExecutor;
 use gecko_engine::syncer::bundle::sync_bundle;
+use mem_gecko::MemGecko;
 
 mod common;
 use common::TestDb;
@@ -75,9 +77,12 @@ const y = 2;
     db.apply_schema(core_schema)
         .await
         .expect("Failed to apply core schema");
+    db.apply_schema(MemGecko::new().schema())
+        .await
+        .expect("Failed to apply mem schema");
 
     // 4. Sync the bundle
-    let _sync_result = sync_bundle(&mut db, &manifest, &[])
+    let _sync_result = sync_bundle(&mut db, &manifest, &[], mem_gecko::BELIEF_TIER_ROOT)
         .await
         .expect("Failed to sync bundle");
 

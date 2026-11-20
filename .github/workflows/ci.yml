@@ -153,6 +153,11 @@ jobs:
           fi
           echo "OK: no candle in the --no-default-features tree."
 
+      # Structural guard: every crate under extensions/ reaches the host only
+      # through gecko-extension-api — never gecko-engine or typedb-driver.
+      - name: Guard — extensions depend only on gecko-extension-api
+        run: scripts/check-extension-deps.sh
+
       # ONE candle-free command covers Tier 1 (--lib/--bins, serviceless) + Tier
       # 2 (tests/, against the real TypeDB service above, stub embedder) +
       # the cyber-entity schema-init assertion (needs `--features cyber`).
