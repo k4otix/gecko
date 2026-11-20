@@ -8,7 +8,6 @@ repository.workspace = true
 
 [dependencies]
 gecko-extension-api = { path = "../../core/gecko-extension-api" }
-gecko-engine = { path = "../../core/gecko-engine" }
 chrono.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"

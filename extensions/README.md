@@ -168,16 +168,18 @@ Notes and invariants:
 
 ### Why the bridge is wired in the binary, not the trait
 
-`ExtensionCallback` lives in `gecko-engine`, which depends on `gecko-extension-api`
-(where `GeckoExtension` lives) — not the other way around. A trait method returning
-`ExtensionCallback` would invert that dependency, so the bridge is composed in
-`build_host_bridge` instead. Adding a new bridged extension means adding one fold
-there, next to mem's and cyber's.
+`ExtensionCallback` lives in `gecko-extension-api`, beside `GeckoExtension`, so an
+extension can define its bridge without depending on the engine. The bridge is
+still composed in `build_host_bridge`, because the host owns everything a bridge
+captures: the `GraphReader`, the `BeliefEdgeWriter` bound to the extension, and the
+`RunContext`. Adding a new bridged extension means adding one fold there, next to
+mem's and cyber's.
 
 ## Checklist for a new extension
 
-1. Crate under `extensions/<name>/`, depending on `gecko-extension-api` and (if it
-   needs the graph-reader/belief-edge bridge) `gecko-engine`.
+1. Crate under `extensions/<name>/`, depending only on `gecko-extension-api` —
+   never `gecko-engine` or `typedb-driver`. CI enforces this with
+   `scripts/check-extension-deps.sh`.
 2. Implement `GeckoExtension`; return your schema fragment from `schema()`.
 3. Validate the schema against live TypeDB (a schema-init test on a throwaway DB).
 4. Plain imports → `call_import`. Graph-read/belief/identity imports → a host

@@ -38,7 +38,7 @@ GECKO is built around a few fundamental components:
 The project is divided into core abstractions, domain extensions, and the final assembler binary:
 
 *   **`core/gecko-engine/`**: The core framework library — the OKF parser, the TypeDB router and idempotent sync logic, the foundational TypeQL schema, and the Wasmtime execution sandbox with its host bridges.
-*   **`core/gecko-extension-api/`**: The extension contract — the `GeckoExtension` trait plus the `EpistemicWriter`/`EpistemicReader` epistemic-memory traits and shared types. Depend on this to build an extension without pulling in the engine.
+*   **`core/gecko-extension-api/`**: The extension contract — the `GeckoExtension` trait, the `EpistemicWriter`/`EpistemicReader` epistemic-memory traits and shared types, the OKF import types (`gecko_extension_api::okf`), and the `ExtensionCallback` host-bridge type. Extensions depend on this crate alone, never on the engine (CI-enforced by `scripts/check-extension-deps.sh`).
 *   **`core/mem-gecko/`**: The epistemic memory substrate (always-on; not an optional feature). Bitemporal belief/provenance schema, index-seeded recall, and the A5.7 retrieval-provenance write path.
 *   **`core/gecko-semantic-index/`**: The in-process HNSW semantic index and embedder (a deterministic stub by default; a candle-backed `bge-large-en-v1.5` embedder behind the `real-embedder` feature).
 *   **`core/js-sandbox/`**: Source for the WebAssembly JS guest (Boa), compiled to `wasm32-wasip1` and checked in as a prebuilt binary. See [`docs/refactor/guest-wasm.md`](docs/refactor/guest-wasm.md) for rebuilding.

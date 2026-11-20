@@ -34,6 +34,7 @@ pub mod epistemic;
 pub mod error;
 pub mod graph;
 pub mod ids;
+pub mod okf;
 pub mod provenance;
 pub mod sandbox_ctx;
 pub mod semantic;
@@ -63,6 +64,12 @@ pub struct HostImportDef {
     /// Human-readable description.
     pub description: String,
 }
+
+/// Host-side handler for a sandboxed `host_call_extension(ext, func, args)` call,
+/// returning its JSON result or an error message.
+pub type ExtensionCallback = std::sync::Arc<
+    dyn Fn(&str, &str, serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync,
+>;
 
 /// A schema change TypeDB's idempotent `define` cannot apply to a database that
 /// already holds an earlier version of the schema — such as a changed annotation

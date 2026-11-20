@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use gecko_engine::okf::types::{OkfBundle, OkfConcept, TypedAttrValue, TypedAttribute};
+use gecko_extension_api::okf::{OkfBundle, OkfConcept, TypedAttrValue, TypedAttribute};
 use gecko_extension_api::{GraphValue, GraphWrite};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -261,7 +261,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
         if rel_roles(rel_type).is_some() {
             raw_rels.push((source_id, target_id, rel_type.to_string()));
         } else {
-            links.push(gecko_engine::okf::types::OkfLink {
+            links.push(gecko_extension_api::okf::OkfLink {
                 source_id,
                 target_id,
                 link_text: rel_type.to_string(),
@@ -290,7 +290,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
                     rel_type,
                 })
             }
-            _ => links.push(gecko_engine::okf::types::OkfLink {
+            _ => links.push(gecko_extension_api::okf::OkfLink {
                 source_id: source,
                 target_id: target,
                 link_text: rel_type,
