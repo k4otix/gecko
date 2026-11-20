@@ -51,7 +51,7 @@ candle-transformers = { version = "0.11", optional = true }
 # we use (from_file/encode/get_ids/get_attention_mask) are identical across both.
 # Pinned to 0.22 to match candle-core 0.11 (which requires ^0.22); a 0.23 here
 # would resolve to a second, duplicate tokenizers version rather than unify.
-tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 safetensors = { version = "0.8", optional = true }
 
 [dev-dependencies]
