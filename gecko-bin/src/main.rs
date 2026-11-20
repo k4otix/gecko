@@ -958,14 +958,14 @@ async fn build_host_bridge(
     writer_config: DbConfig,
     extensions: Vec<Box<dyn GeckoExtension>>,
 ) -> Result<gecko_engine::sandbox::engine::ExtensionCallback> {
-    let graph_router =
-        std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
-    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router.clone()));
+    let store = std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
+        tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)),
+    )));
     // Built from the host's own extension list before it moves into the base bridge,
     // so a bad declaration fails the run before anything executes.
     let edges = check_extension_schemas(gecko_engine::db::CORE_SCHEMA, &extensions)?;
-    let writer: std::sync::Arc<dyn EpistemicWriter> =
-        build_epistemic_writer(store, cfg, edges).await?;
+    let mem_writer = build_epistemic_writer(store.clone(), cfg, edges).await?;
+    let writer: std::sync::Arc<dyn EpistemicWriter> = mem_writer.clone();
 
     // mem (forced-on, first) binds the writer into the sandbox context; other
     // extensions inherit the no-op.
@@ -975,7 +975,7 @@ async fn build_host_bridge(
     }
 
     // Whether the cyber extension is activated for this run (its detect host
-    // imports get a dedicated graph/writer bridge below).
+    // imports get a dedicated graph-reader/belief-edge bridge below).
     #[cfg(feature = "cyber")]
     let cyber_active = extensions.iter().any(|e| e.name() == "cyber-gecko");
 
@@ -1010,14 +1010,18 @@ async fn build_host_bridge(
             let mem_cb =
                 epistemic_extension_callback(run_ctx.clone(), writer.clone(), reader, base_cb);
 
-            // cyber's detect host imports reach the graph and belief-write path
-            // through their own bridge, wrapping mem's so a non-detect call falls
-            // through to it (and then to the base dispatcher).
+            // cyber's detect host imports read the graph and write beliefs with
+            // cyber's declared edges through their own bridge, wrapping mem's so a
+            // non-detect call falls through to it (and then to the base dispatcher).
             #[cfg(feature = "cyber")]
             let mem_cb = if cyber_active {
-                let cyber_store: std::sync::Arc<dyn GraphStore> =
-                    std::sync::Arc::new(RouterGraphStore::new(graph_router));
-                cyber_gecko::detect::cyber_extension_callback(cyber_store, writer, run_ctx, mem_cb)
+                let cyber_edges = cyber_bridge_handles(&mem_writer)?;
+                cyber_gecko::detect::cyber_extension_callback(
+                    store.clone() as std::sync::Arc<dyn gecko_extension_api::GraphReader>,
+                    cyber_edges,
+                    run_ctx,
+                    mem_cb,
+                )
             } else {
                 mem_cb
             };
@@ -1027,6 +1031,16 @@ async fn build_host_bridge(
         None => base_cb,
     };
     Ok(ext_cb)
+}
+
+/// The belief-edge writer bound to cyber-gecko's declared edges, for the detect
+/// bridge. Fails when the writer's registry records no cyber-gecko edges.
+#[cfg(feature = "cyber")]
+fn cyber_bridge_handles(
+    mem: &std::sync::Arc<mem_gecko::MemWriter>,
+) -> Result<std::sync::Arc<dyn gecko_extension_api::BeliefEdgeWriter>> {
+    mem.edge_writer_for("cyber-gecko")
+        .context("wiring the cyber-gecko detect bridge")
 }
 
 /// Prints the outcome of a pipeline execution.
@@ -1119,6 +1133,29 @@ mod tests {
                 Some(mem_gecko::RegistryError::ModifiesBase { .. })
             ),
             "expected a registry refusal, got {err:#}"
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn cyber_bridge_requires_cyber_belief_edges() {
+        // A store that is never used: building the writer does not connect.
+        let store = std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
+            tokio::sync::Mutex::new(TypeDbRouter::new(DbConfig {
+                address: "127.0.0.1:1".to_string(),
+                ..DbConfig::default()
+            })),
+        )));
+        let mem = std::sync::Arc::new(
+            mem_gecko::MemWriter::without_index(store)
+                .with_belief_edges(mem_gecko::BeliefEdgeRegistry::default()),
+        );
+        let err = cyber_bridge_handles(&mem)
+            .err()
+            .expect("a writer with no cyber belief edges must refuse the cyber bridge");
+        assert!(
+            format!("{err:#}").contains("declares no belief edges"),
+            "unexpected error: {err:#}"
         );
     }
 }

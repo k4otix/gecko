@@ -24,6 +24,8 @@ constructor the Assembler can register:
 | --- | --- |
 | `name()` | Stable identifier, e.g. `"cyber-gecko"`. Used for host-call routing and the S3 scope prefix. |
 | `schema()` | The extension's TypeQL, applied after core + mem in registration order. Return `""` for none. |
+| `schema_migrations()` | Migrations that bring an earlier version of the schema forward on an existing database, applied before `schema()`. |
+| `belief_edges()` | Declares the relations this extension writes alongside a belief, through `BeliefEdgeWriter`. |
 | `host_imports()` | Declares the callable host functions (`HostImportDef { name, description }`). |
 | `call_import(name, args)` | **Synchronous** dispatch for host imports that need nothing but their arguments. |
 | `inject_epistemic_host_fns(ctx, writer)` | Optional hook to bind the belief-write path into the sandbox (mem uses it). |
@@ -101,9 +103,9 @@ default it (`""`, `0`) and report success. If your extension has no plain import
 
 ### 2. Host-bridge imports — for graph / belief / run-identity access
 
-An import that must read or write the graph, write beliefs through the
-`EpistemicWriter`, or know the run's identity **cannot** use `call_import` — that
-seam has none of those. Instead it is serviced by a **host bridge**: a wrapper
+An import that must read the graph, write beliefs with the extension's declared
+edges, or know the run's identity **cannot** use `call_import` — that seam has
+none of those. Instead it is serviced by a **host bridge**: a wrapper
 around the sandbox's `ExtensionCallback` that captures the capabilities and
 intercepts this extension's calls, delegating everything else to the inner
 callback.
@@ -113,14 +115,14 @@ Two reference bridges exist, wired in `build_host_bridge` (`gecko-bin/src/main.r
 - **mem** — `epistemic_extension_callback` (`core/gecko-engine/src/sandbox/mem_host.rs`)
   routes `mem.*` to the `EpistemicWriter`/`EpistemicReader`.
 - **cyber** — `cyber_extension_callback` (`extensions/cyber-gecko/src/detect/mod.rs`)
-  routes the detect imports to a `GraphStore` + `EpistemicWriter`.
+  routes the detect imports to a `GraphReader` and a `BeliefEdgeWriter`.
 
 The shape (copy it):
 
 ```rust
 pub fn my_extension_callback(
-    graph: Arc<dyn GraphStore>,          // parameterized reads + atomic batched writes
-    writer: Arc<dyn EpistemicWriter>,    // the exclusive belief-write path
+    graph: Arc<dyn GraphReader>,         // parameterized reads only
+    edges: Arc<dyn BeliefEdgeWriter>,    // writes a belief with this extension's declared edges
     ctx: RunContext,                     // host-minted run identity (never sandbox-forged)
     base: ExtensionCallback,             // the inner callback to fall through to
 ) -> ExtensionCallback {
@@ -146,12 +148,19 @@ Notes and invariants:
 - **Run identity is the host's.** The `RunContext` (`run_id`/`actor`/`source`) is
   minted by the host per run; sandbox code cannot forge or omit it (invariant 2).
   Stamp every belief write with it.
-- **The `GraphStore` seam** (`core/gecko-extension-api/src/graph.rs`): `write(&[GraphWrite])`
-  runs a whole slice in one atomic transaction; `read(query, vars, row)` runs a
-  parameterized `fetch` and returns JSON documents. Values cross as typed
-  `GraphValue` params — never interpolate values into query text. Only fixed
-  schema labels (types, roles, attributes) may be interpolated, and even those, if
-  extension-supplied, should be validated as TypeQL identifiers first.
+- **The `GraphReader` seam** (`core/gecko-extension-api/src/graph.rs`): bridges get
+  read-only graph access. `read(query, vars, row)` runs a parameterized `fetch` and
+  returns JSON documents. Values cross as typed `GraphValue` params — never
+  interpolate values into query text. Only fixed schema labels (types, roles,
+  attributes) may be interpolated, and even those, if extension-supplied, should be
+  validated as TypeQL identifiers first.
+- **Belief edges.** A relation that attaches to a belief is declared in
+  `belief_edges()` and written through the `BeliefEdgeWriter` the host binds to your
+  extension (`assert_belief_with_edges`): the belief and its edges commit in one
+  transaction or not at all. Only mem holds a `GraphStore`.
+- **Import-time writes.** An import-time post-sync step (e.g. cyber's
+  `cyber_post_sync`) returns a `Vec<GraphWrite>`, which the engine runs inside the
+  sync transaction.
 - **Multi-thread runtime required.** `block_in_place` panics on a current-thread
   runtime; the binary and sandbox both run multi-thread.
 - **Still never fabricate.** Validate arguments and refuse to act on references that
@@ -171,8 +180,9 @@ there, next to mem's and cyber's.
    needs the graph/writer bridge) `gecko-engine`.
 2. Implement `GeckoExtension`; return your schema fragment from `schema()`.
 3. Validate the schema against live TypeDB (a schema-init test on a throwaway DB).
-4. Plain imports → `call_import`. Graph/belief/identity imports → a host bridge
-   wired in `build_host_bridge`.
+4. Plain imports → `call_import`. Graph-read/belief/identity imports → a host
+   bridge wired in `build_host_bridge`, over a `GraphReader` and a
+   `BeliefEdgeWriter`.
 5. Persist queryable record fields as `typed_attributes`, not `metadata-json`.
 6. Register in `build_extensions`, activate via `gecko.toml`, grant scopes in
    playbook frontmatter (`scopes: [<name>:<func>]`).

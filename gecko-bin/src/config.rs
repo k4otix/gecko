@@ -405,7 +405,9 @@ mod tests {
     #[test]
     fn check_builds_the_registry_from_the_real_extensions() {
         let exts = build_extensions(&cfg_with(&["cyber"])).unwrap();
-        check_extension_schemas(CORE_SCHEMA, &exts).unwrap();
+        let reg = check_extension_schemas(CORE_SCHEMA, &exts).unwrap();
+        assert_eq!(reg.owner("technique-detection"), Some("cyber-gecko"));
+        assert_eq!(reg.owner("alert-disposition"), Some("cyber-gecko"));
     }
 
     fn cfg_with(enabled: &[&str]) -> GeckoConfig {

@@ -1,26 +1,30 @@
 //! Detection-engineering host imports, backed by the epistemic substrate and the
 //! graph (not fabricated).
 //!
-//! These functions need a graph connection and the belief-write path, which the
-//! plain synchronous [`GeckoExtension::call_import`] seam cannot supply. They are
+//! These functions need graph reads and the belief-write path, which the plain
+//! synchronous [`GeckoExtension::call_import`] seam cannot supply. They are
 //! dispatched instead through [`cyber_extension_callback`], a host bridge wired at
-//! run time (parallel to mem's `mem.*` bridge) that captures a [`GraphStore`], an
-//! [`EpistemicWriter`], and the host-minted [`RunContext`].
+//! run time (parallel to mem's `mem.*` bridge) that captures a read-only
+//! [`GraphReader`], a [`BeliefEdgeWriter`] bound to cyber-gecko's declared belief
+//! edges, and the host-minted [`RunContext`]. Every write is a belief committed
+//! atomically with its edges; the bridge holds no raw graph write path.
 //!
-//! - `claim` asserts a detection belief and links it to its logic and technique
-//!   via the `technique-detection` relation.
-//! - `disposition` records an analyst verdict as a belief plus an
-//!   `alert-disposition` relation, so `precision` can count it.
+//! - `claim` asserts a detection belief with a `technique-detection` edge to its
+//!   logic and technique.
+//! - `disposition` records an analyst verdict as a belief with an
+//!   `alert-disposition` edge carrying the verdict, so `precision` can count it.
 //! - `coverage_gaps` / `blinded` run the persisted `undetected-techniques()` /
 //!   `blinded-detections()` TypeDB functions.
 //! - `precision` counts dispositions in a time window and computes true-positive
 //!   precision host-side.
+//!
+//! [`GeckoExtension::call_import`]: gecko_extension_api::GeckoExtension::call_import
 
 use std::sync::Arc;
 
 use gecko_engine::sandbox::engine::ExtensionCallback;
 use gecko_extension_api::{
-    BeliefDraft, DerivationMethod, EpistemicWriter, GraphStore, GraphValue, GraphWrite, MemId,
+    BeliefDraft, BeliefEdge, BeliefEdgeWriter, DerivationMethod, GraphReader, GraphValue, MemId,
     RunContext, Visibility,
 };
 use serde_json::{Value, json};
@@ -38,8 +42,9 @@ const DETECT_FNS: [&str; 5] = [
 /// `detection-verdict @values(...)`.
 const VERDICTS: [&str; 3] = ["true-positive", "false-positive", "benign-true"];
 
-/// Wraps `base` so cyber-gecko's detect host imports reach the graph and the
-/// belief-write path. Every other extension call falls through to `base`.
+/// Wraps `base` so cyber-gecko's detect host imports reach the read-only `graph`
+/// and the belief-edge writer `edges`. Every other extension call falls through to
+/// `base`.
 ///
 /// This is the sync→async seam: the sandbox host-call bridge is synchronous but
 /// the graph and writer are async, so each detect call is driven to completion on
@@ -47,8 +52,8 @@ const VERDICTS: [&str; 3] = ["true-positive", "false-positive", "benign-true"];
 /// mechanism the mem bridge uses; requires the multi-thread runtime the binary
 /// and sandbox already run on).
 pub fn cyber_extension_callback(
-    graph: Arc<dyn GraphStore>,
-    writer: Arc<dyn EpistemicWriter>,
+    graph: Arc<dyn GraphReader>,
+    edges: Arc<dyn BeliefEdgeWriter>,
     ctx: RunContext,
     base: ExtensionCallback,
 ) -> ExtensionCallback {
@@ -56,11 +61,11 @@ pub fn cyber_extension_callback(
     Arc::new(move |ext_name: &str, func_name: &str, args: Value| {
         if ext_name == CYBER_EXT && DETECT_FNS.contains(&func_name) {
             let graph = graph.clone();
-            let writer = writer.clone();
+            let edges = edges.clone();
             let ctx = ctx.clone();
             let func = func_name.to_string();
             return tokio::task::block_in_place(|| {
-                handle.block_on(dispatch(&graph, &writer, &ctx, &func, args))
+                handle.block_on(dispatch(&graph, &edges, &ctx, &func, args))
             });
         }
         base(ext_name, func_name, args)
@@ -68,15 +73,15 @@ pub fn cyber_extension_callback(
 }
 
 async fn dispatch(
-    graph: &Arc<dyn GraphStore>,
-    writer: &Arc<dyn EpistemicWriter>,
+    graph: &Arc<dyn GraphReader>,
+    edges: &Arc<dyn BeliefEdgeWriter>,
     ctx: &RunContext,
     func: &str,
     args: Value,
 ) -> Result<Value, String> {
     match func {
-        "claim" => claim(graph, writer, ctx, &args).await,
-        "disposition" => disposition(graph, writer, ctx, &args).await,
+        "claim" => claim(graph, edges, ctx, &args).await,
+        "disposition" => disposition(graph, edges, ctx, &args).await,
         "coverage_gaps" => coverage_gaps(graph).await,
         "blinded" => blinded(graph).await,
         "precision" => precision(graph, ctx, &args).await,
@@ -84,12 +89,12 @@ async fn dispatch(
     }
 }
 
-/// Asserts "logic detects technique" as a belief and wires the
-/// `technique-detection` relation. Errors (never fabricates) on a missing/invalid
+/// Asserts "logic detects technique" as a belief committed with its
+/// `technique-detection` edge. Errors (never fabricates) on a missing/invalid
 /// argument or when the referenced logic or technique is absent from the graph.
 async fn claim(
-    graph: &Arc<dyn GraphStore>,
-    writer: &Arc<dyn EpistemicWriter>,
+    graph: &Arc<dyn GraphReader>,
+    edges: &Arc<dyn BeliefEdgeWriter>,
     ctx: &RunContext,
     args: &Value,
 ) -> Result<Value, String> {
@@ -116,30 +121,25 @@ async fn claim(
         confidence: Some(confidence),
         entrenchment: None,
     };
-    let belief_id = writer
-        .assert_belief(ctx, belief, &evidence, method)
+    // The belief plays detection-claim; logic and technique are matched by key.
+    let edge = BeliefEdge {
+        relation: "technique-detection".into(),
+        players: vec![
+            (
+                "detecting-logic".into(),
+                GraphValue::from(logic_id.as_str()),
+            ),
+            (
+                "detected-technique".into(),
+                GraphValue::from(technique_id.as_str()),
+            ),
+        ],
+        attrs: vec![],
+    };
+    let belief_id = edges
+        .assert_belief_with_edges(ctx, belief, &evidence, method, &[edge])
         .await
         .map_err(|e| e.to_string())?;
-
-    // Link the claim: logic (detecting-logic) + technique (detected-technique) +
-    // the belief just written (detection-claim). Idempotent via the not-guard.
-    let op = GraphWrite::single(
-        "given $l: string, $tech: string, $b: string; \
-         match $lc isa concept, has concept-id $lcid; $lcid == $l; \
-               $t isa attack-pattern, has attack-id $taid; $taid == $tech; \
-               $bel isa belief, has concept-id $bid; $bid == $b; \
-               not { $r isa technique-detection, \
-                     links (detecting-logic: $lc, detected-technique: $t, detection-claim: $bel); }; \
-         insert $nr isa technique-detection, \
-                links (detecting-logic: $lc, detected-technique: $t, detection-claim: $bel);",
-        vec!["l".into(), "tech".into(), "b".into()],
-        vec![
-            GraphValue::from(logic_id.as_str()),
-            GraphValue::from(technique_id.as_str()),
-            GraphValue::from(belief_id.0.as_str()),
-        ],
-    );
-    graph.write(&[op]).await.map_err(|e| e.to_string())?;
 
     Ok(json!({
         "belief_id": belief_id.0,
@@ -148,11 +148,11 @@ async fn claim(
     }))
 }
 
-/// Records an analyst verdict on a detection as a belief plus an
-/// `alert-disposition` relation carrying the verdict.
+/// Records an analyst verdict on a detection as a belief committed with its
+/// `alert-disposition` edge carrying the verdict.
 async fn disposition(
-    graph: &Arc<dyn GraphStore>,
-    writer: &Arc<dyn EpistemicWriter>,
+    graph: &Arc<dyn GraphReader>,
+    edges: &Arc<dyn BeliefEdgeWriter>,
     ctx: &RunContext,
     args: &Value,
 ) -> Result<Value, String> {
@@ -174,33 +174,35 @@ async fn disposition(
         confidence: None,
         entrenchment: None,
     };
-    let belief_id = writer
-        .assert_belief(ctx, belief, &evidence, DerivationMethod::HumanAssertion)
+    // The belief plays disposition-belief; the logic is matched by key.
+    let edge = BeliefEdge {
+        relation: "alert-disposition".into(),
+        players: vec![(
+            "dispositioned-logic".into(),
+            GraphValue::from(logic_id.as_str()),
+        )],
+        attrs: vec![(
+            "detection-verdict".into(),
+            GraphValue::from(verdict.as_str()),
+        )],
+    };
+    let belief_id = edges
+        .assert_belief_with_edges(
+            ctx,
+            belief,
+            &evidence,
+            DerivationMethod::HumanAssertion,
+            &[edge],
+        )
         .await
         .map_err(|e| e.to_string())?;
-
-    let op = GraphWrite::single(
-        "given $l: string, $b: string, $v: string; \
-         match $lc isa concept, has concept-id $lcid; $lcid == $l; \
-               $bel isa belief, has concept-id $bid; $bid == $b; \
-         insert $r isa alert-disposition, \
-                links (dispositioned-logic: $lc, disposition-belief: $bel), \
-                has detection-verdict == $v;",
-        vec!["l".into(), "b".into(), "v".into()],
-        vec![
-            GraphValue::from(logic_id.as_str()),
-            GraphValue::from(belief_id.0.as_str()),
-            GraphValue::from(verdict.as_str()),
-        ],
-    );
-    graph.write(&[op]).await.map_err(|e| e.to_string())?;
 
     Ok(json!({ "belief_id": belief_id.0, "logic_id": logic_id, "verdict": verdict }))
 }
 
 /// Techniques with no asserted detection claim (the `undetected-techniques()`
 /// TypeDB function).
-async fn coverage_gaps(graph: &Arc<dyn GraphStore>) -> Result<Value, String> {
+async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     let rows = graph
         .read(
             "match let $t in undetected-techniques(); \
@@ -215,7 +217,7 @@ async fn coverage_gaps(graph: &Arc<dyn GraphStore>) -> Result<Value, String> {
 
 /// Detection logic whose required evidence has no covering sensor (the
 /// `blinded-detections()` TypeDB function).
-async fn blinded(graph: &Arc<dyn GraphStore>) -> Result<Value, String> {
+async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     let rows = graph
         .read(
             "match let $d in blinded-detections(); \
@@ -231,7 +233,7 @@ async fn blinded(graph: &Arc<dyn GraphStore>) -> Result<Value, String> {
 /// True-positive precision of a detection over a trailing time window, computed
 /// host-side from the dispositions recorded against it.
 async fn precision(
-    graph: &Arc<dyn GraphStore>,
+    graph: &Arc<dyn GraphReader>,
     ctx: &RunContext,
     args: &Value,
 ) -> Result<Value, String> {
@@ -313,7 +315,7 @@ fn mem_ids(args: &Value, field: &str) -> Vec<MemId> {
         .unwrap_or_default()
 }
 
-async fn ensure_concept(graph: &Arc<dyn GraphStore>, concept_id: &str) -> Result<(), String> {
+async fn ensure_concept(graph: &Arc<dyn GraphReader>, concept_id: &str) -> Result<(), String> {
     let rows = graph
         .read(
             "given $l: string; \
@@ -331,7 +333,7 @@ async fn ensure_concept(graph: &Arc<dyn GraphStore>, concept_id: &str) -> Result
 }
 
 async fn ensure_logic_and_technique(
-    graph: &Arc<dyn GraphStore>,
+    graph: &Arc<dyn GraphReader>,
     logic_id: &str,
     technique_id: &str,
 ) -> Result<(), String> {

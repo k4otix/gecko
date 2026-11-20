@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use gecko_extension_api::{EpistemicError, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
+use gecko_extension_api::{
+    EpistemicError, GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch,
+};
 use tokio::sync::{Mutex, OnceCell};
 use typedb_driver::answer::QueryAnswer;
 use typedb_driver::concept::Value;
@@ -140,7 +142,10 @@ impl GraphStore for RouterGraphStore {
         wtx.commit().await.map_err(store_err)?;
         Ok(())
     }
+}
 
+#[async_trait]
+impl GraphReader for RouterGraphStore {
     async fn read(
         &self,
         query: &str,
