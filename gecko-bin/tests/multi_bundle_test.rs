@@ -699,4 +699,69 @@ mod cli {
             BTreeSet::from([target.name.clone()])
         );
     }
+
+    /// A playbook that records a detection claim for T1059 through the cyber bridge.
+    const DETECT_PLAYBOOK: &str = r#"---
+type: playbook
+title: Detect T1059
+engine: quickjs
+scopes: [cyber-gecko:claim]
+---
+
+# Detect T1059
+
+```js
+gecko.callExtension("cyber-gecko", "claim", { logic_id: "playbooks/detect-t1059", technique_id: "T1059", method: "external-tool", confidence: 0.9 });
+```
+"#;
+
+    #[tokio::test]
+    async fn playbooks_and_attack_share_a_database() {
+        let db = TestDb::new("gecko_test_playbooks_attack");
+        let dir = TempDir::new().unwrap();
+        let config = write_config(dir.path());
+        let playbooks = dir.path().join("playbooks-bundle");
+        fs::create_dir_all(playbooks.join("playbooks")).unwrap();
+        fs::write(
+            playbooks.join("bundle.json"),
+            serde_json::json!({ "name": "detect-playbooks" }).to_string(),
+        )
+        .unwrap();
+        fs::write(playbooks.join("playbooks/detect-t1059.md"), DETECT_PLAYBOOK).unwrap();
+        let enterprise_file = write_stix(dir.path(), "enterprise.json", &enterprise());
+
+        // The playbooks sync first, so the STIX sync must leave them alone.
+        run_ok(
+            gecko(&config)
+                .args(["--database", &db.name, "sync"])
+                .arg(&playbooks),
+        );
+        run_ok(
+            gecko(&config)
+                .args(["--database", &db.name, "sync-stix"])
+                .arg(&enterprise_file),
+        );
+        let stdout =
+            run_ok(gecko(&config).args(["--database", &db.name, "run", "playbooks/detect-t1059"]));
+        assert!(stdout.contains("Execution successful!"), "{stdout}");
+
+        assert_eq!(count(&db, "match $d isa technique-detection;").await, 1);
+        assert_eq!(
+            bundle_names(&db).await,
+            BTreeSet::from(["detect-playbooks".to_string(), "stix-sync".to_string()])
+        );
+        let rows = membership(&db).await;
+        for pair in [
+            ("playbooks/detect-t1059", "detect-playbooks"),
+            (
+                "stix/attack-pattern/00000000-0000-0000-0000-0000000000a1",
+                "stix-sync",
+            ),
+        ] {
+            assert!(
+                rows.contains(&(pair.0.to_string(), pair.1.to_string())),
+                "missing {pair:?} in {rows:?}"
+            );
+        }
+    }
 }

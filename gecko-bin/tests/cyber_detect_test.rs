@@ -8,6 +8,7 @@
 // requires.
 #![cfg(feature = "cyber")]
 
+use std::fs;
 use std::sync::Arc;
 
 use cyber_gecko::CyberGecko;
@@ -16,6 +17,7 @@ use cyber_gecko::stix::{cyber_post_sync, to_okf};
 use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::graph_store::RouterGraphStore;
 use gecko_engine::extension::GeckoExtension;
+use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::sandbox::engine::ExtensionCallback;
 use gecko_engine::syncer::bundle::sync_bundle;
 use gecko_extension_api::{
@@ -24,6 +26,7 @@ use gecko_extension_api::{
 };
 use mem_gecko::{BeliefEdgeRegistry, MemGecko, MemWriter};
 use serde_json::{Value, json};
+use tempfile::TempDir;
 use tokio::sync::Mutex;
 
 mod common;
@@ -83,8 +86,8 @@ async fn apply_schemas(test_db: &TestDb) {
     }
 }
 
-/// Applies the schemas, syncs the ATT&CK backbone and seeds the detection-logic
-/// concept the claims reference.
+/// Applies the schemas, syncs the ATT&CK backbone, then syncs a playbook bundle
+/// holding the detection-logic concept the claims reference.
 async fn seed_detection_graph(test_db: &TestDb) {
     apply_schemas(test_db).await;
     let mut db = test_db.router();
@@ -93,14 +96,22 @@ async fn seed_detection_graph(test_db: &TestDb) {
         .await
         .expect("sync_bundle");
 
-    // A plain concept the claim references.
-    let tx = db.begin_write().await.expect("write");
-    tx.query(&format!(
-        "insert $c isa concept, has concept-id == '{LOGIC_ID}';"
-    ))
-    .await
-    .expect("insert logic");
-    tx.commit().await.expect("commit logic");
+    let dir = TempDir::new().expect("tempdir");
+    fs::create_dir_all(dir.path().join("playbooks")).expect("playbooks dir");
+    fs::write(
+        dir.path().join("bundle.json"),
+        json!({ "name": "detect-playbooks" }).to_string(),
+    )
+    .expect("write bundle.json");
+    fs::write(
+        dir.path().join(format!("{LOGIC_ID}.md")),
+        "---\ntype: playbook\ntitle: Detect T1059\n---\n\n# Detect T1059\n",
+    )
+    .expect("write playbook");
+    let playbooks = parse_bundle(dir.path()).expect("parse playbook bundle");
+    sync_bundle(&mut db, &playbooks, &[])
+        .await
+        .expect("sync playbook bundle");
 }
 
 /// The read-only graph handle and the cyber-bound belief-edge writer the host
