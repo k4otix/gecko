@@ -2,15 +2,16 @@
 
 > **Status: living working-surface** (not a ratified spec — it tracks, it does not decide).
 > The source of truth for each item is its owning document's cited section; this ledger is the
-> index and the sequencing. Last reconciled against the belief-edge seam PR (A1; branch
-> `feat/belief-edge-seam`, base `389ac2c`, the merge of PR #53) on 2026-11-19; the evidence for every status and every
-> review-sourced item is in [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
+> index and the sequencing. Last reconciled on 2026-11-20 against PR #57 (cyber seam migration)
+> and PR #58 (current ATT&CK import); the evidence for every review-sourced item is in
+> [`REVIEW-2026-11.md`](./REVIEW-2026-11.md).
 >
 > **Ratification provenance:** SPEC-W2-W3 decisions @`11d7ab1`; SPEC-W5 as-design @`95f0d6e`;
 > CONTRACT-W8 as-contract (self-anchored, `fdd1dc6`).
 
 **Reading the IDs.** Items are grouped by track: **F** fix-now, **A** seam ①, **B** bitemporal
-correctness, **P** populations, **C** consolidation daemon, **D-** open decisions. A number in
+correctness, **P** populations, **C** consolidation daemon, **S** STIX/ATT&CK ingest,
+**U** TypeDB upgrade, **D-** open decisions. A number in
 parentheses — "(was #12)" — is the row number the item had in the previous ledger, kept so
 references in specs and commit messages still resolve.
 
@@ -30,6 +31,14 @@ references in specs and commit messages still resolve.
   (**A11**).
 - **Landed in the TypeDB 3.15 upgrade PR (branch `chore/typedb-3.15`):** server and driver at
   3.15.0 (**U1** ✅), and the registry refusing type and role renames.
+- **Landed in PR #57 (cyber seam migration):** cyber writes its belief edges through the seam
+  (**A2** ✅) over a read-only graph handle, with STIX post-sync writes inside the sync
+  transaction (**A9** ✅); the registry refuses extension `undefine`/`redefine` of core and mem
+  at schema time (**A12** ✅); the W5a static lint is green (**A3** ✅). **A10** is partial.
+- **Found while timing a full ATT&CK import:** the cyber schema and STIX adapter were written
+  for ATT&CK's earlier data model and could not import the current Enterprise bundle. The
+  import fix landed in PR #58 (**S1** ✅); modelling ATT&CK's current detection data is owed
+  (**S2**); until it lands, cyber's `blinded` check reports nothing on current data.
 
 ## Sequence
 
@@ -37,13 +46,13 @@ references in specs and commit messages still resolve.
 F1 ✅ ───────────────────────────► (pre-#50 databases upgrade again)
 F2 ✅ F3 ✅ F4 ✅ F5 ✅ F6 ✅ F7 ✅ ─► track F complete
 
-D-B ✅ D-D ✅ ─► A1 ✅ ┬─► A2 + A9 ──► A3 green, A4 green
+D-B ✅ D-D ✅ ─► A1 ✅ ┬─► A2 ✅ + A9 ✅ ──► A3 ✅ green, A4 green
                   ├─► A5 (also needs D-A, D-C)
                   ├─► A6 resolved half (also needs D-C)
                   └─► A8 (parked until cyber builds sighting ingestion)
 A6 contested half ─► needs D-E only (no seam)
 A7 ────────────────► no blocker
-A10 ───────────────► no blocker; must land before a second extension
+A10 ───────────────► no blocker; must land before a second extension (partial, PR #57)
 A11 ───────────────► entries 1–3 no blocker; entry 4 needs a uniqueness decision
 
 D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
@@ -54,8 +63,15 @@ C1, C2 ────────────────► buildable now
 C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I     C8 ─► needs A4
 
 U1 ✅ ──────────────► server + driver on 3.15.0
-A12 ───────────────► no blocker
+A12 ✅ ────────────► extension undefine/redefine of core/mem refused at schema time
+
+S1 ✅ ─► A4 + A10 ─► S2 (needs D-L) ─► S3 (needs D-M)
+                           S4 alongside S2 (the full-bundle check S2 is accepted against)
 ```
+
+Recommended next: **A4 + A10** together (both harden the extension boundary, and A10 moves the
+OKF import types the STIX adapter is built on, so the adapter rework in S2/S3 lands once, on
+the final imports). **D-L** can be settled in parallel so **S2** starts right after.
 
 ---
 
@@ -82,17 +98,17 @@ in one transaction, the `GeckoExtension` declaration hook — are A1's to settle
 | ID | Item | Owning section | Type | Blocked on |
 |---|---|---|---|---|
 | **A1** ✅ | **`BeliefEdgeDecl` registry and the sanctioned belief-edge writer — LANDED in the belief-edge seam PR (branch `feat/belief-edge-seam`, base `389ac2c`)** (was #1). Extensions declare edges through `GeckoExtension::belief_edges()`; `BeliefEdgeRegistry::from_extensions` accepts only relations the declaring extension's fragment introduces, and `gecko run` builds it in `build_host_bridge` (a bad declaration fails the run with `belief-edge declarations`). `MemWriter::edge_writer_for(ext)` returns a `BeliefEdgeWriter` bound to that extension, whose `assert_belief_with_edges` writes the belief and its edges in one transaction, every edge op `expect_rows = Some(1)`. The scanner fails closed: ownership is refused when any other fragment mentions the relation or one of its subtypes, and a non-belief player is refused unless its whole supertype chain resolves outside `memory-item`. Mem-owned edges stay dedicated methods. No production extension declares edges yet (cyber does in A2) | SPEC-W5 §3.2, §3.5 (D-B) | writer + registry + extension-API hook | ✅ Tier 2 (`core/mem-gecko/tests/belief_edge_integration.rs`): `belief_edge_decl_registry_writes_run_stamped`, `missing_player_commits_no_belief`, `value_outside_values_commits_no_belief`, `non_unique_key_commits_no_belief`, `live_schema_mismatch_is_refused_before_writing`, `two_edges_of_one_relation_both_land`, `expect_rows_accepts_an_exact_insert_match`, `expect_rows_rolls_back_a_zero_match`, `expect_rows_rolls_back_a_double_match`, `expect_rows_counts_an_update`; `supersede_of_a_missing_belief_errors_and_commits_nothing`. Unit: the registry suite in `belief_edge/registry.rs` (incl. `refuses_a_mem_relation`, `refuses_a_relation_another_extension_subtypes`, `refuses_memory_item_players`, `refuses_an_extension_fragment_with_an_alias`), the scanner suite in `belief_edge/scan.rs`, `bound_writer_writes_belief_and_edges_in_one_call`, `edge_writer_for_refuses_an_extension_with_no_declarations`, `edge_op_keeps_values_out_of_query_text`, `ownership_is_refused_before_confidence_is_checked`, `a_row_count_mismatch_names_the_failing_edge`, and `graph::tests::row_count_mismatch_*` in the API crate. Shipped set: `from_extensions_accepts_the_shipped_extensions` (`gecko-bin/tests/belief_edge_registry_test.rs`, `cyber` feature) |
-| **A2** ✅ | **Cyber migration — LANDED (this branch).** `technique-detection` and `alert-disposition` are declared through `CyberGecko::belief_edges()` and written with their belief in one transaction by the bound `BeliefEdgeWriter`; the raw `graph.write` literals in `detect/mod.rs` are gone (was #12) | SPEC-W5 §3.3 | writer migration | ✅ `detect_bridge_claims_disposes_and_reports` and `edge_to_an_unknown_technique_commits_no_belief` (`gecko-bin/tests/cyber_detect_test.rs`); `cyber_bridge_requires_cyber_belief_edges` (`gecko-bin/src/main.rs`) |
-| **A3** ✅ | **W5a static lint `no_raw_belief_tier_tql_outside_mem_tql` — LANDED (this branch).** The belief-tier surface (the `memory-item` subtype closure plus every belief-edge relation) is introspected from the composed core→mem→cyber schema. Scope is production sources: `.rs` under each crate's `src/` with inline `#[cfg(test)]` modules blanked, and `.tql` files, outside `tests`/`target`. A hit is a write verb (`insert`/`put`/`update`/`delete`) plus a surface label after `isa` or directly before `(`; the positive control asserts hits in `core/mem-gecko/src/tql.rs` | SPEC-W5 §2.1, §5 row 1 | test | ✅ `gecko-bin/tests/belief_tier_monopoly_test.rs` (`cyber` feature, Tier 2), plus 8 serviceless detector unit tests including `flags_the_pre_seam_cyber_literals` |
+| **A2** ✅ | **Cyber migration — LANDED in PR #57.** `technique-detection` and `alert-disposition` are declared through `CyberGecko::belief_edges()` and written with their belief in one transaction by the bound `BeliefEdgeWriter`; the raw `graph.write` literals in `detect/mod.rs` are gone (was #12) | SPEC-W5 §3.3 | writer migration | ✅ `detect_bridge_claims_disposes_and_reports` and `edge_to_an_unknown_technique_commits_no_belief` (`gecko-bin/tests/cyber_detect_test.rs`); `cyber_bridge_requires_cyber_belief_edges` (`gecko-bin/src/main.rs`) |
+| **A3** ✅ | **W5a static lint `no_raw_belief_tier_tql_outside_mem_tql` — LANDED in PR #57.** The belief-tier surface (the `memory-item` subtype closure plus every belief-edge relation) is introspected from the composed core→mem→cyber schema. Scope is production sources: `.rs` under each crate's `src/` with inline `#[cfg(test)]` modules blanked, and `.tql` files, outside `tests`/`target`. A hit is a write verb (`insert`/`put`/`update`/`delete`) plus a surface label after `isa`/`isa!` or directly before `(`; the positive control asserts hits in `core/mem-gecko/src/tql.rs` | SPEC-W5 §2.1, §5 row 1 | test | ✅ `gecko-bin/tests/belief_tier_monopoly_test.rs` (`cyber` feature, Tier 2), plus 9 serviceless detector unit tests including `flags_the_pre_seam_cyber_literals` and `flags_an_isa_bang_delete` |
 | **A4** | W5a dynamic rig: `memwriter_is_the_sole_belief_tier_writer` and `hostile_extension_raw_belief_write_is_flagged` (entity and relation) | SPEC-W5 §2.2, §5 rows 2–3, 8 | test rig | Rig buildable now; A2 is done, so the reconciliation can go green |
 | **A5** | Divergence-exception writer: co-mints the `divergence-exception` belief and its `divergence-precedence` in one call; refuses an anchor-less or separately-fabricated anchor (was #8 and #13) | SPEC-W2-W3 §2.2; SPEC-W5 §3.2 | writer (mem-owned, dedicated method) | A1's edge-writing core, D-A, D-C. Before A5 reuses that core, `tql::belief_edge_op` must return `Result` instead of `debug_assert!` + `continue` on a missing role value |
 | **A6** | Disposition writer — acts on the ranker's outcome (was #10, writer half). **Resolved:** mint via A5, or supersede the loser for instance-vs-instance. **Contested:** `contest()` (exists) plus a `belief-state "contested"` write (no writer today). Contract must also say how an evidence-less belief's method is read (REVIEW §2) | SPEC-W2-W3 §2.3, §2.4 | host engine + writer | Resolved half: A5, D-C. Contested half: D-E only |
 | **A7** | `scoped` writer (belief → population). No production path writes `scoped`; the cohort branch of `blast-radius` has no input without it. Mem-owned, on the belief-edge surface | SPEC-W5 §1.1 (surface), SPEC-W2-W3 §3.4 | writer (dedicated method) | — |
-| **A9** ✅ | **Read-only graph handle and neutral sync writes — LANDED (this branch).** Cyber's bridge holds an `Arc<dyn GraphReader>` and a bound `BeliefEdgeWriter`; the post-sync hook returns `GraphWrite`s that run inside the sync transaction | SPEC-W5 §3.5 (D-D steps 1–2) | extension-API + engine + cyber | ✅ `failing_extension_write_rolls_back_the_whole_sync` (`gecko-bin/tests/bundle_sync_test.rs`), `post_sync_groups_relations_into_one_write_per_shape` (`extensions/cyber-gecko/src/stix/mod.rs`) |
-| **A10** | Extensions depend only on `gecko-extension-api`: move `ExtensionCallback` and the OKF import types into the API crate; CI guard fails if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine` | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — (before a second extension). **Partial (this branch):** `typedb-driver` is gone from cyber's manifest. Owed: cyber still depends on `gecko-engine`, the CI guard is not written, and `inject_epistemic_host_fns` still offers every extension the full `EpistemicWriter` |
+| **A9** ✅ | **Read-only graph handle and neutral sync writes — LANDED in PR #57.** Cyber's bridge holds an `Arc<dyn GraphReader>` and a bound `BeliefEdgeWriter`; the post-sync hook returns `GraphWrite`s that run inside the sync transaction | SPEC-W5 §3.5 (D-D steps 1–2) | extension-API + engine + cyber | ✅ `failing_extension_write_rolls_back_the_whole_sync` (`gecko-bin/tests/bundle_sync_test.rs`), `post_sync_groups_relations_into_one_write_per_shape` (`extensions/cyber-gecko/src/stix/mod.rs`) |
+| **A10** | Extensions depend only on `gecko-extension-api`: move `ExtensionCallback` and the OKF import types into the API crate; CI guard fails if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine` | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — (before a second extension). **Partial (PR #57):** `typedb-driver` is gone from cyber's manifest. Owed: cyber still depends on `gecko-engine`, the CI guard is not written, and `inject_epistemic_host_fns` still offers every extension the full `EpistemicWriter` |
 | **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
 | **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op; each op below gets an `expect_rows` count, ranked by guest reachability: (1) `derivation_op`, via `mem.derive`: one missing evidence id silently stores the belief as underived. Expect 1, since it is one conjunctive match. A behavior change for any playbook passing ids that match nothing today. (2) `contest_ops`, via `mem.contest`: a missing claim returns the id of an anomaly that was never written. Expect 1. (3) `rests_on_op` and `record_prediction_op`: not guest-exposed. Expect 1. (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs:188-189`), so the right count needs a decision first. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3: — ; entry 4: a uniqueness decision for predictions |
-| **A12** ✅ | **Registry coverage of `undefine` and `redefine` — LANDED (this branch).** The registry refuses an extension fragment or migration that `undefine`s or `redefine`s a type or function the core or mem schema introduces, including an own function whose redefined body names a base type. `check_extension_schemas` runs the check at schema time, before any schema is applied | SPEC-W5 §3.5 (D-B) | registry | ✅ `refuses_an_extension_that_modifies_a_base_type_or_function`, `accepts_an_extension_that_modifies_only_its_own_types`, `refuses_an_explicit_redefine_of_an_own_function_whose_body_names_a_base_type` (`belief_edge/registry.rs`); `check_refuses_an_extension_that_undefines_a_mem_type` (`gecko-bin/src/config.rs`); `apply_all_schemas_refuses_before_touching_the_database` (`gecko-bin/src/main.rs`) |
+| **A12** ✅ | **Registry coverage of `undefine` and `redefine` — LANDED in PR #57.** The registry refuses an extension fragment or migration that `undefine`s or `redefine`s a type or function the core or mem schema introduces, including an own function whose redefined body names a base type. `check_extension_schemas` runs the check at schema time, before any schema is applied | SPEC-W5 §3.5 (D-B) | registry | ✅ `refuses_an_extension_that_modifies_a_base_type_or_function`, `accepts_an_extension_that_modifies_only_its_own_types`, `refuses_an_explicit_redefine_of_an_own_function_whose_body_names_a_base_type` (`belief_edge/registry.rs`); `check_refuses_an_extension_that_undefines_a_mem_type` (`gecko-bin/src/config.rs`); `apply_all_schemas_refuses_before_touching_the_database` (`gecko-bin/src/main.rs`) |
 
 Tests owed with these items (names reserved by the specs):
 
@@ -100,9 +116,39 @@ Tests owed with these items (names reserved by the specs):
 |---|---|---|
 | `belief_edge_decl_registry_writes_run_stamped` ✅ (`core/mem-gecko/tests/belief_edge_integration.rs`) | SPEC-W5 §5 row 5 | A1 |
 | `divergence_precedence_write_requires_cominted_anchor` | SPEC-W5 §5 row 6 | A5 |
-| `cyber_detect_test` stays green | SPEC-W5 §5 row 7 | A2 |
+| `cyber_detect_test` stays green ✅ | SPEC-W5 §5 row 7 | A2 |
 | `empty_winner_yields_contested_anomaly_hub_no_exception_minted` (the hub-minting half; today's `host_side_ranking_reproduces_dispositions` covers the ranking half) | SPEC-W2-W3 §5 P-DISP-3 | A6 |
 | Writer-level halves of the three partially graduated W2 tests (docstrings marked `Graduation scope (owed half)`) | SPEC-W2-W3 §5 | A5, A6 |
+
+---
+
+## Track S — STIX/ATT&CK ingest (cyber-gecko)
+
+**Design of record:** the maintainer's *cyber-gecko Implementation Plan — detect-first, against
+the shipped substrate* (2026-07-10, kept outside the repo), implemented in PR #11. Its
+relationship typing is an extraction of the STIX 2.1 spec's Appendix B (relationship
+summary), cut to what detect consumes; its §C1.3 data-source plane is ATT&CK's earlier data
+model: data components that `detects` a technique and point at their data source through
+`x_mitre_data_source_ref`. It cites no ATT&CK release and no upstream TypeQL schema. Its C2
+acceptance criterion — syncing MITRE's enterprise-attack bundle yields matching
+`attack-pattern`/`data-source`/`data-component` counts with `requires-evidence` edges, and an
+SRO outside the typed subset lands as a `concept-link` — was never run against the real bundle
+(the tests used a hand-built fixture); running it surfaced S1. Current Enterprise ATT&CK instead links a
+technique to data components through a detection strategy (`detects`) and its analytics
+(`x_mitre_analytic_refs`, then each analytic's `x_mitre_log_source_references[].x_mitre_data_component_ref`),
+and its data components no longer reference a data source. So `requires-evidence` and
+`evidence-of` are empty after a current import, and `blinded` (the `blinded-detections()`
+function, which joins `requires-evidence` to `sensor-coverage`) can never report anything;
+`coverage_gaps` and `precision` read detection claims and dispositions and are unaffected. [typedb-cti](https://github.com/typedb-osi/typedb-cti) was compared as a
+reference: it models STIX 2.1 core faithfully but has none of ATT&CK's `x-mitre-*`
+extensions, so it informs S3, not S2.
+
+| ID | Item | Owning section | Type | Blocked on |
+|---|---|---|---|---|
+| **S1** ✅ | **The current Enterprise ATT&CK bundle imports — LANDED in PR #58.** `data-source` owns `platform` and the adapter writes platforms only on subtypes that own it; deprecated and revoked objects (224 reused ids) are ingested without the unique `attack-id`; `tool` plays `uses:user`; each relation shape lists its role-player subtypes and a relation whose ends cannot play its roles is kept as a concept-link (706 strategy→`detects` today). Full bundle: 4,877 concepts and 20,478 typed relations in one transaction, 148 s first sync and 1.2 s re-sync, counts unchanged (debug build, local 3.15.0) | — | adapter + schema | ✅ `stix_sync_persists_typed_attributes_and_backbone`, `stix_sync_links_tool_uses_and_records_unmodeled_shapes_as_links`, `typed_relation_players_match_the_schema` |
+| **S2** | **Model ATT&CK's current detection data.** Detection strategies and analytics get cyber subtypes (analytics own `platform`); `requires-evidence` (data component → technique) is derived from strategy → analytics → log-source data components, as a sync-time `GraphWrite` (A9's neutral path); `evidence-of` is either dropped, kept only for pre-current bundles, or re-sourced, per D-L. `blinded-detections()` and `cyber_detect_test`'s fixtures move to the current shape | — (design owed, D-L) | schema + adapter + cyber functions | D-L; after A10 so the adapter rework lands on the final OKF imports |
+| **S3** | **STIX core coverage.** Relationship types dropped today: `subtechnique-of` (481), `revoked-by` (157); object types ingested as bare `cyber-object`: `x-mitre-tactic`, `x-mitre-matrix`, `x-mitre-collection`, `identity`, `marking-definition`; `kill_chain_phases` and `external_references` flattened to attributes. typedb-cti is the reference for these shapes | — (design owed, D-M) | schema + adapter | D-M; after S2 |
+| **S4** | **Real-bundle regression check.** Record which ATT&CK release the adapter is validated against, and add an opt-in check (Tier-3 style: the bundle is a runtime asset, never in the build tree) that imports the full bundle twice and asserts the re-sync leaves every relation count unchanged. The S1 timing is the baseline | — | test (opt-in) | Lands with S2, which it accepts |
 
 ---
 
@@ -182,6 +228,8 @@ images and `docker-compose.yml`.
 | **D-H** | Shape of the offline similarity-recording method (which edge, which run identity) | CONTRACT-W8 §2, §5 | C3 |
 | **D-I** | Whether blast-radius caching stays a daemon job or becomes a separate `SemanticIndex`-style mechanism | CONTRACT-W8 §5 | C7 |
 | **D-J** | Collapse granularity: which provenance is summarizable and which must survive | CONTRACT-W8 §5 / CF-2 | C5 |
+| **D-L** | ATT&CK's current detection model in the cyber schema: subtypes for detection strategies and analytics (or not), whether `requires-evidence` is derived through them at sync time, and what replaces `evidence-of` now that data components carry no data-source reference. Includes whether pre-current bundles stay supported | — (Track S) | S2 |
+| **D-M** | STIX core shape: align the cyber schema with typedb-cti's STIX 2.1 model (kill-chain-phase and external-reference entities, the full relationship set), or keep the ATT&CK-keyed model and add only what cyber queries. `attack-id` stays the unique key either way, since detection edges resolve techniques by it | — (Track S) | S3 |
 | **D-K** | C2 `out-entrenches` schema hardening (OP-5). The §8.3 trigger has fired; shipping it owes a 5×5 drift-lock test against `Entrenchment::strength()` | SPEC-W2-W3 §2.3 (conditional); SPEC-W5 §2; INVARIANTS §8.3 | — (deliberate decision; D-D may make it unnecessary) |
 
 ---
@@ -271,7 +319,7 @@ otherwise, it holds on 3.15.0.
 
 ## Outside this ledger
 
-- **Cyber-gecko C1/C2/C3** is a separate, mostly unblocked domain track. Its only touchpoint
-  here is the sighting writer (**A8**).
+- **Cyber-gecko C1/C2/C3** is a separate, mostly unblocked domain track. Its touchpoints here
+  are the sighting writer (**A8**) and the ingest track (**S**).
 - **Not owed by W2/W3/W5/W8:** W1 `attested()`, W4 (scope invariant 3 to activation), W6
   (reconciled design doc), W7 (split OP-6), W-T6 (IOC-convergence test) — INVARIANTS §8.4.
