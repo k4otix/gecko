@@ -45,11 +45,17 @@ with its own returning file.
 2. **Sync, step 5.** `belief_edge_references` still computes which GC-delete
    candidates a belief-tier relation references. Those concepts are *retired*;
    the rest are deleted as today. Retiring a concept:
-   - removes every attribute except `concept-id` (as `clear_concept_content`);
+   - removes every attribute except `concept-id` and those its type requires
+     (user's call, 2026-11-20: a cyber `observable` keeps its `@card(1)`
+     `ioc-value`/`ioc-type`, so the schema holds and a belief about it stays
+     legible). TypeDB 3.15 cannot query annotations (`REP254 …
+     QueryingAnnotations`), so the required set is read from the server's
+     canonical schema text (`Database::schema()`), resolving `sub` inheritance;
    - deletes every core OKF relation it plays — hierarchy, concept-link and
      citation, in either direction — except its `containment`;
    - deletes every other relation it plays whose type is not in the belief-tier
-     surface (cyber's typed relations), matching what deletion does to them;
+     surface (cyber's typed relations). Deletion only removes the player; retire
+     removes the whole relation, since it is meaningless without that end;
    - sets `retired-at` to the sync time, and keeps containment in its bundle.
    Belief-tier relations are never touched, so the end-of-transaction
    fingerprint is unchanged.
@@ -72,7 +78,10 @@ with its own returning file.
 6. **Docs.** SPEC-W5 §3.5 records that retirement replaces the pre-GC refusal
    (same date); the ledger marks O6 done; KNOWN-LIMITATIONS replaces the
    "Pre-GC refusal" bullet with a "Retired concepts" one (readers learn of a
-   retirement only by looking at the concept; recall does not flag it);
+   retirement only by looking at the concept; recall does not flag it; a
+   retired ID stays contained by its bundle, so another bundle syncing that ID
+   is refused as a collision while the belief exists; an existing database
+   needs `schema-init` before its first sync);
    `sync_bundle`'s doc comment, CLAUDE.md's architecture line and
    `extensions/README.md` stop describing a refusal.
 7. **Tests** (live TypeDB, `--test-threads=1`):
@@ -85,6 +94,8 @@ with its own returning file.
    - once the referencing edge is gone, the next sync deletes it;
    - an ATT&CK-shaped cyber re-import that drops a claimed technique retires it
      and removes its typed relations;
+   - retiring a claimed cyber `observable` commits and keeps its `ioc-value`
+     and `ioc-type`;
    - the existing refusal tests (`bundle_sync_test.rs`,
      `belief_tier_reconciliation_test.rs`) become retirement tests.
 
