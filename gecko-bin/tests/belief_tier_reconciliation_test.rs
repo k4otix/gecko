@@ -17,15 +17,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use cyber_gecko::stix::{cyber_post_sync, to_okf};
 use futures_util::StreamExt;
+use gecko_engine::db::router::DbError;
 use gecko_engine::db::surface::{
     BeliefTierFingerprint, BeliefTierMeasure, belief_tier_fingerprint, belief_tier_surface,
 };
-use gecko_engine::db::{CORE_SCHEMA, RouterGraphStore};
+use gecko_engine::db::{CORE_SCHEMA, RouterGraphStore, run_graph_writes};
+use gecko_engine::okf::parser::parse_bundle;
+use gecko_engine::syncer::bundle::sync_bundle;
 use gecko_extension_api::{
     ActorId, BeliefDraft, BeliefEdge, ConceptId, ContextBudget, DerivationMethod, Embedder,
-    EpisodeDraft, EpistemicWriter, GraphValue, MemId, Outcome, ProvenanceSource, RecallQuery,
-    RunContext, Visibility,
+    EpisodeDraft, EpistemicWriter, GraphValue, GraphWrite, MemId, Outcome, ProvenanceSource,
+    RecallQuery, RunContext, Visibility,
 };
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 use mem_gecko::{BELIEF_TIER_ROOT, BeliefEdgeRegistry, MemWriter};
@@ -205,12 +209,13 @@ const d = gecko.callExtension("cyber-gecko", "disposition", {{ logic_id: {logic}
 }
 
 /// The rig's working directory: the config, cache, OKF bundle and STIX bundle the
-/// binary is driven with.
+/// binary is driven with, and a copy of the OKF bundle without `rig_cyber`.
 struct Rig {
     _tmp: tempfile::TempDir,
     config: PathBuf,
     cache: PathBuf,
     okf_dir: PathBuf,
+    okf_dir_without_cyber: PathBuf,
     stix: PathBuf,
 }
 
@@ -236,14 +241,17 @@ impl Rig {
         std::fs::create_dir_all(&cache).expect("cache dir");
 
         let okf_dir = root.join("okf");
-        std::fs::create_dir_all(okf_dir.join("playbooks")).expect("okf dir");
-        std::fs::write(
-            okf_dir.join("bundle.json"),
-            serde_json::json!({ "name": "rig-playbooks" }).to_string(),
-        )
-        .expect("write bundle.json");
-        std::fs::write(okf_dir.join("playbooks/rig_mem.md"), mem_playbook())
-            .expect("write rig_mem");
+        let okf_dir_without_cyber = root.join("okf-without-cyber");
+        for dir in [&okf_dir, &okf_dir_without_cyber] {
+            std::fs::create_dir_all(dir.join("playbooks")).expect("okf dir");
+            std::fs::write(
+                dir.join("bundle.json"),
+                serde_json::json!({ "name": "rig-playbooks" }).to_string(),
+            )
+            .expect("write bundle.json");
+            std::fs::write(dir.join("playbooks/rig_mem.md"), mem_playbook())
+                .expect("write rig_mem");
+        }
         std::fs::write(okf_dir.join("playbooks/rig_cyber.md"), cyber_playbook())
             .expect("write rig_cyber");
 
@@ -255,6 +263,7 @@ impl Rig {
             config,
             cache,
             okf_dir,
+            okf_dir_without_cyber,
             stix,
         }
     }
@@ -284,6 +293,29 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     stdout
+}
+
+/// Runs the `gecko` binary against `db` like [`gecko`]; asserts it fails and returns
+/// its stdout followed by its stderr. The binary logs a command's error through
+/// `tracing`, whose writer is stdout.
+async fn gecko_expect_failure(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_gecko"))
+        .arg("--config")
+        .arg(&rig.config)
+        .arg("--database")
+        .arg(&db.name)
+        .args(args)
+        .env("GECKO_CACHE_DIR", &rig.cache)
+        .output()
+        .await
+        .expect("spawn gecko");
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "gecko {args:?} succeeded\n{output}");
+    output
 }
 
 /// Runs a playbook through the binary and returns its JSON output.
@@ -502,6 +534,38 @@ fn guest_draft(ctx: &RunContext, text: &str, confidence: Option<f64>) -> BeliefD
     }
 }
 
+/// Raw belief-tier writes a hostile extension could send: a bare belief, and a
+/// `technique-detection` edge from `rig_cyber` to T1059 claimed by `belief_id`.
+fn hostile_writes(belief_id: &str) -> Vec<GraphWrite> {
+    vec![
+        GraphWrite::single(
+            "given $id: string, $st: string; \
+             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
+            vec!["id".to_string(), "st".to_string()],
+            vec![
+                GraphValue::from("mem/bel/hostile"),
+                GraphValue::from("asserted"),
+            ],
+        )
+        .expecting(1),
+        GraphWrite::single(
+            "given $lid: string, $tid: string, $bid: string; \
+             match $lc isa concept, has concept-id == $lid; \
+                   $t isa attack-pattern, has attack-id == $tid; \
+                   $b isa belief, has concept-id == $bid; \
+             insert technique-detection (detecting-logic: $lc, detected-technique: $t, \
+                                         detection-claim: $b);",
+            vec!["lid".to_string(), "tid".to_string(), "bid".to_string()],
+            vec![
+                GraphValue::from(CYBER_PLAYBOOK),
+                GraphValue::from("T1059"),
+                GraphValue::from(belief_id),
+            ],
+        )
+        .expecting(1),
+    ]
+}
+
 /// A writer-only drive on the reference database and the delta it caused.
 struct Drive {
     name: &'static str,
@@ -519,6 +583,10 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
     gecko(&rig, &rig_ref, &["schema-init"]).await;
     let mut prod_fp = fingerprint(&rig_prod).await;
     for (db, fp) in [("prod", &prod_fp), ("ref", &fingerprint(&rig_ref).await)] {
+        assert!(
+            !fp.counts.is_empty(),
+            "step 1 {db}: the fingerprint counts nothing"
+        );
         let nonzero: Vec<_> = fp.counts.iter().filter(|(_, n)| **n != 0).collect();
         assert!(
             nonzero.is_empty(),
@@ -786,6 +854,7 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             .await
             .expect("resolve_prediction")
     );
+    // Population tables are outside the belief tier, so this drive's delta is empty.
     drive!("populations", {
         assert!(
             ref_writer
@@ -932,4 +1001,157 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hostile_extension_raw_belief_write_is_flagged() {
+    let db = TestDb::new("gecko_test_rig_hostile");
+    let rig = Rig::new();
+    setup(&rig, &db).await;
+    let out = run_playbook(&rig, &db, CYBER_PLAYBOOK).await;
+    let belief_id = out["claim"].as_str().expect("claim belief id").to_string();
+    let disposition_id = out["disposition"]
+        .as_str()
+        .expect("disposition belief id")
+        .to_string();
+    let f0 = fingerprint(&db).await;
+    let (manifest, typed_rels) = to_okf(STIX_BUNDLE).expect("STIX bundle converts");
+
+    // Raw belief and belief-edge inserts alongside the real extension writes.
+    let writes = [cyber_post_sync(&typed_rels), hostile_writes(&belief_id)].concat();
+    let refused = match sync_bundle(&mut db.router(), &manifest, &writes, BELIEF_TIER_ROOT).await {
+        Err(DbError::BeliefTierWrite { changes }) => changes,
+        other => panic!("raw belief writes: expected BeliefTierWrite, got {other:?}"),
+    };
+    let guard_labels: BTreeSet<String> = refused.iter().map(|c| c.label.clone()).collect();
+    assert_eq!(
+        guard_labels,
+        ["memory-item", "belief", "technique-detection"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>(),
+        "raw belief writes: refused changes {refused:?}"
+    );
+    assert_eq!(fingerprint(&db).await, f0, "raw belief writes committed");
+
+    // An attribute added to an existing belief, with no new instance.
+    let confidence = GraphWrite::single(
+        "given $bid: string, $c: double; \
+         match $b isa belief, has concept-id $bc; $bc == $bid; \
+               not { $b has confidence $x; }; \
+         insert $b has confidence == $c;",
+        vec!["bid".to_string(), "c".to_string()],
+        vec![GraphValue::from(disposition_id), GraphValue::Double(0.1)],
+    )
+    .expecting(1);
+    let refused = match sync_bundle(
+        &mut db.router(),
+        &manifest,
+        std::slice::from_ref(&confidence),
+        BELIEF_TIER_ROOT,
+    )
+    .await
+    {
+        Err(DbError::BeliefTierWrite { changes }) => changes,
+        other => panic!("attribute-only write: expected BeliefTierWrite, got {other:?}"),
+    };
+    let refused: BTreeSet<(String, BeliefTierMeasure)> = refused
+        .iter()
+        .map(|c| (c.label.clone(), c.measure))
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            ("memory-item".to_string(), BeliefTierMeasure::Attributes),
+            ("belief".to_string(), BeliefTierMeasure::Attributes),
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>(),
+        "attribute-only write: refused changes"
+    );
+    assert_eq!(fingerprint(&db).await, f0, "attribute-only write committed");
+
+    // An importer concept typed as a belief-tier entity.
+    let mut imported = manifest.clone();
+    let mut hostile = imported.concepts[0].clone();
+    hostile.concept_id = "hostile/working-set".to_string();
+    hostile.type_hint = Some("working-set".into());
+    hostile.typed_attributes = Vec::new();
+    hostile.file_hash = "hostile-working-set".to_string();
+    imported.concepts.push(hostile);
+    match sync_bundle(&mut db.router(), &imported, &[], BELIEF_TIER_ROOT).await {
+        Err(DbError::Schema(m)) => assert!(
+            m.contains("working-set"),
+            "importer type_hint: error does not name working-set: {m}"
+        ),
+        other => panic!("importer type_hint: expected a schema error, got {other:?}"),
+    }
+    assert_eq!(fingerprint(&db).await, f0, "importer type_hint committed");
+
+    // The same raw writes sent around the guard, reconciled against no expected
+    // writes, surface exactly the labels the guard refused.
+    {
+        let mut router = db.router();
+        let tx = router.begin_write().await.expect("write tx");
+        run_graph_writes(&tx, &hostile_writes(&belief_id))
+            .await
+            .expect("raw belief writes outside a sync");
+        tx.commit().await.expect("commit raw belief writes");
+    }
+    assert_eq!(
+        unaccounted(&Delta::new(), &delta(&f0, &fingerprint(&db).await)),
+        guard_labels,
+        "the rig does not report the labels the guard refused"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_of_a_concept_a_belief_edge_references_is_refused() {
+    let db = TestDb::new("gecko_test_rig_gc");
+    let rig = Rig::new();
+    setup(&rig, &db).await;
+    run_playbook(&rig, &db, CYBER_PLAYBOOK).await;
+    let f0 = fingerprint(&db).await;
+
+    let without_cyber = parse_bundle(&rig.okf_dir_without_cyber).expect("parse");
+    let references =
+        match sync_bundle(&mut db.router(), &without_cyber, &[], BELIEF_TIER_ROOT).await {
+            Err(DbError::BeliefEdgeReferencesRemovedConcept { references }) => references,
+            other => panic!("expected BeliefEdgeReferencesRemovedConcept, got {other:?}"),
+        };
+    for relation in ["technique-detection", "alert-disposition"] {
+        assert!(
+            references.contains(&(CYBER_PLAYBOOK.to_string(), relation.to_string())),
+            "references {references:?} miss ({CYBER_PLAYBOOK}, {relation})"
+        );
+    }
+    assert_eq!(
+        fingerprint(&db).await,
+        f0,
+        "the refused GC changed the belief tier"
+    );
+    let concept_count = "given $v: string; match $c isa concept, has concept-id $id; $id == $v; \
+                         reduce $n = count;";
+    assert_eq!(
+        count_with(&db, concept_count, CYBER_PLAYBOOK).await,
+        1,
+        "the refused GC removed {CYBER_PLAYBOOK}"
+    );
+
+    let output =
+        gecko_expect_failure(&rig, &db, &["sync", path_str(&rig.okf_dir_without_cyber)]).await;
+    assert!(
+        output.contains(CYBER_PLAYBOOK),
+        "gecko sync output does not name {CYBER_PLAYBOOK}:\n{output}"
+    );
+    assert_eq!(
+        fingerprint(&db).await,
+        f0,
+        "the binary's refused GC changed the belief tier"
+    );
+    assert_eq!(
+        count_with(&db, concept_count, CYBER_PLAYBOOK).await,
+        1,
+        "the binary's refused GC removed {CYBER_PLAYBOOK}"
+    );
 }
