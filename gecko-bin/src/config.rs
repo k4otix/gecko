@@ -327,9 +327,88 @@ pub fn build_extensions(cfg: &GeckoConfig) -> Result<Vec<Box<dyn GeckoExtension>
     Ok(extensions)
 }
 
+/// Builds the belief-edge registry from the core schema and every extension, refusing
+/// any extension schema or migration that modifies what core or mem introduces. Run
+/// before any extension schema reaches the database.
+pub fn check_extension_schemas(
+    core_schema: &str,
+    extensions: &[Box<dyn GeckoExtension>],
+) -> Result<mem_gecko::BeliefEdgeRegistry> {
+    mem_gecko::BeliefEdgeRegistry::from_extensions(core_schema, extensions)
+        .map_err(anyhow::Error::new)
+        .context("extension schema check")
+}
+
+/// An extension whose migration undefines the `belief` type, for registry-refusal tests.
+#[cfg(test)]
+pub(crate) struct BadExt;
+
+#[cfg(test)]
+impl GeckoExtension for BadExt {
+    fn name(&self) -> &str {
+        "bad-ext"
+    }
+
+    fn schema(&self) -> &str {
+        "define entity bad-thing;"
+    }
+
+    fn schema_migrations(&self) -> &[gecko_extension_api::SchemaMigration] {
+        &[gecko_extension_api::SchemaMigration {
+            id: "bad-ext/undefine-belief",
+            applies_when: "entity belief",
+            tql: "undefine belief;",
+        }]
+    }
+
+    fn host_imports(&self) -> Vec<gecko_extension_api::HostImportDef> {
+        vec![]
+    }
+
+    fn call_import(
+        &self,
+        name: &str,
+        _args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!("bad-ext exposes no import '{name}'"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gecko_engine::db::CORE_SCHEMA;
+
+    #[test]
+    fn check_refuses_an_extension_that_undefines_a_mem_type() {
+        let exts: Vec<Box<dyn GeckoExtension>> = vec![mem_gecko::extension(), Box::new(BadExt)];
+        let err = check_extension_schemas(CORE_SCHEMA, &exts).unwrap_err();
+        match err.downcast_ref::<mem_gecko::RegistryError>() {
+            Some(mem_gecko::RegistryError::ModifiesBase {
+                extension,
+                mode: "undefine",
+                label,
+            }) => {
+                assert_eq!(extension, "bad-ext");
+                assert_eq!(label, "belief");
+            }
+            other => panic!("expected ModifiesBase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_builds_the_registry_from_mem_alone() {
+        check_extension_schemas(CORE_SCHEMA, &[mem_gecko::extension()]).unwrap();
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn check_builds_the_registry_from_the_real_extensions() {
+        let exts = build_extensions(&cfg_with(&["cyber"])).unwrap();
+        let reg = check_extension_schemas(CORE_SCHEMA, &exts).unwrap();
+        assert_eq!(reg.owner("technique-detection"), Some("cyber-gecko"));
+        assert_eq!(reg.owner("alert-disposition"), Some("cyber-gecko"));
+    }
 
     fn cfg_with(enabled: &[&str]) -> GeckoConfig {
         GeckoConfig {

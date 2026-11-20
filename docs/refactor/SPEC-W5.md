@@ -498,10 +498,10 @@ run-stamped) **and** a raw `graph.write` of the linking relation (`:142` for
 and `alert-disposition` (marking `detection-claim`/`disposition-belief` as the belief
 roles, declaring the `detection-verdict` owned attr on `alert-disposition`), and both
 functions write their linking relation through the registered seam instead of raw TQL.
-The `cyber_extension_callback` bridge (`detect/mod.rs:49`) still captures the graph for
-the *read* paths (`coverage_gaps`/`blinded`/`precision`, `:203,218,233`), but its
-belief-tier *writes* route through the seam. After migration, cyber holds no raw
-belief-tier write.
+The `cyber_extension_callback` bridge (`detect/mod.rs:54`) holds a `GraphReader` for
+the *read* paths (`coverage_gaps`/`blinded`/`precision`, `:205,220,235`) and a
+`BeliefEdgeWriter` bound to cyber for its belief-tier *writes*. After migration, cyber
+holds no raw belief-tier write.
 
 **A third cyber belief-edge relation the surface caught — `sighting-of` (disposition).**
 P-W5-1's 23-relation surface (§4) includes cyber's `sighting-of` (`cyber_schema.tql:143-149`;
@@ -686,6 +686,18 @@ its check.
 > `value_outside_values_commits_no_belief`, `non_unique_key_commits_no_belief`,
 > `live_schema_mismatch_is_refused_before_writing`) and by the registry unit tests in
 > `core/mem-gecko/src/belief_edge/registry.rs`. Tracked as ledger item A1.
+>
+> **Implementation note (2026-11-19, not ratified text) — row 1.** `no_raw_belief_tier_tql_outside_mem_tql`
+> ships in `gecko-bin/tests/belief_tier_monopoly_test.rs` (`cyber` feature, live TypeDB). The
+> surface is introspected from the composed core→mem→cyber schema: the `memory-item` subtype
+> closure plus the §1.1 belief-edge relations. The scope is production sources — `.rs` under
+> each `core/*`, `extensions/*` and `gecko-bin` crate's `src/`, with inline `#[cfg(test)]`
+> modules blanked, and `.tql` under `core/`, `extensions/` and `gecko-bin/`, outside `tests`
+> and `target`. A hit is a unit (a Rust string literal, or a `.tql` file with comments and
+> quoted strings removed) holding a write verb (`insert`/`put`/`update`/`delete`) and a surface
+> label after `isa` or directly before `(`, which also catches anonymous-relation inserts. The
+> positive control asserts that `core/mem-gecko/src/tql.rs` shows `belief` and `supersession`
+> hits; every other file must show none. Known limit: the unit is a single string literal, so a write assembled across `concat!`/`format!` pieces is not seen. Tracked as ledger item A3.
 
 ---
 

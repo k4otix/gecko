@@ -46,7 +46,7 @@ pub use epistemic::{
     EpistemicReader, EpistemicWriter, Outcome, RecallQuery,
 };
 pub use error::EpistemicError;
-pub use graph::{GraphStore, GraphValue, GraphWrite, RowCountMismatch};
+pub use graph::{GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
 pub use sandbox_ctx::SandboxCtx;

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use gecko_engine::okf::types::{OkfBundle, OkfConcept, TypedAttrValue, TypedAttribute};
+use gecko_extension_api::{GraphValue, GraphWrite};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -306,20 +307,15 @@ fn rel_roles(rel_type: &str) -> Option<RelShape> {
     }
 }
 
-/// Inserts the typed SROs collected by [`to_okf`], one idempotent relation per
-/// STIX relationship. The concept IDs are the untrusted STIX
-/// `source_ref`/`target_ref` and flow through the parameterized `given` stage;
-/// only fixed schema labels — the relation, the roles, and the resolved role-
-/// player entity subtypes — are interpolated. The role players are bound with
-/// `isa <subtype>` because binding them to the generic `concept` type would make
-/// TypeDB reject the role assignment (only the subtypes play the roles).
-pub async fn cyber_post_sync(
-    tx: &typedb_driver::transaction::Transaction,
-    typed_rels: &[TypedRelation],
-) -> Result<(), String> {
-    use typedb_driver::concept::Value;
-    use typedb_driver::given::{GivenRowEntry, GivenRows};
-
+/// Builds the writes that link the typed SROs collected by [`to_okf`], one
+/// idempotent relation per STIX relationship. The concept IDs are the untrusted
+/// STIX `source_ref`/`target_ref` and travel as parameterized rows; only fixed
+/// schema labels — the relation, the roles, and the resolved role-player entity
+/// subtypes — are interpolated. The role players are bound with `isa <subtype>`
+/// because binding them to the generic `concept` type would make TypeDB reject
+/// the role assignment (only the subtypes play the roles). Relations with an
+/// unknown `rel_type` are skipped.
+pub fn cyber_post_sync(typed_rels: &[TypedRelation]) -> Vec<GraphWrite> {
     // Group by the full query shape — relation, roles, and both role-player
     // subtypes — so each distinct shape is one multi-row parameterized write.
     type Shape<'a> = (RelShape, &'a str, &'a str);
@@ -334,26 +330,70 @@ pub async fn cyber_post_sync(
             .push((rel.source.as_str(), rel.target.as_str()));
     }
 
-    for (((rel_name, source_role, target_role), source_type, target_type), pairs) in by_shape {
-        let query = format!(
-            "given $src: string, $tgt: string; \
-             match $s isa {source_type}, has concept-id $sid; $sid == $src; \
-                   $t isa {target_type}, has concept-id $tid; $tid == $tgt; \
-                   not {{ $r isa {rel_name}, links ({source_role}: $s, {target_role}: $t); }}; \
-             insert $nr isa {rel_name}, links ({source_role}: $s, {target_role}: $t);"
-        );
-        let mut given = GivenRows::new(vec!["src".to_string(), "tgt".to_string()], pairs.len());
-        for (src, tgt) in pairs {
-            given
-                .push_row(vec![
-                    GivenRowEntry::Value(Value::String(src.to_string())),
-                    GivenRowEntry::Value(Value::String(tgt.to_string())),
-                ])
-                .map_err(|e| e.to_string())?;
+    let mut writes: Vec<GraphWrite> = by_shape
+        .into_iter()
+        .map(
+            |(((rel_name, source_role, target_role), source_type, target_type), pairs)| {
+                let query = format!(
+                    "given $src: string, $tgt: string; \
+                     match $s isa {source_type}, has concept-id $sid; $sid == $src; \
+                           $t isa {target_type}, has concept-id $tid; $tid == $tgt; \
+                           not {{ $r isa {rel_name}, links ({source_role}: $s, {target_role}: $t); }}; \
+                     insert $nr isa {rel_name}, links ({source_role}: $s, {target_role}: $t);"
+                );
+                GraphWrite {
+                    query,
+                    vars: vec!["src".to_string(), "tgt".to_string()],
+                    rows: pairs
+                        .into_iter()
+                        .map(|(src, tgt)| {
+                            vec![
+                                GraphValue::String(src.to_string()),
+                                GraphValue::String(tgt.to_string()),
+                            ]
+                        })
+                        .collect(),
+                    expect_rows: None,
+                }
+            },
+        )
+        .collect();
+    // Deterministic order regardless of hash-map iteration.
+    writes.sort_by(|a, b| a.query.cmp(&b.query));
+    writes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rel(source: &str, target: &str, st: &str, tt: &str, rel_type: &str) -> TypedRelation {
+        TypedRelation {
+            source: source.into(),
+            target: target.into(),
+            source_type: st.into(),
+            target_type: tt.into(),
+            rel_type: rel_type.into(),
         }
-        tx.query_with_rows(&query, given)
-            .await
-            .map_err(|e| e.to_string())?;
     }
-    Ok(())
+
+    #[test]
+    fn post_sync_groups_relations_into_one_write_per_shape() {
+        let rels = vec![
+            rel("a1", "b1", "malware", "attack-pattern", "uses"),
+            rel("a2", "b2", "malware", "attack-pattern", "uses"),
+            rel("i1", "t1", "indicator", "attack-pattern", "indicates"),
+            rel("x", "y", "malware", "attack-pattern", "frobnicates"),
+        ];
+        let writes = cyber_post_sync(&rels);
+        assert_eq!(writes.len(), 2);
+        let uses = writes
+            .iter()
+            .find(|w| w.query.contains("isa uses"))
+            .expect("uses op");
+        assert_eq!(uses.vars, vec!["src".to_string(), "tgt".to_string()]);
+        assert_eq!(uses.rows.len(), 2);
+        assert_eq!(uses.expect_rows, None);
+        assert!(writes.iter().all(|w| !w.query.contains("frobnicates")));
+    }
 }

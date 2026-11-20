@@ -28,14 +28,14 @@ use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
 use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
 
 use gecko_extension_api::{
-    ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, ProvenanceSource,
-    RunContext, SandboxCtx, SemanticIndex,
+    ActorId, ConceptId, Embedder, EpistemicWriter, GeckoExtension, GraphStore, GraphWrite,
+    ProvenanceSource, RunContext, SandboxCtx, SemanticIndex,
 };
 #[cfg(feature = "real-embedder")]
 use gecko_semantic_index::CandleEmbedder;
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
-use crate::config::{GeckoConfig, TypedbMode, build_extensions};
+use crate::config::{GeckoConfig, TypedbMode, build_extensions, check_extension_schemas};
 
 #[derive(Parser)]
 #[command(
@@ -343,18 +343,10 @@ async fn run(cli: Cli) -> Result<()> {
                 config.database
             );
 
-            let (mut db, result) = sync_manifest(config, &extensions, &manifest).await?;
-            print_sync_result(&result);
-
+            let writes = cyber_gecko::stix::cyber_post_sync(&typed_rels);
             println!("Linking {} typed relations...", typed_rels.len());
-            let tx = db
-                .begin_write()
-                .await
-                .context("Failed to begin write transaction")?;
-            cyber_gecko::stix::cyber_post_sync(&tx, &typed_rels)
-                .await
-                .map_err(|e| anyhow::anyhow!("Post sync failed: {}", e))?;
-            tx.commit().await.context("Failed to commit post sync")?;
+            let result = sync_manifest(config, &extensions, &manifest, &writes).await?;
+            print_sync_result(&result);
 
             Ok(())
         }
@@ -613,6 +605,8 @@ async fn apply_all_schemas(
         gecko_engine::db::CORE_SCHEMA.to_string()
     };
 
+    check_extension_schemas(&core_schema, extensions)?;
+
     db.apply_schema(&core_schema)
         .await
         .context("Failed to apply core schema")?;
@@ -650,23 +644,23 @@ async fn cmd_schema_init(
     Ok(())
 }
 
-/// Sync a parsed OKF bundle. The bundle's database is ensured (schema applied,
-/// idempotently) so the single-bundle-per-database flow works from one command.
-/// Ensures the database schema and syncs a parsed bundle, returning the open
-/// router (for any extension post-sync step) alongside the sync counts.
+/// Ensures the bundle's database schema (applied idempotently, so the
+/// single-bundle-per-database flow works from one command) and syncs a parsed
+/// bundle, running `extension_writes` in the same transaction.
 async fn sync_manifest(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
     manifest: &OkfBundle,
-) -> Result<(TypeDbRouter, SyncResult)> {
+    extension_writes: &[GraphWrite],
+) -> Result<SyncResult> {
     let mut db = TypeDbRouter::new(config);
     apply_all_schemas(&mut db, extensions, None)
         .await
         .context("Failed to ensure database schema")?;
-    let result = sync_bundle(&mut db, manifest)
+    let result = sync_bundle(&mut db, manifest, extension_writes)
         .await
         .context("Failed to sync bundle")?;
-    Ok((db, result))
+    Ok(result)
 }
 
 fn print_sync_result(result: &SyncResult) {
@@ -691,7 +685,7 @@ async fn cmd_sync(
         config.database
     );
 
-    let (_db, result) = sync_manifest(config, extensions, &manifest).await?;
+    let result = sync_manifest(config, extensions, &manifest, &[]).await?;
     print_sync_result(&result);
 
     Ok(())
@@ -964,17 +958,14 @@ async fn build_host_bridge(
     writer_config: DbConfig,
     extensions: Vec<Box<dyn GeckoExtension>>,
 ) -> Result<gecko_engine::sandbox::engine::ExtensionCallback> {
-    let graph_router =
-        std::sync::Arc::new(tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)));
-    let store = std::sync::Arc::new(RouterGraphStore::new(graph_router.clone()));
+    let store = std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
+        tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)),
+    )));
     // Built from the host's own extension list before it moves into the base bridge,
     // so a bad declaration fails the run before anything executes.
-    let edges =
-        mem_gecko::BeliefEdgeRegistry::from_extensions(gecko_engine::db::CORE_SCHEMA, &extensions)
-            .map_err(anyhow::Error::new)
-            .context("belief-edge declarations")?;
-    let writer: std::sync::Arc<dyn EpistemicWriter> =
-        build_epistemic_writer(store, cfg, edges).await?;
+    let edges = check_extension_schemas(gecko_engine::db::CORE_SCHEMA, &extensions)?;
+    let mem_writer = build_epistemic_writer(store.clone(), cfg, edges).await?;
+    let writer: std::sync::Arc<dyn EpistemicWriter> = mem_writer.clone();
 
     // mem (forced-on, first) binds the writer into the sandbox context; other
     // extensions inherit the no-op.
@@ -984,7 +975,7 @@ async fn build_host_bridge(
     }
 
     // Whether the cyber extension is activated for this run (its detect host
-    // imports get a dedicated graph/writer bridge below).
+    // imports get a dedicated graph-reader/belief-edge bridge below).
     #[cfg(feature = "cyber")]
     let cyber_active = extensions.iter().any(|e| e.name() == "cyber-gecko");
 
@@ -1019,14 +1010,18 @@ async fn build_host_bridge(
             let mem_cb =
                 epistemic_extension_callback(run_ctx.clone(), writer.clone(), reader, base_cb);
 
-            // cyber's detect host imports reach the graph and belief-write path
-            // through their own bridge, wrapping mem's so a non-detect call falls
-            // through to it (and then to the base dispatcher).
+            // cyber's detect host imports read the graph and write beliefs with
+            // cyber's declared edges through their own bridge, wrapping mem's so a
+            // non-detect call falls through to it (and then to the base dispatcher).
             #[cfg(feature = "cyber")]
             let mem_cb = if cyber_active {
-                let cyber_store: std::sync::Arc<dyn GraphStore> =
-                    std::sync::Arc::new(RouterGraphStore::new(graph_router));
-                cyber_gecko::detect::cyber_extension_callback(cyber_store, writer, run_ctx, mem_cb)
+                let cyber_edges = cyber_bridge_handles(&mem_writer)?;
+                cyber_gecko::detect::cyber_extension_callback(
+                    store.clone() as std::sync::Arc<dyn gecko_extension_api::GraphReader>,
+                    cyber_edges,
+                    run_ctx,
+                    mem_cb,
+                )
             } else {
                 mem_cb
             };
@@ -1036,6 +1031,16 @@ async fn build_host_bridge(
         None => base_cb,
     };
     Ok(ext_cb)
+}
+
+/// The belief-edge writer bound to cyber-gecko's declared edges, for the detect
+/// bridge. Fails when the writer's registry records no cyber-gecko edges.
+#[cfg(feature = "cyber")]
+fn cyber_bridge_handles(
+    mem: &std::sync::Arc<mem_gecko::MemWriter>,
+) -> Result<std::sync::Arc<dyn gecko_extension_api::BeliefEdgeWriter>> {
+    mem.edge_writer_for("cyber-gecko")
+        .context("wiring the cyber-gecko detect bridge")
 }
 
 /// Prints the outcome of a pipeline execution.
@@ -1106,4 +1111,51 @@ async fn cmd_run(
 
     render_execution_result(&pipeline_result.execution);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BadExt;
+
+    #[tokio::test]
+    async fn apply_all_schemas_refuses_before_touching_the_database() {
+        // Port 1 is unreachable: any database contact would surface a connection error.
+        let mut db = TypeDbRouter::new(DbConfig {
+            address: "127.0.0.1:1".to_string(),
+            ..DbConfig::default()
+        });
+        let exts: Vec<Box<dyn GeckoExtension>> = vec![mem_gecko::extension(), Box::new(BadExt)];
+        let err = apply_all_schemas(&mut db, &exts, None).await.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<mem_gecko::RegistryError>(),
+                Some(mem_gecko::RegistryError::ModifiesBase { .. })
+            ),
+            "expected a registry refusal, got {err:#}"
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn cyber_bridge_requires_cyber_belief_edges() {
+        // A store that is never used: building the writer does not connect.
+        let store = std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
+            tokio::sync::Mutex::new(TypeDbRouter::new(DbConfig {
+                address: "127.0.0.1:1".to_string(),
+                ..DbConfig::default()
+            })),
+        )));
+        let mem = std::sync::Arc::new(
+            mem_gecko::MemWriter::without_index(store)
+                .with_belief_edges(mem_gecko::BeliefEdgeRegistry::default()),
+        );
+        let err = cyber_bridge_handles(&mem)
+            .err()
+            .expect("a writer with no cyber belief edges must refuse the cyber bridge");
+        assert!(
+            format!("{err:#}").contains("declares no belief edges"),
+            "unexpected error: {err:#}"
+        );
+    }
 }

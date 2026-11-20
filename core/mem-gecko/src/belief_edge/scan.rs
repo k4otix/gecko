@@ -4,10 +4,20 @@
 //! The scanner does not model the grammar. It strips comments and string literals and
 //! tokenizes, so the registry can refuse anything it cannot prove safe (fail closed).
 
+/// The query keyword in force for a statement: the last leading `define`, `redefine` or
+/// `undefine` seen in the same text, at the start of this statement or an earlier one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mode {
+    Define,
+    Redefine,
+    Undefine,
+}
+
 /// One `;`-terminated statement, as whole tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Statement {
     tokens: Vec<String>,
+    mode: Mode,
 }
 
 impl Statement {
@@ -16,12 +26,32 @@ impl Statement {
         self.tokens.iter().any(|t| t == token)
     }
 
-    /// The statement after a leading `define`/`redefine` and then a leading
+    /// The query keyword in force for this statement.
+    pub(super) fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Every token of the statement.
+    pub(super) fn tokens(&self) -> impl Iterator<Item = &str> {
+        self.tokens.iter().map(String::as_str)
+    }
+
+    /// The label that directly follows the first `fun` token anywhere in the statement.
+    /// This is wider than `fun` at the statement start, so it matches the engine's
+    /// line-based function detector.
+    pub(super) fn introduces_function(&self) -> Option<&str> {
+        self.tokens
+            .windows(2)
+            .find(|w| w[0] == "fun")
+            .map(|w| w[1].as_str())
+    }
+
+    /// The statement after a leading `define`/`redefine`/`undefine` and then a leading
     /// `entity`/`relation`/`attribute`.
     fn body(&self) -> &[String] {
         let mut rest = self.tokens.as_slice();
         if let [t, tail @ ..] = rest
-            && (t == "define" || t == "redefine")
+            && matches!(t.as_str(), "define" | "redefine" | "undefine")
         {
             rest = tail;
         }
@@ -76,10 +106,22 @@ impl Statement {
 
 /// Returns the statements of `fragment`, with comments and string literals removed.
 pub(super) fn statements(fragment: &str) -> Vec<Statement> {
+    let mut mode = Mode::Define;
     tokenize(&strip_comments_and_strings(fragment))
         .split(|t| t == ";")
         .filter(|s| !s.is_empty())
-        .map(|s| Statement { tokens: s.to_vec() })
+        .map(|s| {
+            match s[0].as_str() {
+                "define" => mode = Mode::Define,
+                "redefine" => mode = Mode::Redefine,
+                "undefine" => mode = Mode::Undefine,
+                _ => {}
+            }
+            Statement {
+                tokens: s.to_vec(),
+                mode,
+            }
+        })
         .collect()
 }
 
@@ -179,6 +221,32 @@ mod tests {
             .iter()
             .filter(|s| s.first_label() == Some(label))
             .collect()
+    }
+
+    #[test]
+    fn scanner_carries_the_query_mode_across_statements() {
+        let modes: Vec<Mode> = statements(
+            "define entity a; entity b; undefine owns x from a; c; redefine entity d @abstract;",
+        )
+        .iter()
+        .map(Statement::mode)
+        .collect();
+        assert_eq!(
+            modes,
+            [
+                Mode::Define,
+                Mode::Define,
+                Mode::Undefine,
+                Mode::Undefine,
+                Mode::Redefine
+            ]
+        );
+        assert_eq!(statements("entity a;")[0].mode(), Mode::Define);
+        assert_eq!(
+            statements("define\nfun f() -> boolean:\n match $x isa a;\n return check;")[0]
+                .introduces_function(),
+            Some("f")
+        );
     }
 
     #[test]

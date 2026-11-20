@@ -153,20 +153,12 @@ impl RowCountMismatch {
     }
 }
 
-/// The neutral graph capability: parameterized reads + atomic batched writes.
+/// The read-only graph capability: parameterized reads.
 ///
-/// This is the **only** production coupling mem-gecko has to a graph backend. The
-/// engine implements it over the real driver; tests implement it in-memory.
+/// Host bridges receive this handle so an extension can query the graph without a
+/// write path; belief writes go through the belief-edge seam instead.
 #[async_trait]
-pub trait GraphStore: Send + Sync {
-    /// Runs a sequence of parameterized writes in **one** transaction and commits.
-    ///
-    /// Ops execute in order; any error rolls the whole transaction back (nothing
-    /// is committed). Ops with empty `rows` are skipped. An op whose answer row
-    /// count differs from its [`GraphWrite::expect_rows`] total is an error built by
-    /// [`RowCountMismatch::into_error`].
-    async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError>;
-
+pub trait GraphReader: Send + Sync {
     /// Runs a read query, returning the fetched documents as JSON values.
     ///
     /// `vars`/`row` supply an optional single `given` row of typed params
@@ -178,6 +170,21 @@ pub trait GraphStore: Send + Sync {
         vars: &[String],
         row: &[GraphValue],
     ) -> Result<Vec<serde_json::Value>, EpistemicError>;
+}
+
+/// The neutral graph capability: parameterized reads + atomic batched writes.
+///
+/// This is the **only** production coupling mem-gecko has to a graph backend. The
+/// engine implements it over the real driver; tests implement it in-memory.
+#[async_trait]
+pub trait GraphStore: GraphReader {
+    /// Runs a sequence of parameterized writes in **one** transaction and commits.
+    ///
+    /// Ops execute in order; any error rolls the whole transaction back (nothing
+    /// is committed). Ops with empty `rows` are skipped. An op whose answer row
+    /// count differs from its [`GraphWrite::expect_rows`] total is an error built by
+    /// [`RowCountMismatch::into_error`].
+    async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError>;
 }
 
 #[cfg(test)]

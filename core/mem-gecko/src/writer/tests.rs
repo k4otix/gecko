@@ -2,11 +2,11 @@ use super::beliefs::validate_confidence;
 use super::reader::{DEFAULT_HALF_LIFE_HOURS, recency_decay};
 use super::*;
 use async_trait::async_trait;
-use gecko_extension_api::GraphWrite;
 use gecko_extension_api::{
     ActorId, BeliefDraft, DerivationMethod, EpistemicWriter, FilterMeta, ProvenanceSource,
     RunContext, Visibility,
 };
+use gecko_extension_api::{GraphReader, GraphWrite};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
@@ -83,6 +83,9 @@ impl GraphStore for RecordingGraphStore {
         self.write_calls.lock().unwrap().push(ops.to_vec());
         Ok(())
     }
+}
+#[async_trait]
+impl GraphReader for RecordingGraphStore {
     async fn read(
         &self,
         _query: &str,

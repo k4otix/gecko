@@ -45,7 +45,7 @@ test:
 
 # Tier 2 — integration against a real TypeDB, but STILL the stub embedder (no 1.3GB).
 test-it: up
-    cargo test --test '*' --no-default-features -- --test-threads=1
+    cargo test --test '*' --no-default-features --features cyber -- --test-threads=1
 
 # Tier 3 — OPT-IN. Real bge-large model (first run downloads ~1.3GB) + real TypeDB.
 test-model: up
