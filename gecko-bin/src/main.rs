@@ -49,8 +49,9 @@ struct Cli {
     #[arg(long, global = true)]
     address: Option<String>,
 
-    /// TypeDB database name. Defaults to the bundle's declared name (from
-    /// bundle.json) for `init`/`sync`, otherwise "gecko". One database per bundle.
+    /// TypeDB database name. Defaults to the bundle's declared name for
+    /// `schema-init`/`sync`/`sync-stix`, otherwise "gecko". One database per bundle
+    /// by default; pass the same `--database` to sync several bundles into one.
     #[arg(long, global = true)]
     database: Option<String>,
 
@@ -116,6 +117,11 @@ enum Commands {
     SyncStix {
         /// Path to the STIX bundle JSON file
         bundle_path: PathBuf,
+        /// The bundle name to import under, default `stix-sync`. Several imports
+        /// share a database when each has its own name and they pass the same
+        /// `--database`; without `--database`, the database is named after the bundle.
+        #[arg(long)]
+        bundle_name: Option<String>,
     },
 
     /// Run an ad-hoc TypeQL read query
@@ -229,6 +235,25 @@ fn resolve_db(explicit: &Option<String>, derived: Option<&str>) -> String {
         .unwrap_or_else(|| "gecko".to_string())
 }
 
+/// Names a converted STIX bundle: `bundle_name` (when given) replaces the default
+/// name, and the STIX file's canonical path becomes the recorded `bundle-path`.
+#[cfg(feature = "cyber")]
+fn apply_stix_naming(
+    manifest: &mut OkfBundle,
+    bundle_name: Option<&str>,
+    stix_file: &Path,
+) -> Result<()> {
+    if let Some(name) = bundle_name {
+        anyhow::ensure!(!name.trim().is_empty(), "--bundle-name must not be empty");
+        manifest.bundle_name = name.to_string();
+    }
+    manifest.bundle_path = std::fs::canonicalize(stix_file)
+        .context("Failed to resolve STIX file path")?
+        .to_string_lossy()
+        .into_owned();
+    Ok(())
+}
+
 /// Maps the `--tls` flag (and optional `--ca-cert`) to a [`TlsMode`]. Shared by
 /// `make_config`, `gecko doctor`'s typedb check, and the orchestrator's readiness
 /// probe so all three connect with the same TLS posture.
@@ -323,13 +348,17 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_sync(config, &extensions, manifest).await
         }
         #[cfg(feature = "cyber")]
-        Commands::SyncStix { bundle_path } => {
+        Commands::SyncStix {
+            bundle_path,
+            bundle_name,
+        } => {
             let extensions = build_extensions(&cfg)?;
             println!("Parsing STIX bundle at {}...", bundle_path.display());
             let bundle_json =
                 std::fs::read_to_string(bundle_path).context("Failed to read STIX JSON")?;
-            let (manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
+            let (mut manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
                 .map_err(|e| anyhow::anyhow!("STIX parse error: {}", e))?;
+            apply_stix_naming(&mut manifest, bundle_name.as_deref(), bundle_path)?;
             let config = make_config(
                 &cli,
                 &address,
@@ -597,17 +626,23 @@ async fn apply_all_schemas(
     extensions: &[Box<dyn GeckoExtension>],
     custom_schema: Option<PathBuf>,
 ) -> Result<()> {
-    let core_schema = if let Some(path) = custom_schema {
-        tokio::fs::read_to_string(&path)
+    // A custom core schema may still carry text a migration replaces, which the
+    // migration would then make `define` refuse, so only the embedded one migrates.
+    let (core_schema, core_migrations) = if let Some(path) = custom_schema {
+        let text = tokio::fs::read_to_string(&path)
             .await
-            .with_context(|| format!("Failed to read schema file: {}", path.display()))?
+            .with_context(|| format!("Failed to read schema file: {}", path.display()))?;
+        (text, &[][..])
     } else {
-        gecko_engine::db::CORE_SCHEMA.to_string()
+        (
+            gecko_engine::db::CORE_SCHEMA.to_string(),
+            gecko_engine::db::CORE_MIGRATIONS,
+        )
     };
 
     check_extension_schemas(&core_schema, extensions)?;
 
-    db.apply_schema(&core_schema)
+    db.apply_schema_with_migrations(&core_schema, core_migrations)
         .await
         .context("Failed to apply core schema")?;
     info!("Core schema applied");
@@ -644,9 +679,9 @@ async fn cmd_schema_init(
     Ok(())
 }
 
-/// Ensures the bundle's database schema (applied idempotently, so the
-/// single-bundle-per-database flow works from one command) and syncs a parsed
-/// bundle, running `extension_writes` in the same transaction.
+/// Ensures the bundle's database schema (applied idempotently, so one command
+/// serves a fresh database or a shared one) and syncs a parsed bundle, running
+/// `extension_writes` in the same transaction.
 async fn sync_manifest(
     config: DbConfig,
     extensions: &[Box<dyn GeckoExtension>],
@@ -669,6 +704,7 @@ fn print_sync_result(result: &SyncResult) {
     println!("  Concepts updated:  {}", result.concepts_updated);
     println!("  Concepts skipped:  {}", result.concepts_skipped);
     println!("  Concepts deleted:  {}", result.concepts_deleted);
+    println!("  Concepts released: {}", result.concepts_released);
     println!("  Links attempted:    {}", result.links_attempted);
     println!("  Citations attempted: {}", result.citations_attempted);
 }
@@ -863,10 +899,11 @@ struct FetchedPlaybook {
 
 /// Fetches a concept's single code-block, engine, and granted scopes from the graph.
 ///
-/// Single-bundle-scoped: concept IDs are exact bundle-relative paths, and each
-/// concept has exactly one executable program (its engine-matched code fences were
-/// concatenated at parse time), so there is no ambiguity to resolve. `code` and
-/// `scopes` are list projections to tolerate the 0-or-1 / 0-or-N cardinalities.
+/// Concept IDs are exact bundle-relative paths (unique across the bundles of one
+/// database), and each concept has exactly one executable program (its
+/// engine-matched code fences were concatenated at parse time), so there is no
+/// ambiguity to resolve. `code` and `scopes` are list projections to tolerate the
+/// 0-or-1 / 0-or-N cardinalities.
 async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<FetchedPlaybook> {
     let tx = db
         .begin_read()
@@ -1157,5 +1194,47 @@ mod tests {
             format!("{err:#}").contains("declares no belief edges"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[cfg(feature = "cyber")]
+    fn stix_manifest_and_file() -> (OkfBundle, tempfile::TempDir, PathBuf) {
+        let (manifest, _) = cyber_gecko::stix::to_okf(r#"{"type":"bundle","objects":[]}"#)
+            .expect("empty STIX bundle converts");
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("attack.json");
+        std::fs::write(&file, "{}").unwrap();
+        (manifest, dir, file)
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_naming_keeps_the_default_name() {
+        let (mut manifest, _dir, file) = stix_manifest_and_file();
+        apply_stix_naming(&mut manifest, None, &file).unwrap();
+        assert_eq!(manifest.bundle_name, "stix-sync");
+        assert_eq!(
+            manifest.bundle_path,
+            std::fs::canonicalize(&file).unwrap().to_string_lossy()
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_naming_overrides_the_name_and_records_the_file_path() {
+        let (mut manifest, _dir, file) = stix_manifest_and_file();
+        apply_stix_naming(&mut manifest, Some("attack-mobile"), &file).unwrap();
+        assert_eq!(manifest.bundle_name, "attack-mobile");
+        assert_eq!(
+            manifest.bundle_path,
+            std::fs::canonicalize(&file).unwrap().to_string_lossy()
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_naming_refuses_an_empty_bundle_name() {
+        let (mut manifest, _dir, file) = stix_manifest_and_file();
+        let err = apply_stix_naming(&mut manifest, Some("  "), &file).unwrap_err();
+        assert!(format!("{err:#}").contains("--bundle-name"), "{err:#}");
     }
 }

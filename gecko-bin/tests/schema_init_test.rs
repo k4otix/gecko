@@ -84,3 +84,45 @@ async fn test_schema_initialization() {
         "Mem schema 'execution-episode' type not found"
     );
 }
+
+const OLD_BUNDLE_DOC: &str = "entity bundle @doc(\"The single OKF documentation bundle ingested into this database, keyed by its declared name; bundle-path is machine-local provenance, not identity.\")";
+const NEW_BUNDLE_SENTENCE: &str = "An OKF documentation bundle synced into this database, keyed by its declared name and containing its concepts; several bundles may share a database, and bundle-path is machine-local provenance, not identity.";
+
+#[tokio::test]
+async fn previous_core_schema_upgrades_to_the_shipped_schema() {
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA};
+
+    let test_db = TestDb::new("gecko_test_core_migration");
+    let mut db = test_db.router();
+
+    let new_statement = format!("entity bundle @doc(\"{NEW_BUNDLE_SENTENCE}\")");
+    let previous = CORE_SCHEMA.replace(&new_statement, OLD_BUNDLE_DOC);
+    assert_ne!(
+        previous, CORE_SCHEMA,
+        "the previous schema must differ from the shipped one"
+    );
+    db.apply_schema(&previous)
+        .await
+        .expect("previous core schema applies");
+
+    let err = db
+        .apply_schema(CORE_SCHEMA)
+        .await
+        .expect_err("a changed annotation needs a migration");
+    assert!(err.to_string().contains("DEX15"), "unexpected error: {err}");
+
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+            .await
+            .expect("core schema applies with its migrations");
+    }
+
+    let schema = db.database_schema().await.expect("schema");
+    assert!(
+        !CORE_MIGRATIONS
+            .iter()
+            .any(|m| schema.contains(m.applies_when)),
+        "a migration's replaced text is still in the database"
+    );
+    assert!(schema.contains(NEW_BUNDLE_SENTENCE));
+}

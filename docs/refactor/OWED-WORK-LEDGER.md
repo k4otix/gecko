@@ -11,7 +11,7 @@
 
 **Reading the IDs.** Items are grouped by track: **F** fix-now, **A** seam ①, **B** bitemporal
 correctness, **P** populations, **C** consolidation daemon, **S** STIX/ATT&CK ingest,
-**U** TypeDB upgrade, **D-** open decisions. A number in
+**O** OKF bundles and OKF v0.2, **U** TypeDB upgrade, **D-** open decisions. A number in
 parentheses — "(was #12)" — is the row number the item had in the previous ledger, kept so
 references in specs and commit messages still resolve.
 
@@ -39,6 +39,9 @@ references in specs and commit messages still resolve.
   for ATT&CK's earlier data model and could not import the current Enterprise bundle. The
   import fix landed in PR #58 (**S1** ✅); modelling ATT&CK's current detection data is owed
   (**S2**); until it lands, cyber's `blinded` check reports nothing on current data.
+- **Landed in the multi-bundle databases PR (branch `feat/multi-bundle-databases`):** several
+  bundles can share a database (**O1** ✅), which unblocks cyber's detection flow end to end.
+  OKF v0.2 adoption is owed (**O2–O5**).
 
 ## Sequence
 
@@ -65,13 +68,17 @@ C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I 
 U1 ✅ ──────────────► server + driver on 3.15.0
 A12 ✅ ────────────► extension undefine/redefine of core/mem refused at schema time
 
+O1 ✅ ─► A4 + A10
+O2, O3, O4 ─► independent        O5 ─► needs D-N
+S5 ─► needs a design (after O1)
+
 S1 ✅ ─► A4 + A10 ─► S2 (needs D-L) ─► S3 (needs D-M)
                            S4 alongside S2 (the full-bundle check S2 is accepted against)
 ```
 
-Recommended next: **A4 + A10** together (both harden the extension boundary, and A10 moves the
-OKF import types the STIX adapter is built on, so the adapter rework in S2/S3 lands once, on
-the final imports). **D-L** can be settled in parallel so **S2** starts right after.
+Recommended next, now that **O1** has landed: **A4 + A10** together (both harden the extension boundary, and A10
+moves the OKF import types the STIX adapter is built on, so the adapter rework in S2/S3 lands once, on the final
+imports). **D-L** can be settled in parallel so **S2** starts right after.
 
 ---
 
@@ -100,7 +107,7 @@ in one transaction, the `GeckoExtension` declaration hook — are A1's to settle
 | **A1** ✅ | **`BeliefEdgeDecl` registry and the sanctioned belief-edge writer — LANDED in the belief-edge seam PR (branch `feat/belief-edge-seam`, base `389ac2c`)** (was #1). Extensions declare edges through `GeckoExtension::belief_edges()`; `BeliefEdgeRegistry::from_extensions` accepts only relations the declaring extension's fragment introduces, and `gecko run` builds it in `build_host_bridge` (a bad declaration fails the run with `belief-edge declarations`). `MemWriter::edge_writer_for(ext)` returns a `BeliefEdgeWriter` bound to that extension, whose `assert_belief_with_edges` writes the belief and its edges in one transaction, every edge op `expect_rows = Some(1)`. The scanner fails closed: ownership is refused when any other fragment mentions the relation or one of its subtypes, and a non-belief player is refused unless its whole supertype chain resolves outside `memory-item`. Mem-owned edges stay dedicated methods. No production extension declares edges yet (cyber does in A2) | SPEC-W5 §3.2, §3.5 (D-B) | writer + registry + extension-API hook | ✅ Tier 2 (`core/mem-gecko/tests/belief_edge_integration.rs`): `belief_edge_decl_registry_writes_run_stamped`, `missing_player_commits_no_belief`, `value_outside_values_commits_no_belief`, `non_unique_key_commits_no_belief`, `live_schema_mismatch_is_refused_before_writing`, `two_edges_of_one_relation_both_land`, `expect_rows_accepts_an_exact_insert_match`, `expect_rows_rolls_back_a_zero_match`, `expect_rows_rolls_back_a_double_match`, `expect_rows_counts_an_update`; `supersede_of_a_missing_belief_errors_and_commits_nothing`. Unit: the registry suite in `belief_edge/registry.rs` (incl. `refuses_a_mem_relation`, `refuses_a_relation_another_extension_subtypes`, `refuses_memory_item_players`, `refuses_an_extension_fragment_with_an_alias`), the scanner suite in `belief_edge/scan.rs`, `bound_writer_writes_belief_and_edges_in_one_call`, `edge_writer_for_refuses_an_extension_with_no_declarations`, `edge_op_keeps_values_out_of_query_text`, `ownership_is_refused_before_confidence_is_checked`, `a_row_count_mismatch_names_the_failing_edge`, and `graph::tests::row_count_mismatch_*` in the API crate. Shipped set: `from_extensions_accepts_the_shipped_extensions` (`gecko-bin/tests/belief_edge_registry_test.rs`, `cyber` feature) |
 | **A2** ✅ | **Cyber migration — LANDED in PR #57.** `technique-detection` and `alert-disposition` are declared through `CyberGecko::belief_edges()` and written with their belief in one transaction by the bound `BeliefEdgeWriter`; the raw `graph.write` literals in `detect/mod.rs` are gone (was #12) | SPEC-W5 §3.3 | writer migration | ✅ `detect_bridge_claims_disposes_and_reports` and `edge_to_an_unknown_technique_commits_no_belief` (`gecko-bin/tests/cyber_detect_test.rs`); `cyber_bridge_requires_cyber_belief_edges` (`gecko-bin/src/main.rs`) |
 | **A3** ✅ | **W5a static lint `no_raw_belief_tier_tql_outside_mem_tql` — LANDED in PR #57.** The belief-tier surface (the `memory-item` subtype closure plus every belief-edge relation) is introspected from the composed core→mem→cyber schema. Scope is production sources: `.rs` under each crate's `src/` with inline `#[cfg(test)]` modules blanked, and `.tql` files, outside `tests`/`target`. A hit is a write verb (`insert`/`put`/`update`/`delete`) plus a surface label after `isa`/`isa!` or directly before `(`; the positive control asserts hits in `core/mem-gecko/src/tql.rs` | SPEC-W5 §2.1, §5 row 1 | test | ✅ `gecko-bin/tests/belief_tier_monopoly_test.rs` (`cyber` feature, Tier 2), plus 9 serviceless detector unit tests including `flags_the_pre_seam_cyber_literals` and `flags_an_isa_bang_delete` |
-| **A4** | W5a dynamic rig: `memwriter_is_the_sole_belief_tier_writer` and `hostile_extension_raw_belief_write_is_flagged` (entity and relation) | SPEC-W5 §2.2, §5 rows 2–3, 8 | test rig | Rig buildable now; A2 is done, so the reconciliation can go green |
+| **A4** | W5a dynamic rig: `memwriter_is_the_sole_belief_tier_writer` and `hostile_extension_raw_belief_write_is_flagged` (entity and relation) | SPEC-W5 §2.2, §5 rows 2–3, 8 | test rig | O1 |
 | **A5** | Divergence-exception writer: co-mints the `divergence-exception` belief and its `divergence-precedence` in one call; refuses an anchor-less or separately-fabricated anchor (was #8 and #13) | SPEC-W2-W3 §2.2; SPEC-W5 §3.2 | writer (mem-owned, dedicated method) | A1's edge-writing core, D-A, D-C. Before A5 reuses that core, `tql::belief_edge_op` must return `Result` instead of `debug_assert!` + `continue` on a missing role value |
 | **A6** | Disposition writer — acts on the ranker's outcome (was #10, writer half). **Resolved:** mint via A5, or supersede the loser for instance-vs-instance. **Contested:** `contest()` (exists) plus a `belief-state "contested"` write (no writer today). Contract must also say how an evidence-less belief's method is read (REVIEW §2) | SPEC-W2-W3 §2.3, §2.4 | host engine + writer | Resolved half: A5, D-C. Contested half: D-E only |
 | **A7** | `scoped` writer (belief → population). No production path writes `scoped`; the cohort branch of `blast-radius` has no input without it. Mem-owned, on the belief-edge surface | SPEC-W5 §1.1 (surface), SPEC-W2-W3 §3.4 | writer (dedicated method) | — |
@@ -149,6 +156,21 @@ extensions, so it informs S3, not S2.
 | **S2** | **Model ATT&CK's current detection data.** Detection strategies and analytics get cyber subtypes (analytics own `platform`); `requires-evidence` (data component → technique) is derived from strategy → analytics → log-source data components, as a sync-time `GraphWrite` (A9's neutral path); `evidence-of` is either dropped, kept only for pre-current bundles, or re-sourced, per D-L. `blinded-detections()` and `cyber_detect_test`'s fixtures move to the current shape | — (design owed, D-L) | schema + adapter + cyber functions | D-L; after A10 so the adapter rework lands on the final OKF imports |
 | **S3** | **STIX core coverage.** Relationship types dropped today: `subtechnique-of` (481), `revoked-by` (157); object types ingested as bare `cyber-object`: `x-mitre-tactic`, `x-mitre-matrix`, `x-mitre-collection`, `identity`, `marking-definition`; `kill_chain_phases` and `external_references` flattened to attributes. typedb-cti is the reference for these shapes | — (design owed, D-M) | schema + adapter | D-M; after S2 |
 | **S4** | **Real-bundle regression check.** Record which ATT&CK release the adapter is validated against, and add an opt-in check (Tier-3 style: the bundle is a runtime asset, never in the build tree) that imports the full bundle twice and asserts the re-sync leaves every relation count unchanged. The S1 timing is the baseline | — | test (opt-in) | Lands with S2, which it accepts |
+| **S5** | **Objects shared across STIX imports.** Two ATT&CK domains (Enterprise and Mobile) cannot share a database. They ship the same MITRE `identity` and `marking-definition` objects, and some groups and software, under the same STIX ids, so the second import is refused as a concept-ID collision (O1). Under the default bundle name `stix-sync`, a second domain replaces the first instead, subject to the belief-edge guard of the belief-tier PR (A4 + A10): a re-import whose garbage collection would delete a record a belief edge references is refused. Sharing objects across imports needs a design: an object held by several imports (multi-containment ownership, collected only when no import holds it) and `attack-id` uniqueness across domains. | — (design owed) | design + engine + adapter | O1; the design |
+
+---
+
+## Track O — OKF bundles and OKF v0.2
+
+[OKF v0.2](https://raw.githubusercontent.com/GoogleCloudPlatform/knowledge-catalog/refs/heads/main/okf/SPEC.md) supersedes v0.1, which GECKO's parser implements. Concept IDs (file paths), links (§6.1, broken links tolerated) and bundle layout already match. The items are what v0.2 renames or adds (§13), plus O1, which v0.2 does not require but cyber's detection flow does. A v0.1 bundle stays consumable under v0.2's fallbacks.
+
+| ID | Item | Owning section | Type | Blocked on |
+|---|---|---|---|---|
+| **O1** ✅ | **Several bundles in one database — LANDS in the multi-bundle databases PR (branch `feat/multi-bundle-databases`).** A sync acts only on the concepts its bundle contains (GC, change detection, containment, hierarchy, links). GC releases, rather than deletes, a concept another bundle also contains. An incoming concept ID held by another bundle or by none is refused with `DbError::ConceptIdCollision`, and nothing is written. Links and hierarchy resolve within the bundle. `sync-stix --bundle-name` lets several imports share a database. One bundle per database stays the default. It also adds `CORE_MIGRATIONS`, whose first entry, `core/bundle-shared-database-doc`, brings the `bundle` `@doc` forward on existing databases. Done when: in `multi_bundle_test.rs`, `two_bundles_share_a_database`, `resync_garbage_collects_only_its_own_bundle`, `colliding_concept_id_is_refused`, `uncontained_concept_counts_as_a_collision`, `renamed_bundle_is_refused_with_guidance`, `empty_bundle_deletes_nothing_from_others`, `shared_legacy_concept_is_released_not_deleted`, `link_does_not_cross_bundles`, `link_does_not_cross_bundles_in_either_order`, `updated_concept_relinks_within_its_bundle`, and in `cli::` `sync_stix_bundle_name_override`, `second_attack_domain_is_refused`, `bundle_name_override_selects_the_default_database`, `playbooks_and_attack_share_a_database`; `core_migrations_lead_to_the_shipped_schema` and `previous_core_schema_upgrades_to_the_shipped_schema`; and `cyber_detect_test` seeding through a synced bundle | `docs/superpowers/specs/2026-11-20-multi-bundle-databases-design.md` | engine + CLI | — |
+| **O2** | **`generated: {by, at}` replaces `timestamp`** (§5.2, §13.1; breaking). GECKO reads `timestamp` at `core/gecko-engine/src/okf/parser.rs:172` into the `timestamp` attribute. Read `generated.at` (and `generated.by`, §7 actor convention), with the v0.1 `timestamp` fallback v0.2 allows | OKF v0.2 §5.2, §13.1 | parser + schema | — |
+| **O3** | **`sources` frontmatter and keyed footnotes replace body citations** (§5.1, §13.1; breaking). GECKO treats every http(s) body link as a citation (`core/gecko-engine/src/okf/linker.rs:35`). Read `sources` (and its credibility signals) into `external-resource`/`citation`, keeping the body parse as the v0.1 fallback | OKF v0.2 §5.1, §13.1 | parser + schema | — |
+| **O4** | **Trust and lifecycle fields:** `verified` (§5.2; trust tiers keyed on `human:` actors, §5.3, §7), `status` (§5.4), `stale_after` (§5.5), and `okf_version` in the root `index.md` (§8, §12). Today the concept-level keys land only in `metadata-json`, and `index.md` is a reserved file the parser skips. Decide how they map to GECKO and to mem's belief and provenance model: a human-verified record versus a belief's confidence and entrenchment, and `stale_after` versus validity windows | OKF v0.2 §5.2–5.5, §7, §8, §12 | design + parser | — (the mapping is the item's first step) |
+| **O5** | **`Attested Computation` concept type** (§10): `runtime`, `parameters`, `computation`, `executor` with its `receipt`, and a deterministic `attester`. It overlaps GECKO's playbooks, `engine`, `scopes` and wasm sandbox. OKF fixes the interface, not the packaging, and defers attester sandboxing to the consumer | OKF v0.2 §10 | design + engine | D-N |
 
 ---
 
@@ -231,6 +253,7 @@ images and `docker-compose.yml`.
 | **D-L** | ATT&CK's current detection model in the cyber schema: subtypes for detection strategies and analytics (or not), whether `requires-evidence` is derived through them at sync time, and what replaces `evidence-of` now that data components carry no data-source reference. Includes whether pre-current bundles stay supported | — (Track S) | S2 |
 | **D-M** | STIX core shape: align the cyber schema with typedb-cti's STIX 2.1 model (kill-chain-phase and external-reference entities, the full relationship set), or keep the ATT&CK-keyed model and add only what cyber queries. `attack-id` stays the unique key either way, since detection edges resolve techniques by it | — (Track S) | S3 |
 | **D-K** | C2 `out-entrenches` schema hardening (OP-5). The §8.3 trigger has fired; shipping it owes a 5×5 drift-lock test against `Entrenchment::strength()` | SPEC-W2-W3 §2.3 (conditional); SPEC-W5 §2; INVARIANTS §8.3 | — (deliberate decision; D-D may make it unnecessary) |
+| **D-N** | How GECKO treats an Attested Computation: as a playbook (engine, scopes and sandbox run), with its attester as a second sandboxed program, or as its own concept kind; where receipts and verdicts live (the record tier, or beliefs with provenance); how the attester is sandboxed | OKF v0.2 §10 | O5 |
 
 ---
 
