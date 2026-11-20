@@ -513,9 +513,9 @@ mod cli {
         stix(&[MITRE_IDENTITY, T1059, DATA_SOURCE, DATA_COMPONENT, DETECTS])
     }
 
-    /// `ENTERPRISE` without its data source (and so without the `detects` edge to it).
+    /// `ENTERPRISE` without its data source; the data component still references it.
     fn enterprise_next() -> String {
-        stix(&[MITRE_IDENTITY, T1059])
+        stix(&[MITRE_IDENTITY, T1059, DATA_COMPONENT, DETECTS])
     }
 
     fn mobile() -> String {
@@ -639,12 +639,11 @@ mod cli {
         let after = membership(&db).await;
         assert!(!after.iter().any(|(id, _)| id == DATA_SOURCE_ID));
         let kept = members_of(&after, "stix-sync");
-        assert!(!kept.is_empty());
         assert_eq!(
             kept,
             enterprise_ids
                 .iter()
-                .filter(|id| id.as_str() != DATA_SOURCE_ID && !id.contains("-0000000000f6"))
+                .filter(|id| id.as_str() != DATA_SOURCE_ID)
                 .cloned()
                 .collect::<BTreeSet<_>>()
         );
