@@ -40,6 +40,7 @@ use gecko_extension_api::GraphWrite;
 
 use crate::db::graph_store::run_graph_writes;
 use crate::db::router::{DbError, TypeDbRouter};
+use crate::db::validate_schema_label;
 use crate::okf::types::{OkfBundle, OkfConcept, TypedAttrValue};
 
 /// Results of a bundle sync operation.
@@ -131,28 +132,6 @@ pub fn split_gc(
 /// parameterized `given` queries and never interpolates values into query text.
 pub fn escape_tql(val: &str) -> String {
     val.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Validates a TypeDB type or attribute label before it is interpolated into
-/// query text. Values always flow through parameterized `given` stages, but a
-/// schema *label* (an entity subtype from a concept's `type_hint`, or a typed
-/// attribute name) is part of the query grammar and cannot be parameterized, so
-/// an extension-supplied label must be constrained to the TypeQL identifier
-/// charset first — otherwise a crafted label would be an injection vector.
-fn validate_schema_label(label: &str) -> Result<(), DbError> {
-    let valid = !label.is_empty()
-        && !label.starts_with(|c: char| c.is_ascii_digit())
-        && label
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if valid {
-        Ok(())
-    } else {
-        Err(DbError::Schema(format!(
-            "invalid schema label {label:?}: must be a non-empty TypeQL identifier \
-             (ASCII alphanumeric, '-' or '_', no leading digit)"
-        )))
-    }
 }
 
 /// Per-concept disposition relative to what is already in the graph, computed by

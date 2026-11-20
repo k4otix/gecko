@@ -1,8 +1,10 @@
 //! TypeDB transaction routing and connection management.
 
 pub mod graph_store;
+pub mod label;
 pub mod router;
 pub mod schema_apply;
+pub mod surface;
 
 use gecko_extension_api::SchemaMigration;
 
@@ -18,6 +20,7 @@ pub const CORE_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
 }];
 
 pub use graph_store::{RouterGraphStore, run_graph_writes};
+pub use label::validate_schema_label;
 pub use router::{GraphHandle, WriteTransaction};
 
 #[cfg(test)]

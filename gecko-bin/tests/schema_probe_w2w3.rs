@@ -62,9 +62,36 @@ mod common;
 #[path = "common/surface.rs"]
 mod surface;
 use common::TestDb;
-use surface::{belief_edge_surface, read_col};
+use surface::live_belief_tier_surface;
 
 const CORE_SCHEMA: &str = include_str!("../../core/gecko-engine/schema/core_schema.tql");
+
+/// Runs a raw-TQL read whose final stage is `select $<col>;` (one string column)
+/// and collects the values, sorted for deterministic assertions.
+///
+/// A `Some(Err(_))` mid-stream is surfaced (via `.expect`), never silently swallowed
+/// — an ended-early stream would otherwise mask a DB failure as a short result set.
+async fn read_col(db: &TestDb, query: &str, col: &str) -> Vec<String> {
+    let mut router = db.router();
+    let tx = router.begin_read().await.expect("read tx");
+    let answer = tx.query(query).await.expect("read query");
+    assert!(answer.is_row_stream(), "select returns a row stream");
+    let mut rows = answer.into_rows();
+    let mut out = Vec::new();
+    while let Some(item) = rows.next().await {
+        let row = item.expect("row stream item");
+        let val = row
+            .get(col)
+            .expect("column present")
+            .expect("column bound")
+            .try_get_string()
+            .expect("column is a string")
+            .to_string();
+        out.push(val);
+    }
+    out.sort();
+    out
+}
 
 /// Candidate **C2** — the entrenchment ordering as a `return check` predicate
 /// (`out-entrenches`). Applied as a Mode-A delta on top of the composed schema.
@@ -1942,7 +1969,7 @@ async fn p_w5_1_folded_surface_contains_divergence_precedence() {
     apply_composed_schema(&db).await;
 
     // The introspection-derived belief-edge surface on the SHIPPED (folded) schema.
-    let surface = belief_edge_surface(&db).await;
+    let surface = live_belief_tier_surface(&db).await.relations;
     eprintln!("W5a surface (folded core+mem+cyber) = {surface:?}");
 
     // Membership: W2 landed, so divergence-precedence is on the surface with no delta and

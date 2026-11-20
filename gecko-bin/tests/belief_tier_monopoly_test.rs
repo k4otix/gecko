@@ -32,7 +32,7 @@ mod surface;
 #[cfg(feature = "cyber")]
 use common::TestDb;
 #[cfg(feature = "cyber")]
-use surface::{belief_edge_surface, read_col};
+use surface::live_belief_tier_surface;
 
 /// The language a scanned source is written in, which decides what a query unit is.
 #[derive(Clone, Copy, Debug)]
@@ -425,20 +425,16 @@ fn matching_close(
     None
 }
 
-/// The belief-tier surface of the composed schema: the `memory-item` subtype
-/// closure together with every belief-edge relation.
+/// Every belief-tier label of the composed schema: the root's subtype closure
+/// together with every belief-edge relation.
 #[cfg(feature = "cyber")]
-async fn belief_tier_surface(db: &TestDb) -> BTreeSet<String> {
-    let mut surface: BTreeSet<String> = read_col(
-        db,
-        r#"match $t sub memory-item; let $l = label($t); select $l;"#,
-        "l",
-    )
-    .await
-    .into_iter()
-    .collect();
-    surface.extend(belief_edge_surface(db).await);
+async fn belief_tier_labels(db: &TestDb) -> BTreeSet<String> {
+    let surface = live_belief_tier_surface(db).await;
     surface
+        .entities
+        .union(&surface.relations)
+        .cloned()
+        .collect()
 }
 
 /// Every file under `dir` (recursively) whose extension is `ext`, skipping any
@@ -530,7 +526,7 @@ async fn no_raw_belief_tier_tql_outside_mem_tql() {
         .await
         .expect("cyber schema applies");
 
-    let surface = belief_tier_surface(&db).await;
+    let surface = belief_tier_labels(&db).await;
     for expected in [
         "belief",
         "technique-detection",

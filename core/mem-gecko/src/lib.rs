@@ -49,6 +49,9 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
     tql: "redefine relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\");",
 }];
 
+/// The root type of the belief tier mem's writer owns.
+pub const BELIEF_TIER_ROOT: &str = "memory-item";
+
 /// Cognitive memory extension.
 pub struct MemGecko;
 
