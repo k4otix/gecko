@@ -57,6 +57,7 @@ define
 
   entity tool sub cyber-object @doc("An ATT&CK/STIX tool: legitimate software that adversaries may repurpose, with the platforms it runs on."),
       owns platform @card(0..),
+      plays uses:user,
       plays uses:used,
       plays mitigates:mitigated,
       plays indicates:indicated;
@@ -102,6 +103,7 @@ define
       relates observable-value @doc("The concrete observable matching the pattern.");
 
   entity data-source sub cyber-object @doc("An ATT&CK data source: a category of telemetry (e.g. Process, Network Traffic) from which technique detection can draw evidence."),
+      owns platform @card(0..),
       plays evidence-of:evidence-source,
       plays sensor-coverage:covered-source;
 
