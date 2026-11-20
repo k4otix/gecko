@@ -62,6 +62,15 @@ build the extension only inside the CLI arms that use it — a typo in
   renames a type or role (`redefine <type> label <new>;`,
   `redefine <relation>:<role> label <new>;`), including the extension's own types: it
   resolves every type by the label the fragments declare.
+- **No modifying core or mem.** The registry refuses an extension fragment or migration
+  that `undefine`s or `redefine`s anything core or mem introduces, or that defines a
+  function with a core or mem function name. It runs before any extension schema is
+  applied (`schema-init`, `sync`, `sync-stix`, `run`).
+- **Changing your own functions.** Edit them in your `define` fragment; the engine
+  redefines changed functions itself. An explicit `redefine fun` whose body names a core
+  or mem type is refused.
+- **Retiring a belief edge** cannot be done from an extension fragment. It is a reviewed
+  change to the fragments, applied to a fresh database or by a migration that mem reviews.
 - **`@meta("key","value")` (client-readable schema metadata) is deliberately unused.**
   It only pays off when an *unknown-at-compile-time* client reads the schema; GECKO
   composes its schema at compile time and its current clients never introspect it. Two

@@ -35,7 +35,7 @@ use gecko_extension_api::{
 use gecko_semantic_index::CandleEmbedder;
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 
-use crate::config::{GeckoConfig, TypedbMode, build_extensions};
+use crate::config::{GeckoConfig, TypedbMode, build_extensions, check_extension_schemas};
 
 #[derive(Parser)]
 #[command(
@@ -613,6 +613,8 @@ async fn apply_all_schemas(
         gecko_engine::db::CORE_SCHEMA.to_string()
     };
 
+    check_extension_schemas(&core_schema, extensions)?;
+
     db.apply_schema(&core_schema)
         .await
         .context("Failed to apply core schema")?;
@@ -969,10 +971,7 @@ async fn build_host_bridge(
     let store = std::sync::Arc::new(RouterGraphStore::new(graph_router.clone()));
     // Built from the host's own extension list before it moves into the base bridge,
     // so a bad declaration fails the run before anything executes.
-    let edges =
-        mem_gecko::BeliefEdgeRegistry::from_extensions(gecko_engine::db::CORE_SCHEMA, &extensions)
-            .map_err(anyhow::Error::new)
-            .context("belief-edge declarations")?;
+    let edges = check_extension_schemas(gecko_engine::db::CORE_SCHEMA, &extensions)?;
     let writer: std::sync::Arc<dyn EpistemicWriter> =
         build_epistemic_writer(store, cfg, edges).await?;
 
@@ -1106,4 +1105,28 @@ async fn cmd_run(
 
     render_execution_result(&pipeline_result.execution);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BadExt;
+
+    #[tokio::test]
+    async fn apply_all_schemas_refuses_before_touching_the_database() {
+        // Port 1 is unreachable: any database contact would surface a connection error.
+        let mut db = TypeDbRouter::new(DbConfig {
+            address: "127.0.0.1:1".to_string(),
+            ..DbConfig::default()
+        });
+        let exts: Vec<Box<dyn GeckoExtension>> = vec![mem_gecko::extension(), Box::new(BadExt)];
+        let err = apply_all_schemas(&mut db, &exts, None).await.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<mem_gecko::RegistryError>(),
+                Some(mem_gecko::RegistryError::ModifiesBase { .. })
+            ),
+            "expected a registry refusal, got {err:#}"
+        );
+    }
 }
