@@ -16,7 +16,7 @@ fi
 
 failed=0
 for c in $crates; do
-  tree=$(cargo tree -p "$c" --all-features -e normal,build,dev --prefix none --locked)
+  tree=$(cargo tree -p "$c" --all-features --target all -e normal,build,dev --prefix none --locked)
   first=${tree%%$'\n'*}
   case "$first" in
     "$c v"*) ;;
@@ -25,14 +25,24 @@ for c in $crates; do
       exit 1
       ;;
   esac
-  if bad=$(printf '%s\n' "$tree" | grep -E '^(gecko-engine|typedb-driver) ' | sort -u); then
-    while IFS= read -r line; do
-      echo "::error::$c depends on $line"
-    done <<EOF
-$bad
+  # grep exits 0 on a match, 1 on none, and 2 or higher on its own failure.
+  rc=0
+  bad=$(printf '%s\n' "$tree" | grep -E '^(gecko-engine|typedb-driver) ') || rc=$?
+  case "$rc" in
+    0)
+      while IFS= read -r line; do
+        echo "::error::$c depends on $line"
+      done <<EOF
+$(printf '%s\n' "$bad" | sort -u)
 EOF
-    failed=1
-  fi
+      failed=1
+      ;;
+    1) ;;
+    *)
+      echo "::error::grep failed with status $rc while checking $c"
+      exit 1
+      ;;
+  esac
 done
 
 if [ "$failed" -ne 0 ]; then
