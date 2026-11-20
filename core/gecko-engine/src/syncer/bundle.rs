@@ -189,7 +189,9 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 /// `extension_writes` run in that same transaction after the core writes, so a
 /// failing extension write rolls back the whole sync. A manifest concept ID that
 /// the database holds outside this bundle fails the sync with
-/// [`DbError::ConceptIdCollision`] before anything is written.
+/// [`DbError::ConceptIdCollision`] before anything is written, as does a written
+/// concept whose `type_hint` is not `concept` or a subtype of it, with
+/// [`DbError::Schema`].
 ///
 /// `belief_tier_root` names the root type of the belief tier, which the schema
 /// must contain (otherwise [`DbError::Schema`]). A concept the sync would
@@ -227,10 +229,7 @@ pub async fn sync_bundle(
         });
     }
 
-    // 3. Ensure the bundle entity and its metadata.
-    upsert_bundle(&tx, manifest).await?;
-
-    // 4. Plan against the concepts this bundle contains, and split its orphans
+    // 3. Plan against the concepts this bundle contains, and split its orphans
     //    into those it owns alone and those another bundle also contains.
     let plan = plan_sync(&manifest.concepts, &owned_hashes(name, &stored));
     let (gc_delete, gc_release) = split_gc(name, &plan.to_delete, &stored);
@@ -242,6 +241,22 @@ pub async fn sync_bundle(
         release = gc_release.len(),
         "Computed sync plan"
     );
+    let new_concepts: Vec<&OkfConcept> = plan
+        .to_insert
+        .iter()
+        .map(|&i| &manifest.concepts[i])
+        .collect();
+    let write_concepts: Vec<&OkfConcept> = plan
+        .to_insert
+        .iter()
+        .chain(plan.to_update.iter())
+        .map(|&i| &manifest.concepts[i])
+        .collect();
+    // Refuse a type_hint outside `concept`'s closure before anything is written.
+    check_type_hints(&tx, &write_concepts).await?;
+
+    // 4. Ensure the bundle entity and its metadata.
+    upsert_bundle(&tx, manifest).await?;
 
     // 5. Refuse to delete a concept a belief edge references, then garbage-collect
     //    orphans: delete those this bundle owns alone (with their OKF relations,
@@ -265,28 +280,8 @@ pub async fn sync_bundle(
         .collect();
     clear_concept_content(&tx, &update_ids).await?;
 
-    let new_concepts: Vec<&OkfConcept> = plan
-        .to_insert
-        .iter()
-        .map(|&i| &manifest.concepts[i])
-        .collect();
-    let write_concepts: Vec<&OkfConcept> = plan
-        .to_insert
-        .iter()
-        .chain(plan.to_update.iter())
-        .map(|&i| &manifest.concepts[i])
-        .collect();
-    let concept_types = if write_concepts
-        .iter()
-        .any(|c| c.type_hint.as_deref().is_some_and(|t| t != "concept"))
-    {
-        Some(concept_subtypes(&tx).await?)
-    } else {
-        None
-    };
-
-    insert_concept_entities(&tx, &new_concepts, concept_types.as_ref()).await?;
-    attach_concept_content(&tx, &write_concepts, concept_types.as_ref()).await?;
+    insert_concept_entities(&tx, &new_concepts).await?;
+    attach_concept_content(&tx, &write_concepts).await?;
 
     // 7. Containment of written concepts in this bundle. The not-exists guard
     //    makes this a no-op for updated concepts, whose containment was preserved.
@@ -539,25 +534,28 @@ async fn concept_subtypes(tx: &Transaction) -> Result<HashSet<String>, DbError> 
     Ok(out)
 }
 
-/// Checks that `type_name` is a valid label naming `concept` or one of its
-/// subtypes. `concept_types` is `None` only when no written concept carries a
-/// `type_hint` other than `concept`.
-fn check_concept_type(
-    type_name: &str,
-    concept_types: Option<&HashSet<String>>,
-) -> Result<(), DbError> {
-    validate_schema_label(type_name)?;
-    let known = match concept_types {
-        Some(types) => types.contains(type_name),
-        None => type_name == "concept",
-    };
-    if known {
-        Ok(())
-    } else {
-        Err(DbError::Schema(format!(
-            "type_hint {type_name:?} is not a subtype of `concept`"
-        )))
+/// Checks that every written concept's `type_hint` is a valid label naming
+/// `concept` or one of its subtypes. The subtype closure is read once, and only
+/// when some hint names a type other than `concept`.
+async fn check_type_hints(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<(), DbError> {
+    let hints: HashSet<&str> = concepts
+        .iter()
+        .map(|c| c.type_hint.as_deref().unwrap_or("concept"))
+        .filter(|&t| t != "concept")
+        .collect();
+    if hints.is_empty() {
+        return Ok(());
     }
+    let concept_types = concept_subtypes(tx).await?;
+    for type_name in hints {
+        validate_schema_label(type_name)?;
+        if !concept_types.contains(type_name) {
+            return Err(DbError::Schema(format!(
+                "type_hint {type_name:?} is not a subtype of `concept`"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Garbage-collects concepts removed from the bundle. It is given only concepts
@@ -646,12 +644,11 @@ async fn clear_concept_content(tx: &Transaction, ids: &[&str]) -> Result<(), DbE
 }
 
 /// Inserts the entity and concept-id key for brand-new concepts, as the subtype
-/// each one's `type_hint` names (which must be in `concept_types`). Their content
-/// is attached separately by [`attach_concept_content`].
+/// each one's `type_hint` names (already checked by [`check_type_hints`]). Their
+/// content is attached separately by [`attach_concept_content`].
 async fn insert_concept_entities(
     tx: &Transaction,
     concepts: &[&OkfConcept],
-    concept_types: Option<&HashSet<String>>,
 ) -> Result<(), DbError> {
     let mut grouped: HashMap<&str, Vec<&OkfConcept>> = HashMap::new();
     for c in concepts {
@@ -659,7 +656,7 @@ async fn insert_concept_entities(
         grouped.entry(type_name).or_default().push(c);
     }
     for type_name in grouped.keys() {
-        check_concept_type(type_name, concept_types)?;
+        validate_schema_label(type_name)?;
     }
 
     for (type_name, type_concepts) in grouped {
@@ -678,11 +675,7 @@ async fn insert_concept_entities(
 /// already exists. Used for new concepts (after [`insert_concept_entities`]) and
 /// for updated concepts (after [`clear_concept_content`]), batched by attribute
 /// kind — one query each regardless of concept count.
-async fn attach_concept_content(
-    tx: &Transaction,
-    concepts: &[&OkfConcept],
-    concept_types: Option<&HashSet<String>>,
-) -> Result<(), DbError> {
+async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<(), DbError> {
     if concepts.is_empty() {
         return Ok(());
     }
@@ -738,7 +731,7 @@ async fn attach_concept_content(
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
 
     // Extension-declared typed attributes (e.g. cyber-gecko's stix-id, ioc-value).
-    attach_typed_attributes(tx, concepts, concept_types).await?;
+    attach_typed_attributes(tx, concepts).await?;
 
     Ok(())
 }
@@ -749,12 +742,12 @@ async fn attach_concept_content(
 /// subtype (its `type_hint`) rather than the generic `concept`, because a typed
 /// attribute is owned by that subtype and TypeDB would reject `has <attr>` on the
 /// too-general `concept` type. Both interpolated labels are extension-supplied,
-/// so each is validated as a TypeQL identifier and the subtype must be in
-/// `concept_types`; values flow through the parameterized `given` stage.
+/// so each is validated as a TypeQL identifier (the subtype was checked against
+/// `concept`'s closure by [`check_type_hints`]); values flow through the
+/// parameterized `given` stage.
 async fn attach_typed_attributes(
     tx: &Transaction,
     concepts: &[&OkfConcept],
-    concept_types: Option<&HashSet<String>>,
 ) -> Result<(), DbError> {
     // Keyed on (entity subtype, attribute name); value carries the TypeQL value
     // type and the accumulated rows.
@@ -781,7 +774,7 @@ async fn attach_typed_attributes(
     }
 
     for (type_name, attr) in groups.keys() {
-        check_concept_type(type_name, concept_types)?;
+        validate_schema_label(type_name)?;
         validate_schema_label(attr)?;
     }
 

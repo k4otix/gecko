@@ -339,6 +339,24 @@ async fn unknown_type_hint_is_refused_as_a_schema_error() {
     };
     assert!(m.contains("no-such-type"), "{m}");
     assert_eq!(sole_file_hash(&mut db).await, stored_hash);
+
+    // Update path: a changed concept with no typed attribute whose type_hint is
+    // unknown, or names a type outside `concept`.
+    for hint in ["no-such-type", "bundle"] {
+        let mut changed = bundle.clone();
+        changed.concepts[0].file_hash = format!("{stored_hash}-changed");
+        changed.concepts[0].type_hint = Some(hint.into());
+        assert!(changed.concepts[0].typed_attributes.is_empty());
+        let result = sync_bundle(&mut db, &changed, &[], BELIEF_TIER_ROOT).await;
+        let Err(DbError::Schema(m)) = result else {
+            panic!("expected a schema error for type_hint {hint:?}, got {result:?}");
+        };
+        assert!(
+            m.contains(&format!("type_hint {hint:?} is not a subtype of `concept`")),
+            "{m}"
+        );
+        assert_eq!(sole_file_hash(&mut db).await, stored_hash);
+    }
 }
 
 #[tokio::test]
