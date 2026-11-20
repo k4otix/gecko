@@ -73,6 +73,14 @@ fn sdo_type_hint(type_str: &str) -> &'static str {
     }
 }
 
+/// Whether the cyber-schema subtype `type_hint` owns `platform`.
+fn owns_platform(type_hint: &str) -> bool {
+    matches!(
+        type_hint,
+        "attack-pattern" | "malware" | "tool" | "data-source"
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedRelation {
     pub source: String,
@@ -150,7 +158,13 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
                 value: TypedAttrValue::Bool(revoked),
             });
         }
-        if let Some(ext_refs) = obj.get("external_references").and_then(Value::as_array) {
+        // ATT&CK reuses an id across a live object and its deprecated or revoked
+        // predecessors; only the live object claims the unique attack-id.
+        let retired = ["x_mitre_deprecated", "revoked"]
+            .iter()
+            .any(|k| obj.get(*k).and_then(Value::as_bool) == Some(true));
+        if !retired && let Some(ext_refs) = obj.get("external_references").and_then(Value::as_array)
+        {
             for r in ext_refs {
                 if get_str(r, "source_name") == Some("mitre-attack")
                     && let Some(ext_id) = get_str(r, "external_id")
@@ -160,7 +174,10 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
             }
         }
         // platform and kill-chain-phase are @card(0..) — one typed attribute each.
-        if let Some(platforms) = obj.get("x_mitre_platforms").and_then(Value::as_array) {
+        // Platforms are written only on the subtypes that own `platform`.
+        if owns_platform(type_hint)
+            && let Some(platforms) = obj.get("x_mitre_platforms").and_then(Value::as_array)
+        {
             for p in platforms.iter().filter_map(Value::as_str) {
                 typed.push(str_attr("platform", p));
             }
@@ -256,16 +273,23 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
     // resolve to an in-bundle concept becomes a typed relation; if an endpoint is
     // an external reference (not in this bundle) its type is unknown and the
     // relation is dropped to a concept-link so the reference is still recorded.
+    // A relation whose resolved subtypes cannot play its roles (an ATT&CK shape
+    // the cyber schema does not model) is also recorded as a concept-link.
     let mut typed_rels = Vec::new();
     for (source, target, rel_type) in raw_rels {
         match (id_types.get(source.as_str()), id_types.get(target.as_str())) {
-            (Some(source_type), Some(target_type)) => typed_rels.push(TypedRelation {
-                source,
-                target,
-                source_type: source_type.to_string(),
-                target_type: target_type.to_string(),
-                rel_type,
-            }),
+            (Some(source_type), Some(target_type))
+                if rel_roles(&rel_type)
+                    .is_some_and(|shape| shape.admits(source_type, target_type)) =>
+            {
+                typed_rels.push(TypedRelation {
+                    source,
+                    target,
+                    source_type: source_type.to_string(),
+                    target_type: target_type.to_string(),
+                    rel_type,
+                })
+            }
             _ => links.push(gecko_engine::okf::types::OkfLink {
                 source_id: source,
                 target_id: target,
@@ -288,23 +312,134 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
     ))
 }
 
-/// A resolved relation shape: `(relation-label, source-role, target-role)`.
-type RelShape = (&'static str, &'static str, &'static str);
+/// A resolved relation shape: the TypeDB relation label, its source and target
+/// role labels, and the cyber subtypes that play each role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RelShape {
+    relation: &'static str,
+    source_role: &'static str,
+    target_role: &'static str,
+    source_players: &'static [&'static str],
+    target_players: &'static [&'static str],
+}
 
-/// Resolves a STIX/ATT&CK relationship type to its TypeDB relation label and the
-/// source/target role labels. These labels are fixed schema identifiers (never
-/// user data), so they are the only part safe to interpolate into query text.
-fn rel_roles(rel_type: &str) -> Option<RelShape> {
-    match rel_type {
-        "indicates" => Some(("indicates", "indicator-source", "indicated")),
-        "uses" => Some(("uses", "user", "used")),
-        "attributed-to" => Some(("attributed-to", "attributee", "actor")),
-        "mitigates" => Some(("mitigates", "mitigation", "mitigated")),
-        "targets" => Some(("targets", "threat-source", "target")),
-        "detects" => Some(("requires-evidence", "required", "technique")),
-        "evidence-of" => Some(("evidence-of", "evidence-component", "evidence-source")),
-        _ => None,
+impl RelShape {
+    /// Whether `source_type` and `target_type` can play this shape's roles.
+    fn admits(&self, source_type: &str, target_type: &str) -> bool {
+        self.source_players.contains(&source_type) && self.target_players.contains(&target_type)
     }
+}
+
+/// Every STIX/ATT&CK relationship type the adapter links as a typed relation.
+/// The labels are fixed schema identifiers (never user data), so they are the
+/// only part safe to interpolate into query text. The player lists mirror the
+/// cyber schema's `plays` declarations.
+const REL_SHAPES: &[(&str, RelShape)] = &[
+    (
+        "indicates",
+        RelShape {
+            relation: "indicates",
+            source_role: "indicator-source",
+            target_role: "indicated",
+            source_players: &["indicator"],
+            target_players: &[
+                "attack-pattern",
+                "intrusion-set",
+                "threat-actor",
+                "campaign",
+                "malware",
+                "tool",
+            ],
+        },
+    ),
+    (
+        "uses",
+        RelShape {
+            relation: "uses",
+            source_role: "user",
+            target_role: "used",
+            source_players: &[
+                "intrusion-set",
+                "threat-actor",
+                "campaign",
+                "malware",
+                "tool",
+            ],
+            target_players: &["attack-pattern", "malware", "tool"],
+        },
+    ),
+    (
+        "attributed-to",
+        RelShape {
+            relation: "attributed-to",
+            source_role: "attributee",
+            target_role: "actor",
+            source_players: &["intrusion-set", "campaign"],
+            target_players: &["intrusion-set", "threat-actor"],
+        },
+    ),
+    (
+        "mitigates",
+        RelShape {
+            relation: "mitigates",
+            source_role: "mitigation",
+            target_role: "mitigated",
+            source_players: &["course-of-action"],
+            target_players: &["attack-pattern", "malware", "tool", "indicator"],
+        },
+    ),
+    (
+        "targets",
+        RelShape {
+            relation: "targets",
+            source_role: "threat-source",
+            target_role: "target",
+            source_players: &["intrusion-set", "threat-actor", "campaign"],
+            target_players: &["host-asset"],
+        },
+    ),
+    (
+        "detects",
+        RelShape {
+            relation: "requires-evidence",
+            source_role: "required",
+            target_role: "technique",
+            source_players: &["data-component"],
+            target_players: &["attack-pattern"],
+        },
+    ),
+    (
+        "evidence-of",
+        RelShape {
+            relation: "evidence-of",
+            source_role: "evidence-component",
+            target_role: "evidence-source",
+            source_players: &["data-component"],
+            target_players: &["data-source"],
+        },
+    ),
+];
+
+/// Every `(relation, role, players)` the adapter links, for checking the player
+/// lists against the schema's `plays` declarations.
+pub fn typed_relation_players() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+    REL_SHAPES
+        .iter()
+        .flat_map(|(_, s)| {
+            [
+                (s.relation, s.source_role, s.source_players),
+                (s.relation, s.target_role, s.target_players),
+            ]
+        })
+        .collect()
+}
+
+/// Resolves a STIX/ATT&CK relationship type to its relation shape.
+fn rel_roles(rel_type: &str) -> Option<RelShape> {
+    REL_SHAPES
+        .iter()
+        .find(|(t, _)| *t == rel_type)
+        .map(|(_, shape)| *shape)
 }
 
 /// Builds the writes that link the typed SROs collected by [`to_okf`], one
@@ -333,7 +468,13 @@ pub fn cyber_post_sync(typed_rels: &[TypedRelation]) -> Vec<GraphWrite> {
     let mut writes: Vec<GraphWrite> = by_shape
         .into_iter()
         .map(
-            |(((rel_name, source_role, target_role), source_type, target_type), pairs)| {
+            |((shape, source_type, target_type), pairs)| {
+                let RelShape {
+                    relation: rel_name,
+                    source_role,
+                    target_role,
+                    ..
+                } = shape;
                 let query = format!(
                     "given $src: string, $tgt: string; \
                      match $s isa {source_type}, has concept-id $sid; $sid == $src; \
