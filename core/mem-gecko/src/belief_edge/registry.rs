@@ -586,8 +586,14 @@ mod tests {
     #[test]
     fn refuses_an_extension_that_modifies_a_base_type_or_function() {
         let decls = [decl("probe-link")];
-        let rows: [(&str, &str, &str); 11] = [
+        let rows: [(&str, &str, &str); 13] = [
             ("undefine belief;", "undefine", "belief"),
+            (
+                "redefine relation my-edge sub supersession;",
+                "redefine",
+                "supersession",
+            ),
+            ("redefine entity belief sub foo;", "redefine", "belief"),
             (
                 "undefine owns confidence from belief;",
                 "undefine",
@@ -1037,6 +1043,10 @@ mod tests {
                 None,
             ),
             (
+                "define relation my-edge, relates claim, relates subject; relation parent-edge, relates claim, relates subject;",
+                Some("redefine relation my-edge sub parent-edge;"),
+            ),
+            (
                 "define relation my-edge, relates claim, relates subject; my-edge sub supersession;",
                 None,
             ),
@@ -1154,6 +1164,10 @@ mod tests {
             (
                 "  entity sighting;\n  sighting sub execution-episode;\n",
                 None,
+            ),
+            (
+                "  entity Mid sub execution-episode;\n  entity sighting;\n",
+                Some("redefine entity sighting sub Mid;"),
             ),
             (
                 "  entity Mid sub execution-episode;\n  entity sighting sub Mid;\n",
