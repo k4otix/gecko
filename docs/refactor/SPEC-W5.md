@@ -698,7 +698,6 @@ its check.
 > label after `isa` or directly before `(`, which also catches anonymous-relation inserts. The
 > positive control asserts that `core/mem-gecko/src/tql.rs` shows `belief` and `supersession`
 > hits; every other file must show none. Known limit: the unit is a single string literal, so a write assembled across `concat!`/`format!` pieces is not seen. Tracked as ledger item A3.
-
 >
 > **Implementation note (2026-11-20, not ratified text) — rows 2, 3 and 8.**
 >
@@ -706,10 +705,11 @@ its check.
 >   production database is driven only through the `gecko` binary. The expectation is a reference
 >   database driven by in-process `MemWriter` and `edge_writer_for("cyber-gecko")` calls, which keeps
 >   §2.2 row 1 literally: the harness's own MemWriter calls are the accounting. The measure is the
->   production fingerprint: per label, instance, attribute-ownership and role-player counts (the
->   attribute measure reads the schema's owner set once and counts `has` only for labels in it, because
->   TypeDB 3.15 errors on a count over a label that owns nothing). The §1.2 disposition table has two
->   classes, *writer-only* and *owed*; an *allowlisted* class was dropped because it had no entries.
+>   production fingerprint: per label, instance, attribute-ownership and role-player counts. On
+>   TypeDB 3.15 a direct `has $a` count and a per-label `owns` read both error on a label that owns
+>   nothing (INF11/INF6), so the attribute measure reads the schema's owner set once and counts `has`
+>   only for labels in it. The §1.2 disposition table has two classes, *writer-only* and *owed*; an
+>   *allowlisted* class was dropped because it had no entries.
 >   Labels with no ledger owner are owned by D-O. The mem path derives b2 before the recall, because
 >   recall surfaces beliefs only and would otherwise return no chunks.
 > - **Row 3 deviation.** Since D-D step 1 a bridge holds only `Arc<dyn GraphReader>`, so a stub composed

@@ -61,7 +61,7 @@ fn belief_tier_write_message(changes: &[BeliefTierChange]) -> String {
     let list: Vec<String> = changes.iter().map(ToString::to_string).collect();
     format!(
         "sync refused: it changed the belief tier ({}). Only the epistemic write path may \
-         write beliefs; nothing was committed.",
+         change the belief tier; nothing was committed.",
         list.join(", ")
     )
 }

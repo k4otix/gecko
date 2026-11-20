@@ -65,6 +65,10 @@ proven through the real sandbox against live TypeDB.
   import), or sync into a fresh database. Superseding the belief does not help,
   since the edge stays in the graph. Retiring rather than deleting such a record
   is ledger item O6.
+- **Cost.** Every sync takes two fingerprints. On an unchanged-bundle sync with
+  mem and cyber composed, in a debug build, a sync took about 25.4 ms against
+  about 4.8 ms with the fingerprints stubbed, so about 20.6 ms. The cost grows
+  with the belief tier, because each count scans that label's instances.
 
 ## Consolidation ("dreaming") daemon is a scaffold
 

@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 //
 // `RunContext`/`EpistemicWriter`/`EpistemicReader`/`SemanticIndex`/`Embedder` live
 // alongside `GeckoExtension`/`HostImportDef` in this same crate. mem-gecko
-// implements them; `gecko-engine` re-exports them for sandbox host-fn injection.
+// implements them; `gecko-engine` re-exports them for the sandbox host bridge.
 pub mod belief_edge;
 pub mod epistemic;
 pub mod error;

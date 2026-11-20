@@ -211,7 +211,7 @@ const d = gecko.callExtension("cyber-gecko", "disposition", {{ logic_id: {logic}
 /// The rig's working directory: the config, cache, OKF bundle and STIX bundle the
 /// binary is driven with, and a copy of the OKF bundle without `rig_cyber`.
 struct Rig {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     config: PathBuf,
     cache: PathBuf,
     okf_dir: PathBuf,
@@ -259,7 +259,7 @@ impl Rig {
         std::fs::write(&stix, STIX_BUNDLE).expect("write stix.json");
 
         Rig {
-            _tmp: tmp,
+            tmp,
             config,
             cache,
             okf_dir,
@@ -273,10 +273,10 @@ fn path_str(p: &std::path::Path) -> &str {
     p.to_str().expect("utf-8 temp path")
 }
 
-/// Runs the `gecko` binary against `db` with the rig's config and cache; asserts it
-/// succeeds and returns its stdout.
-async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
-    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_gecko"))
+/// Runs the `gecko` binary against `db` with the rig's config and cache and
+/// returns its output.
+async fn gecko_output(rig: &Rig, db: &TestDb, args: &[&str]) -> std::process::Output {
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_gecko"))
         .arg("--config")
         .arg(&rig.config)
         .arg("--database")
@@ -285,7 +285,13 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
         .env("GECKO_CACHE_DIR", &rig.cache)
         .output()
         .await
-        .expect("spawn gecko");
+        .expect("spawn gecko")
+}
+
+/// Runs the `gecko` binary against `db` with the rig's config and cache; asserts it
+/// succeeds and returns its stdout.
+async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
+    let out = gecko_output(rig, db, args).await;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success(),
@@ -299,16 +305,7 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
 /// its stdout followed by its stderr. The binary logs a command's error through
 /// `tracing`, whose writer is stdout.
 async fn gecko_expect_failure(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
-    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_gecko"))
-        .arg("--config")
-        .arg(&rig.config)
-        .arg("--database")
-        .arg(&db.name)
-        .args(args)
-        .env("GECKO_CACHE_DIR", &rig.cache)
-        .output()
-        .await
-        .expect("spawn gecko");
+    let out = gecko_output(rig, db, args).await;
     let output = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -644,7 +641,7 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
         rig_ref.router(),
     ))));
     let embedder = Arc::new(StubEmbedder::new(384));
-    let index = HnswIndex::open(rig._tmp.path().join("ref.hnsw"), embedder.model_id(), 384)
+    let index = HnswIndex::open(rig.tmp.path().join("ref.hnsw"), embedder.model_id(), 384)
         .expect("open ref index");
     let registry = BeliefEdgeRegistry::from_extensions(
         CORE_SCHEMA,
@@ -1143,6 +1140,10 @@ async fn gc_of_a_concept_a_belief_edge_references_is_refused() {
     assert!(
         output.contains(CYBER_PLAYBOOK),
         "gecko sync output does not name {CYBER_PLAYBOOK}:\n{output}"
+    );
+    assert!(
+        output.contains("concept(s) a belief edge references"),
+        "gecko sync output is not the belief-edge GC refusal:\n{output}"
     );
     assert_eq!(
         fingerprint(&db).await,
