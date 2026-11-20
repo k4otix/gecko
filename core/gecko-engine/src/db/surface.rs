@@ -179,18 +179,18 @@ pub async fn belief_tier_surface(
         return Err(DbError::Query(format!("{what}: expected a row stream")));
     }
     let mut rows = answer.into_rows();
-    // Scoped role label -> (owning relation label, player type labels).
-    let mut roles: HashMap<String, (String, HashSet<String>)> = HashMap::new();
+    // Scoped role label -> (every relation relating it, player type labels). A
+    // relation subtype reports each inherited role under its parent's scoped
+    // label, so one role can have several relating relations.
+    let mut roles: HashMap<String, (HashSet<String>, HashSet<String>)> = HashMap::new();
     while let Some(item) = rows.next().await {
         let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
         let player = string_col(&row, "tl", what)?;
         let role = string_col(&row, "rl", what)?;
         let relation = string_col(&row, "reln", what)?;
-        roles
-            .entry(role)
-            .or_insert_with(|| (relation, HashSet::new()))
-            .1
-            .insert(player);
+        let (relating, players) = roles.entry(role).or_default();
+        relating.insert(relation);
+        players.insert(player);
     }
 
     let closure_plays = roles
@@ -199,7 +199,7 @@ pub async fn belief_tier_surface(
     let relations: BTreeSet<String> = roles
         .into_values()
         .filter(|(_, players)| !players.is_empty() && players.iter().all(|p| entities.contains(p)))
-        .map(|(relation, _)| relation)
+        .flat_map(|(relating, _)| relating)
         .collect();
     if closure_plays && relations.is_empty() {
         return Err(DbError::Schema(format!(
@@ -255,7 +255,7 @@ async fn count(
 async fn attribute_owners(tx: &Transaction) -> Result<HashSet<String>, DbError> {
     let what = "belief-tier fingerprint attribute owners";
     let answer = tx
-        .query("match $s sub $t; $s owns $at; let $tl = label($t); select $tl;")
+        .query("match $s sub $t; $s owns $at; let $tl = label($t); select $tl; distinct;")
         .await
         .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
     if !answer.is_row_stream() {

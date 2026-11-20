@@ -92,6 +92,33 @@ async fn surface_of_the_mem_schema_has_the_root_closure_and_its_belief_edges() {
     );
 }
 
+/// A relation subtype inherits its parent's roles, and TypeDB reports each
+/// inherited role under the parent's scoped label on both relations, so the
+/// surface must keep every relation relating a qualifying role.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn surface_keeps_a_belief_edge_and_its_subtype() {
+    let db = schema_db("gecko_test_surface", true).await;
+    let mut router = db.router();
+    router
+        .apply_schema(
+            "define relation test-rests-on sub rests-on \
+             @doc(\"A test-only subtype of rests-on that inherits its roles.\");",
+        )
+        .await
+        .expect("test subtype of rests-on applies");
+    let tx = router.begin_read().await.expect("read tx");
+    let surface = belief_tier_surface(&tx, BELIEF_TIER_ROOT)
+        .await
+        .expect("surface of the mem schema with a rests-on subtype");
+    for label in ["rests-on", "test-rests-on"] {
+        assert!(
+            surface.relations.contains(label),
+            "relations must include `{label}`; got {:?}",
+            surface.relations
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn surface_without_the_root_is_an_error() {
     let db = schema_db("gecko_test_surface", false).await;
@@ -174,17 +201,21 @@ async fn fingerprint_counts_instances_attributes_and_links() {
     };
 
     let tx = router.begin_write().await.expect("write tx");
-    let mut given = GivenRows::new(vec!["a".to_string(), "b".to_string()], 1);
+    let mut given = GivenRows::new(
+        vec!["a".to_string(), "b".to_string(), "state".to_string()],
+        1,
+    );
     given
         .push_row(vec![
             GivenRowEntry::Value(Value::String("mem/bel/a".to_string())),
             GivenRowEntry::Value(Value::String("mem/bel/b".to_string())),
+            GivenRowEntry::Value(Value::String("asserted".to_string())),
         ])
         .expect("given row");
     tx.query_with_rows(
-        "given $a: string, $b: string; \
-         insert $ba isa belief, has concept-id == $a, has belief-state \"asserted\"; \
-                $bb isa belief, has concept-id == $b, has belief-state \"asserted\"; \
+        "given $a: string, $b: string, $state: string; \
+         insert $ba isa belief, has concept-id == $a, has belief-state == $state; \
+                $bb isa belief, has concept-id == $b, has belief-state == $state; \
                 (resting: $ba, assumption: $bb) isa rests-on;",
         given,
     )
