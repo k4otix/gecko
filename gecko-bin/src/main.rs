@@ -963,7 +963,10 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         // Surface a stream error rather than masking it as "playbook not found".
         if let Some(item) = stream.next().await {
             let doc = item.context("error reading playbook document stream")?;
-            doc_json = serde_json::to_value(doc.into_json()).ok();
+            doc_json = Some(
+                serde_json::to_value(doc.into_json())
+                    .context("failed to serialize the playbook document")?,
+            );
         }
     }
 
