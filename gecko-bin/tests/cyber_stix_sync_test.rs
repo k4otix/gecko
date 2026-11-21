@@ -362,3 +362,24 @@ async fn typed_relation_players_match_the_schema() {
         }
     }
 }
+
+#[tokio::test]
+async fn required_attributes_of_the_live_cyber_schema() {
+    let test_db = TestDb::new("gecko_test_stix_required");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+
+    let schema = db.database_schema().await.expect("database schema");
+    let required = gecko_engine::db::required::required_attributes(&schema).expect("parse");
+    for (entity, attrs) in [
+        ("observable", &["concept-id", "ioc-value", "ioc-type"][..]),
+        ("attack-pattern", &["concept-id"][..]),
+    ] {
+        let got = required
+            .get(entity)
+            .unwrap_or_else(|| panic!("{entity} missing from {required:?}"));
+        for a in attrs {
+            assert!(got.contains(*a), "{entity} must require {a}: {got:?}");
+        }
+    }
+}
