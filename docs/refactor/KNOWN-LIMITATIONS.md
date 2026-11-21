@@ -82,4 +82,7 @@ proven through the real sandbox against live TypeDB.
 `core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait + a wired
 no-op `tick`. Every other job is a build-later stub that returns
 `EpistemicError::NotYetImplemented` (no panic). The one real consolidation operation
-that ships is per-pair `MemWriter::dedup_episodes`.
+that ships is per-pair `MemWriter::dedup_episodes`. A daemon tick is not exempt from
+the belief-tier accounting: the reconciliation rig drives one whose tick calls
+`dedup_episodes` and requires every belief-tier label its writes change to be accounted
+for, as for any other caller.

@@ -47,8 +47,12 @@ references in specs and commit messages still resolve.
   crate alone, `scripts/check-extension-deps.sh` guards it in CI, and no extension is offered the
   writer) and **A4** ✅ (a sync refuses to change the belief tier, in production, and retires rather
   than deletes a concept a belief edge references, see O6; the
-  `memwriter_is_the_sole_belief_tier_writer` rig and the hostile-write test). **C8** is unblocked.
+  `memwriter_is_the_sole_belief_tier_writer` rig and the hostile-write test).
   Owed follow-on: Track M for the belief-tier types no production path writes.
+- **Landed in the mem write-counts PR (branch `fix/mem-write-counts`):** **A11** entries 1–3 ✅
+  (a derive, contest, `rests_on` or `record_prediction` whose ids match nothing fails and
+  commits nothing; the sandbox bridge refuses a malformed id list) and **C8** ✅ (a daemon tick
+  is a counted drive in the reconciliation rig).
 
 ## Sequence
 
@@ -63,14 +67,14 @@ D-B ✅ D-D ✅ ─► A1 ✅ ┬─► A2 ✅ + A9 ✅ ──► A3 ✅ green, 
 A6 contested half ─► needs D-E only (no seam)
 A7 ────────────────► no blocker
 A10 ✅ ─────────────► landed with A4
-A11 ───────────────► entries 1–3 no blocker; entry 4 needs a uniqueness decision
+A11 ───────────────► entries 1–3 ✅; entry 4 needs a uniqueness decision
 
 D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
 
 P1, P2 (F3 ✅) ─► buildable    P3 ─► no blocker
 
 C1, C2 ────────────────► buildable now
-C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I     C8 ─► unblocked (A4 ✅)
+C3 ──► needs D-H       C4–C6 ─► new methods     C7 ─► needs D-I     C8 ✅
 
 U1 ✅ ──────────────► server + driver on 3.15.0
 A12 ✅ ────────────► extension undefine/redefine of core/mem refused at schema time
@@ -84,7 +88,7 @@ S1 ✅ ─► A4 ✅ + A10 ✅ ─► S2 (needs D-L) ─► S3 (needs D-M)
 ```
 
 Recommended next, now that **O1**, **A4** and **A10** have landed: settle **D-L** so **S2** starts (the adapter rework
-in S2/S3 lands once, on the final OKF imports now in `gecko-extension-api`). **C8** is unblocked.
+in S2/S3 lands once, on the final OKF imports now in `gecko-extension-api`).
 
 ---
 
@@ -120,7 +124,7 @@ in one transaction, the `GeckoExtension` declaration hook — are A1's to settle
 | **A9** ✅ | **Read-only graph handle and neutral sync writes — LANDED in PR #57.** Cyber's bridge holds an `Arc<dyn GraphReader>` and a bound `BeliefEdgeWriter`; the post-sync hook returns `GraphWrite`s that run inside the sync transaction | SPEC-W5 §3.5 (D-D steps 1–2) | extension-API + engine + cyber | ✅ `failing_extension_write_rolls_back_the_whole_sync` (`gecko-bin/tests/bundle_sync_test.rs`), `post_sync_groups_relations_into_one_write_per_shape` (`extensions/cyber-gecko/src/stix/mod.rs`) |
 | **A10** ✅ | **Extensions depend only on `gecko-extension-api` — LANDED in the belief-tier guard PR.** `ExtensionCallback` and the OKF import types live in the API crate; `scripts/check-extension-deps.sh` fails CI if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine`; no extension is offered the `EpistemicWriter` (`inject_epistemic_host_fns` is removed) | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — |
 | **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
-| **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op; each op below gets an `expect_rows` count, ranked by guest reachability: (1) `derivation_op`, via `mem.derive`: one missing evidence id silently stores the belief as underived. Expect 1, since it is one conjunctive match. A behavior change for any playbook passing ids that match nothing today. (2) `contest_ops`, via `mem.contest`: a missing claim returns the id of an anomaly that was never written. Expect 1. (3) `rests_on_op` and `record_prediction_op`: not guest-exposed. Expect 1. (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs:188-189`), so the right count needs a decision first. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3: — ; entry 4: a uniqueness decision for predictions |
+| **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op. Entries 1–3 ✅ (mem write-counts PR): `derivation_op` (via `mem.derive`), the last op of `contest_ops` (via `mem.contest`), `rests_on_op` and `record_prediction_op` each require exactly one row, and the writer names the given ids in a `Storage` error ending "nothing was committed"; `contest` refuses a repeated claim, and the sandbox bridge and cyber's detect bridge refuse a non-array id list or a non-string entry. Still owed: (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs`), so the right count needs a decision first. Deferred, same shape, not guest-supplied ids: `retrieval_event_ops`, `informs_synthesis_op`, `set_was_used_op`, `set_retrieval_provenance_op`, and `tombstone_episode_op` (guarded only by a read in a separate transaction). Deferred, needs a `quickjs.wasm` rebuild: the guest drops a non-array `evidence` and turns a non-array `claims` into `[]` (`core/js-sandbox/src/main.rs`) before the host sees them. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3 ✅ `derive_with_a_missing_evidence_id_errors_and_commits_nothing`, `contest_with_a_missing_claim_errors_and_commits_nothing`, `rests_on_with_a_missing_assumption_errors_and_commits_nothing`, `record_prediction_on_a_missing_belief_errors_and_commits_nothing` (`core/mem-gecko/tests/writer_reader_integration.rs`), `belief_with_edges_and_a_missing_evidence_id_names_the_evidence` (`belief_edge_integration.rs`), `a_malformed_id_list_is_refused_before_the_writer_runs` (`mem_host.rs`); entry 4: a uniqueness decision for predictions |
 | **A12** ✅ | **Registry coverage of `undefine` and `redefine` — LANDED in PR #57.** The registry refuses an extension fragment or migration that `undefine`s or `redefine`s a type or function the core or mem schema introduces, including an own function whose redefined body names a base type. `check_extension_schemas` runs the check at schema time, before any schema is applied | SPEC-W5 §3.5 (D-B) | registry | ✅ `refuses_an_extension_that_modifies_a_base_type_or_function`, `accepts_an_extension_that_modifies_only_its_own_types`, `refuses_an_explicit_redefine_of_an_own_function_whose_body_names_a_base_type` (`belief_edge/registry.rs`); `check_refuses_an_extension_that_undefines_a_mem_type` (`gecko-bin/src/config.rs`); `apply_all_schemas_refuses_before_touching_the_database` (`gecko-bin/src/main.rs`) |
 
 Tests owed with these items (names reserved by the specs):
@@ -224,7 +228,7 @@ surfaces as existing, so the track is not uniformly blocked.
 | **C5** | Provenance summarize/collapse writer, then `summarize_archived_provenance` and `collapse_superseded_provenance` (was #17) | CONTRACT-W8 §2, §5 | New method; D-J |
 | **C6** | Episode rollup writer, then `rollup_high_volume_episodes` (was #18) | CONTRACT-W8 §2 | New sanctioned method |
 | **C7** | Blast-radius cache `precompute`/`invalidate` (was #19). The windowed traversal it depended on has landed (`blast-radius-at`) | CONTRACT-W8 §2a, §4 | D-I |
-| **C8** | `daemon_is_enumerated_by_the_monopoly_test` | CONTRACT-W8 §3 row 5 | — (A4 ✅) |
+| **C8** ✅ | `daemon_is_enumerated_by_the_monopoly_test` — LANDED in the mem write-counts PR as the `daemon tick` drive of `memwriter_is_the_sole_belief_tier_writer` (`gecko-bin/tests/belief_tier_reconciliation_test.rs`): a test daemon's tick dedups an episode pair, its delta must be non-empty, and every belief-tier label it changes must be accounted for or a writer-only entry naming it, as for any other drive | CONTRACT-W8 §3 row 5 | ✅ |
 
 The remaining six checks in CONTRACT-W8 §3 (rows 1–4, 6, 7) land with the job each one names:
 rows 1, 6, 7 with C1/C2; row 2 with C3; row 3 with C4; row 4 with C5/C6.

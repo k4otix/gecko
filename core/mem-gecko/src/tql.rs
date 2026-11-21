@@ -270,7 +270,7 @@ pub(crate) fn derivation_op(
     let body = format!(
         "match\n           {match_lines}         insert (derived: $b{source_roles}) isa derivation, has derivation-method == $dm{conf_frag};"
     );
-    Some(p.write(&body))
+    Some(p.write(&body).expecting(1))
 }
 
 /// `supersede`: link old → new and flip old's belief-state to "superseded".
@@ -339,7 +339,11 @@ pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -
            (memory: $an, origin: $run) isa source-link, has origin-kind == $kind;
            (owned: $an, owner: $ag) isa ownership;"
     );
-    vec![ensure_run(ctx), ensure_agent(ctx), p.write(&body)]
+    vec![
+        ensure_run(ctx),
+        ensure_agent(ctx),
+        p.write(&body).expecting(1),
+    ]
 }
 
 /// `rests_on`: a `rests-on` relation (resting depends on assumptions 1..).
@@ -362,7 +366,7 @@ pub(crate) fn rests_on_op(resting: &MemId, assumptions: &[MemId]) -> GraphWrite 
     let body = format!(
         "match\n           {match_lines}         insert (resting: $r{roles}) isa rests-on;"
     );
-    p.write(&body)
+    p.write(&body).expecting(1)
 }
 
 /// `record_prediction`: a `prediction-resolution` seeded with the predicted
@@ -375,6 +379,7 @@ pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
         "match $b isa belief, has concept-id $bc; $bc == $bid;
          insert (predicted-belief: $b) isa prediction-resolution, has predicted-probability == $pp;",
     )
+    .expecting(1)
 }
 
 // ── Rebuild-from-graph reads ──────────────────────────────────────────────────

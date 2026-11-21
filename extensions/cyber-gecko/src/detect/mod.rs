@@ -106,7 +106,7 @@ async fn claim(
     if !(0.0..=1.0).contains(&confidence) {
         return Err(format!("confidence {confidence} is outside [0.0, 1.0]"));
     }
-    let evidence = mem_ids(args, "evidence");
+    let evidence = mem_ids(args, "evidence")?;
 
     // Refuse to assert a claim about a logic or technique that does not exist.
     ensure_logic_and_technique(graph, &logic_id, &technique_id).await?;
@@ -163,7 +163,7 @@ async fn disposition(
         ));
     }
     // Alert/sighting references, if supplied, back the disposition belief.
-    let evidence = mem_ids(args, "evidence");
+    let evidence = mem_ids(args, "evidence")?;
     ensure_concept(graph, &logic_id).await?;
 
     let belief = BeliefDraft {
@@ -306,12 +306,23 @@ fn req_f64(args: &Value, field: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("missing required numeric argument '{field}'"))
 }
 
-/// Parses an optional JSON string array of belief/episode ids into `MemId`s.
-fn mem_ids(args: &Value, field: &str) -> Vec<MemId> {
-    args.get(field)
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(MemId::new).collect())
-        .unwrap_or_default()
+/// Parses an optional JSON string array of belief/episode ids into `MemId`s: absent or
+/// `null` ⇒ empty, and a non-array or a non-string entry is an error naming the field.
+fn mem_ids(args: &Value, field: &str) -> Result<Vec<MemId>, String> {
+    let Some(value) = args.get(field).filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let arr = value
+        .as_array()
+        .ok_or_else(|| format!("argument '{field}' must be an array of id strings"))?;
+    arr.iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.as_str().map(MemId::new).ok_or_else(|| {
+                format!("argument '{field}' must be an array of id strings; [{i}] is {v}")
+            })
+        })
+        .collect()
 }
 
 async fn ensure_concept(graph: &Arc<dyn GraphReader>, concept_id: &str) -> Result<(), String> {
@@ -378,9 +389,22 @@ mod tests {
     #[test]
     fn mem_ids_parses_string_array() {
         let args = json!({ "evidence": ["mem/ep/1", "mem/ep/2"] });
-        let ids = mem_ids(&args, "evidence");
+        let ids = mem_ids(&args, "evidence").unwrap();
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0].0, "mem/ep/1");
-        assert!(mem_ids(&args, "absent").is_empty());
+        assert!(mem_ids(&args, "absent").unwrap().is_empty());
+        assert!(
+            mem_ids(&json!({ "evidence": null }), "evidence")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mem_ids_rejects_a_non_array_or_a_non_string_entry() {
+        let e = mem_ids(&json!({ "evidence": "mem/ep/1" }), "evidence").unwrap_err();
+        assert!(e.contains("'evidence'"), "{e}");
+        let e = mem_ids(&json!({ "evidence": ["mem/ep/1", 7] }), "evidence").unwrap_err();
+        assert!(e.contains("'evidence'") && e.contains("[1]"), "{e}");
     }
 }

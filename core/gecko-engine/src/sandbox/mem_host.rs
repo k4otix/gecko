@@ -152,17 +152,23 @@ fn req_str(payload: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("mem call missing required string field '{key}'"))
 }
 
-/// Collects a `[MemId]` from an optional string-array field (absent ⇒ empty).
-fn mem_ids(payload: &Value, key: &str) -> Vec<MemId> {
-    payload
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(MemId::new))
-                .collect()
+/// Collects a `[MemId]` from an optional string-array field: absent or `null` ⇒ empty,
+/// and a non-array or a non-string entry is an error naming the field.
+fn mem_ids(payload: &Value, key: &str) -> Result<Vec<MemId>, String> {
+    let Some(field) = payload.get(key).filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let arr = field
+        .as_array()
+        .ok_or_else(|| format!("mem call field '{key}' must be an array of id strings"))?;
+    arr.iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v.as_str().map(MemId::new).ok_or_else(|| {
+                format!("mem call field '{key}' must be an array of id strings; [{i}] is {v}")
+            })
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Parses an optional RFC3339 datetime field, falling back to `default`.
@@ -220,7 +226,7 @@ pub async fn dispatch_mem_call(
         }
         MemHostFn::Derive => {
             let belief = belief_draft_from_payload(ctx, p)?;
-            let evidence = mem_ids(p, "evidence");
+            let evidence = mem_ids(p, "evidence")?;
             let method = p
                 .get("method")
                 .and_then(Value::as_str)
@@ -243,7 +249,7 @@ pub async fn dispatch_mem_call(
             Ok(json!({ "id": id.0 }))
         }
         MemHostFn::Contest => {
-            let claims = mem_ids(p, "claims");
+            let claims = mem_ids(p, "claims")?;
             let anomaly = writer.contest(ctx, &claims).await.map_err(err)?;
             Ok(json!({ "anomaly": anomaly.0 }))
         }
@@ -610,5 +616,133 @@ mod tests {
         .unwrap();
         let (q, _budget) = captured(&mock);
         assert!(q.as_of.is_some(), "valid RFC3339 as_of must route as-of-T");
+    }
+
+    // ── Writer bridge: id lists ─────────────────────────────────────────────
+
+    #[test]
+    fn mem_ids_treats_an_absent_key_as_empty() {
+        assert_eq!(mem_ids(&json!({"text": "x"}), "evidence"), Ok(vec![]));
+        assert_eq!(mem_ids(&json!({"evidence": null}), "evidence"), Ok(vec![]));
+        assert_eq!(
+            mem_ids(&json!({"evidence": ["mem/ep/1"]}), "evidence"),
+            Ok(vec![MemId::new("mem/ep/1")])
+        );
+    }
+
+    #[test]
+    fn mem_ids_rejects_a_non_array() {
+        let e = mem_ids(&json!({"evidence": "mem/ep/1"}), "evidence").unwrap_err();
+        assert!(e.contains("'evidence'"), "{e}");
+    }
+
+    #[test]
+    fn mem_ids_rejects_a_non_string_entry() {
+        let e = mem_ids(&json!({"claims": ["mem/bel/1", 42]}), "claims").unwrap_err();
+        assert!(e.contains("'claims'"), "{e}");
+        assert!(e.contains("[1]"), "{e}");
+    }
+
+    /// A writer that records the evidence `assert_belief` receives; every other
+    /// method panics.
+    #[derive(Default)]
+    struct ProbeWriter {
+        evidence: std::sync::Mutex<Option<Vec<MemId>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl EpistemicWriter for ProbeWriter {
+        async fn observe(&self, _: &RunContext, _: EpisodeDraft) -> Result<MemId, EpistemicError> {
+            unreachable!("observe")
+        }
+        async fn assert_belief(
+            &self,
+            _: &RunContext,
+            _: BeliefDraft,
+            evidence: &[MemId],
+            _: DerivationMethod,
+        ) -> Result<MemId, EpistemicError> {
+            *self.evidence.lock().unwrap() = Some(evidence.to_vec());
+            Ok(MemId::new("mem/bel/probe"))
+        }
+        async fn supersede(
+            &self,
+            _: &RunContext,
+            _: MemId,
+            _: BeliefDraft,
+            _: &str,
+        ) -> Result<MemId, EpistemicError> {
+            unreachable!("supersede")
+        }
+        async fn contest(
+            &self,
+            _: &RunContext,
+            _: &[MemId],
+        ) -> Result<gecko_extension_api::AnomalyId, EpistemicError> {
+            unreachable!("contest")
+        }
+        async fn rests_on(
+            &self,
+            _: &RunContext,
+            _: MemId,
+            _: &[MemId],
+        ) -> Result<(), EpistemicError> {
+            unreachable!("rests_on")
+        }
+        async fn record_prediction(
+            &self,
+            _: &RunContext,
+            _: MemId,
+            _: f64,
+        ) -> Result<(), EpistemicError> {
+            unreachable!("record_prediction")
+        }
+        async fn resolve_prediction(
+            &self,
+            _: &RunContext,
+            _: MemId,
+            _: gecko_extension_api::Outcome,
+        ) -> Result<(), EpistemicError> {
+            unreachable!("resolve_prediction")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_malformed_id_list_is_refused_before_the_writer_runs() {
+        let ctx = host_ctx();
+        let probe = Arc::new(ProbeWriter::default());
+        let writer: Arc<dyn EpistemicWriter> = probe.clone();
+        for (func, args) in [
+            (MemHostFn::Derive, json!({"text": "t", "evidence": [42]})),
+            (
+                MemHostFn::Derive,
+                json!({"text": "t", "evidence": "mem/ep/1"}),
+            ),
+            (MemHostFn::Contest, json!({"claims": {"a": "mem/bel/1"}})),
+        ] {
+            let call = bind_mem_call(&ctx, func, args.clone());
+            let e = dispatch_mem_call(&writer, &ctx, call)
+                .await
+                .expect_err("a malformed id list is refused");
+            assert!(e.contains("must be an array of id strings"), "{args}: {e}");
+        }
+        assert!(
+            probe.evidence.lock().unwrap().is_none(),
+            "the writer never ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn derive_without_evidence_reaches_the_writer_with_none() {
+        let ctx = host_ctx();
+        for args in [json!({"text": "t"}), json!({"text": "t", "evidence": null})] {
+            let probe = Arc::new(ProbeWriter::default());
+            let writer: Arc<dyn EpistemicWriter> = probe.clone();
+            let call = bind_mem_call(&ctx, MemHostFn::Derive, args.clone());
+            dispatch_mem_call(&writer, &ctx, call)
+                .await
+                .expect("a derive without evidence succeeds");
+            assert_eq!(*probe.evidence.lock().unwrap(), Some(vec![]), "{args}");
+        }
     }
 }

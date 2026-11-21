@@ -534,6 +534,34 @@ async fn missing_player_commits_no_belief() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn belief_with_edges_and_a_missing_evidence_id_names_the_evidence() {
+    let fx = Fixture::new().await;
+    seed_probe(&fx).await;
+    let w = writer_with(&fx, registry(PROBE_SCHEMA, &DECL_BY_REF));
+
+    let err = w
+        .assert_belief_with_edges(
+            &run_ctx(),
+            draft("probe missing evidence"),
+            &[MemId::new("mem/ep/does-not-exist")],
+            DerivationMethod::LlmSynthesis,
+            &[edge("probe-object", "t1", "yes")],
+        )
+        .await
+        .expect_err("a missing evidence id must not commit");
+    let EpistemicError::Storage(msg) = &err else {
+        panic!("expected Storage, got {err:?}");
+    };
+    assert!(msg.contains("mem/ep/does-not-exist"), "{msg}");
+    assert!(msg.contains("no memory item"), "{msg}");
+    assert!(!msg.contains("belief edge"), "{msg}");
+    assert_eq!(beliefs_titled(&fx, "probe missing evidence").await, 0);
+    assert_no_probe_links(&fx).await;
+
+    fx.drop_db().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn value_outside_values_commits_no_belief() {
     let fx = Fixture::new().await;
     seed_probe(&fx).await;
