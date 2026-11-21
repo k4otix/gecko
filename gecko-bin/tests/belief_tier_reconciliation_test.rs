@@ -302,17 +302,16 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
 }
 
 /// Runs the `gecko` binary against `db` like [`gecko`]; asserts it fails and returns
-/// its stdout followed by its stderr. The binary logs a command's error through
-/// `tracing`, whose writer is stdout.
+/// its stderr, where the binary logs a command's error through `tracing`.
 async fn gecko_expect_failure(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
     let out = gecko_output(rig, db, args).await;
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !out.status.success(),
+        "gecko {args:?} succeeded\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
+        String::from_utf8_lossy(&out.stdout)
     );
-    assert!(!out.status.success(), "gecko {args:?} succeeded\n{output}");
-    output
+    stderr
 }
 
 /// Runs a playbook through the binary and returns its JSON output.

@@ -554,16 +554,16 @@ mod cli {
         stdout
     }
 
-    /// Asserts failure and returns stdout + stderr (the tracing `error!` line is on stdout).
+    /// Asserts failure and returns stderr, where the tracing `error!` line is written.
     fn run_err(cmd: &mut Command) -> String {
         let out = cmd.output().expect("spawn gecko");
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success(),
+            "expected failure\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
+            String::from_utf8_lossy(&out.stdout)
         );
-        assert!(!out.status.success(), "expected failure\n{combined}");
-        combined
+        stderr
     }
 
     fn write_stix(dir: &Path, name: &str, body: &str) -> PathBuf {

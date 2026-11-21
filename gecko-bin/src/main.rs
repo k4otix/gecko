@@ -198,16 +198,18 @@ enum ModelCommands {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Initialize tracing. Parse the CLI first so `gecko doctor --quiet` can pin the
-    // default log floor to `error`: the TypeDB driver/router emit INFO on the
-    // doctor typedb check, and `--quiet` promises only the exit code is meaningful
-    // (setup.sh depends on it) — so their INFO must not leak to stderr. An explicit
-    // RUST_LOG still wins for anyone who wants the chatter back.
+    // Initialize tracing on stderr, keeping stdout for command output. Parse the CLI
+    // first so `gecko doctor --quiet` can pin the default log floor to `error`: the
+    // TypeDB driver/router emit INFO on the doctor typedb check, and `--quiet`
+    // promises only the exit code is meaningful (setup.sh depends on it), so their
+    // INFO must not leak. An explicit RUST_LOG still wins for anyone who wants the
+    // chatter back.
     let default_filter = match &cli.command {
         Commands::Doctor { quiet: true, .. } => "error",
         _ => "info",
     };
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
