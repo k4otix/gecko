@@ -406,6 +406,7 @@ pub(crate) fn enumerate_episodes_read() -> &'static str {
     "match
        $e isa episode, has concept-id $eid, has title $ttl, has event-time $et;
        not { $e isa retrieval-event; };
+       not { $e has consolidation-state \"tombstoned\"; };
        $own isa ownership, links (owned: $e, owner: $ag);
        $ag has agent-id $aid;
      fetch { \"id\": $eid, \"text\": $ttl, \"owner\": $aid, \"vf\": $et };"
@@ -519,37 +520,45 @@ pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> G
 
 // ── Consolidation ("dreaming") ────────────────────────────────────────────────
 
-/// The **provable** dedup guard: do episodes `a` and `b` share an identical
-/// content-hash? Content-hash is proxied by the episode `title` (the observed text),
-/// and equality is enforced structurally by binding BOTH titles to the SAME variable
-/// `$t` — so a match exists iff both episodes exist AND their content is identical.
-/// A non-empty result means the pair is a genuine duplicate (never a false collapse).
-pub(crate) fn episodes_share_content_read(
-    a: &MemId,
-    b: &MemId,
-) -> (String, Vec<String>, Vec<GraphValue>) {
+/// The guarded dedup write: one `match … update … insert …` pipeline that applies
+/// only when `keeper` and `loser` are both exactly `episode`s with the same title and
+/// event-time and identical owner sets, neither resolves a prediction or is already
+/// tombstoned, and `keeper` ingested first (ties broken by lowest concept-id). It
+/// tombstones `loser` and records a `consolidation-step`. Op index 2 of
+/// `[ensure_run, ensure_agent, this]`; it must match exactly one row, so a refused
+/// pair surfaces as a row-count mismatch on that op.
+pub(crate) fn dedup_episodes_ops(
+    ctx: &RunContext,
+    keeper: &MemId,
+    loser: &MemId,
+) -> Vec<GraphWrite> {
     let mut p = Params::new();
-    p.s("aid", a.0.clone());
-    p.s("bid", b.0.clone());
-    p.read(
-        "match
-           $a isa episode, has concept-id $ac, has title $t; $ac == $aid;
-           $b isa episode, has concept-id $bc, has title $t; $bc == $bid;
-         fetch { \"ok\": $ac };",
-    )
-}
-
-/// Tombstones the loser episode: advances its `consolidation-state` to "tombstoned"
-/// (the terminal state of the state machine). The graph is the SoR — the loser's row
-/// stays queryable as a tombstone; only its index vector is dropped (best-effort,
-/// caller-side). `update` upserts the single-valued `consolidation-state @card(0..1)`.
-pub(crate) fn tombstone_episode_op(loser: &MemId) -> GraphWrite {
-    let mut p = Params::new();
+    p.s("kid", keeper.0.clone());
     p.s("lid", loser.0.clone());
-    p.write(
-        "match $l isa episode, has concept-id $lc; $lc == $lid;
-         update $l has consolidation-state \"tombstoned\";",
-    )
+    p.s("rid", ctx.run_id.to_string());
+    p.s("aid", ctx.actor.0.clone());
+    p.s("act", "tombstone");
+    p.dt("now", ctx.occurred_at);
+    let body = "match
+           $k isa! episode, has concept-id $kc, has title $t, has event-time $et, has ingest-time $ki; $kc == $kid;
+           $l isa! episode, has concept-id $lc, has title $t, has event-time $et, has ingest-time $li; $lc == $lid;
+           { $ki < $li; } or { $ki == $li; $kc < $lc; };
+           not { $k has consolidation-state \"tombstoned\"; };
+           not { $l has consolidation-state \"tombstoned\"; };
+           not { $p1 isa prediction-resolution, links (resolving-episode: $k); };
+           not { $p2 isa prediction-resolution, links (resolving-episode: $l); };
+           not { $o1 isa ownership, links (owned: $k, owner: $a1); not { $o2 isa ownership, links (owned: $l, owner: $a1); }; };
+           not { $o3 isa ownership, links (owned: $l, owner: $a2); not { $o4 isa ownership, links (owned: $k, owner: $a2); }; };
+           $run isa doc-run, has run-id $rr; $rr == $rid;
+           $ag isa agent, has agent-id $aa; $aa == $aid;
+         update $l has consolidation-state \"tombstoned\";
+         insert (affected: $l, run: $run, performer: $ag) isa consolidation-step,
+           has consolidation-action == $act, has created-at == $now;";
+    vec![
+        ensure_run(ctx),
+        ensure_agent(ctx),
+        p.write(body).expecting(1),
+    ]
 }
 
 /// Retrieval-provenance retention (concrete helper): the `retrieval-event`s that

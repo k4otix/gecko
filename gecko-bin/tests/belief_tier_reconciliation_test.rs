@@ -475,7 +475,7 @@ impl LabelDisposition {
 }
 
 /// The ledger items that may own a disposition.
-const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6"];
+const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6", "C1"];
 
 /// Every belief-tier label no production step reaches, with how it is accounted for.
 const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
@@ -491,6 +491,13 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
         LabelDisposition::WriterOnly {
             methods: &["record_prediction", "resolve_prediction"],
             owner: "M2",
+        },
+    ),
+    (
+        "consolidation-step",
+        LabelDisposition::WriterOnly {
+            methods: &["dedup", "daemon tick"],
+            owner: "C1",
         },
     ),
     ("sighting", LabelDisposition::Owed { owner: "A8" }),
@@ -587,16 +594,23 @@ struct DedupDaemon {
 impl ConsolidationDaemon for DedupDaemon {
     async fn tick(
         &self,
-        _now: gecko_extension_api::DateTime,
+        now: gecko_extension_api::DateTime,
     ) -> Result<ConsolidationReport, gecko_extension_api::EpistemicError> {
+        let ctx = RunContext::new(ActorId::new("daemon"), ProvenanceSource::Manual, now);
         self.writer
-            .dedup_episodes(&self.keeper, &self.loser)
+            .dedup_episodes(&ctx, &self.keeper, &self.loser)
             .await?;
         Ok(ConsolidationReport {
             episodes_deduped: 1,
             ..Default::default()
         })
     }
+}
+
+/// Orders a duplicate pair as (keeper, loser): equal ingest times are broken by the
+/// lowest concept-id.
+fn by_id<'a>(a: &'a MemId, b: &'a MemId) -> (&'a MemId, &'a MemId) {
+    if a.0 < b.0 { (a, b) } else { (b, a) }
 }
 
 /// A writer-only drive on the reference database and the delta it caused.
@@ -933,8 +947,9 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
                     .expect("observe duplicate"),
             );
         }
+        let (keeper, loser) = by_id(&episodes[0], &episodes[1]);
         ref_writer
-            .dedup_episodes(&episodes[0], &episodes[1])
+            .dedup_episodes(&cyber_ctx, keeper, loser)
             .await
             .expect("dedup_episodes");
     });
@@ -968,8 +983,8 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
     drive!("daemon tick", {
         let daemon = DedupDaemon {
             writer: ref_writer.clone(),
-            keeper: duplicates[0].clone(),
-            loser: duplicates[1].clone(),
+            keeper: by_id(&duplicates[0], &duplicates[1]).0.clone(),
+            loser: by_id(&duplicates[0], &duplicates[1]).1.clone(),
         };
         let report = daemon.tick(chrono::Utc::now()).await.expect("daemon tick");
         assert_eq!(report.episodes_deduped, 1);

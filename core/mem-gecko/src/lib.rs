@@ -21,7 +21,7 @@ pub use belief_edge::{BeliefEdgeRegistry, ExtensionFragment, RegistryError};
 pub use consolidation::{ConsolidationDaemon, ConsolidationReport, NoopConsolidationDaemon};
 pub use disposition::{DispKeys, Disposition};
 pub use populations::MaterializeReport;
-pub use writer::MemWriter;
+pub use writer::{IndexOutcome, MemWriter};
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
 /// the type ontology (`mem_types.tql`) and the persisted reasoning functions

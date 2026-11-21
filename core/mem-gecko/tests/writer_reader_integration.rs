@@ -22,7 +22,7 @@ use gecko_extension_api::{
     Embedder, Entrenchment, EpisodeDraft, EpistemicError, EpistemicReader, EpistemicWriter,
     FilterMeta, MemId, ProvenanceSource, RecallQuery, RunContext, SemanticIndex, Visibility,
 };
-use mem_gecko::MemWriter;
+use mem_gecko::{IndexOutcome, MemWriter};
 use ulid::Ulid;
 
 mod common;
@@ -1259,12 +1259,43 @@ async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
         ingest_time: dt("2026-01-01T00:00:00Z"),
     };
     let keeper = w.observe(&ctx, dup.clone()).await.unwrap();
-    let loser = w.observe(&ctx, dup.clone()).await.unwrap();
+    let loser = w
+        .observe(
+            &ctx,
+            EpisodeDraft {
+                ingest_time: dt("2026-01-01T00:00:01Z"),
+                ..dup.clone()
+            },
+        )
+        .await
+        .unwrap();
 
     // The manual consolidation op.
-    w.dedup_episodes(&keeper, &loser)
+    let outcome = w
+        .dedup_episodes(&ctx, &keeper, &loser)
         .await
         .expect("dedup of two identical-hash episodes succeeds");
+    assert_eq!(outcome, IndexOutcome::Removed);
+
+    // One consolidation-step ties the loser to this run and actor.
+    let steps = fx
+        .raw_fetch(&format!(
+            r#"match
+                 $l isa episode, has concept-id "{}";
+                 $r isa doc-run, has run-id "{}";
+                 $a isa agent, has agent-id "agent-1";
+                 $s isa consolidation-step, links (affected: $l, run: $r, performer: $a),
+                     has consolidation-action $act, has created-at $at;
+               fetch {{ "act": $act, "at": $at }};"#,
+            loser.0, ctx.run_id
+        ))
+        .await;
+    assert_eq!(steps.len(), 1, "exactly one consolidation-step");
+    assert_eq!(steps[0]["act"], "tombstone");
+    let all_steps = fx
+        .raw_fetch(r#"match $s isa consolidation-step; fetch { "k": "x" };"#)
+        .await;
+    assert_eq!(all_steps.len(), 1, "no other step was recorded");
 
     // Graph: the loser is tombstoned (terminal consolidation-state)…
     let tomb = fx
@@ -1334,14 +1365,14 @@ async fn dedup_episodes_refuses_non_duplicates() {
             EpisodeDraft {
                 text: "a DIFFERENT observation".into(),
                 event_time: dt("2026-01-01T00:00:00Z"),
-                ingest_time: dt("2026-01-01T00:00:00Z"),
+                ingest_time: dt("2026-01-01T00:00:01Z"),
             },
         )
         .await
         .unwrap();
 
     let err = w
-        .dedup_episodes(&a, &b)
+        .dedup_episodes(&ctx, &a, &b)
         .await
         .expect_err("distinct-content episodes must not be deduped");
     assert!(matches!(err, EpistemicError::InvalidInput(_)));
@@ -1354,6 +1385,274 @@ async fn dedup_episodes_refuses_non_duplicates() {
     assert!(
         index.removed.lock().unwrap().is_empty(),
         "no vector was removed"
+    );
+
+    fx.drop_db().await;
+}
+
+/// Seeds an episode of `kind` straight into the graph, with the given optional
+/// title and owner set (`observe` always writes a title and exactly one owner).
+async fn seed_episode(
+    fx: &Fixture,
+    kind: &str,
+    id: &str,
+    title: Option<&str>,
+    event: &str,
+    ingest: &str,
+    owners: &[&str],
+) {
+    let mut owner_match = String::new();
+    let mut owner_links = String::new();
+    for (i, o) in owners.iter().enumerate() {
+        fx.raw_write(&format!(r#"put $a isa agent, has agent-id "{o}";"#))
+            .await;
+        owner_match.push_str(&format!(r#"$a{i} isa agent, has agent-id "{o}"; "#));
+        owner_links.push_str(&format!(", owner: $a{i}"));
+    }
+    let title = title
+        .map(|t| format!(r#", has title "{t}""#))
+        .unwrap_or_default();
+    let ownership = if owners.is_empty() {
+        String::new()
+    } else {
+        format!("(owned: $e{owner_links}) isa ownership;")
+    };
+    let matching = if owners.is_empty() {
+        String::new()
+    } else {
+        format!("match {owner_match}")
+    };
+    fx.raw_write(&format!(
+        r#"{matching} insert $e isa {kind}, has concept-id "{id}"{title},
+             has event-time {event}, has ingest-time {ingest}; {ownership}"#
+    ))
+    .await;
+}
+
+/// Orders two ids as (earlier-concept-id, later-concept-id).
+fn by_id(a: MemId, b: MemId) -> (MemId, MemId) {
+    if a.0 < b.0 { (a, b) } else { (b, a) }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Every way a pair can fail the duplicate rule is refused as InvalidInput naming
+// both ids, and the guarded write commits neither a tombstone nor a step.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn dedup_episodes_refuses_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let index = Arc::new(RecordingIndex::default());
+    let w = fx.writer(Some(Arc::new(StubEmbedder)), Some(index.clone()));
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let (t0, t1) = ("2026-01-01T00:00:00", "2026-01-01T00:00:01");
+    let mut cases: Vec<(&str, MemId, MemId)> = Vec::new();
+    let mid = |s: &str| MemId(s.to_string());
+
+    // Different event time.
+    seed_episode(&fx, "episode", "e-time-k", Some("t"), t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-time-l", Some("t"), t1, t1, &["x"]).await;
+    cases.push(("event-time", mid("e-time-k"), mid("e-time-l")));
+
+    // Owner sets {x} vs {x, y}.
+    seed_episode(&fx, "episode", "e-own-k", Some("t"), t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-own-l", Some("t"), t0, t1, &["x", "y"]).await;
+    cases.push(("owners-subset", mid("e-own-k"), mid("e-own-l")));
+    seed_episode(&fx, "episode", "e-own2-k", Some("t"), t0, t0, &["x", "y"]).await;
+    seed_episode(&fx, "episode", "e-own2-l", Some("t"), t0, t1, &["x"]).await;
+    cases.push(("owners-superset", mid("e-own2-k"), mid("e-own2-l")));
+
+    // Owned vs unowned.
+    seed_episode(&fx, "episode", "e-un-k", Some("t"), t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-un-l", Some("t"), t0, t1, &[]).await;
+    cases.push(("unowned-loser", mid("e-un-k"), mid("e-un-l")));
+
+    // Without a title.
+    seed_episode(&fx, "episode", "e-nt-k", None, t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-nt-l", None, t0, t1, &["x"]).await;
+    cases.push(("untitled", mid("e-nt-k"), mid("e-nt-l")));
+
+    // Reversed: the later ingest is the keeper.
+    seed_episode(&fx, "episode", "e-rev-a", Some("t"), t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-rev-b", Some("t"), t0, t1, &["x"]).await;
+    cases.push(("reversed", mid("e-rev-b"), mid("e-rev-a")));
+
+    // Tied ingest time with the higher concept-id as keeper.
+    seed_episode(&fx, "episode", "e-tie-a", Some("t"), t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-tie-b", Some("t"), t0, t0, &["x"]).await;
+    cases.push(("tie-higher-keeper", mid("e-tie-b"), mid("e-tie-a")));
+
+    // An already-tombstoned loser.
+    seed_episode(&fx, "episode", "e-tomb-k", Some("t"), t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "e-tomb-l", Some("t"), t0, t1, &["x"]).await;
+    fx.raw_write(
+        r#"match $e isa episode, has concept-id "e-tomb-l";
+           insert $e has consolidation-state "tombstoned";"#,
+    )
+    .await;
+    cases.push(("tombstoned-loser", mid("e-tomb-k"), mid("e-tomb-l")));
+
+    // Two titled execution-episodes with the same owner and times (isa! refuses).
+    seed_episode(
+        &fx,
+        "execution-episode",
+        "e-ex-k",
+        Some("t"),
+        t0,
+        t0,
+        &["x"],
+    )
+    .await;
+    seed_episode(
+        &fx,
+        "execution-episode",
+        "e-ex-l",
+        Some("t"),
+        t0,
+        t1,
+        &["x"],
+    )
+    .await;
+    cases.push(("execution-episode", mid("e-ex-k"), mid("e-ex-l")));
+
+    // Two prediction-resolving episodes resolved under ONE ctx (same title and
+    // event time), keeper ordered first so only the resolution refuses them.
+    let rctx = ctx_at("agent-1", dt("2026-01-02T00:00:00Z"));
+    let mut resolving = Vec::new();
+    for text in ["belief one", "belief two"] {
+        let b = w
+            .assert_belief(
+                &rctx,
+                belief(text, "agent-1", 0.6),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap();
+        w.record_prediction(&rctx, b.clone(), 0.6).await.unwrap();
+        w.resolve_prediction(&rctx, b, gecko_extension_api::Outcome::Confirmed)
+            .await
+            .unwrap();
+        let ids = fx
+            .raw_fetch(
+                r#"match $e isa episode, has title "prediction resolved: confirmed",
+                         has concept-id $c; fetch { "c": $c };"#,
+            )
+            .await;
+        resolving = ids
+            .iter()
+            .map(|d| MemId(d["c"].as_str().unwrap().to_string()))
+            .collect();
+    }
+    assert_eq!(resolving.len(), 2, "two resolving episodes");
+    let (rk, rl) = by_id(resolving[0].clone(), resolving[1].clone());
+    cases.push(("prediction-resolving", rk, rl));
+
+    for (name, keeper, loser) in &cases {
+        let err = w.dedup_episodes(&ctx, keeper, loser).await.expect_err(name);
+        let EpistemicError::InvalidInput(msg) = &err else {
+            panic!("{name}: expected InvalidInput, got {err:?}");
+        };
+        assert!(
+            msg.contains(&keeper.0) && msg.contains(&loser.0),
+            "{name}: message must name both ids: {msg}"
+        );
+    }
+
+    let steps = fx
+        .raw_fetch(r#"match $s isa consolidation-step; fetch { "k": "x" };"#)
+        .await;
+    assert!(steps.is_empty(), "no consolidation-step was written");
+    let tombstones = fx
+        .raw_fetch(
+            r#"match $e isa episode, has consolidation-state $s, has concept-id $c; fetch { "c": $c };"#,
+        )
+        .await;
+    assert_eq!(
+        tombstones.len(),
+        1,
+        "only the seeded tombstone exists: {tombstones:?}"
+    );
+    assert!(
+        index.removed.lock().unwrap().is_empty(),
+        "no vector was removed"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The seeded shapes the refusal test rejects are accepted when they do satisfy
+// the rule: identical multi-owner sets, and a tied ingest time with the lowest
+// concept-id as keeper.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn dedup_episodes_accepts_identical_owner_sets_and_id_tie_break() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let t0 = "2026-01-01T00:00:00";
+    seed_episode(&fx, "episode", "e-ok-a", Some("t"), t0, t0, &["x", "y"]).await;
+    seed_episode(&fx, "episode", "e-ok-b", Some("t"), t0, t0, &["y", "x"]).await;
+
+    let outcome = w
+        .dedup_episodes(&ctx, &MemId("e-ok-a".into()), &MemId("e-ok-b".into()))
+        .await
+        .expect("identical owner sets and a lower-id keeper are a duplicate");
+    assert_eq!(outcome, IndexOutcome::NoIndex);
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A tombstoned episode is not current state: a rebuild does not re-embed it.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn index_rebuild_skips_a_tombstoned_episode() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(
+        Some(Arc::new(StubEmbedder)),
+        Some(Arc::new(RecordingIndex::default())),
+    );
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let draft = EpisodeDraft {
+        text: "seen twice".into(),
+        event_time: dt("2026-01-01T00:00:00Z"),
+        ingest_time: dt("2026-01-01T00:00:00Z"),
+    };
+    let keeper = w.observe(&ctx, draft.clone()).await.unwrap();
+    let loser = w
+        .observe(
+            &ctx,
+            EpisodeDraft {
+                ingest_time: dt("2026-01-01T00:00:01Z"),
+                ..draft
+            },
+        )
+        .await
+        .unwrap();
+
+    let before: Vec<String> = w
+        .enumerate_current_state_embeddables()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, _, _)| id.0)
+        .collect();
+    assert!(before.contains(&keeper.0) && before.contains(&loser.0));
+
+    w.dedup_episodes(&ctx, &keeper, &loser).await.unwrap();
+
+    let after: Vec<String> = w
+        .enumerate_current_state_embeddables()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, _, _)| id.0)
+        .collect();
+    assert_eq!(
+        after,
+        vec![keeper.0.clone()],
+        "only the keeper is embeddable"
     );
 
     fx.drop_db().await;

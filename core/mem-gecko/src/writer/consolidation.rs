@@ -1,52 +1,52 @@
 //! Consolidation operations on the graph ("dreaming"): provable episode dedup and
 //! retrieval-event retention.
 
-use gecko_extension_api::{ConceptId, EpistemicError, MemId};
+use gecko_extension_api::{ConceptId, EpistemicError, MemId, RowCountMismatch, RunContext};
 
-use super::{MemWriter, Result, dedup_mapped};
+use super::{IndexOutcome, MemWriter, Result, dedup_mapped};
 use crate::tql;
 
+/// The index of the guarded write in the ops [`tql::dedup_episodes_ops`] returns.
+const DEDUP_GUARD_OP: usize = 2;
+
 impl MemWriter {
-    /// The one real consolidation operation — the seam proof. Given two episodes
-    /// the daemon's content-hash scan found to be byte-identical, keep `keeper`,
-    /// **tombstone** `loser` (its `consolidation-state` → "tombstoned"; the graph is
-    /// the source of record, so the tombstoned row stays queryable), AND best-effort
-    /// **remove** the loser's vector from the index via the
-    /// [`SemanticIndex::remove`](gecko_extension_api::SemanticIndex::remove) hook (invariant 8: never fail the graph op on an
-    /// index error; a failed remove marks the id dirty for background repair — no new
-    /// index API).
+    /// Collapses a duplicate episode pair: tombstones `loser` (its
+    /// `consolidation-state` becomes "tombstoned"; the row stays queryable), records
+    /// a `consolidation-step` stamped with `ctx`'s run and actor, then removes the
+    /// loser's vector from the index on a best-effort basis (invariant 8: an index
+    /// failure marks the id dirty and never fails the graph write).
     ///
-    /// **Provable, not probabilistic:** it refuses to dedup unless `keeper` and
-    /// `loser` genuinely share an identical content-hash, so it can never collapse two
-    /// distinct episodes. Passing an episode as both keeper and loser, or two episodes
-    /// with differing content, is rejected with [`EpistemicError::InvalidInput`].
-    pub async fn dedup_episodes(&self, keeper: &MemId, loser: &MemId) -> Result<()> {
+    /// The duplicate rule is enforced inside the one guarded write: both are exactly
+    /// `episode`s with the same title, event-time and owner set, neither resolves a
+    /// prediction or is already tombstoned, and `keeper` ingested first (ties broken
+    /// by lowest concept-id). Any other pair is refused with
+    /// [`EpistemicError::InvalidInput`] and nothing is written.
+    pub async fn dedup_episodes(
+        &self,
+        ctx: &RunContext,
+        keeper: &MemId,
+        loser: &MemId,
+    ) -> Result<IndexOutcome> {
         if keeper.0 == loser.0 {
             return Err(EpistemicError::InvalidInput(
                 "dedup_episodes: keeper and loser are the same episode".into(),
             ));
         }
-        // Provable guard: both episodes exist AND share an identical content-hash.
-        if !self.episodes_share_content(keeper, loser).await? {
-            return Err(EpistemicError::InvalidInput(
-                "dedup_episodes: episodes do not share an identical content-hash".into(),
-            ));
-        }
-        // AUTHORITATIVE: tombstone the loser first (the graph is the SoR).
         self.graph
-            .write(&[tql::tombstone_episode_op(loser)])
-            .await?;
-        // Best-effort: drop the loser's vector via the existing remove hook. A remove
-        // failure only marks the id dirty — the dedup (graph op) already succeeded.
-        self.best_effort_remove(ConceptId(loser.0.clone()));
-        Ok(())
-    }
-
-    /// The provable-dedup guard read: true iff both episodes exist and share an
-    /// identical content-hash (see [`tql::episodes_share_content_read`]).
-    async fn episodes_share_content(&self, a: &MemId, b: &MemId) -> Result<bool> {
-        let (q, v, r) = tql::episodes_share_content_read(a, b);
-        Ok(!self.graph.read(&q, &v, &r).await?.is_empty())
+            .write(&tql::dedup_episodes_ops(ctx, keeper, loser))
+            .await
+            .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
+                (EpistemicError::Storage(_), Some(m)) if m.op == DEDUP_GUARD_OP => {
+                    EpistemicError::InvalidInput(format!(
+                        "dedup_episodes: {} is not a duplicate of keeper {}: the pair must be \
+                         untombstoned episodes with the same title, event-time and owners, \
+                         neither resolving a prediction, with the keeper ingested first",
+                        loser.0, keeper.0
+                    ))
+                }
+                _ => e,
+            })?;
+        Ok(self.best_effort_remove(ConceptId(loser.0.clone())))
     }
 
     /// Retrieval-provenance retention (concrete helper): the `retrieval-event`s
