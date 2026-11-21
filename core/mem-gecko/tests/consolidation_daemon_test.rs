@@ -647,3 +647,66 @@ async fn daemon_tick_writes_share_one_run_context() {
     assert!(runs.iter().all(|d| d["id"] == run.as_str()));
     fx.drop_db().await;
 }
+
+/// A graph that tombstones `target` right after the cohort read, so the tick's
+/// guarded write for that loser is refused.
+struct TombstoneAfterReadStore {
+    inner: RouterGraphStore,
+    shared: Arc<Mutex<TypeDbRouter>>,
+    target: String,
+}
+
+#[async_trait]
+impl GraphReader for TombstoneAfterReadStore {
+    async fn read(
+        &self,
+        query: &str,
+        vars: &[String],
+        row: &[GraphValue],
+    ) -> Result<Vec<serde_json::Value>, EpistemicError> {
+        let docs = self.inner.read(query, vars, row).await?;
+        let mut router = self.shared.lock().await;
+        let tx = router.begin_write().await.expect("write tx");
+        tx.query(&format!(
+            r#"match $e isa episode, has concept-id "{}";
+               update $e has consolidation-state "tombstoned";"#,
+            self.target
+        ))
+        .await
+        .expect("tombstone");
+        tx.commit().await.expect("commit");
+        Ok(docs)
+    }
+}
+
+#[async_trait]
+impl GraphStore for TombstoneAfterReadStore {
+    async fn write(&self, ops: &[GraphWrite]) -> Result<(), EpistemicError> {
+        self.inner.write(ops).await
+    }
+}
+
+#[tokio::test]
+async fn a_refused_pair_is_skipped_and_counted_without_aborting_the_tick() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ids = observe_cohort(&w, "raced").await;
+    let (t0, t1) = ("2026-01-01T00:00:00", "2026-01-01T00:00:01");
+    seed_episode(&fx, "episode", "other-a", "other", t0, t0, &["x"]).await;
+    seed_episode(&fx, "episode", "other-b", "other", t0, t1, &["x"]).await;
+
+    let store = Arc::new(TombstoneAfterReadStore {
+        inner: RouterGraphStore::new(fx.shared.clone()),
+        shared: fx.shared.clone(),
+        target: ids[1].0.clone(),
+    });
+    let daemon = MemConsolidationDaemon::new(Arc::new(MemWriter::without_index(store)));
+    let report = daemon.tick(dt("2026-02-01T00:00:00Z")).await.unwrap();
+
+    assert_eq!(report.pairs_refused, 1, "the raced loser is refused");
+    assert_eq!(report.episodes_deduped, 2, "the other pairs still dedup");
+    assert!(fx.is_tombstoned(&ids[2].0).await);
+    assert!(fx.is_tombstoned("other-b").await);
+    assert!(!fx.is_tombstoned(&ids[0].0).await);
+    fx.drop_db().await;
+}

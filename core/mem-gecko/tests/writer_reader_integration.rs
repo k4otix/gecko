@@ -1239,7 +1239,7 @@ async fn population_members_and_canonical_entity() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: a manual dedup of two identical-content-hash episodes tombstones
+// Acceptance: a manual dedup of two duplicate episodes (same title, event-time and owners) tombstones
 // the loser in the graph AND removes the loser's vector from the index (via the
 // best-effort SemanticIndex::remove hook, invariant 8).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1252,7 +1252,7 @@ async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
     let w = fx.writer(Some(Arc::new(StubEmbedder)), Some(index.clone()));
     let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
 
-    // Two episodes with an IDENTICAL content-hash (same observed text).
+    // Two duplicate episodes: same observed text, event-time and owner.
     let dup = EpisodeDraft {
         text: "the host phoned home at 03:14".into(),
         event_time: dt("2026-01-01T00:00:00Z"),

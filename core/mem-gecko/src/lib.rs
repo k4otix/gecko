@@ -19,7 +19,8 @@ pub mod writer;
 
 pub use belief_edge::{BeliefEdgeRegistry, ExtensionFragment, RegistryError};
 pub use consolidation::{
-    ConsolidationDaemon, ConsolidationReport, MemConsolidationDaemon, NoopConsolidationDaemon,
+    ConsolidationDaemon, ConsolidationReport, DedupSummary, MemConsolidationDaemon,
+    NoopConsolidationDaemon,
 };
 pub use disposition::{DispKeys, Disposition};
 pub use populations::MaterializeReport;

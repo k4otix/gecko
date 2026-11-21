@@ -50,7 +50,10 @@ pub struct ConsolidationReport {
     /// Beliefs moved one step along `raw → candidate → consolidated → archived →
     /// tombstoned` this tick.
     pub state_transitions: usize,
-    /// Concept-ids whose vector was removed from the index.
+    /// Duplicate pairs the guarded write refused (the pair no longer satisfied the
+    /// duplicate rule when written); each was skipped and nothing was written for it.
+    pub pairs_refused: usize,
+    /// Concept-ids whose vector removal the index reported as succeeded.
     pub vectors_removed: usize,
     /// Concept-ids whose vector removal failed and was marked dirty for repair.
     pub vectors_marked_dirty: usize,
@@ -206,33 +209,46 @@ impl MemConsolidationDaemon {
     }
 
     /// Dedups every duplicate episode cohort under `ctx`, returning one index outcome
-    /// per tombstoned loser. A failure of the cohort read is returned as is (nothing
-    /// was written); a failure of a dedup write names `ctx`'s run.
-    pub async fn dedup_episodes_in(&self, ctx: &RunContext) -> Result<Vec<IndexOutcome>> {
+    /// per tombstoned loser and a count of pairs the guarded write refused (skipped, not
+    /// fatal). A failure of the cohort read is returned as is (nothing was written); any
+    /// other failure of a dedup write names `ctx`'s run, even when it was the tick's
+    /// first write, whose run was rolled back.
+    pub async fn dedup_episodes_in(&self, ctx: &RunContext) -> Result<DedupSummary> {
         let mut cohorts: BTreeMap<_, Vec<DuplicateCandidate>> = BTreeMap::new();
         for c in self.writer.duplicate_episode_candidates().await? {
             let key = (c.title.clone(), c.event_time, c.owners.clone());
             cohorts.entry(key).or_default().push(c);
         }
-        let mut outcomes = Vec::new();
+        let mut summary = DedupSummary::default();
         for mut members in cohorts.into_values() {
             members.sort_by(|a, b| (a.ingest_time, &a.id.0).cmp(&(b.ingest_time, &b.id.0)));
             let Some((keeper, losers)) = members.split_first() else {
                 continue;
             };
             for loser in losers {
-                let outcome = self
-                    .writer
-                    .dedup_episodes(ctx, &keeper.id, &loser.id)
-                    .await
-                    .map_err(|e| {
-                        EpistemicError::Storage(format!("consolidation run {}: {e}", ctx.run_id))
-                    })?;
-                outcomes.push(outcome);
+                match self.writer.dedup_episodes(ctx, &keeper.id, &loser.id).await {
+                    Ok(outcome) => summary.outcomes.push(outcome),
+                    Err(EpistemicError::InvalidInput(_)) => summary.pairs_refused += 1,
+                    Err(e) => {
+                        return Err(EpistemicError::Storage(format!(
+                            "consolidation run {}: {e}",
+                            ctx.run_id
+                        )));
+                    }
+                }
             }
         }
-        Ok(outcomes)
+        Ok(summary)
     }
+}
+
+/// What [`MemConsolidationDaemon::dedup_episodes_in`] did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DedupSummary {
+    /// One index outcome per tombstoned loser.
+    pub outcomes: Vec<IndexOutcome>,
+    /// Pairs the guarded write refused as no longer duplicates.
+    pub pairs_refused: usize,
 }
 
 #[async_trait]
@@ -245,11 +261,15 @@ impl ConsolidationDaemon for MemConsolidationDaemon {
             },
             now,
         );
-        let outcomes = self.dedup_episodes_in(&ctx).await?;
+        let DedupSummary {
+            outcomes,
+            pairs_refused,
+        } = self.dedup_episodes_in(&ctx).await?;
         let count = |wanted: IndexOutcome| outcomes.iter().filter(|o| **o == wanted).count();
         Ok(ConsolidationReport {
             run_id: (!outcomes.is_empty()).then_some(ctx.run_id),
             episodes_deduped: outcomes.len(),
+            pairs_refused,
             vectors_removed: count(IndexOutcome::Removed),
             vectors_marked_dirty: count(IndexOutcome::MarkedDirty),
             ..Default::default()
@@ -257,7 +277,7 @@ impl ConsolidationDaemon for MemConsolidationDaemon {
     }
 
     async fn dedup_content_hash(&self, ctx: &RunContext) -> Result<usize> {
-        Ok(self.dedup_episodes_in(ctx).await?.len())
+        Ok(self.dedup_episodes_in(ctx).await?.outcomes.len())
     }
 }
 

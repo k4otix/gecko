@@ -77,7 +77,7 @@ proven through the real sandbox against live TypeDB.
   median of about 4.3 ms per sync (23 syncs). The cost grows with the belief
   tier, because each read scans its instances.
 
-## Consolidation ("dreaming") daemon is a scaffold
+## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
 `core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait, a no-op
 daemon, and `MemConsolidationDaemon`, whose `tick` mints one run and dedups duplicate
