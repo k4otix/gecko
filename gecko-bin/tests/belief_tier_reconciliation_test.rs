@@ -301,19 +301,6 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
     stdout
 }
 
-/// Runs the `gecko` binary against `db` like [`gecko`]; asserts it fails and returns
-/// its stderr, where the binary logs a command's error through `tracing`.
-async fn gecko_expect_failure(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
-    let out = gecko_output(rig, db, args).await;
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(
-        !out.status.success(),
-        "gecko {args:?} succeeded\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    stderr
-}
-
 /// Runs a playbook through the binary and returns its JSON output.
 async fn run_playbook(rig: &Rig, db: &TestDb, concept_id: &str) -> serde_json::Value {
     let stdout = gecko(rig, db, &["run", concept_id]).await;
@@ -1066,7 +1053,7 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gc_of_a_concept_a_belief_edge_references_is_refused() {
+async fn gc_of_a_concept_a_belief_edge_references_is_retired() {
     let db = TestDb::new("gecko_test_rig_gc");
     let rig = Rig::new();
     setup(&rig, &db).await;
@@ -1074,48 +1061,36 @@ async fn gc_of_a_concept_a_belief_edge_references_is_refused() {
     let f0 = fingerprint(&db).await;
 
     let without_cyber = parse_bundle(&rig.okf_dir_without_cyber).expect("parse");
-    let references =
-        match sync_bundle(&mut db.router(), &without_cyber, &[], BELIEF_TIER_ROOT).await {
-            Err(DbError::BeliefEdgeReferencesRemovedConcept { references }) => references,
-            other => panic!("expected BeliefEdgeReferencesRemovedConcept, got {other:?}"),
-        };
-    for relation in ["technique-detection", "alert-disposition"] {
-        assert!(
-            references.contains(&(CYBER_PLAYBOOK.to_string(), relation.to_string())),
-            "references {references:?} miss ({CYBER_PLAYBOOK}, {relation})"
-        );
-    }
+    let result = sync_bundle(&mut db.router(), &without_cyber, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("dropping a referenced concept retires it");
+    assert_eq!(result.concepts_retired, 1);
     assert_eq!(
         fingerprint(&db).await,
         f0,
-        "the refused GC changed the belief tier"
+        "the retiring GC changed the belief tier"
     );
     let concept_count = "given $v: string; match $c isa concept, has concept-id $id; $id == $v; \
                          reduce $n = count;";
     assert_eq!(
         count_with(&db, concept_count, CYBER_PLAYBOOK).await,
         1,
-        "the refused GC removed {CYBER_PLAYBOOK}"
+        "the retiring GC removed {CYBER_PLAYBOOK}"
     );
 
-    let output =
-        gecko_expect_failure(&rig, &db, &["sync", path_str(&rig.okf_dir_without_cyber)]).await;
+    let output = gecko(&rig, &db, &["sync", path_str(&rig.okf_dir_without_cyber)]).await;
     assert!(
-        output.contains(CYBER_PLAYBOOK),
-        "gecko sync output does not name {CYBER_PLAYBOOK}:\n{output}"
-    );
-    assert!(
-        output.contains("concept(s) a belief edge references"),
-        "gecko sync output is not the belief-edge GC refusal:\n{output}"
+        output.contains("Concepts retired:  0"),
+        "gecko sync output does not report the already-retired concept:\n{output}"
     );
     assert_eq!(
         fingerprint(&db).await,
         f0,
-        "the binary's refused GC changed the belief tier"
+        "the binary's re-sync changed the belief tier"
     );
     assert_eq!(
         count_with(&db, concept_count, CYBER_PLAYBOOK).await,
         1,
-        "the binary's refused GC removed {CYBER_PLAYBOOK}"
+        "the binary's re-sync removed {CYBER_PLAYBOOK}"
     );
 }

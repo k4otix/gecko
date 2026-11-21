@@ -48,12 +48,6 @@ pub enum DbError {
     /// transaction and just before its commit. Nothing was committed.
     #[error("{}", belief_tier_write_message(.changes))]
     BeliefTierWrite { changes: Vec<BeliefTierChange> },
-
-    /// A sync would garbage-collect concepts that play a role in a belief-tier
-    /// relation. `references` holds each `(concept_id, relation_label)` pair,
-    /// sorted and deduplicated. Nothing was deleted or committed.
-    #[error("{}", belief_edge_reference_message(.references))]
-    BeliefEdgeReferencesRemovedConcept { references: Vec<(String, String)> },
 }
 
 /// Renders a refused belief-tier change, listing every differing count.
@@ -62,22 +56,6 @@ fn belief_tier_write_message(changes: &[BeliefTierChange]) -> String {
     format!(
         "sync refused: it changed the belief tier ({}). Only the epistemic write path may \
          change the belief tier; nothing was committed.",
-        list.join(", ")
-    )
-}
-
-/// Renders a refused garbage collection, naming each removed concept with the
-/// belief-tier relation that references it, and the available recovery.
-fn belief_edge_reference_message(references: &[(String, String)]) -> String {
-    let list: Vec<String> = references
-        .iter()
-        .map(|(id, relation)| format!("`{id}` (referenced by `{relation}`)"))
-        .collect();
-    format!(
-        "sync refused: it would delete {} concept(s) a belief edge references: {}. \
-         Nothing was deleted. Restore the removed concept's file and sync again, or sync \
-         into a fresh database with `--database`.",
-        references.len(),
         list.join(", ")
     )
 }

@@ -120,9 +120,8 @@ enum Commands {
         /// The bundle name to import under, default `stix-sync`. Several imports
         /// share a database when each has its own name and they pass the same
         /// `--database`; without `--database`, the database is named after the bundle.
-        /// A re-import under the same name replaces the previous one, unless a
-        /// belief edge references a record the new import drops, in which case the
-        /// import is refused.
+        /// A re-import under the same name replaces the previous one; a record a
+        /// belief edge references is retired rather than deleted.
         #[arg(long)]
         bundle_name: Option<String>,
     },
@@ -715,6 +714,7 @@ fn print_sync_result(result: &SyncResult) {
     println!("  Concepts skipped:  {}", result.concepts_skipped);
     println!("  Concepts deleted:  {}", result.concepts_deleted);
     println!("  Concepts released: {}", result.concepts_released);
+    println!("  Concepts retired:  {}", result.concepts_retired);
     println!("  Links attempted:    {}", result.links_attempted);
     println!("  Citations attempted: {}", result.citations_attempted);
 }
