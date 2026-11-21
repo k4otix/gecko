@@ -80,8 +80,9 @@ with its own returning file.
    "Pre-GC refusal" bullet with a "Retired concepts" one (readers learn of a
    retirement only by looking at the concept; recall does not flag it; a
    retired ID stays contained by its bundle, so another bundle syncing that ID
-   is refused as a collision while the belief exists; an existing database
-   needs `schema-init` before its first sync);
+   is refused as a collision while the belief exists; a library caller
+   of `sync_bundle` must apply the current schema first, as the CLI's sync does
+   itself, since a database without `retired-at` cannot be synced);
    `sync_bundle`'s doc comment, CLAUDE.md's architecture line and
    `extensions/README.md` stop describing a refusal.
 7. **Tests** (live TypeDB, `--test-threads=1`):

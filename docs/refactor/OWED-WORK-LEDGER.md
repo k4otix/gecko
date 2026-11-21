@@ -45,8 +45,8 @@ references in specs and commit messages still resolve.
 - **Landed in the belief-tier guard PR (branch `feat/belief-tier-guard`):** **A10** ✅ (the OKF import
   types and `ExtensionCallback` moved into `gecko-extension-api`, cyber depends on the API crate alone,
   `scripts/check-extension-deps.sh` guards it in CI, and no extension is offered the writer) and **A4** ✅
-  (a sync retires rather than deletes a concept a belief edge references (O6), and refuses to change the belief tier, in
-  production; the `memwriter_is_the_sole_belief_tier_writer` rig and the hostile-write test). **C8** is
+  (a sync refuses to change the belief tier, in
+  production, and retires rather than deletes a concept a belief edge references, see O6; the `memwriter_is_the_sole_belief_tier_writer` rig and the hostile-write test). **C8** is
   unblocked. Owed follow-on: Track M for the belief-tier types no production path writes.
 
 ## Sequence

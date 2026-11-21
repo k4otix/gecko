@@ -165,8 +165,7 @@ Notes and invariants:
   `type_hint` must name a `concept` subtype. Garbage collection retires, rather than
   deletes, a concept a belief edge references: it keeps the entity, its ID and
   containment, removes its other attributes and relations, and sets `retired-at`.
-  A retired concept keeps the attributes its type requires, so a required
-  attribute on a concept subtype is kept across retirement.
+  A required attribute on a concept subtype is kept across retirement.
 - **Multi-thread runtime required.** `block_in_place` panics on a current-thread
   runtime; the binary and sandbox both run multi-thread.
 - **Still never fabricate.** Validate arguments and refuse to act on references that

@@ -65,8 +65,11 @@ proven through the real sandbox against live TypeDB.
   deleted once nothing references it. A reader learns of a retirement only from
   the concept itself; recall does not flag beliefs about it. A retired ID stays
   contained by its bundle, so another bundle syncing that ID is refused as a
-  collision while the belief exists. An existing database needs `schema-init`
-  before its first sync.
+  collision while the belief exists. A later sync keeps the first `retired-at`,
+  and the CLI reports `Concepts retired: <n>` for the concepts that sync newly
+  retired. A library caller of `sync_bundle` must apply the current schema first
+  (the CLI's sync does this itself); a database without `retired-at` cannot be
+  synced until then.
 - **Cost.** Every sync reads the surface and takes two fingerprints: nine reads
   in all, since each fingerprint is one grouped count per measure. With mem and
   cyber composed, in a debug build on near-empty databases, the guard took a
