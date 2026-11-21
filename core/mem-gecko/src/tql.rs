@@ -520,6 +520,23 @@ pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> G
 
 // ── Consolidation ("dreaming") ────────────────────────────────────────────────
 
+/// The dedup cohort read: every owned plain `episode` that is neither tombstoned nor
+/// resolving a prediction and shares its title and event-time with another such
+/// episode, one row per (episode, owner).
+pub(crate) fn duplicate_episode_candidates_read() -> &'static str {
+    "match
+       $e isa! episode, has concept-id $eid, has title $ttl, has event-time $et, has ingest-time $it;
+       $f isa! episode, has title $ttl, has event-time $et;
+       not { $e is $f; };
+       not { $e has consolidation-state \"tombstoned\"; };
+       not { $f has consolidation-state \"tombstoned\"; };
+       not { $pe isa prediction-resolution, links (resolving-episode: $e); };
+       not { $pf isa prediction-resolution, links (resolving-episode: $f); };
+       $own isa ownership, links (owned: $e, owner: $ag);
+       $ag has agent-id $aid;
+     fetch { \"id\": $eid, \"title\": $ttl, \"et\": $et, \"it\": $it, \"owner\": $aid };"
+}
+
 /// The guarded dedup write: one `match … update … insert …` pipeline that applies
 /// only when `keeper` and `loser` are both exactly `episode`s with the same title and
 /// event-time and identical owner sets, neither resolves a prediction or is already
