@@ -206,14 +206,9 @@ impl MemConsolidationDaemon {
     }
 
     /// Dedups every duplicate episode cohort under `ctx`, returning one index outcome
-    /// per tombstoned loser. An error names `ctx`'s run.
+    /// per tombstoned loser. A failure of the cohort read is returned as is (nothing
+    /// was written); a failure of a dedup write names `ctx`'s run.
     pub async fn dedup_episodes_in(&self, ctx: &RunContext) -> Result<Vec<IndexOutcome>> {
-        self.dedup_cohorts(ctx)
-            .await
-            .map_err(|e| EpistemicError::Storage(format!("consolidation run {}: {e}", ctx.run_id)))
-    }
-
-    async fn dedup_cohorts(&self, ctx: &RunContext) -> Result<Vec<IndexOutcome>> {
         let mut cohorts: BTreeMap<_, Vec<DuplicateCandidate>> = BTreeMap::new();
         for c in self.writer.duplicate_episode_candidates().await? {
             let key = (c.title.clone(), c.event_time, c.owners.clone());
@@ -226,11 +221,14 @@ impl MemConsolidationDaemon {
                 continue;
             };
             for loser in losers {
-                outcomes.push(
-                    self.writer
-                        .dedup_episodes(ctx, &keeper.id, &loser.id)
-                        .await?,
-                );
+                let outcome = self
+                    .writer
+                    .dedup_episodes(ctx, &keeper.id, &loser.id)
+                    .await
+                    .map_err(|e| {
+                        EpistemicError::Storage(format!("consolidation run {}: {e}", ctx.run_id))
+                    })?;
+                outcomes.push(outcome);
             }
         }
         Ok(outcomes)

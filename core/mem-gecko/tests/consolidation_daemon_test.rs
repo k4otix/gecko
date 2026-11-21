@@ -184,6 +184,28 @@ impl SemanticIndex for RecordingIndex {
     }
 }
 
+/// An index whose removals always fail.
+struct FailingRemoveIndex;
+impl SemanticIndex for FailingRemoveIndex {
+    fn upsert(&self, _id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<(), EpistemicError> {
+        Ok(())
+    }
+    fn remove(&self, _id: ConceptId) -> Result<(), EpistemicError> {
+        Err(EpistemicError::Storage("index offline".into()))
+    }
+    fn query(
+        &self,
+        _v: &[f32],
+        _k: usize,
+        _p: &FilterMeta,
+    ) -> Result<Vec<(ConceptId, f32)>, EpistemicError> {
+        Ok(vec![])
+    }
+    fn model_id(&self) -> &str {
+        "stub"
+    }
+}
+
 /// Seeds an episode of `kind` straight into the graph with the given owner set.
 async fn seed_episode(
     fx: &Fixture,
@@ -432,6 +454,24 @@ async fn tick_reports_index_outcomes() {
     assert_eq!(report.vectors_removed, 0);
     assert_eq!(report.vectors_marked_dirty, 0);
     fx.drop_db().await;
+
+    let fx = Fixture::new().await;
+    let w = fx.writer(
+        Some(Arc::new(StubEmbedder)),
+        Some(Arc::new(FailingRemoveIndex)),
+    );
+    observe_cohort(&w, "index offline").await;
+    let report = MemConsolidationDaemon::new(w)
+        .tick(dt("2026-02-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(
+        report.episodes_deduped, 2,
+        "an index failure never fails the write"
+    );
+    assert_eq!(report.vectors_removed, 0);
+    assert_eq!(report.vectors_marked_dirty, 2);
+    fx.drop_db().await;
 }
 
 /// A graph whose reads return a fixed duplicate pair and whose writes always fail,
@@ -498,6 +538,47 @@ async fn a_failing_tick_names_its_run() {
     );
 }
 
+/// A graph whose cohort read fails.
+struct UnreadableStore;
+
+#[async_trait]
+impl GraphReader for UnreadableStore {
+    async fn read(
+        &self,
+        _query: &str,
+        _vars: &[String],
+        _row: &[GraphValue],
+    ) -> Result<Vec<serde_json::Value>, EpistemicError> {
+        Err(EpistemicError::Storage("read refused".into()))
+    }
+}
+
+#[async_trait]
+impl GraphStore for UnreadableStore {
+    async fn write(&self, _ops: &[GraphWrite]) -> Result<(), EpistemicError> {
+        panic!("a failed cohort read must not reach a write");
+    }
+}
+
+#[tokio::test]
+async fn a_failing_cohort_read_does_not_name_a_run() {
+    let daemon = MemConsolidationDaemon::new(Arc::new(MemWriter::without_index(Arc::new(
+        UnreadableStore,
+    ))));
+    let err = daemon
+        .tick(dt("2026-02-01T00:00:00Z"))
+        .await
+        .expect_err("the read fails");
+    let EpistemicError::Storage(msg) = err else {
+        panic!("expected Storage, got {err:?}");
+    };
+    assert!(msg.contains("read refused"), "{msg}");
+    assert!(
+        !msg.contains("consolidation run"),
+        "no run was written: {msg}"
+    );
+}
+
 #[tokio::test]
 async fn a_referenced_loser_is_tombstoned_and_keeps_its_derivation() {
     let fx = Fixture::new().await;
@@ -540,11 +621,10 @@ async fn a_referenced_loser_is_tombstoned_and_keeps_its_derivation() {
 async fn daemon_tick_writes_share_one_run_context() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);
-    let ids = observe_cohort(&w, "one run").await;
+    observe_cohort(&w, "one run").await;
     let (t0, t1) = ("2026-01-01T00:00:00", "2026-01-01T00:00:01");
     seed_episode(&fx, "episode", "second-a", "other", t0, t0, &["x"]).await;
     seed_episode(&fx, "episode", "second-b", "other", t0, t1, &["x"]).await;
-    let _ = ids;
 
     let report = MemConsolidationDaemon::new(w)
         .tick(dt("2026-02-01T00:00:00Z"))
