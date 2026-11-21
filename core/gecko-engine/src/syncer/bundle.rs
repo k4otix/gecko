@@ -603,8 +603,8 @@ async fn check_type_hints(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<
 /// each concept plays (containment, hierarchy, concept-link, citation) so none
 /// are left dangling, then the concept entity itself.
 ///
-/// Extension-defined relations (e.g. mem-gecko `contextualizes`) are intentionally
-/// left untouched — their lifecycle belongs to the extension, not the OKF sync.
+/// Only the OKF core relations are deleted explicitly; any other relation the
+/// concept plays loses that player when the entity goes.
 async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
     if ids.is_empty() {
         return Ok(());

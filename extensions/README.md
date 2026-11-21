@@ -162,11 +162,11 @@ Notes and invariants:
   sync transaction. The sync is guarded: a sync whose writes (or whose importer's
   concepts) change any belief-tier type's instance, attribute or link count is
   refused with `DbError::BeliefTierWrite` and commits nothing. A concept's
-  `type_hint` must name a `concept` subtype. Garbage collection refuses to delete a
-  concept a belief edge references (`DbError::BeliefEdgeReferencesRemovedConcept`),
-  so a re-import that drops a referenced record is refused. Recovery: keep or
-  restore the record, or import into a fresh database. "Retire, not delete" is
-  ledger item O6.
+  `type_hint` must name a `concept` subtype. Garbage collection retires, rather than
+  deletes, a concept a belief edge references: it keeps the entity, its ID and
+  containment, removes its other attributes and relations, and sets `retired-at`.
+  A retired concept keeps the attributes its type requires, so a required
+  attribute on a concept subtype is kept across retirement.
 - **Multi-thread runtime required.** `block_in_place` panics on a current-thread
   runtime; the binary and sandbox both run multi-thread.
 - **Still never fabricate.** Validate arguments and refuse to act on references that
