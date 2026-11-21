@@ -10,8 +10,11 @@
 use cyber_gecko::CyberGecko;
 use cyber_gecko::stix::{cyber_post_sync, to_okf, typed_relation_players};
 use futures_util::StreamExt;
+use gecko_engine::db::router::TypeDbRouter;
+use gecko_engine::db::run_graph_writes;
 use gecko_engine::extension::GeckoExtension;
-use gecko_engine::syncer::bundle::sync_bundle;
+use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
+use gecko_extension_api::GraphWrite;
 use mem_gecko::MemGecko;
 use typedb_driver::Transaction;
 
@@ -382,4 +385,188 @@ async fn required_attributes_of_the_live_cyber_schema() {
             assert!(got.contains(*a), "{entity} must require {a}: {got:?}");
         }
     }
+}
+
+const T1059_STIX_ID: &str = "attack-pattern--00000000-0000-0000-0000-0000000000a1";
+const IP_OBSERVABLE_STIX_ID: &str = "ipv4-addr--00000000-0000-0000-0000-0000000000d4";
+
+/// `BUNDLE` without the object whose STIX id is `stix_id`; relationships that
+/// reference it stay in the bundle.
+fn bundle_without(stix_id: &str) -> String {
+    let mut bundle: serde_json::Value = serde_json::from_str(BUNDLE).expect("BUNDLE is JSON");
+    let objects = bundle["objects"].as_array_mut().expect("objects array");
+    let before = objects.len();
+    objects.retain(|o| o["id"] != stix_id);
+    assert_eq!(objects.len(), before - 1, "{stix_id} is not in BUNDLE");
+    bundle.to_string()
+}
+
+/// Syncs a STIX bundle through the record path.
+async fn sync_stix(db: &mut TypeDbRouter, stix: &str) -> SyncResult {
+    let (manifest, typed_rels) = to_okf(stix).expect("to_okf");
+    sync_bundle(
+        db,
+        &manifest,
+        &cyber_post_sync(&typed_rels),
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync_bundle")
+}
+
+/// The concept-id of the one concept `selector` matches as `$c`.
+async fn concept_id_of(db: &mut TypeDbRouter, selector: &str) -> String {
+    let tx = db.begin_read().await.expect("begin read");
+    let rows: Vec<_> = tx
+        .query(format!("match {selector} $c has concept-id $i; select $i;"))
+        .await
+        .expect("concept-id query")
+        .into_rows()
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(rows.len(), 1, "{selector} must match exactly one concept");
+    rows.into_iter()
+        .next()
+        .expect("one row")
+        .expect("row")
+        .get("i")
+        .expect("column i")
+        .expect("i bound")
+        .try_get_string()
+        .expect("concept-id string")
+        .to_string()
+}
+
+/// Gives the concept `id` a belief whose `source-link` names it as its origin.
+async fn claim_with_belief(db: &mut TypeDbRouter, id: &str) {
+    let tx = db.begin_write().await.expect("begin write");
+    let setup = [
+        GraphWrite::single(
+            "given $id: string, $st: string; \
+             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
+            vec!["id".into(), "st".into()],
+            vec!["mem/bel/claim".into(), "asserted".into()],
+        )
+        .expecting(1),
+        GraphWrite::single(
+            "given $bid: string, $cid: string, $kind: string; \
+             match $b isa belief, has concept-id $bi; $bi == $bid; \
+                   $c isa concept, has concept-id $ci; $ci == $cid; \
+             insert $l isa source-link, links (memory: $b, origin: $c), \
+                    has origin-kind == $kind;",
+            vec!["bid".into(), "cid".into(), "kind".into()],
+            vec![
+                "mem/bel/claim".into(),
+                id.to_string().into(),
+                "concept".into(),
+            ],
+        )
+        .expecting(1),
+    ];
+    run_graph_writes(&tx, &setup).await.expect("belief setup");
+    tx.commit().await.expect("commit belief setup");
+}
+
+/// The labels of the relations the concept `id` plays a role in, sorted.
+async fn relations_played(db: &mut TypeDbRouter, id: &str) -> Vec<String> {
+    let tx = db.begin_read().await.expect("begin read");
+    let rows: Vec<_> = tx
+        .query(format!(
+            r#"match $c isa concept, has concept-id "{id}"; $r links ($c); $r isa! $t;
+               select $t;"#
+        ))
+        .await
+        .expect("relations query")
+        .into_rows()
+        .collect::<Vec<_>>()
+        .await;
+    let mut labels: Vec<String> = rows
+        .into_iter()
+        .map(|r| {
+            r.expect("row")
+                .get("t")
+                .expect("column t")
+                .expect("t bound")
+                .try_get_label()
+                .expect("type label")
+                .to_string()
+        })
+        .collect();
+    labels.sort();
+    labels
+}
+
+#[tokio::test]
+async fn dropping_a_claimed_technique_retires_it_and_its_typed_relations() {
+    let test_db = TestDb::new("gecko_test_stix_retire_technique");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+    sync_stix(&mut db, BUNDLE).await;
+
+    let id = concept_id_of(&mut db, r#"$c isa attack-pattern, has attack-id "T1059";"#).await;
+    claim_with_belief(&mut db, &id).await;
+    let before = relations_played(&mut db, &id).await;
+    assert!(
+        before
+            .iter()
+            .any(|l| l != "containment" && l != "source-link"),
+        "the technique plays no typed relation before retirement: {before:?}"
+    );
+
+    let result = sync_stix(&mut db, &bundle_without(T1059_STIX_ID)).await;
+    assert_eq!(result.concepts_retired, 1);
+
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(
+        count(
+            &tx,
+            &format!(r#"match $c isa concept, has concept-id "{id}", has retired-at $t;"#)
+        )
+        .await,
+        1,
+        "the dropped technique is not stamped retired-at"
+    );
+    assert_eq!(
+        count(
+            &tx,
+            &format!(r#"match $c isa concept, has concept-id "{id}", has attack-id $a;"#)
+        )
+        .await,
+        0,
+        "the retired technique kept its attack-id"
+    );
+    drop(tx);
+    assert_eq!(
+        relations_played(&mut db, &id).await,
+        vec!["containment".to_string(), "source-link".to_string()],
+        "the retired technique plays more than its containment and the belief's source-link"
+    );
+}
+
+#[tokio::test]
+async fn retiring_a_claimed_observable_keeps_its_required_attributes() {
+    let test_db = TestDb::new("gecko_test_stix_retire_observable");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+    sync_stix(&mut db, BUNDLE).await;
+
+    let id = concept_id_of(&mut db, r#"$c isa observable, has ioc-value "1.1.1.1";"#).await;
+    claim_with_belief(&mut db, &id).await;
+
+    let result = sync_stix(&mut db, &bundle_without(IP_OBSERVABLE_STIX_ID)).await;
+    assert_eq!(result.concepts_retired, 1);
+
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(
+        count(
+            &tx,
+            &format!(
+                r#"match $c isa observable, has concept-id "{id}",
+                   has ioc-value "1.1.1.1", has ioc-type "ipv4", has retired-at $t;"#
+            )
+        )
+        .await,
+        1,
+        "the retired observable lost a required attribute or retired-at"
+    );
 }

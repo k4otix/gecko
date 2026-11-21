@@ -926,7 +926,8 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         fetch {{
             "engine": $c.engine,
             "code": [ $c.code-block ],
-            "scopes": [ $c.scope ]
+            "scopes": [ $c.scope ],
+            "retired": [ $c.retired-at ]
         }};
     "#,
         gecko_engine::syncer::bundle::escape_tql(concept_id)
@@ -950,6 +951,18 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
     let Some(json) = doc_json else {
         anyhow::bail!("Playbook '{concept_id}' not found.");
     };
+
+    // `retired` is a list projection: non-empty once a sync has retired the concept.
+    if let Some(since) = json
+        .get("retired")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    {
+        let since = since
+            .as_str()
+            .map_or_else(|| since.to_string(), str::to_string);
+        anyhow::bail!("concept `{concept_id}` is retired (since {since})");
+    }
 
     // `code` is a list projection: zero elements if the concept has no program.
     let code_block = json

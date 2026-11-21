@@ -301,6 +301,19 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
     stdout
 }
 
+/// Runs the `gecko` binary against `db` like [`gecko`]; asserts it fails and returns
+/// its stdout followed by its stderr, since the binary logs a command's error to either.
+async fn gecko_expect_failure(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
+    let out = gecko_output(rig, db, args).await;
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "gecko {args:?} succeeded\n{output}");
+    output
+}
+
 /// Runs a playbook through the binary and returns its JSON output.
 async fn run_playbook(rig: &Rig, db: &TestDb, concept_id: &str) -> serde_json::Value {
     let stdout = gecko(rig, db, &["run", concept_id]).await;
@@ -1053,7 +1066,7 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gc_of_a_concept_a_belief_edge_references_is_retired() {
+async fn gc_of_a_concept_a_belief_edge_references_retires_it() {
     let db = TestDb::new("gecko_test_rig_gc");
     let rig = Rig::new();
     setup(&rig, &db).await;
@@ -1076,6 +1089,23 @@ async fn gc_of_a_concept_a_belief_edge_references_is_retired() {
         count_with(&db, concept_count, CYBER_PLAYBOOK).await,
         1,
         "the retiring GC removed {CYBER_PLAYBOOK}"
+    );
+    let retired_query = "given $v: string; match $c isa concept, has concept-id $id, \
+                         has retired-at $t; $id == $v; reduce $n = count;";
+    assert_eq!(
+        count_with(&db, retired_query, CYBER_PLAYBOOK).await,
+        1,
+        "{CYBER_PLAYBOOK} is not stamped retired-at"
+    );
+
+    let refusal = gecko_expect_failure(&rig, &db, &["run", CYBER_PLAYBOOK]).await;
+    assert!(
+        refusal.contains(&format!("concept `{CYBER_PLAYBOOK}` is retired (since")),
+        "gecko run did not refuse the retired concept:\n{refusal}"
+    );
+    assert!(
+        !refusal.contains("no executable program"),
+        "gecko run reports a retired concept as having no program:\n{refusal}"
     );
 
     let output = gecko(&rig, &db, &["sync", path_str(&rig.okf_dir_without_cyber)]).await;
