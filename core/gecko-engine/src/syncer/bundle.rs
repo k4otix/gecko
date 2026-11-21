@@ -139,15 +139,6 @@ pub fn split_gc(
     (delete, release)
 }
 
-/// Escapes string literals for safe embedding in TypeQL.
-///
-/// Used by the CLI's concept-fetch read path (`gecko run`), which still
-/// interpolates a concept ID into query text; the write path in this module uses
-/// parameterized `given` queries and never interpolates values into query text.
-pub fn escape_tql(val: &str) -> String {
-    val.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 /// Per-concept disposition relative to what is already in the graph, computed by
 /// comparing content hashes. Pure and unit-tested — no database access.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -694,7 +685,9 @@ async fn retire_concepts(
     let mut by_type: HashMap<&str, Vec<&str>> = HashMap::new();
     for id in ids {
         let type_name = types.get(*id).ok_or_else(|| {
-            DbError::Query(format!("concept `{id}` to retire has no concept type"))
+            DbError::Query(format!(
+                "invariant violation: concept `{id}` to retire has no concept type row"
+            ))
         })?;
         by_type.entry(type_name.as_str()).or_default().push(id);
     }
@@ -1185,11 +1178,6 @@ mod tests {
             scopes: vec![],
             timeout_ms: None,
         }
-    }
-
-    #[test]
-    fn test_escape_tql() {
-        assert_eq!(escape_tql(r#"a"b\c"#), r#"a\"b\\c"#);
     }
 
     /// Invariants 1/2/8 guardrail: the record path must never reach into the

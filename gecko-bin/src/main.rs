@@ -35,6 +35,8 @@ use gecko_extension_api::{
 #[cfg(feature = "real-embedder")]
 use gecko_semantic_index::CandleEmbedder;
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
+use typedb_driver::concept::Value;
+use typedb_driver::given::{GivenRowEntry, GivenRows};
 
 use crate::config::{GeckoConfig, TypedbMode, build_extensions, check_extension_schemas};
 
@@ -934,18 +936,24 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
 
     let query = format!(
         r#"
-        match $c isa concept, has concept-id "{}";
+        given $id: string;
+        match $c isa concept, has concept-id $cid; $cid == $id;
         fetch {{
             "engine": $c.engine,
             "code": [ $c.code-block ],
             "scopes": [ $c.scope ]{retired_projection}
         }};
-    "#,
-        gecko_engine::syncer::bundle::escape_tql(concept_id)
+    "#
     );
+    let mut given = GivenRows::new(vec!["id".to_string()], 1);
+    given
+        .push_row(vec![GivenRowEntry::Value(Value::String(
+            concept_id.to_string(),
+        ))])
+        .map_err(|e| anyhow::anyhow!("Failed to bind the concept id: {e}"))?;
 
     let answer = tx
-        .query(&query)
+        .query_with_rows(&query, given)
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {e}"))?;
 
@@ -969,9 +977,9 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
     {
-        let since = since
-            .as_str()
-            .map_or_else(|| since.to_string(), str::to_string);
+        let Some(since) = since.as_str() else {
+            anyhow::bail!("concept `{concept_id}` has a non-string `retired-at`: {since}");
+        };
         anyhow::bail!("concept `{concept_id}` is retired (since {since})");
     }
 

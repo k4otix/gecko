@@ -31,6 +31,11 @@ pub fn required_attributes(schema: &str) -> Result<HashMap<String, BTreeSet<Stri
             continue;
         }
         let (label, decl) = parse_entity(body)?;
+        if decls.contains_key(&label) {
+            return Err(DbError::Schema(format!(
+                "entity type '{label}' is declared more than once"
+            )));
+        }
         decls.insert(label, decl);
     }
 
@@ -95,10 +100,15 @@ fn resolve(
 fn parse_entity(body: &str) -> Result<(String, EntityDecl), DbError> {
     let mut clauses = split_top_level(body, ',').into_iter();
     let head = clauses.next().unwrap_or_default();
-    let label = split_words(&head)
-        .into_iter()
+    let mut head_words = split_words(&head).into_iter();
+    let label = head_words
         .next()
         .ok_or_else(|| DbError::Schema(format!("entity statement without a label: '{body}'")))?;
+    if let Some(extra) = head_words.find(|w| !w.starts_with('@')) {
+        return Err(DbError::Schema(format!(
+            "unexpected '{extra}' after the label of entity '{label}'"
+        )));
+    }
     let mut decl = EntityDecl {
         sup: None,
         owns: Vec::new(),
@@ -116,6 +126,11 @@ fn parse_entity(body: &str) -> Result<(String, EntityDecl), DbError> {
                 let attr = words.get(1).ok_or_else(|| {
                     DbError::Schema(format!("'owns' without an attribute in entity '{label}'"))
                 })?;
+                if words.iter().skip(2).any(|w| w == "as") {
+                    return Err(DbError::Schema(format!(
+                        "unsupported attribute override ('owns {attr} as ...') in entity '{label}'"
+                    )));
+                }
                 let attr = attr.trim_end_matches("[]").to_string();
                 let required = words[2..]
                     .iter()
@@ -262,5 +277,62 @@ entity p,
             DbError::Schema(m) => assert!(m.contains("missing"), "{m}"),
             other => panic!("wrong error: {other:?}"),
         }
+    }
+
+    fn schema_err(schema: &str) -> String {
+        match required_attributes(schema).unwrap_err() {
+            DbError::Schema(m) => m,
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unique_alone_is_not_required() {
+        let r = required_attributes("define\nentity e,\n owns a @unique;\n").unwrap();
+        assert!(r["e"].is_empty());
+    }
+
+    #[test]
+    fn unique_with_a_minimum_card_is_required() {
+        let r = required_attributes("define\nentity e,\n owns a @unique @card(1..1);\n").unwrap();
+        assert_eq!(r["e"], set(&["a"]));
+    }
+
+    #[test]
+    fn inheritance_cycle_is_an_error() {
+        let m = schema_err("define\nentity a,\n sub b;\nentity b,\n sub a;\n");
+        assert!(m.contains("own supertype"), "{m}");
+    }
+
+    #[test]
+    fn unreadable_card_is_an_error() {
+        let m = schema_err("define\nentity e,\n owns a @card(x..2);\n");
+        assert!(m.contains("cardinality"), "{m}");
+    }
+
+    #[test]
+    fn subtype_declared_before_its_supertype_resolves() {
+        let r =
+            required_attributes("define\nentity o,\n sub c;\nentity c,\n owns a @card(1..1);\n")
+                .unwrap();
+        assert_eq!(r["o"], set(&["a"]));
+    }
+
+    #[test]
+    fn sub_in_the_head_clause_is_an_error() {
+        let m = schema_err("define\nentity c sub x,\n owns a @card(1..1);\n");
+        assert!(m.contains("'c'") && m.contains("sub"), "{m}");
+    }
+
+    #[test]
+    fn duplicate_entity_label_is_an_error() {
+        let m = schema_err("define\nentity c,\n owns a;\nentity c,\n owns b;\n");
+        assert!(m.contains("'c'") && m.contains("more than once"), "{m}");
+    }
+
+    #[test]
+    fn owns_override_is_unsupported() {
+        let m = schema_err("define\nentity c,\n owns a as b;\n");
+        assert!(m.contains("unsupported") && m.contains("'c'"), "{m}");
     }
 }

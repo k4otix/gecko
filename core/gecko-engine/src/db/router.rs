@@ -285,9 +285,9 @@ impl TypeDbRouter {
         Ok(all.iter().map(|d| d.name().to_string()).collect())
     }
 
-    /// The database's full schema (types and functions) as TypeQL `define` text.
+    /// The full schema (types and functions) of the existing target database as
+    /// TypeQL `define` text; errors when the database does not exist.
     pub async fn database_schema(&mut self) -> Result<String, DbError> {
-        self.ensure_database().await?;
         let db_name = self.config.database.clone();
         let driver = self.driver().await?;
         driver

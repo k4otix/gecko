@@ -11,14 +11,18 @@ use cyber_gecko::CyberGecko;
 use cyber_gecko::stix::{cyber_post_sync, to_okf, typed_relation_players};
 use futures_util::StreamExt;
 use gecko_engine::db::router::TypeDbRouter;
-use gecko_engine::db::run_graph_writes;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
-use gecko_extension_api::GraphWrite;
 use mem_gecko::MemGecko;
 use typedb_driver::Transaction;
+use typedb_driver::answer::ConceptRow;
+use typedb_driver::concept::Value;
+use typedb_driver::given::{GivenRowEntry, GivenRows};
 
+#[path = "common/belief.rs"]
+mod belief;
 mod common;
+use belief::claim_with_belief;
 use common::TestDb;
 
 /// A representative STIX 2.1 / ATT&CK bundle exercising SDOs, an SCO observable
@@ -437,54 +441,39 @@ async fn concept_id_of(db: &mut TypeDbRouter, selector: &str) -> String {
         .to_string()
 }
 
-/// Gives the concept `id` a belief whose `source-link` names it as its origin.
-async fn claim_with_belief(db: &mut TypeDbRouter, id: &str) {
-    let tx = db.begin_write().await.expect("begin write");
-    let setup = [
-        GraphWrite::single(
-            "given $id: string, $st: string; \
-             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
-            vec!["id".into(), "st".into()],
-            vec!["mem/bel/claim".into(), "asserted".into()],
-        )
-        .expecting(1),
-        GraphWrite::single(
-            "given $bid: string, $cid: string, $kind: string; \
-             match $b isa belief, has concept-id $bi; $bi == $bid; \
-                   $c isa concept, has concept-id $ci; $ci == $cid; \
-             insert $l isa source-link, links (memory: $b, origin: $c), \
-                    has origin-kind == $kind;",
-            vec!["bid".into(), "cid".into(), "kind".into()],
-            vec![
-                "mem/bel/claim".into(),
-                id.to_string().into(),
-                "concept".into(),
-            ],
-        )
-        .expecting(1),
-    ];
-    run_graph_writes(&tx, &setup).await.expect("belief setup");
-    tx.commit().await.expect("commit belief setup");
+/// Runs `query` (a `given $id: string; ...` TypeQL query) with `id` bound, and
+/// returns its rows.
+async fn rows_for_id(tx: &Transaction, query: &str, id: &str) -> Vec<ConceptRow> {
+    let mut given = GivenRows::new(vec!["id".to_string()], 1);
+    given
+        .push_row(vec![GivenRowEntry::Value(Value::String(id.to_string()))])
+        .expect("bind id");
+    let answer = tx
+        .query_with_rows(query, given)
+        .await
+        .expect("query failed");
+    answer
+        .into_rows()
+        .map(|r| r.expect("row"))
+        .collect::<Vec<_>>()
+        .await
 }
 
 /// The labels of the relations the concept `id` plays a role in, sorted.
 async fn relations_played(db: &mut TypeDbRouter, id: &str) -> Vec<String> {
     let tx = db.begin_read().await.expect("begin read");
-    let rows: Vec<_> = tx
-        .query(format!(
-            r#"match $c isa concept, has concept-id "{id}"; $r links ($c); $r isa! $t;
-               select $t;"#
-        ))
-        .await
-        .expect("relations query")
-        .into_rows()
-        .collect::<Vec<_>>()
-        .await;
+    let rows = rows_for_id(
+        &tx,
+        "given $id: string; \
+         match $c isa concept, has concept-id $cid; $cid == $id; \
+               $r links ($c); $r isa! $t; select $t;",
+        id,
+    )
+    .await;
     let mut labels: Vec<String> = rows
         .into_iter()
         .map(|r| {
-            r.expect("row")
-                .get("t")
+            r.get("t")
                 .expect("column t")
                 .expect("t bound")
                 .try_get_label()
@@ -504,7 +493,7 @@ async fn dropping_a_claimed_technique_retires_it_and_its_typed_relations() {
     sync_stix(&mut db, BUNDLE).await;
 
     let id = concept_id_of(&mut db, r#"$c isa attack-pattern, has attack-id "T1059";"#).await;
-    claim_with_belief(&mut db, &id).await;
+    claim_with_belief(&mut db, "mem/bel/claim", &id).await;
     let before = relations_played(&mut db, &id).await;
     assert!(
         before
@@ -518,20 +507,26 @@ async fn dropping_a_claimed_technique_retires_it_and_its_typed_relations() {
 
     let tx = db.begin_read().await.expect("begin read");
     assert_eq!(
-        count(
+        rows_for_id(
             &tx,
-            &format!(r#"match $c isa concept, has concept-id "{id}", has retired-at $t;"#)
+            "given $id: string; match $c isa concept, has concept-id $cid; $cid == $id; \
+             $c has retired-at $t;",
+            &id
         )
-        .await,
+        .await
+        .len(),
         1,
         "the dropped technique is not stamped retired-at"
     );
     assert_eq!(
-        count(
+        rows_for_id(
             &tx,
-            &format!(r#"match $c isa concept, has concept-id "{id}", has attack-id $a;"#)
+            "given $id: string; match $c isa concept, has concept-id $cid; $cid == $id; \
+             $c has attack-id $a;",
+            &id
         )
-        .await,
+        .await
+        .len(),
         0,
         "the retired technique kept its attack-id"
     );
@@ -551,21 +546,21 @@ async fn retiring_a_claimed_observable_keeps_its_required_attributes() {
     sync_stix(&mut db, BUNDLE).await;
 
     let id = concept_id_of(&mut db, r#"$c isa observable, has ioc-value "1.1.1.1";"#).await;
-    claim_with_belief(&mut db, &id).await;
+    claim_with_belief(&mut db, "mem/bel/claim", &id).await;
 
     let result = sync_stix(&mut db, &bundle_without(IP_OBSERVABLE_STIX_ID)).await;
     assert_eq!(result.concepts_retired, 1);
 
     let tx = db.begin_read().await.expect("begin read");
     assert_eq!(
-        count(
+        rows_for_id(
             &tx,
-            &format!(
-                r#"match $c isa observable, has concept-id "{id}",
-                   has ioc-value "1.1.1.1", has ioc-type "ipv4", has retired-at $t;"#
-            )
+            "given $id: string; match $c isa observable, has concept-id $cid; $cid == $id; \
+             $c has ioc-value \"1.1.1.1\", has ioc-type \"ipv4\", has retired-at $t;",
+            &id
         )
-        .await,
+        .await
+        .len(),
         1,
         "the retired observable lost a required attribute or retired-at"
     );

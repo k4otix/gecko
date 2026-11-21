@@ -19,7 +19,10 @@ use gecko_engine::syncer::bundle::sync_bundle;
 use gecko_extension_api::GraphWrite;
 use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
 
+#[path = "common/belief.rs"]
+mod belief;
 mod common;
+use belief::claim_with_belief;
 use common::TestDb;
 
 fn create_test_bundle(dir: &std::path::Path) {
@@ -420,34 +423,7 @@ async fn synced_with_referenced(
     );
 
     // A belief whose source-link names the concept as its origin.
-    let tx = db.begin_write().await.expect("Failed to begin write");
-    let setup = [
-        GraphWrite::single(
-            "given $id: string, $st: string; \
-             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
-            vec!["id".into(), "st".into()],
-            vec!["mem/bel/ref".into(), "asserted".into()],
-        )
-        .expecting(1),
-        GraphWrite::single(
-            "given $bid: string, $cid: string, $kind: string; \
-             match $b isa belief, has concept-id $bi; $bi == $bid; \
-                   $c isa concept, has concept-id $ci; $ci == $cid; \
-             insert $l isa source-link, links (memory: $b, origin: $c), \
-                    has origin-kind == $kind;",
-            vec!["bid".into(), "cid".into(), "kind".into()],
-            vec![
-                "mem/bel/ref".into(),
-                referenced.clone().into(),
-                "concept".into(),
-            ],
-        )
-        .expecting(1),
-    ];
-    run_graph_writes(&tx, &setup)
-        .await
-        .expect("belief setup writes");
-    tx.commit().await.expect("commit belief setup");
+    claim_with_belief(db, "mem/bel/ref", &referenced).await;
 
     let mut dropped = full.clone();
     dropped.concepts.retain(|c| c.concept_id != referenced);
