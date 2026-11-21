@@ -579,7 +579,7 @@ seam closed the last raw belief-tier write.
   attrs are the committed allowlist entries §1.2 records, owned by the populations writer,
   "never raw `graph.write`."
 
-### §3.5 — Amendments decided after ratification (D-B, D-D, pre-GC check)
+### §3.5 — Amendments decided after ratification (D-B, D-D, retirement)
 
 > **Status: decided by the user on 2026-11-19** (ledger D-B and D-D, from
 > `REVIEW-2026-11.md` §3 points 1, 2 and 5). These amend §3.2 and §3.3; the ratified text above is
@@ -627,11 +627,12 @@ detected. The decision is to retire it structurally, in three steps:
 a raw write path by accident; they do not defend against a deliberately hostile extension. W5a
 (§2) remains the backstop for every belief-tier write, mem's own included.
 
-**Pre-GC check — ratified by the user on 2026-11-20.** A sync refuses to garbage-collect a concept
-that plays a role in a belief-tier relation, with `DbError::BeliefEdgeReferencesRemovedConcept`
-naming each concept ID and the relation that references it, and nothing commits. The fingerprint
-of §2 stays the backstop. The recovery is to restore the removed record or to sync into a fresh
-database; retiring such a record instead of refusing is ledger item O6.
+**Retirement — decided by the user on 2026-11-20:** a referenced GC candidate is retired instead of
+refusing the sync (design `docs/superpowers/specs/2026-11-20-retire-not-delete-design.md`). A sync
+that drops a concept playing a role in a belief-tier relation keeps the entity, its `concept-id` and
+the attributes its type requires, removes its other attributes and every relation it plays except
+containment and belief-tier relations, and sets `retired-at`. The fingerprint of §2 stays the
+backstop, and nothing in the belief tier changes.
 
 ---
 
@@ -727,7 +728,7 @@ its check.
 >   (`DbError::BeliefTierWrite`). The residual is a same-count swap, which the fingerprint cannot see.
 >   Each fingerprint is at most three grouped reads, one per measure. Measured guard time with mem and
 >   cyber composed (debug build, near-empty databases, 23 syncs): a median of about 4.3 ms per sync.
-> - **The pre-GC check** ships as `DbError::BeliefEdgeReferencesRemovedConcept`; it is ratified in §3.5.
+> - **Retirement** replaces a pre-GC refusal: a referenced GC candidate is retired, not deleted; it is decided in §3.5.
 >
 > Tracked as ledger items A4 and A10.
 

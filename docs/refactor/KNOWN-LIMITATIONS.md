@@ -57,14 +57,20 @@ proven through the real sandbox against live TypeDB.
   and end of its transaction and refuses any difference. A change that keeps
   every count is not seen: a belief-tier attribute value replaced in place, or one
   instance deleted and an identical-shape one inserted.
-- **Pre-GC refusal.** A sync refuses to garbage-collect a concept that plays a
-  role in a belief-tier relation (`DbError::BeliefEdgeReferencesRemovedConcept`),
-  and deletes nothing. This fires when a playbook a belief cites is renamed or
-  deleted, and when an ATT&CK re-import drops a technique a belief claims.
-  Recovery today: restore the removed concept's file (or keep the record in the
-  import), or sync into a fresh database. Superseding the belief does not help,
-  since the edge stays in the graph. Retiring rather than deleting such a record
-  is ledger item O6.
+- **Retired concepts.** A sync that drops a concept a belief-tier relation
+  references retires it instead of deleting it: the concept keeps its ID and the
+  attributes its type requires, loses its other attributes and every relation
+  except containment and belief-tier relations, and gains `retired-at`.
+  `gecko run` refuses a retired concept. Restoring its file revives it, and it is
+  deleted once nothing references it. A reader learns of a retirement only from
+  the concept itself; recall does not flag beliefs about it. A retired ID stays
+  contained by its bundle, so another bundle syncing that ID is refused as a
+  collision while the belief exists. A later sync keeps the first `retired-at`,
+  and the CLI reports `Concepts retired: <n>` for the concepts that sync newly
+  retired. The CLI's `sync` applies the schemas itself; a library caller of
+  `sync_bundle` must apply the current schema first, since a database without
+  `retired-at` cannot retire a concept. `gecko run` works on a database without
+  `retired-at`, where no concept can be retired.
 - **Cost.** Every sync reads the surface and takes two fingerprints: nine reads
   in all, since each fingerprint is one grouped count per measure. With mem and
   cyber composed, in a debug build on near-empty databases, the guard took a

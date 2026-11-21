@@ -29,9 +29,10 @@
 //!
 //! Every sync fingerprints the belief tier at the start and end of its
 //! transaction and refuses to commit when any count changed. A concept that a
-//! belief edge references is never garbage-collected: the sync is refused instead.
+//! belief edge references is never garbage-collected: the sync retires it instead
+//! ([`retire_concepts`]), keeping the entity and its belief edges.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -44,6 +45,7 @@ use typedb_driver::given::{GivenRowEntry, GivenRows};
 use gecko_extension_api::GraphWrite;
 
 use crate::db::graph_store::run_graph_writes;
+use crate::db::required::required_attributes;
 use crate::db::router::{DbError, TypeDbRouter};
 use crate::db::surface::{BeliefTierSurface, belief_tier_fingerprint, belief_tier_surface};
 use crate::db::validate_schema_label;
@@ -59,16 +61,22 @@ pub struct SyncResult {
     /// Concepts this bundle dropped that another bundle still contains: only this
     /// bundle's containment was removed.
     pub concepts_released: usize,
+    /// Concepts this sync newly retired: dropped from the bundle while a belief
+    /// edge references them. A concept already retired counts as neither retired
+    /// nor deleted.
+    pub concepts_retired: usize,
     pub links_attempted: usize,
     pub citations_attempted: usize,
 }
 
-/// A concept already in the graph: its stored content hash and the names of
-/// every bundle containing it (sorted, deduplicated; empty when uncontained).
+/// A concept already in the graph: its stored content hash, the names of every
+/// bundle containing it (sorted, deduplicated; empty when uncontained), and
+/// whether it is retired (owns a `retired-at`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StoredConcept {
     pub hash: Option<String>,
     pub bundles: Vec<String>,
+    pub retired: bool,
 }
 
 /// The stored concepts `bundle_name` contains, as the concept-id → file-hash map
@@ -131,15 +139,6 @@ pub fn split_gc(
     (delete, release)
 }
 
-/// Escapes string literals for safe embedding in TypeQL.
-///
-/// Used by the CLI's concept-fetch read path (`gecko run`), which still
-/// interpolates a concept ID into query text; the write path in this module uses
-/// parameterized `given` queries and never interpolates values into query text.
-pub fn escape_tql(val: &str) -> String {
-    val.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 /// Per-concept disposition relative to what is already in the graph, computed by
 /// comparing content hashes. Pure and unit-tested — no database access.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -195,14 +194,15 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 ///
 /// `belief_tier_root` names the root type of the belief tier, which the schema
 /// must contain (otherwise [`DbError::Schema`]). A concept the sync would
-/// garbage-collect that plays a role in a belief-tier relation stops the sync
-/// before any delete with [`DbError::BeliefEdgeReferencesRemovedConcept`]; the
-/// recovery is to restore the removed concept's file, or to sync into a fresh
-/// database. Otherwise the sync is refused with [`DbError::BeliefTierWrite`] when
-/// any belief-tier label's instance, attribute-ownership or role-player count
-/// differs between the start of the transaction and just before commit. The
-/// guard does not see a same-count swap: a value replaced in place, or one
-/// instance deleted and an identical-shape one inserted.
+/// garbage-collect that plays a role in a belief-tier relation is retired instead
+/// ([`retire_concepts`]): it keeps its ID, the attributes its type requires, its
+/// containment and its belief edges, and gains a `retired-at`. A concept already
+/// retired gets no further writes; restoring its file makes it live again. The
+/// sync is refused with [`DbError::BeliefTierWrite`] when any belief-tier label's
+/// instance, attribute-ownership or role-player count differs between the start
+/// of the transaction and just before commit. The guard does not see a
+/// same-count swap: a value replaced in place, or one instance deleted and an
+/// identical-shape one inserted.
 pub async fn sync_bundle(
     db: &mut TypeDbRouter,
     manifest: &OkfBundle,
@@ -258,13 +258,27 @@ pub async fn sync_bundle(
     // 4. Ensure the bundle entity and its metadata.
     upsert_bundle(&tx, manifest).await?;
 
-    // 5. Refuse to delete a concept a belief edge references, then garbage-collect
-    //    orphans: delete those this bundle owns alone (with their OKF relations,
-    //    so none dangle), and release shared ones from this bundle.
-    let delete_ids: Vec<&str> = gc_delete.iter().map(String::as_str).collect();
-    let references = belief_edge_references(&tx, &delete_ids, &surface).await?;
-    if !references.is_empty() {
-        return Err(DbError::BeliefEdgeReferencesRemovedConcept { references });
+    // 5. Garbage-collect orphans: retire those this bundle owns alone that a
+    //    belief edge references (unless already retired), delete the rest it owns
+    //    alone (with their OKF relations, so none dangle), and release shared ones
+    //    from this bundle.
+    let gc_ids: Vec<&str> = gc_delete.iter().map(String::as_str).collect();
+    let referenced: HashSet<String> = belief_edge_references(&tx, &gc_ids, &surface)
+        .await?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let (referenced_ids, delete_ids): (Vec<&str>, Vec<&str>) = gc_ids
+        .iter()
+        .copied()
+        .partition(|id| referenced.contains(*id));
+    let retire_ids: Vec<&str> = referenced_ids
+        .into_iter()
+        .filter(|id| !stored.get(*id).is_some_and(|s| s.retired))
+        .collect();
+    if !retire_ids.is_empty() {
+        let required = required_attributes(&db.database_schema().await?)?;
+        retire_concepts(&tx, &retire_ids, &surface, &required, Utc::now()).await?;
     }
     delete_concepts_gc(&tx, &delete_ids).await?;
     let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
@@ -317,8 +331,9 @@ pub async fn sync_bundle(
         concepts_inserted: plan.to_insert.len(),
         concepts_updated: plan.to_update.len(),
         concepts_skipped: plan.skipped,
-        concepts_deleted: gc_delete.len(),
+        concepts_deleted: delete_ids.len(),
         concepts_released: gc_release.len(),
+        concepts_retired: retire_ids.len(),
         links_attempted,
         citations_attempted,
     };
@@ -328,6 +343,7 @@ pub async fn sync_bundle(
         skipped = result.concepts_skipped,
         deleted = result.concepts_deleted,
         released = result.concepts_released,
+        retired = result.concepts_retired,
         links_attempted = result.links_attempted,
         citations_attempted = result.citations_attempted,
         "Bundle sync complete"
@@ -414,9 +430,10 @@ async fn upsert_bundle(tx: &Transaction, manifest: &OkfBundle) -> Result<(), DbE
     Ok(())
 }
 
-/// Fetches every stored concept with its content hash and the names of the
-/// bundles containing it. The query yields one row per containment (one row with
-/// no bundle for an uncontained concept), so rows are folded by concept ID.
+/// Fetches every stored concept with its content hash, the names of the bundles
+/// containing it, and whether it is retired. The query yields one row per
+/// containment (one row with no bundle for an uncontained concept), so rows are
+/// folded by concept ID.
 async fn fetch_stored_concepts(
     tx: &Transaction,
 ) -> Result<HashMap<String, StoredConcept>, DbError> {
@@ -425,7 +442,8 @@ async fn fetch_stored_concepts(
             r#"match $c isa concept, has concept-id $id;
                      try { $ct isa containment, links (container: $b, member: $c);
                            $b has bundle-name $bn; };
-               fetch { "id": $id, "hash": $c.file-hash, "bundle": $bn };"#,
+               fetch { "id": $id, "hash": $c.file-hash, "retired": $c.retired-at,
+                       "bundle": $bn };"#,
         )
         .await
         .map_err(|e| DbError::Query(e.to_string()))?;
@@ -449,6 +467,9 @@ async fn fetch_stored_concepts(
         let entry = out.entry(id.to_string()).or_default();
         if let Some(hash) = json.get("hash").and_then(|v| v.as_str()) {
             entry.hash = Some(hash.to_string());
+        }
+        if json.get("retired").is_some_and(|v| !v.is_null()) {
+            entry.retired = true;
         }
         if let Some(bundle) = json.get("bundle").and_then(|v| v.as_str()) {
             entry.bundles.push(bundle.to_string());
@@ -478,10 +499,21 @@ async fn belief_edge_references(
     ids: &[&str],
     surface: &BeliefTierSurface,
 ) -> Result<Vec<(String, String)>, DbError> {
+    let mut out = played_relations(tx, ids).await?;
+    out.retain(|(_, relation)| surface.relations.contains(relation));
+    Ok(out)
+}
+
+/// Every `(concept_id, relation_label)` pair, sorted and deduplicated, in which
+/// one of the concepts `ids` plays a role in a relation of that exact type.
+async fn played_relations(
+    tx: &Transaction,
+    ids: &[&str],
+) -> Result<Vec<(String, String)>, DbError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let what = "belief-edge reference read";
+    let what = "played-relation read";
     let mut given = GivenRows::new(vec!["id".to_string()], ids.len());
     for id in ids {
         given
@@ -505,10 +537,10 @@ async fn belief_edge_references(
     let mut out = Vec::new();
     while let Some(item) = rows.next().await {
         let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
-        let relation = row_string(&row, "rl", what)?;
-        if surface.relations.contains(&relation) {
-            out.push((row_string(&row, "cid", what)?, relation));
-        }
+        out.push((
+            row_string(&row, "cid", what)?,
+            row_string(&row, "rl", what)?,
+        ));
     }
     out.sort();
     out.dedup();
@@ -559,12 +591,13 @@ async fn check_type_hints(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<
 }
 
 /// Garbage-collects concepts removed from the bundle. It is given only concepts
-/// this bundle owns alone (see [`split_gc`]). Deletes the OKF core relations
+/// this bundle owns alone (see [`split_gc`]) that no belief edge references
+/// (those are retired by [`retire_concepts`]). Deletes the OKF core relations
 /// each concept plays (containment, hierarchy, concept-link, citation) so none
 /// are left dangling, then the concept entity itself.
 ///
-/// Extension-defined relations (e.g. mem-gecko `contextualizes`) are intentionally
-/// left untouched — their lifecycle belongs to the extension, not the OKF sync.
+/// Only the OKF core relations are deleted explicitly; any other relation the
+/// concept plays loses that player when the entity goes.
 async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
     if ids.is_empty() {
         return Ok(());
@@ -591,6 +624,125 @@ async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbErro
          delete $c;",
         &["id"],
         rows(),
+    )
+    .await
+}
+
+/// The exact type label of each concept `ids` names, keyed by concept ID.
+async fn concept_types(tx: &Transaction, ids: &[&str]) -> Result<HashMap<String, String>, DbError> {
+    let what = "concept type read";
+    let mut given = GivenRows::new(vec!["id".to_string()], ids.len());
+    for id in ids {
+        given
+            .push_row(vec![str_entry(id)])
+            .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    }
+    let answer = tx
+        .query_with_rows(
+            "given $id: string; \
+             match $c isa! $t, has concept-id $cid; $cid == $id; $t sub concept; \
+                   let $tl = label($t); \
+             select $cid, $tl;",
+            given,
+        )
+        .await
+        .map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+    if !answer.is_row_stream() {
+        return Err(DbError::Query(format!("{what}: expected a row stream")));
+    }
+    let mut rows = answer.into_rows();
+    let mut out = HashMap::new();
+    while let Some(item) = rows.next().await {
+        let row = item.map_err(|e| DbError::Query(format!("{what}: {e}")))?;
+        out.insert(
+            row_string(&row, "cid", what)?,
+            row_string(&row, "tl", what)?,
+        );
+    }
+    Ok(out)
+}
+
+/// Retires concepts dropped from the bundle that a belief edge still references.
+/// Each keeps its entity, its `concept-id`, the attributes its type requires
+/// (`required`, keyed by entity type label), its containment and every relation
+/// of `surface`; every other attribute and relation it plays is deleted, and it
+/// gains `retired-at` = `at`. A concept whose type `required` does not name is a
+/// [`DbError::Schema`].
+async fn retire_concepts(
+    tx: &Transaction,
+    ids: &[&str],
+    surface: &BeliefTierSurface,
+    required: &HashMap<String, BTreeSet<String>>,
+    at: DateTime<Utc>,
+) -> Result<(), DbError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    // Attributes: one delete per concept type, keeping concept-id and the
+    // attributes that type requires.
+    let types = concept_types(tx, ids).await?;
+    let mut by_type: HashMap<&str, Vec<&str>> = HashMap::new();
+    for id in ids {
+        let type_name = types.get(*id).ok_or_else(|| {
+            DbError::Query(format!(
+                "invariant violation: concept `{id}` to retire has no concept type row"
+            ))
+        })?;
+        by_type.entry(type_name.as_str()).or_default().push(id);
+    }
+    for (type_name, type_ids) in by_type {
+        validate_schema_label(type_name)?;
+        let keep = required.get(type_name).ok_or_else(|| {
+            DbError::Schema(format!(
+                "concept type `{type_name}` is missing from the schema's entity types"
+            ))
+        })?;
+        let mut exclusions = String::from("not { $a isa concept-id; }; ");
+        for label in keep.iter().filter(|l| *l != "concept-id") {
+            validate_schema_label(label)?;
+            exclusions.push_str(&format!("not {{ $a isa {label}; }}; "));
+        }
+        let query = format!(
+            "given $id: string; \
+             match $c isa! {type_name}, has concept-id $cid; $cid == $id; \
+                   $c has $a; {exclusions}\
+             delete has $a of $c;"
+        );
+        let rows = type_ids.iter().map(|id| vec![str_entry(id)]).collect();
+        run_rows(tx, &query, &["id"], rows).await?;
+    }
+
+    // Relations: every one played except containment and the belief tier's.
+    let rows = || -> Vec<Vec<GivenRowEntry>> { ids.iter().map(|id| vec![str_entry(id)]).collect() };
+    let labels: BTreeSet<String> = played_relations(tx, ids)
+        .await?
+        .into_iter()
+        .map(|(_, relation)| relation)
+        .filter(|r| r != "containment" && !surface.relations.contains(r))
+        .collect();
+    for label in &labels {
+        validate_schema_label(label)?;
+        let query = format!(
+            "given $id: string; \
+             match $c isa concept, has concept-id $cid; $cid == $id; \
+                   $r isa! {label}, links ($c); \
+             delete $r;"
+        );
+        run_rows(tx, &query, &["id"], rows()).await?;
+    }
+
+    let stamped = ids
+        .iter()
+        .map(|id| vec![str_entry(id), dt_entry(&at)])
+        .collect();
+    run_rows(
+        tx,
+        "given $id: string, $at: datetime; \
+         match $c isa concept, has concept-id $cid; $cid == $id; \
+         insert $c has retired-at == $at;",
+        &["id", "at"],
+        stamped,
     )
     .await
 }
@@ -887,9 +1039,9 @@ async fn release_containment(
 }
 
 /// The concept IDs of `manifest`. When links and hierarchy are written, these
-/// are exactly the concepts this bundle contains: a manifest ID held outside the
-/// bundle has already refused the sync as a collision, and every concept the
-/// bundle dropped has been deleted or released.
+/// are exactly the live concepts this bundle contains: a manifest ID held outside
+/// the bundle has already refused the sync as a collision, and every concept the
+/// bundle dropped has been deleted, released or retired.
 fn bundle_ids(manifest: &OkfBundle) -> HashSet<&str> {
     manifest
         .concepts
@@ -1028,11 +1180,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_escape_tql() {
-        assert_eq!(escape_tql(r#"a"b\c"#), r#"a\"b\\c"#);
-    }
-
     /// Invariants 1/2/8 guardrail: the record path must never reach into the
     /// belief-write path or the semantic accelerator. This module names none of
     /// those types (the guardrail doc-comment above is worded to avoid them, so
@@ -1097,6 +1244,7 @@ mod tests {
         StoredConcept {
             hash: Some(hash.to_string()),
             bundles: bundles.iter().map(|b| b.to_string()).collect(),
+            retired: false,
         }
     }
 

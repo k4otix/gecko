@@ -2,6 +2,7 @@
 
 pub mod graph_store;
 pub mod label;
+pub mod required;
 pub mod router;
 pub mod schema_apply;
 pub mod surface;

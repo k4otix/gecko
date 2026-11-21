@@ -5,6 +5,7 @@
 use futures_util::StreamExt;
 use std::collections::HashSet;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 #[cfg(feature = "cyber")]
@@ -13,12 +14,15 @@ use gecko_engine::db::router::{DbError, TypeDbRouter};
 use gecko_engine::db::run_graph_writes;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
-use gecko_engine::okf::types::{TypedAttrValue, TypedAttribute};
+use gecko_engine::okf::types::{HierarchyEdge, OkfBundle, OkfLink, TypedAttrValue, TypedAttribute};
 use gecko_engine::syncer::bundle::sync_bundle;
 use gecko_extension_api::GraphWrite;
 use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
 
+#[path = "common/belief.rs"]
+mod belief;
 mod common;
+use belief::claim_with_belief;
 use common::TestDb;
 
 fn create_test_bundle(dir: &std::path::Path) {
@@ -359,28 +363,341 @@ async fn unknown_type_hint_is_refused_as_a_schema_error() {
     }
 }
 
-#[tokio::test]
-async fn gc_of_a_concept_a_belief_edge_references_is_refused_before_any_delete() {
-    let test_db = TestDb::new("gecko_test_sync_gc_ref");
-    let mut db = test_db.router();
-    apply_core(&mut db, true).await;
+/// The concept the two-concept bundle of [`synced_with_referenced`] drops.
+const REFERENCED: &str = "playbooks/test_concept";
 
-    let temp_dir = TempDir::new().unwrap();
-    create_test_bundle(temp_dir.path());
-    let bundle = parse_bundle(temp_dir.path()).expect("Failed to parse bundle");
-    sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+/// Applies the core and mem schemas, syncs a two-concept bundle whose second
+/// concept links to (and is the hierarchy parent of) the first, and gives the
+/// first a belief with a `source-link` to it. Returns the full bundle, the
+/// referenced concept's ID, and the bundle without that concept and its edges.
+async fn synced_with_referenced(
+    db: &mut TypeDbRouter,
+    dir: &Path,
+) -> (OkfBundle, String, OkfBundle) {
+    apply_core(db, true).await;
+    create_test_bundle(dir);
+    fs::write(
+        dir.join("playbooks/second.md"),
+        "---\ntype: Playbook\ntitle: Second\n---\n\nSee [the first](test_concept.md).\n",
+    )
+    .unwrap();
+    let mut full = parse_bundle(dir).expect("Failed to parse bundle");
+    let referenced = REFERENCED.to_string();
+    let survivor = full
+        .concepts
+        .iter()
+        .find(|c| c.concept_id != referenced)
+        .expect("a second concept")
+        .concept_id
+        .clone();
+    full.hierarchy.push(HierarchyEdge {
+        parent_id: survivor.clone(),
+        child_id: referenced.clone(),
+    });
+    let r = sync_bundle(db, &full, &[], BELIEF_TIER_ROOT)
         .await
         .expect("Failed to sync bundle");
-    let referenced = bundle.concepts[0].concept_id.clone();
+    assert_eq!(r.concepts_inserted, 2);
+    assert_eq!(
+        count(
+            db,
+            &format!(
+                r#"match $s isa concept, has concept-id "{survivor}";
+                         $t isa concept, has concept-id "{referenced}";
+                         $l isa concept-link, links (source: $s, target: $t);"#
+            )
+        )
+        .await,
+        1,
+        "the second concept links to the first"
+    );
+    assert_eq!(
+        plays(db, &referenced, "hierarchy").await,
+        1,
+        "the second concept is the first's hierarchy parent"
+    );
+    assert_eq!(
+        plays(db, &referenced, "citation").await,
+        1,
+        "the first concept cites an external resource"
+    );
 
     // A belief whose source-link names the concept as its origin.
+    claim_with_belief(db, "mem/bel/ref", &referenced).await;
+
+    let mut dropped = full.clone();
+    dropped.concepts.retain(|c| c.concept_id != referenced);
+    dropped
+        .links
+        .retain(|l| l.source_id != referenced && l.target_id != referenced);
+    dropped
+        .hierarchy
+        .retain(|h| h.parent_id != referenced && h.child_id != referenced);
+    dropped.citations.retain(|c| c.source_id != referenced);
+    assert_eq!(dropped.concepts.len(), 1);
+    (full, referenced, dropped)
+}
+
+/// The `retired-at` values of the concept `id`, rendered for comparison.
+async fn retired_at(db: &mut TypeDbRouter, id: &str) -> Vec<String> {
+    let tx = db.begin_read().await.expect("Failed to begin read");
+    let rows: Vec<_> = tx
+        .query(format!(
+            r#"match $c isa concept, has concept-id "{id}", has retired-at $t; select $t;"#
+        ))
+        .await
+        .expect("retired-at query failed")
+        .into_rows()
+        .collect::<Vec<_>>()
+        .await;
+    rows.into_iter()
+        .map(|r| {
+            let t = r
+                .expect("retired-at row")
+                .get("t")
+                .expect("column t")
+                .expect("t bound")
+                .try_get_datetime()
+                .expect("t is a datetime");
+            t.to_string()
+        })
+        .collect()
+}
+
+/// How many relations of type `rel` the concept `id` plays a role in.
+async fn plays(db: &mut TypeDbRouter, id: &str, rel: &str) -> usize {
+    count(
+        db,
+        &format!(r#"match $c isa concept, has concept-id "{id}"; $r isa {rel}, links ($c);"#),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn gc_of_a_concept_a_belief_edge_references_retires_it() {
+    let test_db = TestDb::new("gecko_test_sync_gc_retire");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (_full, referenced, dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+
+    let r = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("dropping a referenced concept retires it");
+    assert_eq!(r.concepts_retired, 1);
+    assert_eq!(r.concepts_deleted, 0);
+
+    let first = retired_at(&mut db, &referenced).await;
+    assert_eq!(first.len(), 1, "exactly one retired-at: {first:?}");
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(
+                r#"match $c isa concept, has concept-id "{referenced}"; $c has $a;
+                         not {{ $a isa concept-id; }}; not {{ $a isa retired-at; }};"#
+            )
+        )
+        .await,
+        0,
+        "a retired concept keeps only its concept-id and retired-at"
+    );
+    assert_eq!(plays(&mut db, &referenced, "containment").await, 1);
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(
+                r#"match $c isa concept, has concept-id "{referenced}";
+                         $b isa bundle, has bundle-name "{}";
+                         $r isa containment, links (container: $b, member: $c);"#,
+                dropped.bundle_name
+            )
+        )
+        .await,
+        1,
+        "the retired concept stays contained by its bundle"
+    );
+    for rel in ["hierarchy", "concept-link", "citation"] {
+        assert_eq!(plays(&mut db, &referenced, rel).await, 0, "{rel}");
+    }
+    assert_eq!(count(&mut db, "match $l isa source-link;").await, 1);
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(
+                r#"match $c isa concept, has concept-id "{referenced}";
+                         $l isa source-link, links (origin: $c);"#
+            )
+        )
+        .await,
+        1,
+        "the belief edge still names the retired concept"
+    );
+
+    let again = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync with the concept still retired");
+    assert_eq!(again.concepts_retired, 0);
+    assert_eq!(again.concepts_deleted, 0);
+    assert_eq!(retired_at(&mut db, &referenced).await, first);
+}
+
+#[tokio::test]
+async fn restoring_a_retired_concepts_file_unretires_it() {
+    let test_db = TestDb::new("gecko_test_sync_unretire");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (full, referenced, dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+    sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("retire");
+
+    let r = sync_bundle(&mut db, &full, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("restoring the file");
+    assert_eq!(r.concepts_updated, 1);
+    assert!(retired_at(&mut db, &referenced).await.is_empty());
+
+    let expected_hash = &full
+        .concepts
+        .iter()
+        .find(|c| c.concept_id == referenced)
+        .unwrap()
+        .file_hash;
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(
+                r#"match $c isa concept, has concept-id "{referenced}", has file-hash "{expected_hash}";"#
+            )
+        )
+        .await,
+        1,
+        "the restored concept carries its file's hash"
+    );
+    let survivor = &dropped.concepts[0].concept_id;
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(
+                r#"match $s isa concept, has concept-id "{survivor}";
+                         $t isa concept, has concept-id "{referenced}";
+                         $l isa concept-link, links (source: $s, target: $t);"#
+            )
+        )
+        .await,
+        1,
+        "the surviving concept's link to the restored one is back"
+    );
+}
+
+#[tokio::test]
+async fn a_retired_concept_no_longer_referenced_is_deleted() {
+    let test_db = TestDb::new("gecko_test_sync_retired_gc");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (_full, referenced, dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+    sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("retire");
+
+    let tx = db.begin_write().await.expect("Failed to begin write");
+    for q in [
+        "match $l isa source-link; delete $l;",
+        r#"match $b isa belief, has concept-id "mem/bel/ref"; delete $b;"#,
+    ] {
+        tx.query(q).await.expect("raw delete");
+    }
+    tx.commit().await.expect("commit raw delete");
+
+    let r = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("GC of an unreferenced retired concept");
+    assert_eq!(r.concepts_deleted, 1);
+    assert_eq!(r.concepts_retired, 0);
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(r#"match $c isa concept, has concept-id "{referenced}";"#)
+        )
+        .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn retired_concept_gets_no_new_links_from_live_files() {
+    let test_db = TestDb::new("gecko_test_sync_retired_links");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (_full, referenced, dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+    sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("retire");
+
+    let survivor = dropped.concepts[0].concept_id.clone();
+    let mut linking = dropped.clone();
+    linking.links.push(OkfLink {
+        source_id: survivor.clone(),
+        target_id: referenced.clone(),
+        link_text: "retired".into(),
+    });
+    linking.hierarchy.push(HierarchyEdge {
+        parent_id: survivor,
+        child_id: referenced.clone(),
+    });
+    sync_bundle(&mut db, &linking, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync with edges to the retired concept");
+    assert_eq!(plays(&mut db, &referenced, "concept-link").await, 0);
+    assert_eq!(plays(&mut db, &referenced, "hierarchy").await, 0);
+}
+
+#[tokio::test]
+async fn a_dropped_concept_another_bundle_contains_is_released_not_retired() {
+    let test_db = TestDb::new("gecko_test_sync_release_not_retire");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (_full, referenced, dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+
+    let tx = db.begin_write().await.expect("Failed to begin write");
+    tx.query(format!(
+        r#"match $c isa concept, has concept-id "{referenced}";
+           insert $b isa bundle, has bundle-name "beta";
+                  $cb isa containment, links (container: $b, member: $c);"#
+    ))
+    .await
+    .expect("raw beta containment");
+    tx.commit().await.expect("commit beta containment");
+
+    let r = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("release");
+    assert_eq!(r.concepts_released, 1);
+    assert_eq!(r.concepts_retired, 0);
+    assert!(retired_at(&mut db, &referenced).await.is_empty());
+}
+
+#[tokio::test]
+async fn one_sync_retires_two_linked_referenced_concepts_and_deletes_an_unreferenced_one() {
+    let test_db = TestDb::new("gecko_test_sync_gc_mixed");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (full, referenced, _dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+    let linker = full
+        .concepts
+        .iter()
+        .find(|c| c.concept_id != referenced)
+        .expect("a second concept")
+        .concept_id
+        .clone();
+
+    // The linking concept gains a belief reference, and a third concept nothing references.
     let tx = db.begin_write().await.expect("Failed to begin write");
     let setup = [
         GraphWrite::single(
             "given $id: string, $st: string; \
              insert $b isa belief, has concept-id == $id, has belief-state == $st;",
             vec!["id".into(), "st".into()],
-            vec!["mem/bel/ref".into(), "asserted".into()],
+            vec!["mem/bel/linker".into(), "asserted".into()],
         )
         .expecting(1),
         GraphWrite::single(
@@ -391,8 +708,8 @@ async fn gc_of_a_concept_a_belief_edge_references_is_refused_before_any_delete()
                     has origin-kind == $kind;",
             vec!["bid".into(), "cid".into(), "kind".into()],
             vec![
-                "mem/bel/ref".into(),
-                referenced.clone().into(),
+                "mem/bel/linker".into(),
+                linker.clone().into(),
                 "concept".into(),
             ],
         )
@@ -402,47 +719,40 @@ async fn gc_of_a_concept_a_belief_edge_references_is_refused_before_any_delete()
         .await
         .expect("belief setup writes");
     tx.commit().await.expect("commit belief setup");
-    let concepts_before = count(&mut db, "match $c isa concept;").await;
 
-    let mut dropped = bundle.clone();
-    dropped.concepts.retain(|c| c.concept_id != referenced);
-    dropped
-        .links
-        .retain(|l| l.source_id != referenced && l.target_id != referenced);
-    dropped
-        .hierarchy
-        .retain(|h| h.parent_id != referenced && h.child_id != referenced);
-    dropped.citations.retain(|c| c.source_id != referenced);
-
-    let result = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT).await;
-    let Err(DbError::BeliefEdgeReferencesRemovedConcept { references }) = result else {
-        panic!("expected BeliefEdgeReferencesRemovedConcept, got {result:?}");
-    };
-    assert_eq!(references, vec![(referenced.clone(), "source-link".into())]);
-
-    assert_eq!(
-        count(&mut db, "match $c isa concept, has concept-id $i;").await,
-        concepts_before
-    );
-    let tx = db.begin_read().await.expect("Failed to begin read");
-    let rows: Vec<_> = tx
-        .query("match $c isa concept, has concept-id $i; select $i;")
+    let unreferenced = "playbooks/unreferenced".to_string();
+    let mut with_third = full.clone();
+    let mut third = with_third.concepts[0].clone();
+    third.concept_id = unreferenced.clone();
+    with_third.concepts.push(third);
+    let r = sync_bundle(&mut db, &with_third, &[], BELIEF_TIER_ROOT)
         .await
-        .expect("concept-id query failed")
-        .into_rows()
-        .collect::<Vec<_>>()
-        .await;
-    let ids: Vec<String> = rows
-        .into_iter()
-        .map(|r| {
-            r.expect("concept-id row")
-                .get("i")
-                .expect("column i")
-                .expect("i bound")
-                .try_get_string()
-                .expect("i is a string")
-                .to_string()
-        })
-        .collect();
-    assert_eq!(ids, vec![referenced], "the referenced concept must survive");
+        .expect("sync the third concept");
+    assert_eq!(r.concepts_inserted, 1);
+
+    let mut emptied = with_third.clone();
+    emptied.concepts.clear();
+    emptied.links.clear();
+    emptied.hierarchy.clear();
+    emptied.citations.clear();
+    let r = sync_bundle(&mut db, &emptied, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("dropping every concept");
+    assert_eq!(r.concepts_retired, 2);
+    assert_eq!(r.concepts_deleted, 1);
+
+    for id in [&referenced, &linker] {
+        assert_eq!(retired_at(&mut db, id).await.len(), 1, "{id} is retired");
+        assert_eq!(plays(&mut db, id, "concept-link").await, 0, "{id}");
+    }
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(r#"match $c isa concept, has concept-id "{unreferenced}";"#)
+        )
+        .await,
+        0,
+        "the unreferenced concept is deleted"
+    );
+    assert_eq!(count(&mut db, "match $l isa concept-link;").await, 0);
 }

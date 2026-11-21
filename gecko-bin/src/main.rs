@@ -20,6 +20,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use gecko_engine::db::RouterGraphStore;
+use gecko_engine::db::required::defines_attribute;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
@@ -34,6 +35,8 @@ use gecko_extension_api::{
 #[cfg(feature = "real-embedder")]
 use gecko_semantic_index::CandleEmbedder;
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
+use typedb_driver::concept::Value;
+use typedb_driver::given::{GivenRowEntry, GivenRows};
 
 use crate::config::{GeckoConfig, TypedbMode, build_extensions, check_extension_schemas};
 
@@ -120,9 +123,8 @@ enum Commands {
         /// The bundle name to import under, default `stix-sync`. Several imports
         /// share a database when each has its own name and they pass the same
         /// `--database`; without `--database`, the database is named after the bundle.
-        /// A re-import under the same name replaces the previous one, unless a
-        /// belief edge references a record the new import drops, in which case the
-        /// import is refused.
+        /// A re-import under the same name replaces the previous one; a record a
+        /// belief edge references is retired rather than deleted.
         #[arg(long)]
         bundle_name: Option<String>,
     },
@@ -715,6 +717,7 @@ fn print_sync_result(result: &SyncResult) {
     println!("  Concepts skipped:  {}", result.concepts_skipped);
     println!("  Concepts deleted:  {}", result.concepts_deleted);
     println!("  Concepts released: {}", result.concepts_released);
+    println!("  Concepts retired:  {}", result.concepts_retired);
     println!("  Links attempted:    {}", result.links_attempted);
     println!("  Citations attempted: {}", result.citations_attempted);
 }
@@ -915,6 +918,17 @@ struct FetchedPlaybook {
 /// ambiguity to resolve. `code` and `scopes` are list projections to tolerate the
 /// 0-or-1 / 0-or-N cardinalities.
 async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<FetchedPlaybook> {
+    // A database whose schema lacks `retired-at` has no retired concept, so the
+    // projection is omitted there rather than failing the fetch.
+    let schema = db
+        .database_schema()
+        .await
+        .context("Failed to read schema")?;
+    let retired_projection = if defines_attribute(&schema, "retired-at") {
+        r#","retired": [ $c.retired-at ]"#
+    } else {
+        ""
+    };
     let tx = db
         .begin_read()
         .await
@@ -922,18 +936,24 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
 
     let query = format!(
         r#"
-        match $c isa concept, has concept-id "{}";
+        given $id: string;
+        match $c isa concept, has concept-id $cid; $cid == $id;
         fetch {{
             "engine": $c.engine,
             "code": [ $c.code-block ],
-            "scopes": [ $c.scope ]
+            "scopes": [ $c.scope ]{retired_projection}
         }};
-    "#,
-        gecko_engine::syncer::bundle::escape_tql(concept_id)
+    "#
     );
+    let mut given = GivenRows::new(vec!["id".to_string()], 1);
+    given
+        .push_row(vec![GivenRowEntry::Value(Value::String(
+            concept_id.to_string(),
+        ))])
+        .map_err(|e| anyhow::anyhow!("Failed to bind the concept id: {e}"))?;
 
     let answer = tx
-        .query(&query)
+        .query_with_rows(&query, given)
         .await
         .map_err(|e| anyhow::anyhow!("Query failed: {e}"))?;
 
@@ -943,13 +963,28 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         // Surface a stream error rather than masking it as "playbook not found".
         if let Some(item) = stream.next().await {
             let doc = item.context("error reading playbook document stream")?;
-            doc_json = serde_json::to_value(doc.into_json()).ok();
+            doc_json = Some(
+                serde_json::to_value(doc.into_json())
+                    .context("failed to serialize the playbook document")?,
+            );
         }
     }
 
     let Some(json) = doc_json else {
         anyhow::bail!("Playbook '{concept_id}' not found.");
     };
+
+    // `retired` is a list projection: non-empty once a sync has retired the concept.
+    if let Some(since) = json
+        .get("retired")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    {
+        let Some(since) = since.as_str() else {
+            anyhow::bail!("concept `{concept_id}` has a non-string `retired-at`: {since}");
+        };
+        anyhow::bail!("concept `{concept_id}` is retired (since {since})");
+    }
 
     // `code` is a list projection: zero elements if the concept has no program.
     let code_block = json

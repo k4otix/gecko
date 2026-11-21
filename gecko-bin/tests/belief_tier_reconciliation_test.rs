@@ -302,16 +302,16 @@ async fn gecko(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
 }
 
 /// Runs the `gecko` binary against `db` like [`gecko`]; asserts it fails and returns
-/// its stderr, where the binary logs a command's error through `tracing`.
+/// its stdout followed by its stderr, since the binary logs a command's error to either.
 async fn gecko_expect_failure(rig: &Rig, db: &TestDb, args: &[&str]) -> String {
     let out = gecko_output(rig, db, args).await;
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(
-        !out.status.success(),
-        "gecko {args:?} succeeded\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
-        String::from_utf8_lossy(&out.stdout)
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
-    stderr
+    assert!(!out.status.success(), "gecko {args:?} succeeded\n{output}");
+    output
 }
 
 /// Runs a playbook through the binary and returns its JSON output.
@@ -386,6 +386,41 @@ fn assert_reconciled(step: &str, expected: &Delta, observed: &Delta) {
         missing.is_empty(),
         "{step}: unaccounted labels {missing:?}\n  reference: {expected:?}\n  production: {observed:?}"
     );
+}
+
+/// The concept's stored `retired-at`, rendered as `YYYY-MM-DDTHH:MM:SS`.
+async fn retired_at_second(db: &TestDb, id: &str) -> String {
+    let mut router = db.router();
+    let tx = router.begin_read().await.expect("read tx");
+    let mut given = GivenRows::new(vec!["v".to_string()], 1);
+    given
+        .push_row(vec![GivenRowEntry::Value(Value::String(id.to_string()))])
+        .expect("given row");
+    let answer = tx
+        .query_with_rows(
+            "given $v: string; match $c isa concept, has concept-id $id, \
+             has retired-at $t; $id == $v; select $t;",
+            given,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("retired-at of {id}: {e}"));
+    let mut rows = answer.into_rows();
+    let mut found = Vec::new();
+    while let Some(item) = rows.next().await {
+        let row = item.unwrap_or_else(|e| panic!("retired-at of {id}: {e}"));
+        let t = row
+            .get("t")
+            .expect("column t")
+            .and_then(|c| c.try_get_datetime())
+            .unwrap_or_else(|| panic!("retired-at of {id} is not a bound datetime"));
+        found.push(t.to_string());
+    }
+    assert_eq!(found.len(), 1, "{id} has one retired-at: {found:?}");
+    found[0]
+        .chars()
+        .take(19)
+        .collect::<String>()
+        .replace(' ', "T")
 }
 
 /// Counts the rows of a read that binds one string parameter `$v`.
@@ -1066,7 +1101,7 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gc_of_a_concept_a_belief_edge_references_is_refused() {
+async fn gc_of_a_concept_a_belief_edge_references_retires_it() {
     let db = TestDb::new("gecko_test_rig_gc");
     let rig = Rig::new();
     setup(&rig, &db).await;
@@ -1074,48 +1109,106 @@ async fn gc_of_a_concept_a_belief_edge_references_is_refused() {
     let f0 = fingerprint(&db).await;
 
     let without_cyber = parse_bundle(&rig.okf_dir_without_cyber).expect("parse");
-    let references =
-        match sync_bundle(&mut db.router(), &without_cyber, &[], BELIEF_TIER_ROOT).await {
-            Err(DbError::BeliefEdgeReferencesRemovedConcept { references }) => references,
-            other => panic!("expected BeliefEdgeReferencesRemovedConcept, got {other:?}"),
-        };
-    for relation in ["technique-detection", "alert-disposition"] {
-        assert!(
-            references.contains(&(CYBER_PLAYBOOK.to_string(), relation.to_string())),
-            "references {references:?} miss ({CYBER_PLAYBOOK}, {relation})"
-        );
-    }
+    let result = sync_bundle(&mut db.router(), &without_cyber, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("dropping a referenced concept retires it");
+    assert_eq!(result.concepts_retired, 1);
     assert_eq!(
         fingerprint(&db).await,
         f0,
-        "the refused GC changed the belief tier"
+        "the retiring GC changed the belief tier"
     );
     let concept_count = "given $v: string; match $c isa concept, has concept-id $id; $id == $v; \
                          reduce $n = count;";
     assert_eq!(
         count_with(&db, concept_count, CYBER_PLAYBOOK).await,
         1,
-        "the refused GC removed {CYBER_PLAYBOOK}"
+        "the retiring GC removed {CYBER_PLAYBOOK}"
+    );
+    let retired_query = "given $v: string; match $c isa concept, has concept-id $id, \
+                         has retired-at $t; $id == $v; reduce $n = count;";
+    assert_eq!(
+        count_with(&db, retired_query, CYBER_PLAYBOOK).await,
+        1,
+        "{CYBER_PLAYBOOK} is not stamped retired-at"
     );
 
-    let output =
-        gecko_expect_failure(&rig, &db, &["sync", path_str(&rig.okf_dir_without_cyber)]).await;
+    let stored_since = retired_at_second(&db, CYBER_PLAYBOOK).await;
+    let refusal = gecko_expect_failure(&rig, &db, &["run", CYBER_PLAYBOOK]).await;
     assert!(
-        output.contains(CYBER_PLAYBOOK),
-        "gecko sync output does not name {CYBER_PLAYBOOK}:\n{output}"
+        refusal.contains(&format!("concept `{CYBER_PLAYBOOK}` is retired (since")),
+        "gecko run did not refuse the retired concept:\n{refusal}"
     );
     assert!(
-        output.contains("concept(s) a belief edge references"),
-        "gecko sync output is not the belief-edge GC refusal:\n{output}"
+        refusal.contains(&stored_since),
+        "gecko run's `since` does not carry the stored retired-at {stored_since}:\n{refusal}"
+    );
+    assert!(
+        !refusal.contains("no executable program"),
+        "gecko run reports a retired concept as having no program:\n{refusal}"
+    );
+
+    let output = gecko(&rig, &db, &["sync", path_str(&rig.okf_dir_without_cyber)]).await;
+    assert!(
+        output.contains("Concepts retired:  0"),
+        "gecko sync output does not report the already-retired concept:\n{output}"
     );
     assert_eq!(
         fingerprint(&db).await,
         f0,
-        "the binary's refused GC changed the belief tier"
+        "the binary's re-sync changed the belief tier"
     );
     assert_eq!(
         count_with(&db, concept_count, CYBER_PLAYBOOK).await,
         1,
-        "the binary's refused GC removed {CYBER_PLAYBOOK}"
+        "the binary's re-sync removed {CYBER_PLAYBOOK}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gecko_run_works_on_a_database_without_retired_at() {
+    let db = TestDb::new("gecko_test_rig_no_retired_at");
+    let rig = Rig::new();
+    let legacy_schema = CORE_SCHEMA
+        .replace("    owns retired-at @card(0..1),\n", "")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("attribute retired-at"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !legacy_schema.contains("retired-at"),
+        "the legacy schema still names retired-at"
+    );
+    db.router()
+        .apply_schema(&legacy_schema)
+        .await
+        .expect("apply the schema without retired-at");
+    db.router()
+        .apply_schema(mem_gecko::extension().schema())
+        .await
+        .expect("apply the mem schema");
+
+    let program = "console.log(JSON.stringify({ ok: true }));";
+    let mut router = db.router();
+    let tx = router.begin_write().await.expect("write tx");
+    run_graph_writes(
+        &tx,
+        &[GraphWrite::single(
+            "given $id: string, $code: string; \
+             insert $c isa concept, has concept-id == $id, has code-block == $code, \
+                    has engine \"javascript\";",
+            vec!["id".into(), "code".into()],
+            vec!["playbooks/legacy".into(), program.into()],
+        )
+        .expecting(1)],
+    )
+    .await
+    .expect("insert the playbook concept");
+    tx.commit().await.expect("commit the playbook concept");
+
+    let out = gecko(&rig, &db, &["run", "playbooks/legacy"]).await;
+    assert!(
+        out.contains("Execution successful!"),
+        "run did not succeed on a database without retired-at:\n{out}"
     );
 }

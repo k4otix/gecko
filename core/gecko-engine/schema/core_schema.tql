@@ -17,6 +17,7 @@ define
   attribute target-url value string;       # citation target (absolute URL)
   attribute synced-at value datetime;      # last sync timestamp
   attribute file-hash value string;        # content hash for change detection
+  attribute retired-at @doc("When a sync retired this concept: its file left the bundle while a belief edge still referenced it."), value datetime;
 
   # ── Abstract base types (design §4.1) ───────────────────────
   # Extensions inherit from these via `sub` to add domain-specific types.
@@ -72,6 +73,7 @@ define
     owns metadata-json @card(0..1),
     owns synced-at @card(0..1),
     owns file-hash @card(0..1),
+    owns retired-at @card(0..1),
     plays containment:member,
     plays hierarchy:parent,
     plays hierarchy:child,
