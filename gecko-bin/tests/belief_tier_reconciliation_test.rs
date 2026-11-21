@@ -388,6 +388,41 @@ fn assert_reconciled(step: &str, expected: &Delta, observed: &Delta) {
     );
 }
 
+/// The concept's stored `retired-at`, rendered as `YYYY-MM-DDTHH:MM:SS`.
+async fn retired_at_second(db: &TestDb, id: &str) -> String {
+    let mut router = db.router();
+    let tx = router.begin_read().await.expect("read tx");
+    let mut given = GivenRows::new(vec!["v".to_string()], 1);
+    given
+        .push_row(vec![GivenRowEntry::Value(Value::String(id.to_string()))])
+        .expect("given row");
+    let answer = tx
+        .query_with_rows(
+            "given $v: string; match $c isa concept, has concept-id $id, \
+             has retired-at $t; $id == $v; select $t;",
+            given,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("retired-at of {id}: {e}"));
+    let mut rows = answer.into_rows();
+    let mut found = Vec::new();
+    while let Some(item) = rows.next().await {
+        let row = item.unwrap_or_else(|e| panic!("retired-at of {id}: {e}"));
+        let t = row
+            .get("t")
+            .expect("column t")
+            .and_then(|c| c.try_get_datetime())
+            .unwrap_or_else(|| panic!("retired-at of {id} is not a bound datetime"));
+        found.push(t.to_string());
+    }
+    assert_eq!(found.len(), 1, "{id} has one retired-at: {found:?}");
+    found[0]
+        .chars()
+        .take(19)
+        .collect::<String>()
+        .replace(' ', "T")
+}
+
 /// Counts the rows of a read that binds one string parameter `$v`.
 async fn count_with(db: &TestDb, query: &str, value: &str) -> i64 {
     let mut router = db.router();
@@ -1098,10 +1133,15 @@ async fn gc_of_a_concept_a_belief_edge_references_retires_it() {
         "{CYBER_PLAYBOOK} is not stamped retired-at"
     );
 
+    let stored_since = retired_at_second(&db, CYBER_PLAYBOOK).await;
     let refusal = gecko_expect_failure(&rig, &db, &["run", CYBER_PLAYBOOK]).await;
     assert!(
         refusal.contains(&format!("concept `{CYBER_PLAYBOOK}` is retired (since")),
         "gecko run did not refuse the retired concept:\n{refusal}"
+    );
+    assert!(
+        refusal.contains(&stored_since),
+        "gecko run's `since` does not carry the stored retired-at {stored_since}:\n{refusal}"
     );
     assert!(
         !refusal.contains("no executable program"),
@@ -1122,5 +1162,53 @@ async fn gc_of_a_concept_a_belief_edge_references_retires_it() {
         count_with(&db, concept_count, CYBER_PLAYBOOK).await,
         1,
         "the binary's re-sync removed {CYBER_PLAYBOOK}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gecko_run_works_on_a_database_without_retired_at() {
+    let db = TestDb::new("gecko_test_rig_no_retired_at");
+    let rig = Rig::new();
+    let legacy_schema = CORE_SCHEMA
+        .replace("    owns retired-at @card(0..1),\n", "")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("attribute retired-at"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !legacy_schema.contains("retired-at"),
+        "the legacy schema still names retired-at"
+    );
+    db.router()
+        .apply_schema(&legacy_schema)
+        .await
+        .expect("apply the schema without retired-at");
+    db.router()
+        .apply_schema(mem_gecko::extension().schema())
+        .await
+        .expect("apply the mem schema");
+
+    let program = "console.log(JSON.stringify({ ok: true }));";
+    let mut router = db.router();
+    let tx = router.begin_write().await.expect("write tx");
+    run_graph_writes(
+        &tx,
+        &[GraphWrite::single(
+            "given $id: string, $code: string; \
+             insert $c isa concept, has concept-id == $id, has code-block == $code, \
+                    has engine \"javascript\";",
+            vec!["id".into(), "code".into()],
+            vec!["playbooks/legacy".into(), program.into()],
+        )
+        .expecting(1)],
+    )
+    .await
+    .expect("insert the playbook concept");
+    tx.commit().await.expect("commit the playbook concept");
+
+    let out = gecko(&rig, &db, &["run", "playbooks/legacy"]).await;
+    assert!(
+        out.contains("Execution successful!"),
+        "run did not succeed on a database without retired-at:\n{out}"
     );
 }

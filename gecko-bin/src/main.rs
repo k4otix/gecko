@@ -20,6 +20,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use gecko_engine::db::RouterGraphStore;
+use gecko_engine::db::required::defines_attribute;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::OkfBundle;
@@ -915,6 +916,17 @@ struct FetchedPlaybook {
 /// ambiguity to resolve. `code` and `scopes` are list projections to tolerate the
 /// 0-or-1 / 0-or-N cardinalities.
 async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<FetchedPlaybook> {
+    // A database whose schema lacks `retired-at` has no retired concept, so the
+    // projection is omitted there rather than failing the fetch.
+    let schema = db
+        .database_schema()
+        .await
+        .context("Failed to read schema")?;
+    let retired_projection = if defines_attribute(&schema, "retired-at") {
+        r#","retired": [ $c.retired-at ]"#
+    } else {
+        ""
+    };
     let tx = db
         .begin_read()
         .await
@@ -926,8 +938,7 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         fetch {{
             "engine": $c.engine,
             "code": [ $c.code-block ],
-            "scopes": [ $c.scope ],
-            "retired": [ $c.retired-at ]
+            "scopes": [ $c.scope ]{retired_projection}
         }};
     "#,
         gecko_engine::syncer::bundle::escape_tql(concept_id)

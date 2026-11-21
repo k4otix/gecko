@@ -42,6 +42,24 @@ pub fn required_attributes(schema: &str) -> Result<HashMap<String, BTreeSet<Stri
     Ok(resolved)
 }
 
+/// Whether `schema` defines an attribute type labelled `label`.
+pub fn defines_attribute(schema: &str, label: &str) -> bool {
+    split_top_level(schema, ';').iter().any(|statement| {
+        let statement = statement.trim();
+        let statement = statement
+            .strip_prefix("define")
+            .map_or(statement, str::trim);
+        let Some(body) = statement.strip_prefix("attribute") else {
+            return false;
+        };
+        body.starts_with(char::is_whitespace)
+            && split_top_level(body, ',')
+                .first()
+                .and_then(|head| split_words(head).into_iter().next())
+                .is_some_and(|l| l == label)
+    })
+}
+
 fn resolve(
     label: &str,
     decls: &HashMap<String, EntityDecl>,
@@ -195,6 +213,14 @@ entity p,
   sub o,
   owns a1 @card(0..2);
 "#;
+
+    #[test]
+    fn defines_attribute_matches_whole_labels_only() {
+        assert!(defines_attribute(SCHEMA, "a1"));
+        assert!(defines_attribute(SCHEMA, "a2"));
+        assert!(!defines_attribute(SCHEMA, "a"));
+        assert!(!defines_attribute(SCHEMA, "c"));
+    }
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()

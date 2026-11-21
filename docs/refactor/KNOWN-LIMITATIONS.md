@@ -67,9 +67,10 @@ proven through the real sandbox against live TypeDB.
   contained by its bundle, so another bundle syncing that ID is refused as a
   collision while the belief exists. A later sync keeps the first `retired-at`,
   and the CLI reports `Concepts retired: <n>` for the concepts that sync newly
-  retired. A library caller of `sync_bundle` must apply the current schema first
-  (the CLI's sync does this itself); a database without `retired-at` cannot be
-  synced until then.
+  retired. The CLI's `sync` applies the schemas itself; a library caller of
+  `sync_bundle` must apply the current schema first, since a database without
+  `retired-at` cannot retire a concept. `gecko run` works on a database without
+  `retired-at`, where no concept can be retired.
 - **Cost.** Every sync reads the surface and takes two fingerprints: nine reads
   in all, since each fingerprint is one grouped count per measure. With mem and
   cyber composed, in a debug build on near-empty databases, the guard took a

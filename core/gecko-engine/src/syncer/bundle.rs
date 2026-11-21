@@ -218,7 +218,6 @@ pub async fn sync_bundle(
     extension_writes: &[GraphWrite],
     belief_tier_root: &str,
 ) -> Result<SyncResult, DbError> {
-    let required = required_attributes(&db.database_schema().await?)?;
     let tx = db.begin_write().await?;
     let name = manifest.bundle_name.as_str();
 
@@ -286,7 +285,10 @@ pub async fn sync_bundle(
         .into_iter()
         .filter(|id| !stored.get(*id).is_some_and(|s| s.retired))
         .collect();
-    retire_concepts(&tx, &retire_ids, &surface, &required, Utc::now()).await?;
+    if !retire_ids.is_empty() {
+        let required = required_attributes(&db.database_schema().await?)?;
+        retire_concepts(&tx, &retire_ids, &surface, &required, Utc::now()).await?;
+    }
     delete_concepts_gc(&tx, &delete_ids).await?;
     let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
     release_containment(&tx, name, &release_ids).await?;

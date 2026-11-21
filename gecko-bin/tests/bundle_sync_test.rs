@@ -413,6 +413,11 @@ async fn synced_with_referenced(
         1,
         "the second concept is the first's hierarchy parent"
     );
+    assert_eq!(
+        plays(db, &referenced, "citation").await,
+        1,
+        "the first concept cites an external resource"
+    );
 
     // A belief whose source-link names the concept as its origin.
     let tx = db.begin_write().await.expect("Failed to begin write");
@@ -693,4 +698,85 @@ async fn a_dropped_concept_another_bundle_contains_is_released_not_retired() {
     assert_eq!(r.concepts_released, 1);
     assert_eq!(r.concepts_retired, 0);
     assert!(retired_at(&mut db, &referenced).await.is_empty());
+}
+
+#[tokio::test]
+async fn one_sync_retires_two_linked_referenced_concepts_and_deletes_an_unreferenced_one() {
+    let test_db = TestDb::new("gecko_test_sync_gc_mixed");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (full, referenced, _dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+    let linker = full
+        .concepts
+        .iter()
+        .find(|c| c.concept_id != referenced)
+        .expect("a second concept")
+        .concept_id
+        .clone();
+
+    // The linking concept gains a belief reference, and a third concept nothing references.
+    let tx = db.begin_write().await.expect("Failed to begin write");
+    let setup = [
+        GraphWrite::single(
+            "given $id: string, $st: string; \
+             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
+            vec!["id".into(), "st".into()],
+            vec!["mem/bel/linker".into(), "asserted".into()],
+        )
+        .expecting(1),
+        GraphWrite::single(
+            "given $bid: string, $cid: string, $kind: string; \
+             match $b isa belief, has concept-id $bi; $bi == $bid; \
+                   $c isa concept, has concept-id $ci; $ci == $cid; \
+             insert $l isa source-link, links (memory: $b, origin: $c), \
+                    has origin-kind == $kind;",
+            vec!["bid".into(), "cid".into(), "kind".into()],
+            vec![
+                "mem/bel/linker".into(),
+                linker.clone().into(),
+                "concept".into(),
+            ],
+        )
+        .expecting(1),
+    ];
+    run_graph_writes(&tx, &setup)
+        .await
+        .expect("belief setup writes");
+    tx.commit().await.expect("commit belief setup");
+
+    let unreferenced = "playbooks/unreferenced".to_string();
+    let mut with_third = full.clone();
+    let mut third = with_third.concepts[0].clone();
+    third.concept_id = unreferenced.clone();
+    with_third.concepts.push(third);
+    let r = sync_bundle(&mut db, &with_third, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync the third concept");
+    assert_eq!(r.concepts_inserted, 1);
+
+    let mut emptied = with_third.clone();
+    emptied.concepts.clear();
+    emptied.links.clear();
+    emptied.hierarchy.clear();
+    emptied.citations.clear();
+    let r = sync_bundle(&mut db, &emptied, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("dropping every concept");
+    assert_eq!(r.concepts_retired, 2);
+    assert_eq!(r.concepts_deleted, 1);
+
+    for id in [&referenced, &linker] {
+        assert_eq!(retired_at(&mut db, id).await.len(), 1, "{id} is retired");
+        assert_eq!(plays(&mut db, id, "concept-link").await, 0, "{id}");
+    }
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(r#"match $c isa concept, has concept-id "{unreferenced}";"#)
+        )
+        .await,
+        0,
+        "the unreferenced concept is deleted"
+    );
+    assert_eq!(count(&mut db, "match $l isa concept-link;").await, 0);
 }
