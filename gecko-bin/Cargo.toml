@@ -60,6 +60,5 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [dev-dependencies]
-async-trait = "0.1"
 tempfile = "3.27.0"
 uuid = { workspace = true, features = ["v4"] }

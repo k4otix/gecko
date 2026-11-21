@@ -41,6 +41,7 @@ define
   attribute calibration-score value double;
   attribute predicted-probability value double;
   attribute outcome value string;
+  attribute consolidation-action value string;   # OPEN set of consolidation step kinds — NOT @values
 
   # ── A2.9 population attrs ──────────────────────────────────────────
   attribute spec-dialect value string;         # (dialect, text) modelled as 2 attrs; structs unimpl in 3.x
@@ -78,6 +79,7 @@ define
       plays supersession:superseding,
       plays source-link:memory,
       plays ownership:owned,
+      plays consolidation-step:affected,
       plays rests-on:resting,
       plays rests-on:assumption,
       plays pivot:from-state,            # A2.8 pivot: a memory-item is the state pivoted from
@@ -192,6 +194,7 @@ define
   entity agent @doc("An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping."),
       owns agent-id @key,
       plays ownership:owner,
+      plays consolidation-step:performer,
       plays pivot:pivoting-agent;         # A2.8 pivot: the agent that made the investigative move
 
   relation ownership @doc("Assigns a memory item to its owning agent(s) and carries the visibility scope that gates who can recall it."),
@@ -224,11 +227,19 @@ define
       owns run-id @key,
       owns event-time @card(0..1),
       plays execution:run,
+      plays consolidation-step:run,
       plays source-link:origin;
 
   relation execution @doc("Groups the episode steps that make up a doc-run."),
       relates run @doc("The doc-run being executed."),
       relates episode-step @doc("An episode recorded as a step of the run.");
+
+  relation consolidation-step @doc("Records one consolidation action taken on a memory item, by which agent, in which run, and when."),
+      relates affected @doc("The memory item the consolidation action was applied to."),
+      relates run @doc("The doc-run the consolidation action happened in."),
+      relates performer @doc("The agent that performed the consolidation action."),
+      owns consolidation-action @card(1),
+      owns created-at @card(1);
 
   relation tool-invocation @doc("An episode recording a call to an external tool, identified by tool name."),
       relates invocation-episode @doc("The episode in which the tool was invoked."),

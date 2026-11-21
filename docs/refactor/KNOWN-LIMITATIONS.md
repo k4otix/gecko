@@ -77,12 +77,14 @@ proven through the real sandbox against live TypeDB.
   median of about 4.3 ms per sync (23 syncs). The cost grows with the belief
   tier, because each read scans its instances.
 
-## Consolidation ("dreaming") daemon is a scaffold
+## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
-`core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait + a wired
-no-op `tick`. Every other job is a build-later stub that returns
-`EpistemicError::NotYetImplemented` (no panic). The one real consolidation operation
-that ships is per-pair `MemWriter::dedup_episodes`. A daemon tick is not exempt from
-the belief-tier accounting: the reconciliation rig drives one whose tick calls
-`dedup_episodes` and requires every belief-tier label its writes change to be accounted
-for, as for any other caller.
+`core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait, a no-op
+daemon, and `MemConsolidationDaemon`, whose `tick` mints one run and dedups duplicate
+episodes under it through `MemWriter::dedup_episodes`. Nothing calls `tick` outside tests:
+there is no scheduler and no CLI command. The other ten jobs are build-later stubs that
+return `EpistemicError::NotYetImplemented` (no panic). The dedup tick mints no belief or
+derivation, so the provable-merge checks of CONTRACT-W8 §3 stay owed. A daemon tick is not
+exempt from the belief-tier accounting: the reconciliation rig drives the real daemon's
+tick and requires every belief-tier label its writes change to be accounted for, as for
+any other caller.

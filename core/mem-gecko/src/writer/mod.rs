@@ -33,6 +33,9 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+pub use consolidation::DuplicateCandidate;
+pub use index::IndexOutcome;
+
 use gecko_extension_api::{
     BeliefEdgeWriter, ConceptId, DateTime, Embedder, EpistemicError, GraphStore, MemId,
     SemanticIndex,

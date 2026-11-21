@@ -11,6 +11,17 @@ use serde_json::Value;
 use super::{MemWriter, Result, dt_field, str_field};
 use crate::tql;
 
+/// What a best-effort vector removal did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexOutcome {
+    /// The vector was removed from the index.
+    Removed,
+    /// The removal failed and the id was marked dirty for background repair.
+    MarkedDirty,
+    /// No embedder or index is configured, so there was nothing to remove.
+    NoIndex,
+}
+
 impl MemWriter {
     // ── Dirty-set (invariant 8: the accelerator can never gate truth) ────────
 
@@ -178,12 +189,15 @@ impl MemWriter {
     /// attempted exactly when an upsert would have happened. A failure marks the id
     /// dirty for background repair and **never** fails the caller (invariant 8: the
     /// graph is the SoR; the index is rebuildable; no new index API).
-    pub(super) fn best_effort_remove(&self, id: ConceptId) {
-        if let (true, Some(idx)) = (self.embedder.is_some(), &self.index)
-            && idx.remove(id.clone()).is_err()
-        {
+    pub(super) fn best_effort_remove(&self, id: ConceptId) -> IndexOutcome {
+        let (true, Some(idx)) = (self.embedder.is_some(), &self.index) else {
+            return IndexOutcome::NoIndex;
+        };
+        if idx.remove(id.clone()).is_err() {
             self.mark_dirty(id);
+            return IndexOutcome::MarkedDirty;
         }
+        IndexOutcome::Removed
     }
 
     pub(super) fn belief_meta(

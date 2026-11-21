@@ -33,8 +33,8 @@ use gecko_extension_api::{
 };
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
 use mem_gecko::{
-    BELIEF_TIER_ROOT, BeliefEdgeRegistry, ConsolidationDaemon, ConsolidationReport, MemWriter,
-    NoopConsolidationDaemon,
+    BELIEF_TIER_ROOT, BeliefEdgeRegistry, ConsolidationDaemon, ConsolidationReport,
+    MemConsolidationDaemon, MemWriter, NoopConsolidationDaemon,
 };
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
@@ -475,7 +475,7 @@ impl LabelDisposition {
 }
 
 /// The ledger items that may own a disposition.
-const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6"];
+const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6", "C1"];
 
 /// Every belief-tier label no production step reaches, with how it is accounted for.
 const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
@@ -491,6 +491,13 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
         LabelDisposition::WriterOnly {
             methods: &["record_prediction", "resolve_prediction"],
             owner: "M2",
+        },
+    ),
+    (
+        "consolidation-step",
+        LabelDisposition::WriterOnly {
+            methods: &["dedup", "daemon tick"],
+            owner: "C1",
         },
     ),
     ("sighting", LabelDisposition::Owed { owner: "A8" }),
@@ -575,28 +582,10 @@ fn hostile_writes(belief_id: &str) -> Vec<GraphWrite> {
     ]
 }
 
-/// A consolidation daemon whose tick dedups one duplicate episode pair through the
-/// real [`MemWriter::dedup_episodes`].
-struct DedupDaemon {
-    writer: Arc<MemWriter>,
-    keeper: MemId,
-    loser: MemId,
-}
-
-#[async_trait::async_trait]
-impl ConsolidationDaemon for DedupDaemon {
-    async fn tick(
-        &self,
-        _now: gecko_extension_api::DateTime,
-    ) -> Result<ConsolidationReport, gecko_extension_api::EpistemicError> {
-        self.writer
-            .dedup_episodes(&self.keeper, &self.loser)
-            .await?;
-        Ok(ConsolidationReport {
-            episodes_deduped: 1,
-            ..Default::default()
-        })
-    }
+/// Orders a duplicate pair as (keeper, loser): equal ingest times are broken by the
+/// lowest concept-id.
+fn by_id<'a>(a: &'a MemId, b: &'a MemId) -> (&'a MemId, &'a MemId) {
+    if a.0 < b.0 { (a, b) } else { (b, a) }
 }
 
 /// A writer-only drive on the reference database and the delta it caused.
@@ -933,8 +922,9 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
                     .expect("observe duplicate"),
             );
         }
+        let (keeper, loser) = by_id(&episodes[0], &episodes[1]);
         ref_writer
-            .dedup_episodes(&episodes[0], &episodes[1])
+            .dedup_episodes(&cyber_ctx, keeper, loser)
             .await
             .expect("dedup_episodes");
     });
@@ -945,34 +935,32 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             .expect("no-op tick");
         assert_eq!(report, ConsolidationReport::default());
     });
-    let mut duplicates = Vec::new();
     drive!("daemon setup", {
         for _ in 0..2 {
-            duplicates.push(
-                ref_writer
-                    .observe(
-                        &cyber_ctx,
-                        EpisodeDraft {
-                            text: T_EP.to_string(),
-                            event_time: cyber_ctx.occurred_at,
-                            ingest_time: cyber_ctx.occurred_at,
-                        },
-                    )
-                    .await
-                    .expect("observe duplicate"),
-            );
+            ref_writer
+                .observe(
+                    &cyber_ctx,
+                    EpisodeDraft {
+                        text: T_EP.to_string(),
+                        event_time: cyber_ctx.occurred_at,
+                        ingest_time: cyber_ctx.occurred_at,
+                    },
+                )
+                .await
+                .expect("observe duplicate");
         }
     });
     // daemon_is_enumerated_by_the_monopoly_test (CONTRACT-W8 §3 row 5): a daemon
     // tick's writes are reconciled by the checks below like any other caller's.
     drive!("daemon tick", {
-        let daemon = DedupDaemon {
-            writer: ref_writer.clone(),
-            keeper: duplicates[0].clone(),
-            loser: duplicates[1].clone(),
-        };
-        let report = daemon.tick(chrono::Utc::now()).await.expect("daemon tick");
-        assert_eq!(report.episodes_deduped, 1);
+        // The whole-graph tick dedups the setup pair and the `dedup` drive's surviving
+        // keeper, which shares its text, context and time.
+        let report = MemConsolidationDaemon::new(ref_writer.clone())
+            .tick(chrono::Utc::now())
+            .await
+            .expect("daemon tick");
+        assert_eq!(report.episodes_deduped, 2);
+        assert!(report.run_id.is_some(), "the tick mints its own run");
     });
     let drive_delta = |name: &str| {
         &drives

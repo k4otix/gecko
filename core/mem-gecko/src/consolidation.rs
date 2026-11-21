@@ -1,21 +1,18 @@
-//! Consolidation / "dreaming" daemon scaffold.
-//!
-//! This module lays the hooks so the retention/consolidation daemon can slot in
-//! without schema churn; the full daemon is not yet built. What ships today is:
+//! Consolidation / "dreaming" daemon.
 //!
 //! * [`ConsolidationDaemon`] — the trait describing the scheduled, whole-graph jobs
-//!   the daemon runs. Every job beyond the scheduled entry point is a documented
-//!   stub (a signature + doc-comment whose default body returns
-//!   [`EpistemicError::NotYetImplemented`] rather than panicking) — the deliverable is
-//!   the seam, not the body, so a premature caller gets a graceful `Err`, not a crash.
-//! * [`NoopConsolidationDaemon`] — a concrete daemon whose scheduled [`tick`] does
-//!   nothing. It exists and is callable so the wiring is real.
-//!
-//! The one real consolidation operation — content-hash episode dedup that also drops
-//! the loser's vector — lives on [`MemWriter::dedup_episodes`](crate::MemWriter::dedup_episodes),
-//! because it needs the writer's graph seam + best-effort index hook. The
-//! [`dedup_content_hash`](ConsolidationDaemon::dedup_content_hash) job scans the whole
-//! graph for identical-hash cohorts and calls that method per pair.
+//!   a daemon runs. Every job takes the [`RunContext`] of the tick it belongs to, so
+//!   all of a tick's writes share one run. Every job beyond the scheduled entry point
+//!   is a documented stub (a signature + doc-comment whose default body returns
+//!   [`EpistemicError::NotYetImplemented`] rather than panicking), so a premature
+//!   caller gets a graceful `Err`, not a crash.
+//! * [`NoopConsolidationDaemon`] — a daemon whose scheduled [`tick`] does nothing.
+//! * [`MemConsolidationDaemon`] — the shipped daemon: its [`tick`] dedups duplicate
+//!   episodes under one run. Episodes are duplicates when they share an owner set,
+//!   title and event-time and are plain episodes (not retrieval-events or prediction
+//!   resolutions); the earliest ingested survives and each other member is
+//!   tombstoned through [`MemWriter::dedup_episodes`](crate::MemWriter::dedup_episodes),
+//!   which re-checks the rule inside one guarded write and drops the loser's vector.
 //!
 //! ## Invariant 8 (index interaction) binds every job here
 //! On tombstone/archive the daemon calls the best-effort
@@ -26,9 +23,16 @@
 //!
 //! [`tick`]: ConsolidationDaemon::tick
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
-use gecko_extension_api::{DateTime, EpistemicError, MemId};
+use gecko_extension_api::{
+    ActorId, DateTime, EpistemicError, MemId, ProvenanceSource, RunContext, RunId,
+};
+
+use crate::writer::{DuplicateCandidate, IndexOutcome, MemWriter};
 
 type Result<T> = std::result::Result<T, EpistemicError>;
 
@@ -37,21 +41,29 @@ type Result<T> = std::result::Result<T, EpistemicError>;
 /// in so a scheduler/operator can observe consolidation progress.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConsolidationReport {
-    /// Identical-content episodes deduped (loser tombstoned + vector removed).
+    /// The run the tick's writes were stamped with; `None` when the tick wrote nothing.
+    pub run_id: Option<RunId>,
+    /// Duplicate episodes deduped (loser tombstoned, vector removal attempted).
     pub episodes_deduped: usize,
     /// Provable typed-join links discovered (`derivation-method: type-join`).
     pub links_discovered: usize,
     /// Beliefs moved one step along `raw → candidate → consolidated → archived →
     /// tombstoned` this tick.
     pub state_transitions: usize,
-    /// Concept-ids whose vector was removed from the index (best-effort).
+    /// Duplicate pairs the guarded write refused (the pair no longer satisfied the
+    /// duplicate rule when written); each was skipped and nothing was written for it.
+    pub pairs_refused: usize,
+    /// Concept-ids whose vector removal the index reported as succeeded.
     pub vectors_removed: usize,
+    /// Concept-ids whose vector removal failed and was marked dirty for repair.
+    pub vectors_marked_dirty: usize,
 }
 
 /// The scheduled, whole-graph consolidation ("dreaming") interface.
 ///
-/// Only [`tick`](Self::tick) has a real (no-op) default. Every other method is a
-/// documented stub — a signature whose default body returns
+/// Only [`tick`](Self::tick) has a real (no-op) default. Every job takes the
+/// [`RunContext`] of its tick. Every other method is a documented stub — a
+/// signature whose default body returns
 /// [`EpistemicError::NotYetImplemented`] (never panics) so a no-op impl compiles
 /// without carrying dead logic and a premature caller gets a graceful `Err`. Return
 /// types are counts/id-lists so the bodies stay pure data-plane operations over the
@@ -68,21 +80,21 @@ pub trait ConsolidationDaemon: Send + Sync {
 
     // ── Whole-graph reasoning jobs ───────────────────────────────────────────
 
-    /// **Provable** content-hash dedup: scan for cohorts of memory-items sharing an
-    /// identical content-hash, keep one per cohort, and tombstone + de-vector the
-    /// rest via [`MemWriter::dedup_episodes`](crate::MemWriter::dedup_episodes).
-    /// Returns the number of losers deduped. (The per-pair operation is the one real
-    /// body; this whole-graph scan is the wrapper.)
-    async fn dedup_content_hash(&self) -> Result<usize> {
+    /// **Provable** episode dedup: scan for cohorts of episodes sharing an owner
+    /// set, title and event-time, keep the earliest ingested of each, and tombstone
+    /// and de-vector the rest via
+    /// [`MemWriter::dedup_episodes`](crate::MemWriter::dedup_episodes). Returns the
+    /// number of losers deduped.
+    async fn dedup_content_hash(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
-            "whole-graph identical-hash scan → dedup_episodes per pair: not yet implemented",
+            "whole-graph duplicate-episode scan → dedup_episodes per pair: not yet implemented",
         ))
     }
 
     /// **Provable** link discovery: materialize `derivation`s whose method is a
     /// type-enforced join (`derivation-method: type-join`, confidence 1.0 permitted —
     /// invariant 7). Structurally distinct from [`synthesize_links_llm`](Self::synthesize_links_llm).
-    async fn discover_typed_join_links(&self) -> Result<usize> {
+    async fn discover_typed_join_links(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "typed-join link discovery (provable, type-join): not yet implemented",
         ))
@@ -92,7 +104,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// (`derivation-method: llm-synthesis`, confidence < 1.0, MARKED, structurally
     /// forbidden from superseding higher-entrenchment beliefs — invariant 7). Kept
     /// separate from the provable path so the two never blur.
-    async fn synthesize_links_llm(&self) -> Result<usize> {
+    async fn synthesize_links_llm(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "LLM link synthesis (probabilistic, marked llm-synthesis): not yet implemented",
         ))
@@ -100,7 +112,7 @@ pub trait ConsolidationDaemon: Send + Sync {
 
     /// Contradiction sweep: find belief pairs that should share a `contradiction`
     /// hub and reify the anomaly for the JTMS/argumentation layer to resolve.
-    async fn contradiction_sweep(&self) -> Result<usize> {
+    async fn contradiction_sweep(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "whole-graph contradiction detection → anomaly hubs: not yet implemented",
         ))
@@ -109,7 +121,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// Lifecycle advance: walk `consolidation-state` forward
     /// `raw → candidate → consolidated → archived → tombstoned` for decayed items
     /// (calling the best-effort index remove hook on archive/tombstone — invariant 8).
-    async fn decay_archive_tombstone(&self, _now: DateTime) -> Result<usize> {
+    async fn decay_archive_tombstone(&self, _ctx: &RunContext, _now: DateTime) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "decay → archive → tombstone with best-effort de-vector: not yet implemented",
         ))
@@ -117,7 +129,7 @@ pub trait ConsolidationDaemon: Send + Sync {
 
     /// Summarize the provenance of archived beliefs (collapse detail into a summary
     /// while retaining the derivation/retrieval axes the retention rules protect).
-    async fn summarize_archived_provenance(&self) -> Result<usize> {
+    async fn summarize_archived_provenance(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "summarize archived-belief provenance: not yet implemented",
         ))
@@ -130,7 +142,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// [`retrieval_events_safe_to_tombstone`](crate::MemWriter::retrieval_events_safe_to_tombstone)):
     /// never tombstone a `retrieval-event` whose `informs-synthesis` belief is still
     /// non-superseded.
-    async fn ttl_prune_record_tier(&self, _now: DateTime) -> Result<usize> {
+    async fn ttl_prune_record_tier(&self, _ctx: &RunContext, _now: DateTime) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "TTL-prune record tier (honour retrieval-provenance retention): not yet implemented",
         ))
@@ -138,7 +150,7 @@ pub trait ConsolidationDaemon: Send + Sync {
 
     /// Roll up high-volume episodes into aggregate summaries (detail lost, axis
     /// retained), reducing the episodic tier's footprint.
-    async fn rollup_high_volume_episodes(&self) -> Result<usize> {
+    async fn rollup_high_volume_episodes(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "roll up high-volume episodes to aggregates: not yet implemented",
         ))
@@ -147,7 +159,7 @@ pub trait ConsolidationDaemon: Send + Sync {
     /// Collapse a superseded belief's provenance chain into a summary once the belief
     /// is no longer current-state. The write-once `retrieval-provenance` flag on the
     /// belief persists (axis retained) even as episodic detail decays.
-    async fn collapse_superseded_provenance(&self) -> Result<usize> {
+    async fn collapse_superseded_provenance(&self, _ctx: &RunContext) -> Result<usize> {
         Err(EpistemicError::NotYetImplemented(
             "collapse superseded-belief provenance to summaries: not yet implemented",
         ))
@@ -155,7 +167,7 @@ pub trait ConsolidationDaemon: Send + Sync {
 
     /// Precompute (materialize) `blast-radius` for a critical assumption so a later
     /// retraction is O(read). The materialization is a cache: the graph stays SoR.
-    async fn precompute_blast_radius(&self, _assumption: &MemId) -> Result<()> {
+    async fn precompute_blast_radius(&self, _ctx: &RunContext, _assumption: &MemId) -> Result<()> {
         Err(EpistemicError::NotYetImplemented(
             "precompute blast-radius for critical assumptions: not yet implemented",
         ))
@@ -163,7 +175,7 @@ pub trait ConsolidationDaemon: Send + Sync {
 
     /// Invalidate a precomputed `blast-radius` when a host-mediated write touches the
     /// assumption's neighbourhood (the cache is only ever as good as the last write).
-    async fn invalidate_blast_radius(&self, _assumption: &MemId) -> Result<()> {
+    async fn invalidate_blast_radius(&self, _ctx: &RunContext, _assumption: &MemId) -> Result<()> {
         Err(EpistemicError::NotYetImplemented(
             "invalidate blast-radius on host-mediated write: not yet implemented",
         ))
@@ -181,6 +193,92 @@ pub struct NoopConsolidationDaemon;
 impl ConsolidationDaemon for NoopConsolidationDaemon {
     // Inherits the trait default `tick` (a true no-op) and the `NotYetImplemented`
     // job stubs. Nothing to override.
+}
+
+/// The shipped consolidation daemon: each [`tick`](ConsolidationDaemon::tick) mints
+/// one run for the `consolidation-daemon` actor and dedups every duplicate episode
+/// cohort under it. A tick over a graph with no duplicates writes nothing.
+pub struct MemConsolidationDaemon {
+    writer: Arc<MemWriter>,
+}
+
+impl MemConsolidationDaemon {
+    /// A daemon that consolidates through `writer`.
+    pub fn new(writer: Arc<MemWriter>) -> Self {
+        Self { writer }
+    }
+
+    /// Dedups every duplicate episode cohort under `ctx`, returning one index outcome
+    /// per tombstoned loser and a count of pairs the guarded write refused (skipped, not
+    /// fatal). A failure of the cohort read is returned as is (nothing was written); any
+    /// other failure of a dedup write names `ctx`'s run, even when it was the tick's
+    /// first write, whose run was rolled back.
+    pub async fn dedup_episodes_in(&self, ctx: &RunContext) -> Result<DedupSummary> {
+        let mut cohorts: BTreeMap<_, Vec<DuplicateCandidate>> = BTreeMap::new();
+        for c in self.writer.duplicate_episode_candidates().await? {
+            let key = (c.title.clone(), c.event_time, c.owners.clone());
+            cohorts.entry(key).or_default().push(c);
+        }
+        let mut summary = DedupSummary::default();
+        for mut members in cohorts.into_values() {
+            members.sort_by(|a, b| (a.ingest_time, &a.id.0).cmp(&(b.ingest_time, &b.id.0)));
+            let Some((keeper, losers)) = members.split_first() else {
+                continue;
+            };
+            for loser in losers {
+                match self.writer.dedup_episodes(ctx, &keeper.id, &loser.id).await {
+                    Ok(outcome) => summary.outcomes.push(outcome),
+                    Err(EpistemicError::InvalidInput(_)) => summary.pairs_refused += 1,
+                    Err(e) => {
+                        return Err(EpistemicError::Storage(format!(
+                            "consolidation run {}: {e}",
+                            ctx.run_id
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(summary)
+    }
+}
+
+/// What [`MemConsolidationDaemon::dedup_episodes_in`] did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DedupSummary {
+    /// One index outcome per tombstoned loser.
+    pub outcomes: Vec<IndexOutcome>,
+    /// Pairs the guarded write refused as no longer duplicates.
+    pub pairs_refused: usize,
+}
+
+#[async_trait]
+impl ConsolidationDaemon for MemConsolidationDaemon {
+    async fn tick(&self, now: DateTime) -> Result<ConsolidationReport> {
+        let ctx = RunContext::new(
+            ActorId::new("consolidation-daemon"),
+            ProvenanceSource::Tool {
+                name: "consolidation-daemon".into(),
+            },
+            now,
+        );
+        let DedupSummary {
+            outcomes,
+            pairs_refused,
+        } = self.dedup_episodes_in(&ctx).await?;
+        let count = |wanted: IndexOutcome| outcomes.iter().filter(|o| **o == wanted).count();
+        Ok(ConsolidationReport {
+            run_id: (!outcomes.is_empty()).then_some(ctx.run_id),
+            episodes_deduped: outcomes.len(),
+            pairs_refused,
+            vectors_removed: count(IndexOutcome::Removed),
+            vectors_marked_dirty: count(IndexOutcome::MarkedDirty),
+            ..Default::default()
+        })
+    }
+
+    async fn dedup_content_hash(&self, ctx: &RunContext) -> Result<usize> {
+        Ok(self.dedup_episodes_in(ctx).await?.outcomes.len())
+    }
 }
 
 #[cfg(test)]
@@ -209,13 +307,18 @@ mod tests {
     #[tokio::test]
     async fn build_later_stub_returns_not_yet_implemented_not_panic() {
         let daemon = NoopConsolidationDaemon;
+        let ctx = RunContext::new(
+            ActorId::new("test"),
+            ProvenanceSource::Manual,
+            chrono::Utc::now(),
+        );
         let err = daemon
-            .dedup_content_hash()
+            .dedup_content_hash(&ctx)
             .await
             .expect_err("stub is not yet implemented");
         assert!(matches!(err, EpistemicError::NotYetImplemented(_)));
         let unit_err = daemon
-            .precompute_blast_radius(&MemId::new("mem/bel/x"))
+            .precompute_blast_radius(&ctx, &MemId::new("mem/bel/x"))
             .await
             .expect_err("unit-returning stub is also graceful");
         assert!(matches!(unit_err, EpistemicError::NotYetImplemented(_)));
