@@ -228,7 +228,7 @@ surfaces as existing, so the track is not uniformly blocked.
 | **C5** | Provenance summarize/collapse writer, then `summarize_archived_provenance` and `collapse_superseded_provenance` (was #17) | CONTRACT-W8 §2, §5 | New method; D-J |
 | **C6** | Episode rollup writer, then `rollup_high_volume_episodes` (was #18) | CONTRACT-W8 §2 | New sanctioned method |
 | **C7** | Blast-radius cache `precompute`/`invalidate` (was #19). The windowed traversal it depended on has landed (`blast-radius-at`) | CONTRACT-W8 §2a, §4 | D-I |
-| **C8** ✅ | `daemon_is_enumerated_by_the_monopoly_test` — LANDED in the mem write-counts PR as the `daemon tick` drive of `memwriter_is_the_sole_belief_tier_writer` (`gecko-bin/tests/belief_tier_reconciliation_test.rs`): a test daemon's tick dedups an episode pair and its non-empty delta passes the rig's per-drive checks | CONTRACT-W8 §3 row 5 | ✅ |
+| **C8** ✅ | `daemon_is_enumerated_by_the_monopoly_test` — LANDED in the mem write-counts PR as the `daemon tick` drive of `memwriter_is_the_sole_belief_tier_writer` (`gecko-bin/tests/belief_tier_reconciliation_test.rs`): a test daemon's tick dedups an episode pair, its delta must be non-empty, and every belief-tier label it changes must be accounted for or a writer-only entry naming it, as for any other drive | CONTRACT-W8 §3 row 5 | ✅ |
 
 The remaining six checks in CONTRACT-W8 §3 (rows 1–4, 6, 7) land with the job each one names:
 rows 1, 6, 7 with C1/C2; row 2 with C3; row 3 with C4; row 4 with C5/C6.

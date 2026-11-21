@@ -306,10 +306,10 @@ fn req_f64(args: &Value, field: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("missing required numeric argument '{field}'"))
 }
 
-/// Parses an optional JSON string array of belief/episode ids into `MemId`s: absent ⇒
-/// empty, and a non-array or a non-string entry is an error naming the field.
+/// Parses an optional JSON string array of belief/episode ids into `MemId`s: absent or
+/// `null` ⇒ empty, and a non-array or a non-string entry is an error naming the field.
 fn mem_ids(args: &Value, field: &str) -> Result<Vec<MemId>, String> {
-    let Some(value) = args.get(field) else {
+    let Some(value) = args.get(field).filter(|v| !v.is_null()) else {
         return Ok(Vec::new());
     };
     let arr = value
@@ -393,6 +393,11 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0].0, "mem/ep/1");
         assert!(mem_ids(&args, "absent").unwrap().is_empty());
+        assert!(
+            mem_ids(&json!({ "evidence": null }), "evidence")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

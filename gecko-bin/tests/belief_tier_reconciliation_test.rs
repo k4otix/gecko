@@ -974,20 +974,22 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
         let report = daemon.tick(chrono::Utc::now()).await.expect("daemon tick");
         assert_eq!(report.episodes_deduped, 1);
     });
-    for drive in &drives {
-        match drive.name {
-            "noop daemon tick" => assert!(
-                drive.delta.is_empty(),
-                "a no-op tick changed the belief tier: {:?}",
-                drive.delta
-            ),
-            "daemon tick" => assert!(
-                !drive.delta.is_empty(),
-                "the daemon tick's writes are invisible to the fingerprint"
-            ),
-            _ => {}
-        }
-    }
+    let drive_delta = |name: &str| {
+        &drives
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("no drive named `{name}`"))
+            .delta
+    };
+    let noop = drive_delta("noop daemon tick");
+    assert!(
+        noop.is_empty(),
+        "a no-op tick changed the belief tier: {noop:?}"
+    );
+    assert!(
+        !drive_delta("daemon tick").is_empty(),
+        "the daemon tick's writes are invisible to the fingerprint"
+    );
 
     // The disposition ratchet over the production surface.
     let surface = {

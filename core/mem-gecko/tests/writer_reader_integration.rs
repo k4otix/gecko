@@ -835,11 +835,16 @@ async fn rests_on_with_a_missing_assumption_errors_and_commits_nothing() {
         .expect("assert");
 
     let msg = storage_msg(
-        w.rests_on(&ctx, b, &[MemId::new("mem/bel/does-not-exist")])
+        w.rests_on(&ctx, b.clone(), &[MemId::new("mem/bel/does-not-exist")])
             .await
             .expect_err("a missing assumption must fail rests_on"),
     );
-    for want in ["mem/bel/does-not-exist", "nothing was committed"] {
+    for want in [
+        b.0.as_str(),
+        "mem/bel/does-not-exist",
+        "no memory item",
+        "nothing was committed",
+    ] {
         assert!(msg.contains(want), "{want}: {msg}");
     }
     let edges = fx
