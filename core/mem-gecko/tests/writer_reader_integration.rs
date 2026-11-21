@@ -1292,6 +1292,11 @@ async fn dedup_episodes_tombstones_loser_and_removes_its_vector() {
         .await;
     assert_eq!(steps.len(), 1, "exactly one consolidation-step");
     assert_eq!(steps[0]["act"], "tombstone");
+    let at = steps[0]["at"].as_str().expect("created-at is a string");
+    assert!(
+        at.starts_with("2026-01-01T00:00:00"),
+        "created-at is ctx.occurred_at: {at}"
+    );
     let all_steps = fx
         .raw_fetch(r#"match $s isa consolidation-step; fetch { "k": "x" };"#)
         .await;
@@ -1576,6 +1581,13 @@ async fn dedup_episodes_refuses_and_commits_nothing() {
         index.removed.lock().unwrap().is_empty(),
         "no vector was removed"
     );
+    let runs = fx
+        .raw_fetch(&format!(
+            r#"match $r isa doc-run, has run-id "{}"; fetch {{ "k": "x" }};"#,
+            ctx.run_id
+        ))
+        .await;
+    assert!(runs.is_empty(), "the refused writes rolled back the run");
 
     fx.drop_db().await;
 }

@@ -28,9 +28,10 @@ impl MemWriter {
         loser: &MemId,
     ) -> Result<IndexOutcome> {
         if keeper.0 == loser.0 {
-            return Err(EpistemicError::InvalidInput(
-                "dedup_episodes: keeper and loser are the same episode".into(),
-            ));
+            return Err(EpistemicError::InvalidInput(format!(
+                "dedup_episodes: keeper and loser are the same episode {}",
+                keeper.0
+            )));
         }
         self.graph
             .write(&tql::dedup_episodes_ops(ctx, keeper, loser))

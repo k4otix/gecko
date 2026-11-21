@@ -981,10 +981,11 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
     // daemon_is_enumerated_by_the_monopoly_test (CONTRACT-W8 §3 row 5): a daemon
     // tick's writes are reconciled by the checks below like any other caller's.
     drive!("daemon tick", {
+        let (keeper, loser) = by_id(&duplicates[0], &duplicates[1]);
         let daemon = DedupDaemon {
             writer: ref_writer.clone(),
-            keeper: by_id(&duplicates[0], &duplicates[1]).0.clone(),
-            loser: by_id(&duplicates[0], &duplicates[1]).1.clone(),
+            keeper: keeper.clone(),
+            loser: loser.clone(),
         };
         let report = daemon.tick(chrono::Utc::now()).await.expect("daemon tick");
         assert_eq!(report.episodes_deduped, 1);
