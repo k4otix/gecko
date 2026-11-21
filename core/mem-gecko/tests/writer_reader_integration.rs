@@ -728,6 +728,154 @@ async fn supersede_of_a_missing_belief_errors_and_commits_nothing() {
     fx.drop_db().await;
 }
 
+fn storage_msg(err: EpistemicError) -> String {
+    match err {
+        EpistemicError::Storage(msg) => msg,
+        other => panic!("expected Storage, got {other:?}"),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A write whose ids match nothing fails and commits nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn derive_with_a_missing_evidence_id_errors_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let ep = w
+        .observe(
+            &ctx,
+            EpisodeDraft {
+                text: "real evidence".into(),
+                event_time: ctx.occurred_at,
+                ingest_time: ctx.occurred_at,
+            },
+        )
+        .await
+        .expect("observe");
+
+    let msg = storage_msg(
+        w.assert_belief(
+            &ctx,
+            belief("orphan derivation", "agent-1", 0.5),
+            &[ep.clone(), MemId::new("mem/ep/does-not-exist")],
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect_err("a missing evidence id must fail the derive"),
+    );
+    for want in [
+        ep.0.as_str(),
+        "mem/ep/does-not-exist",
+        "no memory item",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let stored = fx
+        .raw_fetch(
+            r#"match $b isa belief, has title $t; $t == "orphan derivation"; fetch { "t": $t };"#,
+        )
+        .await;
+    assert!(stored.is_empty(), "no belief was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn contest_with_a_missing_claim_errors_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("a real claim", "agent-1", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .expect("assert");
+
+    let msg = storage_msg(
+        w.contest(&ctx, &[b.clone(), MemId::new("mem/bel/does-not-exist")])
+            .await
+            .expect_err("a missing claim must fail the contest"),
+    );
+    for want in [
+        b.0.as_str(),
+        "mem/bel/does-not-exist",
+        "no belief",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let anomalies = fx
+        .raw_fetch(r#"match $a isa anomaly, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert!(anomalies.is_empty(), "no anomaly was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_with_a_missing_assumption_errors_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("resting belief", "agent-1", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .expect("assert");
+
+    let msg = storage_msg(
+        w.rests_on(&ctx, b, &[MemId::new("mem/bel/does-not-exist")])
+            .await
+            .expect_err("a missing assumption must fail rests_on"),
+    );
+    for want in ["mem/bel/does-not-exist", "nothing was committed"] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let edges = fx
+        .raw_fetch(r#"match $r isa rests-on; $r links (resting: $x); $x has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert!(edges.is_empty(), "no rests-on was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn record_prediction_on_a_missing_belief_errors_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let msg = storage_msg(
+        w.record_prediction(&ctx, MemId::new("mem/bel/does-not-exist"), 0.3)
+            .await
+            .expect_err("a missing belief must fail record_prediction"),
+    );
+    for want in [
+        "mem/bel/does-not-exist",
+        "no belief",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let preds = fx
+        .raw_fetch(r#"match $p isa prediction-resolution, has predicted-probability $v; fetch { "v": $v };"#)
+        .await;
+    assert!(preds.is_empty(), "no prediction was committed");
+
+    fx.drop_db().await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // An equal-or-higher entrenchment supersede SUCCEEDS.
 // ─────────────────────────────────────────────────────────────────────────────

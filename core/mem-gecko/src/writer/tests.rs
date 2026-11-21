@@ -1,6 +1,7 @@
 use super::beliefs::validate_confidence;
 use super::reader::{DEFAULT_HALF_LIFE_HOURS, recency_decay};
 use super::*;
+use DerivationMethod::LlmSynthesis;
 use async_trait::async_trait;
 use gecko_extension_api::{
     ActorId, BeliefDraft, DerivationMethod, EpistemicWriter, FilterMeta, ProvenanceSource,
@@ -305,6 +306,144 @@ async fn contest_rejects_fewer_than_two_claims() {
     assert!(matches!(e, EpistemicError::InvalidInput(_)));
 }
 
+#[tokio::test]
+async fn contest_refuses_a_repeated_claim() {
+    let store = Arc::new(RecordingGraphStore::default());
+    let w = MemWriter::without_index(store.clone());
+    let a = MemId::new("mem/bel/a");
+    let e = w
+        .contest(&ctx(), &[a.clone(), MemId::new("mem/bel/b"), a])
+        .await
+        .unwrap_err();
+    let EpistemicError::InvalidInput(msg) = &e else {
+        panic!("expected InvalidInput, got {e:?}");
+    };
+    assert!(msg.contains("mem/bel/a"), "{msg}");
+    assert!(store.writes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn id_matching_ops_require_exactly_one_row() {
+    let id = MemId::new("mem/bel/1");
+    let ids = [MemId::new("mem/ep/1"), MemId::new("mem/ep/2")];
+    let deriv = crate::tql::derivation_op(&id, &ids, LlmSynthesis, Some(0.5)).unwrap();
+    assert_eq!(deriv.expect_rows, Some(1));
+    let contest = crate::tql::contest_ops(&ctx(), &MemId::new("mem/anom/1"), &ids);
+    assert_eq!(contest.last().unwrap().expect_rows, Some(1));
+    assert_eq!(
+        crate::tql::rests_on_op(&id, &ids).expect_rows,
+        Some(1),
+        "rests_on"
+    );
+    assert_eq!(
+        crate::tql::record_prediction_op(&id, 0.3).expect_rows,
+        Some(1),
+        "record_prediction"
+    );
+}
+
+#[test]
+fn belief_ops_reports_the_derivation_index() {
+    let w = MemWriter::without_index(Arc::new(RecordingGraphStore::default()))
+        .with_retrieval_provenance(true);
+    let id = MemId::new("mem/bel/1");
+    let ev = [MemId::new("mem/ep/1")];
+    let (ops, at) = w.belief_ops(&ctx(), &belief(), &id, &ev, LlmSynthesis);
+    let at = at.expect("evidence ⇒ a derivation op");
+    assert_eq!(
+        ops[at],
+        crate::tql::derivation_op(&id, &ev, LlmSynthesis, belief().confidence).unwrap()
+    );
+    let (_, none) = w.belief_ops(&ctx(), &belief(), &id, &[], LlmSynthesis);
+    assert_eq!(none, None);
+}
+
+/// A writer whose every write fails with a row-count mismatch at `at(len)`.
+fn mismatching_writer(at: fn(usize) -> usize) -> MemWriter {
+    MemWriter::without_index(Arc::new(RecordingGraphStore {
+        mismatch_at: Some(at),
+        ..Default::default()
+    }))
+}
+
+fn storage(e: EpistemicError) -> String {
+    match e {
+        EpistemicError::Storage(m) => m,
+        other => panic!("expected Storage, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_derivation_mismatch_names_the_evidence() {
+    // Without retrieval provenance the derivation is the last op.
+    let ev = [MemId::new("mem/ep/1"), MemId::new("mem/ep/gone")];
+    let msg = storage(
+        mismatching_writer(|len| len - 1)
+            .assert_belief(&ctx(), belief(), &ev, LlmSynthesis)
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "mem/ep/1",
+        "mem/ep/gone",
+        "no memory item",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    // A mismatch on another op passes through unchanged.
+    let msg = storage(
+        mismatching_writer(|_| 0)
+            .assert_belief(&ctx(), belief(), &ev, LlmSynthesis)
+            .await
+            .unwrap_err(),
+    );
+    assert!(msg.starts_with("write op 0"), "{msg}");
+}
+
+#[tokio::test]
+async fn contest_rests_on_and_record_prediction_mismatches_name_their_ids() {
+    let a = MemId::new("mem/bel/a");
+    let gone = MemId::new("mem/bel/gone");
+    let msg = storage(
+        mismatching_writer(|len| len - 1)
+            .contest(&ctx(), &[a.clone(), gone.clone()])
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "mem/bel/a",
+        "mem/bel/gone",
+        "no belief",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "contest {want}: {msg}");
+    }
+    let msg = storage(
+        mismatching_writer(|_| 0)
+            .rests_on(&ctx(), a.clone(), std::slice::from_ref(&gone))
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "mem/bel/a",
+        "mem/bel/gone",
+        "no memory item",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "rests_on {want}: {msg}");
+    }
+    let msg = storage(
+        mismatching_writer(|_| 0)
+            .record_prediction(&ctx(), gone, 0.3)
+            .await
+            .unwrap_err(),
+    );
+    for want in ["mem/bel/gone", "no belief", "nothing was committed"] {
+        assert!(msg.contains(want), "record_prediction {want}: {msg}");
+    }
+}
+
 #[test]
 fn recency_decay_halves_each_half_life() {
     let t0 = chrono::Utc::now();
@@ -569,6 +708,37 @@ mod edges {
     }
 
     #[tokio::test]
+    async fn a_derivation_mismatch_with_edges_names_the_evidence() {
+        let store = Arc::new(RecordingGraphStore {
+            read_reply: vec![json!({"ok": true})],
+            // The derivation sits just before the two edge ops.
+            mismatch_at: Some(|len| len - 3),
+            ..Default::default()
+        });
+        let e = writer_over(&store)
+            .edge_writer_for("probe-ext")
+            .unwrap()
+            .assert_belief_with_edges(
+                &ctx(),
+                belief(),
+                &[MemId::new("mem/ep/gone")],
+                DerivationMethod::TypeJoin,
+                &[
+                    probe_edge("c/a", "t/1", "yes"),
+                    probe_edge("c/b", "t/2", "no"),
+                ],
+            )
+            .await
+            .expect_err("a derivation mismatch fails the write");
+        let EpistemicError::Storage(msg) = &e else {
+            panic!("expected Storage, got {e:?}");
+        };
+        assert!(msg.contains("mem/ep/gone"), "{msg}");
+        assert!(msg.contains("no memory item"), "{msg}");
+        assert!(!msg.contains("belief edge"), "{msg}");
+    }
+
+    #[tokio::test]
     async fn bound_writer_validates_roles_and_attrs() {
         let subject = ("probe-subject", s("c/a"));
         let object = ("probe-object", s("t/1"));
@@ -664,7 +834,7 @@ mod edges {
         let calls = store.write_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "one transaction");
         let ops = &calls[0];
-        let base = w.belief_ops(&c, &belief(), &id, &[], DerivationMethod::TypeJoin);
+        let (base, _) = w.belief_ops(&c, &belief(), &id, &[], DerivationMethod::TypeJoin);
         assert_eq!(ops.len(), base.len() + 2);
         assert_eq!(queries(&ops[..base.len()]), queries(&base));
         let decl = &PROBE_DECLS[0];

@@ -25,9 +25,10 @@ impl MemWriter {
             .filter(|s| !s.is_empty()))
     }
 
-    /// The ops that write belief `id`: the belief with its run and actor stamps, its
-    /// derivation from `evidence`, and, when retrieval provenance is on, its links to
-    /// the run's retrievals whose candidates overlap that evidence.
+    /// The ops that write belief `id`, and the index of its derivation op when it has
+    /// evidence: the belief with its run and actor stamps, its derivation from
+    /// `evidence`, and, when retrieval provenance is on, its links to the run's
+    /// retrievals whose candidates overlap that evidence.
     pub(super) fn belief_ops(
         &self,
         ctx: &RunContext,
@@ -35,11 +36,12 @@ impl MemWriter {
         id: &MemId,
         evidence: &[MemId],
         method: DerivationMethod,
-    ) -> Vec<GraphWrite> {
+    ) -> (Vec<GraphWrite>, Option<usize>) {
         let mut ops = tql::insert_belief_ops(ctx, b, id, tql::entrenchment_for(method));
-        if let Some(deriv) = tql::derivation_op(id, evidence, method, b.confidence) {
+        let derivation = tql::derivation_op(id, evidence, method, b.confidence).map(|deriv| {
             ops.push(deriv);
-        }
+            ops.len() - 1
+        });
         // Correlate this belief with the run's prior semantic retrievals by
         // evidence overlap (auto-linked; the agent passes nothing). Same transaction
         // as the belief so the retrieval-provenance axis lands atomically with it.
@@ -59,8 +61,52 @@ impl MemWriter {
             };
             ops.push(tql::set_retrieval_provenance_op(id, provenance));
         }
-        ops
+        (ops, derivation)
     }
+}
+
+/// Rewrites a row-count mismatch on op `at` into an error saying no `kind` matches
+/// one of `ids`; any other error is returned unchanged.
+fn name_missing_ids(
+    err: EpistemicError,
+    at: Option<usize>,
+    what: &str,
+    kind: &str,
+    ids: &[&MemId],
+) -> EpistemicError {
+    match (&err, RowCountMismatch::from_error(&err)) {
+        (EpistemicError::Storage(msg), Some(m)) if Some(m.op) == at => {
+            let ids = ids
+                .iter()
+                .map(|id| id.0.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            EpistemicError::Storage(format!(
+                "{what} matched {} row(s): no {kind} matches one of [{ids}]; nothing was committed: {msg}",
+                m.got
+            ))
+        }
+        _ => err,
+    }
+}
+
+/// Rewrites a row-count mismatch on the derivation op of belief `id` (index
+/// `derivation`, from [`MemWriter::belief_ops`]) into an error naming `evidence`; any
+/// other error is returned unchanged.
+pub(super) fn name_missing_evidence(
+    err: EpistemicError,
+    derivation: Option<usize>,
+    id: &MemId,
+    evidence: &[MemId],
+) -> EpistemicError {
+    let ids: Vec<&MemId> = evidence.iter().collect();
+    name_missing_ids(
+        err,
+        derivation,
+        &format!("derivation of {}", id.0),
+        "memory item",
+        &ids,
+    )
 }
 
 #[async_trait]
@@ -90,8 +136,11 @@ impl EpistemicWriter for MemWriter {
         validate_confidence(b.confidence, Some(method))?;
         let id = mint("mem/bel");
         // AUTHORITATIVE: belief + provenance stamp + (evidence⇒derivation) commit first.
-        let ops = self.belief_ops(ctx, &b, &id, evidence, method);
-        self.graph.write(&ops).await?;
+        let (ops, derivation) = self.belief_ops(ctx, &b, &id, evidence, method);
+        self.graph
+            .write(&ops)
+            .await
+            .map_err(|e| name_missing_evidence(e, derivation, &id, evidence))?;
         // Best-effort embed + upsert; failure marks dirty, never fails the write.
         let meta = self.belief_meta(&b, ctx, BeliefState::Asserted);
         self.best_effort_index(&id, &b.text, meta);
@@ -162,10 +211,24 @@ impl EpistemicWriter for MemWriter {
                 "contest requires at least two claims".into(),
             ));
         }
+        if let Some(dup) = claims
+            .iter()
+            .enumerate()
+            .find_map(|(i, c)| claims[..i].contains(c).then_some(c))
+        {
+            return Err(EpistemicError::InvalidInput(format!(
+                "contest names claim {} more than once",
+                dup.0
+            )));
+        }
         let anomaly = mint("mem/anom");
+        let ops = tql::contest_ops(ctx, &anomaly, claims);
+        let last = ops.len() - 1;
+        let ids: Vec<&MemId> = claims.iter().collect();
         self.graph
-            .write(&tql::contest_ops(ctx, &anomaly, claims))
-            .await?;
+            .write(&ops)
+            .await
+            .map_err(|e| name_missing_ids(e, Some(last), "contest", "belief", &ids))?;
         Ok(AnomalyId(anomaly.0))
     }
 
@@ -180,13 +243,18 @@ impl EpistemicWriter for MemWriter {
                 "rests_on requires at least one assumption".into(),
             ));
         }
+        let ids: Vec<&MemId> = std::iter::once(&resting).chain(assumptions).collect();
         self.graph
             .write(&[tql::rests_on_op(&resting, assumptions)])
             .await
+            .map_err(|e| name_missing_ids(e, Some(0), "rests_on", "memory item", &ids))
     }
 
     async fn record_prediction(&self, _ctx: &RunContext, b: MemId, p: f64) -> Result<()> {
-        self.graph.write(&[tql::record_prediction_op(&b, p)]).await
+        self.graph
+            .write(&[tql::record_prediction_op(&b, p)])
+            .await
+            .map_err(|e| name_missing_ids(e, Some(0), "record_prediction", "belief", &[&b]))
     }
 
     async fn resolve_prediction(&self, ctx: &RunContext, b: MemId, outcome: Outcome) -> Result<()> {
