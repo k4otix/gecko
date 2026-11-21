@@ -43,8 +43,9 @@ No vacuous daemon test: a tick that writes nothing proves nothing.
 1. **Counts.** `.expecting(1)` on `derivation_op`, the last op of `contest_ops`,
    `rests_on_op`, and `record_prediction_op` (`core/mem-gecko/src/tql.rs`).
 2. **Errors.** Each caller rewrites a `RowCountMismatch` on its op into
-   `EpistemicError::Storage` that lists the IDs it was given and ends
-   `nothing was committed`, the way `supersede` does. The failing op is found by
+   `EpistemicError::Storage` that lists the IDs it was given and says
+   `nothing was committed`, followed by the raw mismatch, the way `supersede`
+   does. The failing op is found by
    index, so other mismatches pass through unchanged.
    - Derive has two callers, `assert_belief` and `assert_belief_with_edges`
      (`writer/edges.rs`), both through `MemWriter::belief_ops`; `belief_ops`
