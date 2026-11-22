@@ -340,6 +340,24 @@ fn id_matching_ops_require_exactly_one_row() {
         Some(1),
         "record_prediction"
     );
+    let ev = MemId::new("mem/ep/re");
+    assert_eq!(
+        crate::tql::informs_synthesis_op(&ev, &id).expect_rows,
+        Some(1),
+        "informs-synthesis"
+    );
+    assert_eq!(
+        crate::tql::set_was_used_op(&ev, &ids[0]).expect_rows,
+        Some(1),
+        "was-used"
+    );
+    let resolve =
+        crate::tql::resolve_prediction_ops(&ctx(), &id, &MemId::new("mem/ep/r"), "confirmed");
+    assert_eq!(
+        resolve.last().unwrap().expect_rows,
+        Some(1),
+        "resolve_prediction"
+    );
 }
 
 #[test]
@@ -348,14 +366,14 @@ fn belief_ops_reports_the_derivation_index() {
         .with_retrieval_provenance(true);
     let id = MemId::new("mem/bel/1");
     let ev = [MemId::new("mem/ep/1")];
-    let (ops, at) = w.belief_ops(&ctx(), &belief(), &id, &ev, LlmSynthesis);
-    let at = at.expect("evidence ⇒ a derivation op");
+    let built = w.belief_ops(&ctx(), &belief(), &id, &ev, LlmSynthesis);
+    let at = built.derivation.expect("evidence ⇒ a derivation op");
     assert_eq!(
-        ops[at],
+        built.ops[at],
         crate::tql::derivation_op(&id, &ev, LlmSynthesis, belief().confidence).unwrap()
     );
-    let (_, none) = w.belief_ops(&ctx(), &belief(), &id, &[], LlmSynthesis);
-    assert_eq!(none, None);
+    let none = w.belief_ops(&ctx(), &belief(), &id, &[], LlmSynthesis);
+    assert_eq!(none.derivation, None);
 }
 
 /// A writer whose every write fails with a row-count mismatch at `at(len)`.
@@ -399,6 +417,63 @@ async fn a_derivation_mismatch_names_the_evidence() {
             .unwrap_err(),
     );
     assert!(msg.starts_with("write op 0"), "{msg}");
+}
+
+#[tokio::test]
+async fn a_retrieval_provenance_mismatch_names_the_event_and_item() {
+    let ev = MemId::new("mem/ep/re");
+    let item = MemId::new("mem/ep/1");
+    let c = ctx();
+    c.push_retrieval(
+        ev.clone(),
+        std::iter::once(ConceptId(item.0.clone())).collect(),
+    );
+    // With one matched retrieval the ops end: derivation, informs-synthesis,
+    // was-used, retrieval-provenance.
+    let informs = storage(
+        mismatching_writer(|len| len - 3)
+            .with_retrieval_provenance(true)
+            .assert_belief(&c, belief(), std::slice::from_ref(&item), LlmSynthesis)
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "informs-synthesis",
+        "mem/ep/re",
+        "mem/bel/",
+        "nothing was committed",
+    ] {
+        assert!(informs.contains(want), "{want}: {informs}");
+    }
+    let used = storage(
+        mismatching_writer(|len| len - 2)
+            .with_retrieval_provenance(true)
+            .assert_belief(&c, belief(), std::slice::from_ref(&item), LlmSynthesis)
+            .await
+            .unwrap_err(),
+    );
+    for want in ["was-used", "mem/ep/re", "mem/ep/1", "nothing was committed"] {
+        assert!(used.contains(want), "{want}: {used}");
+    }
+}
+
+#[tokio::test]
+async fn a_resolve_prediction_mismatch_names_the_belief() {
+    let b = MemId::new("mem/bel/p");
+    let msg = storage(
+        mismatching_writer(|len| len - 1)
+            .resolve_prediction(&ctx(), b, gecko_extension_api::Outcome::Confirmed)
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "mem/bel/p",
+        "open prediction(s)",
+        "exactly one is required",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
 }
 
 #[tokio::test]
@@ -834,7 +909,9 @@ mod edges {
         let calls = store.write_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "one transaction");
         let ops = &calls[0];
-        let (base, _) = w.belief_ops(&c, &belief(), &id, &[], DerivationMethod::TypeJoin);
+        let base = w
+            .belief_ops(&c, &belief(), &id, &[], DerivationMethod::TypeJoin)
+            .ops;
         assert_eq!(ops.len(), base.len() + 2);
         assert_eq!(queries(&ops[..base.len()]), queries(&base));
         let decl = &PROBE_DECLS[0];

@@ -273,7 +273,9 @@ pub(crate) fn derivation_op(
     Some(p.write(&body).expecting(1))
 }
 
-/// `supersede`: link old → new and flip old's belief-state to "superseded".
+/// `supersede`: link old → new and flip old's belief-state to "superseded". The
+/// link matches only a currently asserted `old`, so superseding a superseded or
+/// retracted belief matches no row.
 pub(crate) fn supersession_ops(
     old: &MemId,
     new_id: &MemId,
@@ -288,7 +290,7 @@ pub(crate) fn supersession_ops(
     let link_op = link
         .write(
             "match
-           $o isa belief, has concept-id $oc; $oc == $oid;
+           $o isa belief, has concept-id $oc, has belief-state \"asserted\"; $oc == $oid;
            $n isa belief, has concept-id $nc; $nc == $nid;
          insert (superseded: $o, superseding: $n) isa supersession,
              has supersession-reason == $reason, has created-at == $ca;",
@@ -490,6 +492,7 @@ pub(crate) fn informs_synthesis_op(ev: &MemId, belief: &MemId) -> GraphWrite {
            $b isa belief, has concept-id $bc; $bc == $bid;
          insert (retrieval: $re, synthesized: $b) isa informs-synthesis;",
     )
+    .expecting(1)
 }
 
 /// Flips `was-used` to `true` on the `surfaced` edge linking retrieval-event `ev`
@@ -505,6 +508,7 @@ pub(crate) fn set_was_used_op(ev: &MemId, item: &MemId) -> GraphWrite {
            $s isa surfaced, links (surfacer: $re, item: $it);
          update $s has was-used true;",
     )
+    .expecting(1)
 }
 
 /// Sets the write-once `retrieval-provenance` summary flag on a belief.
@@ -579,25 +583,26 @@ pub(crate) fn dedup_episodes_ops(
 }
 
 /// Retrieval-provenance retention (concrete helper): the `retrieval-event`s that
-/// are **safe to tombstone** — those whose `informs-synthesis` belief IS superseded.
-/// The retention RULE it enforces: never tombstone a retrieval-event while its
-/// synthesized belief is non-superseded; once the belief is superseded the event may
-/// decay (its episodic detail is lost) — but the belief's write-once
+/// are **safe to tombstone** — those every one of whose `informs-synthesis` beliefs
+/// is superseded. The retention RULE it enforces: never tombstone a retrieval-event
+/// while any belief it synthesized is non-superseded; once all are superseded the
+/// event may decay (its episodic detail is lost) — but each belief's write-once
 /// `retrieval-provenance` flag persists (the axis is retained on the belief, not the
 /// event). A retrieval-event that fed no belief (no `informs-synthesis`) is not
 /// returned here — it is out of scope for provenance-guarded pruning.
 pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
     "match
        $re isa retrieval-event, has concept-id $rid;
-       $b isa belief;
-       (retrieval: $re, synthesized: $b) isa informs-synthesis;
-       true == is-superseded($b);
+       informs-synthesis (retrieval: $re, synthesized: $b);
+       not { informs-synthesis (retrieval: $re, synthesized: $b2); not { true == is-superseded($b2); }; };
        not { $re has consolidation-state \"tombstoned\"; };
+     select $rid; distinct;
      fetch { \"id\": $rid };"
 }
 
 /// `resolve_prediction`: mint a resolving `episode` (run + actor stamped) and attach
-/// it (plus the outcome) to the belief's `prediction-resolution`.
+/// it (plus the outcome) to the belief's open `prediction-resolution`. The last op
+/// matches only a prediction with no outcome yet and must affect exactly one row.
 pub(crate) fn resolve_prediction_ops(
     ctx: &RunContext,
     b: &MemId,
@@ -623,19 +628,22 @@ pub(crate) fn resolve_prediction_ops(
            (owned: $ep, owner: $ag) isa ownership;",
     );
 
-    // 2. link the episode + outcome onto the existing prediction-resolution.
+    // 2. link the episode + outcome onto the open prediction-resolution.
     let mut link = Params::new();
     link.s("bid", b.0.clone());
     link.s("eid", ep_id.0.clone());
     link.s("oc", outcome);
-    let link_op = link.write(
-        "match
+    let link_op = link
+        .write(
+            "match
            $b isa belief, has concept-id $bc; $bc == $bid;
            $pr isa prediction-resolution, links (predicted-belief: $b);
+           not { $pr has outcome $prev; };
            $ep isa episode, has concept-id $ec; $ec == $eid;
          insert $pr links (resolving-episode: $ep);
                 $pr has outcome == $oc;",
-    );
+        )
+        .expecting(1);
 
     vec![ensure_run(ctx), ensure_agent(ctx), ep_op, link_op]
 }

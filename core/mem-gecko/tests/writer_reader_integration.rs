@@ -735,6 +735,102 @@ fn storage_msg(err: EpistemicError) -> String {
     }
 }
 
+/// The supersession edges recorded on belief `id`.
+async fn supersessions_of(fx: &Fixture, id: &MemId) -> usize {
+    fx.raw_fetch(&format!(
+        r#"match $o isa belief, has concept-id "{}";
+             $s isa supersession, links (superseded: $o);
+           fetch {{ "k": "x" }};"#,
+        id.0
+    ))
+    .await
+    .len()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Only a currently asserted belief can be superseded: a second supersede of the
+// same belief is refused and forks nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn superseding_an_already_superseded_belief_is_refused_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("belief a", "agent-1", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.supersede(&ctx, a.clone(), belief("belief b", "agent-1", 0.6), "r")
+        .await
+        .expect("the first supersede succeeds");
+
+    let msg = storage_msg(
+        w.supersede(&ctx, a.clone(), belief("belief c", "agent-1", 0.7), "r")
+            .await
+            .expect_err("a superseded belief cannot be superseded again"),
+    );
+    for want in [
+        a.0.as_str(),
+        "no asserted belief with that id",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(supersessions_of(&fx, &a).await, 1, "no B/C fork exists");
+    let c = fx
+        .raw_fetch(r#"match $b isa belief, has title "belief c"; fetch { "k": "x" };"#)
+        .await;
+    assert!(c.is_empty(), "the refused replacement was not committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn superseding_a_retracted_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("retracted belief", "agent-1", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    fx.raw_write(&format!(
+        r#"match $b isa belief, has concept-id "{}";
+           update $b has belief-state "retracted";"#,
+        a.0
+    ))
+    .await;
+
+    let msg = storage_msg(
+        w.supersede(&ctx, a.clone(), belief("replacement", "agent-1", 0.6), "r")
+            .await
+            .expect_err("a retracted belief cannot be superseded"),
+    );
+    assert!(msg.contains(&a.0), "{msg}");
+    assert!(msg.contains("nothing was committed"), "{msg}");
+    let state = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}", has belief-state $s; fetch {{ "s": $s }};"#,
+            a.0
+        ))
+        .await;
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[0]["s"], "retracted", "A stays retracted");
+    assert_eq!(supersessions_of(&fx, &a).await, 0);
+
+    fx.drop_db().await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // A write whose ids match nothing fails and commits nothing.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1944,6 +2040,239 @@ async fn prediction_lifecycle() {
         "prediction resolved with an episode + outcome"
     );
     assert_eq!(rows[0]["o"], "confirmed");
+
+    fx.drop_db().await;
+}
+
+/// The prediction-resolving episodes in the graph.
+async fn resolving_episodes(fx: &Fixture) -> usize {
+    fx.raw_fetch(
+        r#"match $e isa episode, has title $t; $t like "^prediction resolved"; fetch { "t": $t };"#,
+    )
+    .await
+    .len()
+}
+
+#[tokio::test]
+async fn resolve_prediction_without_a_recorded_prediction_is_refused_and_commits_nothing() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("never predicted", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.resolve_prediction(&ctx, b.clone(), Outcome::Confirmed)
+            .await
+            .expect_err("no recorded prediction ⇒ nothing to resolve"),
+    );
+    for want in [
+        b.0.as_str(),
+        "matched 0 open prediction(s)",
+        "exactly one is required",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(resolving_episodes(&fx).await, 0, "no resolving episode");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn resolving_a_prediction_twice_is_refused() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("it will snow", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+    w.resolve_prediction(&ctx, b.clone(), Outcome::Confirmed)
+        .await
+        .expect("the first resolution succeeds");
+
+    let msg = storage_msg(
+        w.resolve_prediction(&ctx, b.clone(), Outcome::Refuted)
+            .await
+            .expect_err("a resolved prediction cannot be resolved again"),
+    );
+    for want in [
+        b.0.as_str(),
+        "matched 0 open prediction(s)",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(
+        resolving_episodes(&fx).await,
+        1,
+        "only the first resolution"
+    );
+    let outcomes = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}";
+                 $pr isa prediction-resolution, links (predicted-belief: $b), has outcome $o;
+               fetch {{ "o": $o }};"#,
+            b.0
+        ))
+        .await;
+    assert_eq!(outcomes.len(), 1, "one outcome: {outcomes:?}");
+    assert_eq!(outcomes[0]["o"], "confirmed");
+
+    fx.drop_db().await;
+}
+
+/// A writer recording retrieval provenance whose recalls surface `evidence`.
+fn recalling_writer(fx: &Fixture, evidence: &MemId) -> MemWriter {
+    let index = StubIndex::with(vec![(ConceptId(evidence.0.clone()), 0.9)]);
+    fx.writer(Some(Arc::new(StubEmbedder)), Some(index))
+        .with_retrieval_provenance(true)
+}
+
+async fn recall_once(w: &MemWriter, ctx: &RunContext) {
+    let chunks = w
+        .recall(
+            ctx,
+            RecallQuery::now("anything"),
+            ContextBudget {
+                max_chunks: 10,
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!chunks.is_empty(), "the recall surfaced the evidence");
+}
+
+#[tokio::test]
+async fn a_derive_that_used_two_retrievals_links_both() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-02T00:00:00Z"));
+    let evidence = fx
+        .writer(None, None)
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("shared evidence", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let w = recalling_writer(&fx, &evidence);
+    recall_once(&w, &ctx).await;
+    recall_once(&w, &ctx).await;
+
+    let synth = w
+        .assert_belief(
+            &ctx,
+            belief("synthesized from two recalls", "agent-1", 0.7),
+            std::slice::from_ref(&evidence),
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect("a derive over two retrievals commits");
+
+    let links = fx
+        .raw_fetch(&format!(
+            r#"match
+                 $b isa belief, has concept-id "{}";
+                 $re isa retrieval-event, has concept-id $rid;
+                 (retrieval: $re, synthesized: $b) isa informs-synthesis;
+                 (surfacer: $re, item: $ev) isa surfaced, has was-used $u;
+                 $ev has concept-id "{}";
+               fetch {{ "re": $rid, "u": $u }};"#,
+            synth.0, evidence.0
+        ))
+        .await;
+    assert_eq!(
+        links.len(),
+        2,
+        "both retrievals inform the belief: {links:?}"
+    );
+    assert_ne!(links[0]["re"], links[1]["re"]);
+    assert!(links.iter().all(|l| l["u"] == true), "{links:?}");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn a_retrieval_event_feeding_a_live_belief_is_not_safe_to_tombstone() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-02T00:00:00Z"));
+    let evidence = fx
+        .writer(None, None)
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("evidence", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let w = recalling_writer(&fx, &evidence);
+    recall_once(&w, &ctx).await;
+    let mut informed = Vec::new();
+    for text in ["synthesis one", "synthesis two"] {
+        informed.push(
+            w.assert_belief(
+                &ctx,
+                belief(text, "agent-1", 0.7),
+                std::slice::from_ref(&evidence),
+                DerivationMethod::LlmSynthesis,
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let events = fx
+        .raw_fetch(r#"match $re isa retrieval-event, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert_eq!(events.len(), 1, "one retrieval-event: {events:?}");
+    let event = MemId(events[0]["c"].as_str().unwrap().to_string());
+
+    w.supersede(
+        &ctx,
+        informed[0].clone(),
+        belief("revised one", "agent-1", 0.8),
+        "r",
+    )
+    .await
+    .unwrap();
+    let partly = w.retrieval_events_safe_to_tombstone().await.unwrap();
+    assert!(
+        !partly.contains(&event),
+        "an event still feeding a live belief is not safe to tombstone: {partly:?}"
+    );
+
+    w.supersede(
+        &ctx,
+        informed[1].clone(),
+        belief("revised two", "agent-1", 0.8),
+        "r",
+    )
+    .await
+    .unwrap();
+    let all = w.retrieval_events_safe_to_tombstone().await.unwrap();
+    assert!(
+        all.contains(&event),
+        "once every informed belief is superseded the event is safe: {all:?}"
+    );
 
     fx.drop_db().await;
 }

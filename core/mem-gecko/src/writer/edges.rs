@@ -11,7 +11,9 @@ use gecko_extension_api::{
     EpistemicError, GraphValue, MemId, RowCountMismatch, RunContext,
 };
 
-use super::beliefs::{name_missing_evidence, validate_confidence};
+use super::beliefs::{
+    BeliefOps, name_missing_evidence, name_missing_provenance, validate_confidence,
+};
 use super::{MemWriter, Result, mint};
 use crate::belief_edge::BeliefEdgeRegistry;
 use crate::tql;
@@ -89,7 +91,11 @@ impl BeliefEdgeWriter for BoundEdgeWriter {
         }
 
         let id = mint("mem/bel");
-        let (mut ops, derivation) = self.writer.belief_ops(ctx, &draft, &id, evidence, method);
+        let BeliefOps {
+            mut ops,
+            derivation,
+            provenance,
+        } = self.writer.belief_ops(ctx, &draft, &id, evidence, method);
         let first_edge = ops.len();
         ops.extend(
             decls
@@ -100,6 +106,7 @@ impl BeliefEdgeWriter for BoundEdgeWriter {
         // AUTHORITATIVE: the belief and every edge commit together or not at all.
         self.writer.graph.write(&ops).await.map_err(|e| {
             let e = name_missing_evidence(e, derivation, &id, evidence);
+            let e = name_missing_provenance(e, &provenance, &id);
             name_failing_edge(e, first_edge, &decls, edges)
         })?;
         // Best-effort embed + upsert; failure marks dirty, never fails the write.

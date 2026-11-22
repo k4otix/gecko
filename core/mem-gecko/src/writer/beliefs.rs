@@ -13,6 +13,25 @@ use gecko_extension_api::{
 use super::{MemWriter, Result, mint, str_field};
 use crate::tql;
 
+/// The ops that write one belief, with the indices of the ops that must each
+/// affect exactly one row.
+pub(super) struct BeliefOps {
+    pub(super) ops: Vec<GraphWrite>,
+    /// The derivation op's index, when the belief has evidence.
+    pub(super) derivation: Option<usize>,
+    /// The retrieval-provenance link ops.
+    pub(super) provenance: Vec<ProvenanceOp>,
+}
+
+/// A retrieval-provenance link op: `informs-synthesis` from `event` to the belief
+/// when `item` is `None`, else the `was-used` flip on `event`'s `surfaced` edge to
+/// `item`.
+pub(super) struct ProvenanceOp {
+    pub(super) index: usize,
+    pub(super) event: MemId,
+    pub(super) item: Option<MemId>,
+}
+
 impl MemWriter {
     /// Reads a belief's stored `entrenchment` tier (invariant-7 supersede guard input).
     /// `None` when the belief carries no entrenchment attribute.
@@ -25,10 +44,9 @@ impl MemWriter {
             .filter(|s| !s.is_empty()))
     }
 
-    /// The ops that write belief `id`, and the index of its derivation op when it has
-    /// evidence: the belief with its run and actor stamps, its derivation from
-    /// `evidence`, and, when retrieval provenance is on, its links to the run's
-    /// retrievals whose candidates overlap that evidence.
+    /// The ops that write belief `id`: the belief with its run and actor stamps, its
+    /// derivation from `evidence`, and, when retrieval provenance is on, its links to
+    /// the run's retrievals whose candidates overlap that evidence.
     pub(super) fn belief_ops(
         &self,
         ctx: &RunContext,
@@ -36,7 +54,7 @@ impl MemWriter {
         id: &MemId,
         evidence: &[MemId],
         method: DerivationMethod,
-    ) -> (Vec<GraphWrite>, Option<usize>) {
+    ) -> BeliefOps {
         let mut ops = tql::insert_belief_ops(ctx, b, id, tql::entrenchment_for(method));
         let derivation = tql::derivation_op(id, evidence, method, b.confidence).map(|deriv| {
             ops.push(deriv);
@@ -45,11 +63,22 @@ impl MemWriter {
         // Correlate this belief with the run's prior semantic retrievals by
         // evidence overlap (auto-linked; the agent passes nothing). Same transaction
         // as the belief so the retrieval-provenance axis lands atomically with it.
+        let mut provenance = Vec::new();
         if self.record_retrieval_provenance {
             let matched = ctx.matched_retrievals(evidence);
             for (ev, used) in &matched {
+                provenance.push(ProvenanceOp {
+                    index: ops.len(),
+                    event: ev.clone(),
+                    item: None,
+                });
                 ops.push(tql::informs_synthesis_op(ev, id));
                 for item in used {
+                    provenance.push(ProvenanceOp {
+                        index: ops.len(),
+                        event: ev.clone(),
+                        item: Some(item.clone()),
+                    });
                     ops.push(tql::set_was_used_op(ev, item));
                 }
             }
@@ -61,7 +90,43 @@ impl MemWriter {
             };
             ops.push(tql::set_retrieval_provenance_op(id, provenance));
         }
-        (ops, derivation)
+        BeliefOps {
+            ops,
+            derivation,
+            provenance,
+        }
+    }
+}
+
+/// Rewrites a row-count mismatch on a retrieval-provenance op of belief `id` into an
+/// error naming that op's retrieval-event and the belief or item it links; any other
+/// error is returned unchanged.
+pub(super) fn name_missing_provenance(
+    err: EpistemicError,
+    provenance: &[ProvenanceOp],
+    id: &MemId,
+) -> EpistemicError {
+    match (&err, RowCountMismatch::from_error(&err)) {
+        (EpistemicError::Storage(msg), Some(m)) => {
+            let Some(p) = provenance.iter().find(|p| p.index == m.op) else {
+                return err;
+            };
+            let link = match &p.item {
+                None => format!(
+                    "informs-synthesis from retrieval-event {} to belief {}",
+                    p.event.0, id.0
+                ),
+                Some(item) => format!(
+                    "was-used on the surfaced edge from retrieval-event {} to item {}",
+                    p.event.0, item.0
+                ),
+            };
+            EpistemicError::Storage(format!(
+                "{link} matched {} row(s); exactly one is required; nothing was committed: {msg}",
+                m.got
+            ))
+        }
+        _ => err,
     }
 }
 
@@ -136,11 +201,15 @@ impl EpistemicWriter for MemWriter {
         validate_confidence(b.confidence, Some(method))?;
         let id = mint("mem/bel");
         // AUTHORITATIVE: belief + provenance stamp + (evidence⇒derivation) commit first.
-        let (ops, derivation) = self.belief_ops(ctx, &b, &id, evidence, method);
-        self.graph
-            .write(&ops)
-            .await
-            .map_err(|e| name_missing_evidence(e, derivation, &id, evidence))?;
+        let BeliefOps {
+            ops,
+            derivation,
+            provenance,
+        } = self.belief_ops(ctx, &b, &id, evidence, method);
+        self.graph.write(&ops).await.map_err(|e| {
+            let e = name_missing_evidence(e, derivation, &id, evidence);
+            name_missing_provenance(e, &provenance, &id)
+        })?;
         // Best-effort embed + upsert; failure marks dirty, never fails the write.
         let meta = self.belief_meta(&b, ctx, BeliefState::Asserted);
         self.best_effort_index(&id, &b.text, meta);
@@ -190,8 +259,8 @@ impl EpistemicWriter for MemWriter {
             .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
                 (EpistemicError::Storage(msg), Some(m)) if m.op >= first_supersession => {
                     EpistemicError::Storage(format!(
-                        "supersede of {} matched {} belief(s); nothing was committed: {msg}",
-                        old.0, m.got
+                        "supersede of {}: no asserted belief with that id; nothing was committed: {msg}",
+                        old.0
                     ))
                 }
                 _ => e,
@@ -264,9 +333,20 @@ impl EpistemicWriter for MemWriter {
             Outcome::Refuted => "refuted",
             Outcome::Inconclusive => "inconclusive",
         };
+        let ops = tql::resolve_prediction_ops(ctx, &b, &ep_id, oc);
+        let link = ops.len() - 1;
         self.graph
-            .write(&tql::resolve_prediction_ops(ctx, &b, &ep_id, oc))
+            .write(&ops)
             .await
+            .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
+                (EpistemicError::Storage(msg), Some(m)) if m.op == link => {
+                    EpistemicError::Storage(format!(
+                        "resolve_prediction of {} matched {} open prediction(s); exactly one is required; nothing was committed: {msg}",
+                        b.0, m.got
+                    ))
+                }
+                _ => e,
+            })
     }
 
     /// `MemWriter` is both writer and [`EpistemicReader`], so hand it back as one:
