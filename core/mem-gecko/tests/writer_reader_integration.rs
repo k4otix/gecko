@@ -913,6 +913,45 @@ async fn superseding_another_agents_private_belief_is_refused_and_commits_nothin
 }
 
 #[tokio::test]
+async fn superseding_another_agents_private_user_stated_belief_reports_not_visible_not_entrenchment()
+ {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's firmly held view", "agent-a", 0.9, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let err = w
+        .supersede(
+            &ctx_at("agent-b", at),
+            private.clone(),
+            belief_ent("b's cheap guess", "agent-b", 0.3, Entrenchment::Llm),
+            "r",
+        )
+        .await
+        .expect_err("another agent's private belief cannot be superseded");
+    let msg = storage_msg(err);
+    for want in [
+        private.0.as_str(),
+        "not a current belief visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(belief_state(&fx, &private).await, "asserted");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
 async fn superseding_a_team_belief_of_another_agent_is_allowed() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);
@@ -1064,6 +1103,12 @@ async fn deriving_from_another_agents_episode_is_refused() {
     ] {
         assert!(msg.contains(want), "{want}: {msg}");
     }
+    let stored = fx
+        .raw_fetch(
+            r#"match $b isa belief, has title "b's belief from a's episode"; fetch { "k": "x" };"#,
+        )
+        .await;
+    assert!(stored.is_empty(), "no belief was committed");
 
     fx.drop_db().await;
 }
