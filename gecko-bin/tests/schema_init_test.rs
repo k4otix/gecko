@@ -445,8 +445,13 @@ async fn tightening_forms_apply_to_the_pre_tightening_core_and_mem() {
     }
 
     // Without its cleanup, each tightened fragment is refused over the one-player row.
+    let core_without_cleanup: Vec<_> = core_migrations
+        .iter()
+        .copied()
+        .filter(|m| !m.tql.starts_with("match $r isa containment;"))
+        .collect();
     let err = db
-        .apply_schema_with_migrations(&core, CORE_MIGRATIONS)
+        .apply_schema_with_migrations(&core, &core_without_cleanup)
         .await
         .expect_err("a one-player containment fails the required roles");
     assert!(err.to_string().contains("'containment'"), "{err}");
@@ -471,13 +476,14 @@ async fn tightening_forms_apply_to_the_pre_tightening_core_and_mem() {
             .expect("mem cleanup and redefine, then the tightened mem");
     }
 
-    // mem's shipped cleanups for relations this probe leaves untightened stay
+    // The shipped cleanups for relations this probe leaves untightened stay
     // pending; every other migration has run.
     let after = db.database_schema().await.expect("schema");
     let untightened = |m: &gecko_extension_api::SchemaMigration| {
-        m.id.starts_with("mem/")
+        (m.id.starts_with("mem/") || m.id.starts_with("core/"))
             && m.tql.starts_with("match ")
             && !m.tql.starts_with("match $r isa population-member;")
+            && !m.tql.starts_with("match $r isa containment;")
     };
     for m in core_migrations
         .iter()
@@ -608,4 +614,84 @@ async fn tightening_forms_apply_to_the_pre_tightening_cyber() {
         "relates used @card(1..1) @doc(\"The technique, malware, or tool being used.\")"
     ));
     assert_eq!(count_rows(&mut db, "match $r isa uses;").await, 1);
+}
+
+#[tokio::test]
+async fn a_database_holding_a_one_player_core_relation_upgrades() {
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA};
+
+    let test_db = TestDb::new("gecko_test_core_one_player_upgrade");
+    let mut db = test_db.router();
+    db.apply_schema(PRE_CORE)
+        .await
+        .expect("pre-tightening core");
+    write_rows(
+        &mut db,
+        "insert $b isa bundle, has bundle-name 'up-b'; \
+         $c isa concept, has concept-id 'up/c'; \
+         $d isa concept, has concept-id 'up/d'; \
+         $e isa external-resource, has target-url 'https://example.com/up'; \
+         (container: $b, member: $c) isa containment; \
+         (container: $b) isa containment; \
+         (member: $d) isa containment; \
+         (parent: $c, child: $d) isa hierarchy; \
+         (parent: $c) isa hierarchy; \
+         (child: $d) isa hierarchy; \
+         (source: $c, target: $d) isa concept-link; \
+         (source: $c) isa concept-link; \
+         (target: $d) isa concept-link; \
+         (citing-concept: $c, cited-resource: $e) isa citation; \
+         (citing-concept: $c) isa citation; \
+         (cited-resource: $e) isa citation;",
+    )
+    .await;
+
+    // Each cleanup's trigger is in the pre-tightening export exactly once.
+    let before = db.database_schema().await.expect("schema");
+    let cleanups: Vec<_> = CORE_MIGRATIONS
+        .iter()
+        .filter(|m| m.tql.starts_with("match "))
+        .collect();
+    assert_eq!(cleanups.len(), 4, "one cleanup per core relation");
+    for m in &cleanups {
+        assert_eq!(before.matches(m.applies_when).count(), 1, "{}", m.id);
+    }
+
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+            .await
+            .expect("core cleanups, then the shipped core");
+    }
+
+    let after = db.database_schema().await.expect("schema");
+    for m in CORE_MIGRATIONS {
+        assert!(!after.contains(m.applies_when), "{} still pending", m.id);
+    }
+    // `citation` carries its own cards on the roles it specializes, beside the
+    // ones it inherits through them from `okf-link`.
+    for role in [
+        "relates source @card(1..1)",
+        "relates target @card(1..1)",
+        "relates citing-concept as source @card(1..1)",
+        "relates cited-resource as target @card(1..1)",
+    ] {
+        assert!(after.contains(role), "the export lacks {role:?}");
+    }
+    for (relation, full) in [
+        ("containment", "links (container: $x, member: $y)"),
+        ("hierarchy", "links (parent: $x, child: $y)"),
+        ("concept-link", "links (source: $x, target: $y)"),
+        ("citation", "links (citing-concept: $x, cited-resource: $y)"),
+    ] {
+        assert_eq!(
+            count_rows(&mut db, &format!("match $r isa {relation};")).await,
+            1,
+            "only the fully played {relation} survives"
+        );
+        assert_eq!(
+            count_rows(&mut db, &format!("match $r isa {relation}, {full};")).await,
+            1,
+            "the surviving {relation} is the fully played one"
+        );
+    }
 }
