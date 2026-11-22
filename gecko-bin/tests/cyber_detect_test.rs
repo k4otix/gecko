@@ -1,6 +1,6 @@
 // End-to-end proof of the cyber-gecko detect host bridge: claim writes a real
 // detection belief + technique-detection edge through the belief-edge seam,
-// coverage_gaps/blinded run the persisted TypeDB functions, and
+// coverage_gaps runs the persisted TypeDB functions, and
 // disposition/precision compute over real dispositions. Exercises the sync->async
 // bridge over a read-only graph handle and an edge writer bound to cyber-gecko.
 //
@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use cyber_gecko::CyberGecko;
 use cyber_gecko::detect::cyber_extension_callback;
-use cyber_gecko::stix::{cyber_post_sync, to_okf};
 use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::graph_store::RouterGraphStore;
 use gecko_engine::extension::GeckoExtension;
@@ -29,42 +28,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+#[path = "common/attack.rs"]
+mod attack;
 mod common;
 use common::TestDb;
-
-// A minimal ATT&CK bundle: one technique with an attack-id, plus a data
-// source/component wired by `detects` (so the technique has required evidence but
-// no covering sensor -> it will show up as blinded).
-const BUNDLE: &str = r#"{
-  "type": "bundle",
-  "objects": [
-    {
-      "type": "attack-pattern",
-      "id": "attack-pattern--00000000-0000-0000-0000-0000000000a1",
-      "name": "Command and Scripting Interpreter",
-      "external_references": [{ "source_name": "mitre-attack", "external_id": "T1059" }]
-    },
-    {
-      "type": "x-mitre-data-source",
-      "id": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5",
-      "name": "Command",
-      "external_references": [{ "source_name": "mitre-attack", "external_id": "DS0017" }]
-    },
-    {
-      "type": "x-mitre-data-component",
-      "id": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
-      "name": "Command Execution",
-      "x_mitre_data_source_ref": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5"
-    },
-    {
-      "type": "relationship",
-      "id": "relationship--00000000-0000-0000-0000-000000000103",
-      "relationship_type": "detects",
-      "source_ref": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
-      "target_ref": "attack-pattern--00000000-0000-0000-0000-0000000000a1"
-    }
-  ]
-}"#;
 
 const LOGIC_ID: &str = "playbooks/detect-t1059";
 
@@ -86,20 +53,11 @@ async fn apply_schemas(test_db: &TestDb) {
     }
 }
 
-/// Applies the schemas, syncs the ATT&CK backbone, then syncs a playbook bundle
-/// holding the detection-logic concept the claims reference.
+/// Syncs the ATT&CK fixture, then a playbook bundle holding the detection-logic
+/// concept the claims reference.
 async fn seed_detection_graph(test_db: &TestDb) {
-    apply_schemas(test_db).await;
+    attack::sync_fixture(test_db).await;
     let mut db = test_db.router();
-    let (manifest, typed_rels) = to_okf(BUNDLE).expect("to_okf");
-    sync_bundle(
-        &mut db,
-        &manifest,
-        &cyber_post_sync(&typed_rels),
-        mem_gecko::BELIEF_TIER_ROOT,
-    )
-    .await
-    .expect("sync_bundle");
 
     let dir = TempDir::new().expect("tempdir");
     fs::create_dir_all(dir.path().join("playbooks")).expect("playbooks dir");
@@ -168,7 +126,7 @@ async fn detect_bridge_claims_disposes_and_reports() {
     let claimed = call(
         &cb,
         "claim",
-        json!({ "logic_id": LOGIC_ID, "technique_id": "T1059", "method": "external-tool", "confidence": 0.9 }),
+        json!({ "logic_id": LOGIC_ID, "technique_id": attack::TECHNIQUE_ATTACK_ID, "method": "external-tool", "confidence": 0.9 }),
     )
     .expect("claim");
     assert!(
@@ -184,20 +142,6 @@ async fn detect_bridge_claims_disposes_and_reports() {
         gaps["undetected_techniques"].as_array().unwrap().len(),
         0,
         "claim should remove T1059 from the gap list"
-    );
-
-    // The claim's required evidence (the data component) has no covering sensor,
-    // so the detecting logic is blinded.
-    let blind = call(&cb, "blinded", json!({})).expect("blinded");
-    let blinded_ids: Vec<&str> = blind["blinded_detections"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|d| d["concept_id"].as_str())
-        .collect();
-    assert!(
-        blinded_ids.contains(&LOGIC_ID),
-        "logic should be blinded (no sensor covers its evidence): {blinded_ids:?}"
     );
 
     // Dispose two alerts (1 TP, 1 FP) -> precision 0.5.

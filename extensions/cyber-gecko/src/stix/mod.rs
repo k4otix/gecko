@@ -3,7 +3,7 @@ use gecko_extension_api::okf::{OkfBundle, OkfConcept, TypedAttrValue, TypedAttri
 use gecko_extension_api::{GraphValue, GraphWrite};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub mod normalize;
 
@@ -69,6 +69,8 @@ fn sdo_type_hint(type_str: &str) -> &'static str {
         "course-of-action" => "course-of-action",
         "x-mitre-data-source" => "data-source",
         "x-mitre-data-component" => "data-component",
+        "x-mitre-detection-strategy" => "detection-strategy",
+        "x-mitre-analytic" => "analytic",
         _ => "cyber-object",
     }
 }
@@ -77,7 +79,7 @@ fn sdo_type_hint(type_str: &str) -> &'static str {
 fn owns_platform(type_hint: &str) -> bool {
     matches!(
         type_hint,
-        "attack-pattern" | "malware" | "tool" | "data-source"
+        "attack-pattern" | "malware" | "tool" | "data-source" | "analytic"
     )
 }
 
@@ -92,7 +94,111 @@ pub struct TypedRelation {
     pub rel_type: String,
 }
 
-pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), String> {
+/// A log source an analytic reads for a data component: one per (analytic,
+/// component, trimmed name) across the analytic's `x_mitre_log_source_references`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalyticRequirement {
+    /// The analytic's concept id.
+    pub analytic: String,
+    /// The data component's concept id.
+    pub component: String,
+    /// The log-source name as ATT&CK spells it, trimmed.
+    pub name: String,
+    /// The trimmed, lowercased name that sensors are matched on.
+    pub key: String,
+    /// Every distinct channel ATT&CK gives for this log source, sorted; a channel of
+    /// `"None"` or an absent channel contributes none.
+    pub channels: Vec<String>,
+}
+
+/// The relations [`to_okf`] collects for [`cyber_post_sync`] to write.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StixRelations {
+    /// Relations between two in-bundle concepts whose subtypes play the roles.
+    pub typed: Vec<TypedRelation>,
+    /// Every analytic's log-source requirements on in-bundle data components.
+    pub requirements: Vec<AnalyticRequirement>,
+}
+
+/// The version of the STIX-to-graph mapping, folded into every concept's content
+/// hash so that a mapping change refreshes every concept on the next import.
+pub const STIX_MAPPING_VERSION: &str = "2";
+
+/// The content hash of a STIX object under mapping `version`: SHA-256 over the
+/// version, then the object's JSON. serde_json serializes object keys in sorted
+/// order (it is built without `preserve_order`), so the hash is stable across
+/// re-parses.
+fn concept_hash(version: &str, obj: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(obj.to_string().as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+/// The relation label of a synthesized strategy-to-analytic link, used as its
+/// [`TypedRelation::rel_type`].
+const STRATEGY_ANALYTIC_REL: &str = "strategy-analytic";
+
+/// A requirement's grouping key: (analytic id, component id, trimmed name).
+type RequirementKey = (String, String, String);
+
+/// Collects an analytic's `x_mitre_log_source_references` into `out`, grouped by
+/// (analytic, component, trimmed name) with their channels. A reference without a
+/// component ref or a non-empty name, or with a non-string channel, is refused.
+fn collect_requirements(
+    analytic_id: &str,
+    stix_id: &str,
+    obj: &Value,
+    out: &mut BTreeMap<RequirementKey, BTreeSet<String>>,
+) -> Result<(), String> {
+    let Some(refs) = obj.get("x_mitre_log_source_references") else {
+        return Ok(());
+    };
+    let refs = refs
+        .as_array()
+        .ok_or_else(|| format!("analytic {stix_id} has non-array x_mitre_log_source_references"))?;
+    for r in refs {
+        let component = get_str(r, "x_mitre_data_component_ref").ok_or_else(|| {
+            format!(
+                "analytic {stix_id} has a log-source reference without x_mitre_data_component_ref"
+            )
+        })?;
+        let name = get_str(r, "name")
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| {
+                format!("analytic {stix_id} has a log-source reference without a name")
+            })?;
+        let channels = out
+            .entry((
+                analytic_id.to_string(),
+                derive_id(component),
+                name.to_string(),
+            ))
+            .or_default();
+        match r.get("channel") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(ch)) => {
+                let ch = ch.trim();
+                if !ch.is_empty() && ch != "None" {
+                    channels.insert(ch.to_string());
+                }
+            }
+            Some(other) => {
+                return Err(format!(
+                    "analytic {stix_id} has a log-source reference with a non-string channel {other}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
     let parsed: Value = serde_json::from_str(bundle_json).map_err(|e| e.to_string())?;
 
     if let Some(bundle_type) = get_str(&parsed, "type")
@@ -114,6 +220,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
     // Candidate typed relations as (source-id, target-id, rel-type), resolved to
     // typed role players after every concept's subtype is known.
     let mut raw_rels: Vec<(String, String, String)> = Vec::new();
+    let mut raw_requirements: BTreeMap<RequirementKey, BTreeSet<String>> = BTreeMap::new();
 
     for obj in objects {
         let type_str = get_str(obj, "type")
@@ -152,11 +259,13 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
                 value: TypedAttrValue::Datetime(dt),
             });
         }
-        if let Some(revoked) = obj.get("revoked").and_then(Value::as_bool) {
-            typed.push(TypedAttribute {
-                name: "revoked".to_string(),
-                value: TypedAttrValue::Bool(revoked),
-            });
+        for (field, attr) in [("revoked", "revoked"), ("x_mitre_deprecated", "deprecated")] {
+            if let Some(flag) = obj.get(field).and_then(Value::as_bool) {
+                typed.push(TypedAttribute {
+                    name: attr.to_string(),
+                    value: TypedAttrValue::Bool(flag),
+                });
+            }
         }
         // ATT&CK reuses an id across a live object and its deprecated or revoked
         // predecessors; only the live object claims the unique attack-id.
@@ -188,16 +297,28 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
             }
         }
 
-        // ATT&CK links a data component to its data source through an embedded
-        // reference rather than a relationship object; synthesize the SRO here.
-        if type_str == "x-mitre-data-component"
-            && let Some(src_ref) = get_str(obj, "x_mitre_data_source_ref")
+        if type_hint == "data-component"
+            && let Some(name) = get_str(obj, "name")
         {
-            raw_rels.push((
-                concept_id.clone(),
-                derive_id(src_ref),
-                "evidence-of".to_string(),
-            ));
+            typed.push(str_attr("component-key", &name.trim().to_lowercase()));
+        }
+
+        // ATT&CK links a strategy to its analytics, and an analytic to the data
+        // components it reads, through embedded references rather than
+        // relationship objects; synthesize those links here.
+        if type_hint == "detection-strategy"
+            && let Some(refs) = obj.get("x_mitre_analytic_refs").and_then(Value::as_array)
+        {
+            for analytic in refs.iter().filter_map(Value::as_str) {
+                raw_rels.push((
+                    concept_id.clone(),
+                    derive_id(analytic),
+                    STRATEGY_ANALYTIC_REL.to_string(),
+                ));
+            }
+        }
+        if type_hint == "analytic" {
+            collect_requirements(&concept_id, id_str, obj, &mut raw_requirements)?;
         }
 
         id_types.insert(concept_id.clone(), type_hint);
@@ -208,17 +329,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
         }
 
         let description = get_str(obj, "description").map(String::from);
-        // serde_json serializes object keys in sorted order (it is built without
-        // `preserve_order`), so this content hash is stable across re-parses.
-        let file_hash = {
-            let mut hasher = Sha256::new();
-            hasher.update(obj.to_string().as_bytes());
-            hasher
-                .finalize()
-                .iter()
-                .map(|b| format!("{:02x}", b))
-                .collect::<String>()
-        };
+        let file_hash = concept_hash(STIX_MAPPING_VERSION, obj);
 
         let mut extra_metadata = HashMap::new();
         extra_metadata.insert("stix-object".to_string(), obj.to_string());
@@ -279,7 +390,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
     for (source, target, rel_type) in raw_rels {
         match (id_types.get(source.as_str()), id_types.get(target.as_str())) {
             (Some(source_type), Some(target_type))
-                if rel_roles(&rel_type)
+                if shape_of(&rel_type)
                     .is_some_and(|shape| shape.admits(source_type, target_type)) =>
             {
                 typed_rels.push(TypedRelation {
@@ -298,6 +409,24 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
         }
     }
 
+    // A requirement is kept only when its component is an in-bundle data
+    // component, as for the endpoints of a typed relation.
+    let requirements = raw_requirements
+        .into_iter()
+        .filter(|((_, component, _), _)| {
+            id_types.get(component.as_str()) == Some(&"data-component")
+        })
+        .map(
+            |((analytic, component, name), channels)| AnalyticRequirement {
+                analytic,
+                component,
+                key: name.to_lowercase(),
+                name,
+                channels: channels.into_iter().collect(),
+            },
+        )
+        .collect();
+
     Ok((
         OkfBundle {
             bundle_path: "stix-sync".to_string(),
@@ -308,7 +437,10 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, Vec<TypedRelation>), Stri
             citations: Vec::new(),
             hierarchy: Vec::new(),
         },
-        typed_rels,
+        StixRelations {
+            typed: typed_rels,
+            requirements,
+        },
     ))
 }
 
@@ -401,31 +533,43 @@ const REL_SHAPES: &[(&str, RelShape)] = &[
     (
         "detects",
         RelShape {
-            relation: "requires-evidence",
-            source_role: "required",
+            relation: "strategy-detects",
+            source_role: "strategy",
             target_role: "technique",
-            source_players: &["data-component"],
+            source_players: &["detection-strategy"],
             target_players: &["attack-pattern"],
         },
     ),
-    (
-        "evidence-of",
-        RelShape {
-            relation: "evidence-of",
-            source_role: "evidence-component",
-            target_role: "evidence-source",
-            source_players: &["data-component"],
-            target_players: &["data-source"],
-        },
-    ),
 ];
+
+/// The strategy-to-analytic link synthesized from `x_mitre_analytic_refs`, which a
+/// re-import replaces rather than appends to.
+const STRATEGY_ANALYTIC: RelShape = RelShape {
+    relation: STRATEGY_ANALYTIC_REL,
+    source_role: "strategy",
+    target_role: "analytic",
+    source_players: &["detection-strategy"],
+    target_players: &["analytic"],
+};
+
+/// The analytic-to-component requirement synthesized from
+/// `x_mitre_log_source_references`, which a re-import replaces.
+const ANALYTIC_REQUIREMENT: RelShape = RelShape {
+    relation: "analytic-requirement",
+    source_role: "analytic",
+    target_role: "component",
+    source_players: &["analytic"],
+    target_players: &["data-component"],
+};
 
 /// Every `(relation, role, players)` the adapter links, for checking the player
 /// lists against the schema's `plays` declarations.
 pub fn typed_relation_players() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
     REL_SHAPES
         .iter()
-        .flat_map(|(_, s)| {
+        .map(|(_, s)| s)
+        .chain([&STRATEGY_ANALYTIC, &ANALYTIC_REQUIREMENT])
+        .flat_map(|s| {
             [
                 (s.relation, s.source_role, s.source_players),
                 (s.relation, s.target_role, s.target_players),
@@ -442,15 +586,33 @@ fn rel_roles(rel_type: &str) -> Option<RelShape> {
         .map(|(_, shape)| *shape)
 }
 
-/// Builds the writes that link the typed SROs collected by [`to_okf`], one
-/// idempotent relation per STIX relationship. The concept IDs are the untrusted
-/// STIX `source_ref`/`target_ref` and travel as parameterized rows; only fixed
-/// schema labels — the relation, the roles, and the resolved role-player entity
-/// subtypes — are interpolated. The role players are bound with `isa <subtype>`
-/// because binding them to the generic `concept` type would make TypeDB reject
-/// the role assignment (only the subtypes play the roles). Relations with an
-/// unknown `rel_type` are skipped.
-pub fn cyber_post_sync(typed_rels: &[TypedRelation]) -> Vec<GraphWrite> {
+/// Resolves a [`TypedRelation::rel_type`], a relationship type or a synthesized
+/// strategy-to-analytic link, to its relation shape.
+fn shape_of(rel_type: &str) -> Option<RelShape> {
+    if rel_type == STRATEGY_ANALYTIC_REL {
+        Some(STRATEGY_ANALYTIC)
+    } else {
+        rel_roles(rel_type)
+    }
+}
+
+/// Builds the writes that link the relations collected by [`to_okf`].
+///
+/// - **SROs** become one idempotent relation each, inserted under a `not { … }`
+///   guard. Relations with an unknown `rel_type` are skipped.
+/// - **Strategy analytics and analytic requirements** are replaced: their writes
+///   delete every such relation on a strategy or analytic these relations name,
+///   then every such relation left without its analytic (or strategy) player by a
+///   deleted concept, and then insert the current set.
+///
+/// The concept IDs are untrusted STIX references and travel as parameterized rows,
+/// as do the log-source names, keys and channels; only fixed schema labels — the
+/// relation, the roles, and the resolved role-player entity subtypes — are
+/// interpolated. The role players are bound with `isa <subtype>` because binding
+/// them to the generic `concept` type would make TypeDB reject the role assignment
+/// (only the subtypes play the roles).
+pub fn cyber_post_sync(rels: &StixRelations) -> Vec<GraphWrite> {
+    let typed_rels = &rels.typed;
     // Group by the full query shape — relation, roles, and both role-player
     // subtypes — so each distinct shape is one multi-row parameterized write.
     type Shape<'a> = (RelShape, &'a str, &'a str);
@@ -501,7 +663,122 @@ pub fn cyber_post_sync(typed_rels: &[TypedRelation]) -> Vec<GraphWrite> {
         .collect();
     // Deterministic order regardless of hash-map iteration.
     writes.sort_by(|a, b| a.query.cmp(&b.query));
+    writes.extend(replacement_writes(rels));
     writes
+}
+
+/// One row per value, for a single-variable write.
+fn id_rows<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<Vec<GraphValue>> {
+    ids.into_iter()
+        .map(|id| vec![GraphValue::String(id.to_string())])
+        .collect()
+}
+
+/// The replace-then-insert writes for `strategy-analytic` and
+/// `analytic-requirement`, in the order they must run.
+fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
+    let links: Vec<&TypedRelation> = rels
+        .typed
+        .iter()
+        .filter(|r| r.rel_type == STRATEGY_ANALYTIC_REL)
+        .collect();
+
+    // Every strategy and analytic these relations name: an end of a typed
+    // relation, or the analytic of a requirement.
+    let mut scope: BTreeSet<&str> = BTreeSet::new();
+    for r in &rels.typed {
+        for (id, ty) in [(&r.source, &r.source_type), (&r.target, &r.target_type)] {
+            if matches!(ty.as_str(), "detection-strategy" | "analytic") {
+                scope.insert(id);
+            }
+        }
+    }
+    scope.extend(rels.requirements.iter().map(|r| r.analytic.as_str()));
+
+    let mut channel_rows = Vec::new();
+    for r in &rels.requirements {
+        for ch in &r.channels {
+            channel_rows.push(vec![
+                GraphValue::String(r.analytic.clone()),
+                GraphValue::String(r.component.clone()),
+                GraphValue::String(r.name.clone()),
+                GraphValue::String(ch.clone()),
+            ]);
+        }
+    }
+
+    vec![
+        GraphWrite {
+            query: "given $id: string; \
+                    match $x isa cyber-object, has concept-id $xid; $xid == $id; \
+                          { $r isa strategy-analytic, links (strategy: $x); } or \
+                          { $r isa strategy-analytic, links (analytic: $x); } or \
+                          { $r isa analytic-requirement, links (analytic: $x); }; \
+                    delete $r;"
+                .to_string(),
+            vars: vec!["id".to_string()],
+            rows: id_rows(scope.iter().copied()),
+            expect_rows: None,
+        },
+        GraphWrite::plain(
+            "match { $r isa analytic-requirement; not { $r links (analytic: $a1); }; } or \
+                   { $r isa strategy-analytic; not { $r links (analytic: $a2); }; } or \
+                   { $r isa strategy-analytic; not { $r links (strategy: $s3); }; }; \
+             delete $r;",
+        ),
+        GraphWrite {
+            query: "given $s: string, $a: string; \
+                    match $st isa detection-strategy, has concept-id $sid; $sid == $s; \
+                          $an isa analytic, has concept-id $aid; $aid == $a; \
+                    insert $r isa strategy-analytic, links (strategy: $st, analytic: $an);"
+                .to_string(),
+            vars: vec!["s".to_string(), "a".to_string()],
+            rows: links
+                .iter()
+                .map(|r| {
+                    vec![
+                        GraphValue::String(r.source.clone()),
+                        GraphValue::String(r.target.clone()),
+                    ]
+                })
+                .collect(),
+            expect_rows: Some(1),
+        },
+        GraphWrite {
+            query: "given $a: string, $c: string, $name: string, $key: string; \
+                    match $an isa analytic, has concept-id $aid; $aid == $a; \
+                          $co isa data-component, has concept-id $cid; $cid == $c; \
+                    insert $r isa analytic-requirement, links (analytic: $an, component: $co), \
+                           has log-source-name == $name, has log-source-key == $key;"
+                .to_string(),
+            vars: ["a", "c", "name", "key"].map(String::from).to_vec(),
+            rows: rels
+                .requirements
+                .iter()
+                .map(|r| {
+                    vec![
+                        GraphValue::String(r.analytic.clone()),
+                        GraphValue::String(r.component.clone()),
+                        GraphValue::String(r.name.clone()),
+                        GraphValue::String(r.key.clone()),
+                    ]
+                })
+                .collect(),
+            expect_rows: Some(1),
+        },
+        GraphWrite {
+            query: "given $a: string, $c: string, $name: string, $ch: string; \
+                    match $an isa analytic, has concept-id $aid; $aid == $a; \
+                          $co isa data-component, has concept-id $cid; $cid == $c; \
+                          $r isa analytic-requirement, links (analytic: $an, component: $co), \
+                             has log-source-name $n; $n == $name; \
+                    insert $r has log-source-channel == $ch;"
+                .to_string(),
+            vars: ["a", "c", "name", "ch"].map(String::from).to_vec(),
+            rows: channel_rows,
+            expect_rows: Some(1),
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -520,13 +797,19 @@ mod tests {
 
     #[test]
     fn post_sync_groups_relations_into_one_write_per_shape() {
-        let rels = vec![
-            rel("a1", "b1", "malware", "attack-pattern", "uses"),
-            rel("a2", "b2", "malware", "attack-pattern", "uses"),
-            rel("i1", "t1", "indicator", "attack-pattern", "indicates"),
-            rel("x", "y", "malware", "attack-pattern", "frobnicates"),
-        ];
-        let writes = cyber_post_sync(&rels);
+        let rels = StixRelations {
+            typed: vec![
+                rel("a1", "b1", "malware", "attack-pattern", "uses"),
+                rel("a2", "b2", "malware", "attack-pattern", "uses"),
+                rel("i1", "t1", "indicator", "attack-pattern", "indicates"),
+                rel("x", "y", "malware", "attack-pattern", "frobnicates"),
+            ],
+            requirements: Vec::new(),
+        };
+        let writes: Vec<GraphWrite> = cyber_post_sync(&rels)
+            .into_iter()
+            .filter(|w| !w.rows.is_empty() && !w.vars.is_empty())
+            .collect();
         assert_eq!(writes.len(), 2);
         let uses = writes
             .iter()
@@ -536,5 +819,261 @@ mod tests {
         assert_eq!(uses.rows.len(), 2);
         assert_eq!(uses.expect_rows, None);
         assert!(writes.iter().all(|w| !w.query.contains("frobnicates")));
+    }
+
+    const STRATEGY: &str = "x-mitre-detection-strategy--00000000-0000-4000-8000-000000000001";
+    const WINDOWS: &str = "x-mitre-analytic--00000000-0000-4000-8000-000000000001";
+    const LINUX: &str = "x-mitre-analytic--00000000-0000-4000-8000-000000000002";
+    const TECHNIQUE: &str = "attack-pattern--00000000-0000-4000-8000-000000000001";
+    const COMPONENT: &str = "x-mitre-data-component--00000000-0000-4000-8000-000000000001";
+    const OUTSIDE: &str = "x-mitre-data-component--00000000-0000-4000-8000-0000000000ff";
+
+    /// A bundle of a technique, a strategy that detects it through two analytics,
+    /// one component, and the given log-source references on the Windows analytic.
+    fn detection_bundle(windows_sources: Value) -> String {
+        serde_json::json!({
+            "type": "bundle",
+            "objects": [
+                { "type": "attack-pattern", "id": TECHNIQUE, "name": "T" },
+                { "type": "x-mitre-detection-strategy", "id": STRATEGY, "name": "S",
+                  "x_mitre_analytic_refs": [WINDOWS, LINUX] },
+                { "type": "x-mitre-analytic", "id": WINDOWS, "name": "W",
+                  "x_mitre_platforms": ["Windows"],
+                  "x_mitre_log_source_references": windows_sources },
+                { "type": "x-mitre-analytic", "id": LINUX, "name": "L",
+                  "x_mitre_platforms": ["Linux"] },
+                { "type": "x-mitre-data-component", "id": COMPONENT, "name": " Process Creation " },
+                { "type": "relationship", "id": "relationship--00000000-0000-4000-8000-000000000001",
+                  "relationship_type": "detects", "source_ref": STRATEGY, "target_ref": TECHNIQUE },
+            ]
+        })
+        .to_string()
+    }
+
+    fn concept<'a>(bundle: &'a OkfBundle, stix_id: &str) -> &'a OkfConcept {
+        let id = derive_id(stix_id);
+        bundle
+            .concepts
+            .iter()
+            .find(|c| c.concept_id == id)
+            .unwrap_or_else(|| panic!("{id} not in the bundle"))
+    }
+
+    fn attr_values(concept: &OkfConcept, name: &str) -> Vec<TypedAttrValue> {
+        concept
+            .typed_attributes
+            .iter()
+            .filter(|a| a.name == name)
+            .map(|a| a.value.clone())
+            .collect()
+    }
+
+    fn source(name: &str, channel: Option<&str>) -> Value {
+        let mut r = serde_json::json!({ "x_mitre_data_component_ref": COMPONENT, "name": name });
+        if let Some(channel) = channel {
+            r["channel"] = channel.into();
+        }
+        r
+    }
+
+    #[test]
+    fn detection_strategy_and_analytic_get_their_types() {
+        let (bundle, _) = to_okf(&detection_bundle(serde_json::json!([]))).expect("to_okf");
+        assert_eq!(
+            concept(&bundle, STRATEGY).type_hint.as_deref(),
+            Some("detection-strategy")
+        );
+        assert_eq!(
+            concept(&bundle, WINDOWS).type_hint.as_deref(),
+            Some("analytic")
+        );
+    }
+
+    #[test]
+    fn analytic_platform_is_written() {
+        let (bundle, _) = to_okf(&detection_bundle(serde_json::json!([]))).expect("to_okf");
+        assert_eq!(
+            attr_values(concept(&bundle, LINUX), "platform"),
+            vec![TypedAttrValue::String("Linux".into())]
+        );
+    }
+
+    #[test]
+    fn strategy_analytic_is_synthesized_from_analytic_refs() {
+        let (_, rels) = to_okf(&detection_bundle(serde_json::json!([]))).expect("to_okf");
+        let mut pairs: Vec<(&str, &str, &str)> = rels
+            .typed
+            .iter()
+            .filter(|r| r.rel_type == "strategy-analytic")
+            .map(|r| (r.source.as_str(), r.target.as_str(), r.target_type.as_str()))
+            .collect();
+        pairs.sort();
+        let (s, w, l) = (derive_id(STRATEGY), derive_id(WINDOWS), derive_id(LINUX));
+        let mut expected = vec![
+            (s.as_str(), w.as_str(), "analytic"),
+            (s.as_str(), l.as_str(), "analytic"),
+        ];
+        expected.sort();
+        assert_eq!(pairs, expected);
+        assert!(
+            rels.typed
+                .iter()
+                .any(|r| r.rel_type == "detects" && r.source_type == "detection-strategy"),
+            "the strategy's detects SRO is a typed relation: {:?}",
+            rels.typed
+        );
+    }
+
+    #[test]
+    fn requirements_group_by_analytic_component_and_trimmed_name() {
+        let (_, rels) = to_okf(&detection_bundle(serde_json::json!([
+            source("saas:audit ", Some("b")),
+            source("saas:audit", Some("a")),
+        ])))
+        .expect("to_okf");
+        assert_eq!(
+            rels.requirements,
+            vec![AnalyticRequirement {
+                analytic: derive_id(WINDOWS),
+                component: derive_id(COMPONENT),
+                name: "saas:audit".into(),
+                key: "saas:audit".into(),
+                channels: vec!["a".into(), "b".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_none_channel_writes_no_channel() {
+        let (_, rels) = to_okf(&detection_bundle(serde_json::json!([
+            source("WinEventLog:Security", Some("None")),
+            source("NSM:Flow", None),
+        ])))
+        .expect("to_okf");
+        assert_eq!(rels.requirements.len(), 2);
+        assert!(
+            rels.requirements.iter().all(|r| r.channels.is_empty()),
+            "{:?}",
+            rels.requirements
+        );
+        assert_eq!(rels.requirements[0].key, "nsm:flow");
+        assert_eq!(rels.requirements[1].key, "wineventlog:security");
+    }
+
+    #[test]
+    fn a_log_source_reference_without_a_name_is_refused() {
+        let err = to_okf(&detection_bundle(serde_json::json!([
+            { "x_mitre_data_component_ref": COMPONENT }
+        ])))
+        .unwrap_err();
+        assert!(err.contains(WINDOWS) && err.contains("name"), "got: {err}");
+    }
+
+    #[test]
+    fn a_data_component_detects_falls_to_a_concept_link() {
+        let bundle = serde_json::json!({
+            "type": "bundle",
+            "objects": [
+                { "type": "attack-pattern", "id": TECHNIQUE, "name": "T" },
+                { "type": "x-mitre-data-component", "id": COMPONENT, "name": "C" },
+                { "type": "relationship", "id": "relationship--00000000-0000-4000-8000-000000000002",
+                  "relationship_type": "detects", "source_ref": COMPONENT, "target_ref": TECHNIQUE },
+            ]
+        })
+        .to_string();
+        let (manifest, rels) = to_okf(&bundle).expect("to_okf");
+        assert!(rels.typed.is_empty(), "{:?}", rels.typed);
+        assert_eq!(manifest.links.len(), 1);
+        assert_eq!(manifest.links[0].link_text, "detects");
+    }
+
+    #[test]
+    fn deprecated_is_a_typed_attribute() {
+        let bundle = serde_json::json!({
+            "type": "bundle",
+            "objects": [
+                { "type": "attack-pattern", "id": TECHNIQUE, "x_mitre_deprecated": true },
+                { "type": "x-mitre-data-component", "id": COMPONENT, "x_mitre_deprecated": false },
+                { "type": "x-mitre-analytic", "id": WINDOWS },
+            ]
+        })
+        .to_string();
+        let (manifest, _) = to_okf(&bundle).expect("to_okf");
+        assert_eq!(
+            attr_values(concept(&manifest, TECHNIQUE), "deprecated"),
+            vec![TypedAttrValue::Bool(true)]
+        );
+        assert_eq!(
+            attr_values(concept(&manifest, COMPONENT), "deprecated"),
+            vec![TypedAttrValue::Bool(false)]
+        );
+        assert!(attr_values(concept(&manifest, WINDOWS), "deprecated").is_empty());
+    }
+
+    #[test]
+    fn a_data_component_carries_its_name_key() {
+        let (manifest, _) = to_okf(&detection_bundle(serde_json::json!([]))).expect("to_okf");
+        assert_eq!(
+            attr_values(concept(&manifest, COMPONENT), "component-key"),
+            vec![TypedAttrValue::String("process creation".into())]
+        );
+    }
+
+    #[test]
+    fn the_mapping_version_changes_the_hash() {
+        let obj = serde_json::json!({ "type": "attack-pattern", "id": TECHNIQUE });
+        assert_ne!(concept_hash("1", &obj), concept_hash("2", &obj));
+        assert_eq!(concept_hash("2", &obj), concept_hash("2", &obj.clone()));
+        let (manifest, _) =
+            to_okf(&serde_json::json!({ "type": "bundle", "objects": [obj.clone()] }).to_string())
+                .expect("to_okf");
+        assert_eq!(
+            manifest.concepts[0].file_hash,
+            concept_hash(STIX_MAPPING_VERSION, &obj)
+        );
+    }
+
+    #[test]
+    fn a_requirement_on_an_out_of_bundle_component_is_dropped() {
+        let (_, rels) = to_okf(&detection_bundle(serde_json::json!([
+            source("WinEventLog:Security", Some("EventCode=4688")),
+            { "x_mitre_data_component_ref": OUTSIDE, "name": "NSM:Flow" },
+        ])))
+        .expect("to_okf");
+        assert_eq!(rels.requirements.len(), 1, "{:?}", rels.requirements);
+        assert_eq!(rels.requirements[0].component, derive_id(COMPONENT));
+    }
+
+    #[test]
+    fn post_sync_replaces_strategy_analytics_and_requirements() {
+        let (_, rels) = to_okf(&detection_bundle(serde_json::json!([
+            source("WinEventLog:Security", Some("EventCode=4688")),
+            source("WinEventLog:Security", Some("EventCode=4624")),
+        ])))
+        .expect("to_okf");
+        let writes = cyber_post_sync(&rels);
+        let position = |needle: &str| {
+            writes
+                .iter()
+                .position(|w| w.query.contains(needle))
+                .unwrap_or_else(|| panic!("no op contains {needle:?}"))
+        };
+        let scoped_delete = position("delete $r");
+        let orphan_delete = position("not { $r links (analytic:");
+        let requirement_insert = position("insert $r isa analytic-requirement");
+        let channel_insert = position("has log-source-channel ==");
+        let strategy_insert = position("insert $r isa strategy-analytic");
+        assert!(scoped_delete < orphan_delete);
+        assert!(orphan_delete < requirement_insert.min(strategy_insert));
+        assert!(requirement_insert < channel_insert);
+        assert_eq!(writes[requirement_insert].rows.len(), 1);
+        assert_eq!(writes[channel_insert].rows.len(), 2);
+        assert_eq!(writes[strategy_insert].rows.len(), 2);
+        assert!(
+            writes
+                .iter()
+                .any(|w| w.query.contains("isa strategy-detects") && w.query.contains("not {")),
+            "strategy-detects is insert-only under a not guard"
+        );
     }
 }

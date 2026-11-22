@@ -9,6 +9,11 @@ define
   attribute stix-pattern value string;
   attribute valid-until value datetime;
   attribute revoked value boolean;
+  attribute deprecated value boolean;
+  attribute log-source-name value string;
+  attribute log-source-key value string;
+  attribute log-source-channel value string;
+  attribute component-key value string;
 
   # ── the cyber record root ──
   # Concrete (not @abstract): it subtypes the concrete core `concept`, and an
@@ -18,13 +23,15 @@ define
   entity cyber-object sub concept @doc("Root of the cyber knowledge graph: any STIX/ATT&CK object, keyed by its globally-unique ATT&CK id and carrying its STIX id and revoked flag."),
       owns stix-id @card(0..1) @unique,
       owns attack-id @card(0..1) @unique,
-      owns revoked @card(0..1);
+      owns revoked @card(0..1),
+      owns deprecated @card(0..1);
 
   entity attack-pattern sub cyber-object @doc("An ATT&CK technique (STIX attack-pattern): an adversary behavior, with its platforms and kill-chain phases."),
       owns platform @card(0..),
       owns kill-chain-phase @card(0..),
       plays technique-detection:detected-technique,
       plays requires-evidence:technique,
+      plays strategy-detects:technique,
       plays mitigates:mitigated,
       plays indicates:indicated,
       plays uses:used;
@@ -108,6 +115,8 @@ define
       plays sensor-coverage:covered-source;
 
   entity data-component sub cyber-object @doc("An ATT&CK data component: a specific facet of a data source (e.g. Process Creation) that a technique's detection requires as evidence."),
+      owns component-key @card(0..1),
+      plays analytic-requirement:component,
       plays evidence-of:evidence-component,
       plays requires-evidence:required,
       plays sensor-coverage:covered-component;
@@ -119,6 +128,30 @@ define
   relation requires-evidence @doc("Records that detecting a technique requires a given data component as evidence."),
       relates technique @doc("The technique whose detection needs the evidence."),
       relates required @doc("The data component required to detect it.");
+
+  entity detection-strategy sub cyber-object @doc("An ATT&CK detection strategy: how to detect one technique, carried out by one analytic per platform."),
+      plays strategy-detects:strategy,
+      plays strategy-analytic:strategy;
+
+  entity analytic sub cyber-object @doc("An ATT&CK analytic: a strategy's detection logic for one platform, which reads the log sources its requirements name."),
+      owns platform @card(0..),
+      plays strategy-analytic:analytic,
+      plays analytic-requirement:analytic;
+
+  relation strategy-detects @doc("An ATT&CK 'detects' relationship: a detection strategy detects a technique."),
+      relates strategy @doc("The detection strategy doing the detecting."),
+      relates technique @doc("The technique the strategy detects.");
+
+  relation strategy-analytic @doc("Ties a detection strategy to one of the analytics that carry it out."),
+      relates strategy @doc("The detection strategy the analytic belongs to."),
+      relates analytic @doc("The analytic carrying out the strategy.");
+
+  relation analytic-requirement @doc("A log source an analytic reads for a data component, keyed by its trimmed, lowercased name for matching against sensors."),
+      owns log-source-name @card(1),
+      owns log-source-key @card(1),
+      owns log-source-channel @card(0..),
+      relates analytic @doc("The analytic that needs the log source."),
+      relates component @doc("The data component the log source provides to the analytic.");
 
   attribute hostname value string;
   attribute environment value string @values("prod", "staging", "dev", "test");

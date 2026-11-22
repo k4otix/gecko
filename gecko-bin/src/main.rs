@@ -363,7 +363,7 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Parsing STIX bundle at {}...", bundle_path.display());
             let bundle_json =
                 std::fs::read_to_string(bundle_path).context("Failed to read STIX JSON")?;
-            let (mut manifest, typed_rels) = cyber_gecko::stix::to_okf(&bundle_json)
+            let (mut manifest, rels) = cyber_gecko::stix::to_okf(&bundle_json)
                 .map_err(|e| anyhow::anyhow!("STIX parse error: {}", e))?;
             apply_stix_naming(&mut manifest, bundle_name.as_deref(), bundle_path)?;
             let config = make_config(
@@ -379,8 +379,12 @@ async fn run(cli: Cli) -> Result<()> {
                 config.database
             );
 
-            let writes = cyber_gecko::stix::cyber_post_sync(&typed_rels);
-            println!("Linking {} typed relations...", typed_rels.len());
+            let writes = cyber_gecko::stix::cyber_post_sync(&rels);
+            println!(
+                "Linking {} typed relations and {} analytic requirements...",
+                rels.typed.len(),
+                rels.requirements.len()
+            );
             let result = sync_manifest(config, &extensions, &manifest, &writes).await?;
             print_sync_result(&result);
 
