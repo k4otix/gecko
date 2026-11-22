@@ -1,0 +1,231 @@
+define
+
+  # ══════════════════════════════════════════════════════════════════
+  # A3 — substrate functions (persisted; query-time reasoning)
+  # ══════════════════════════════════════════════════════════════════
+
+  # 1 — is-superseded($b) -> bool
+  fun is-superseded($b: memory-item) -> boolean @doc("True if the memory item has been superseded or retracted — either a supersession edge points at it, or its belief-state is 'superseded'/'retracted'."):
+      match
+          {
+              (superseded: $b, superseding: $newer) isa supersession;
+          } or {
+              $b has belief-state "superseded";
+          } or {
+              $b has belief-state "retracted";
+          };
+      return check;
+
+  # 2 — believed-at($t) -> {belief}  (temporal; index NOT involved)
+  fun believed-at($t: datetime) -> { belief } @doc("Returns the beliefs asserted and within their validity window as of time $t (valid-from <= $t and no valid-to on or before $t)."):
+      match
+          $b isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $t;
+          not { $b has valid-to $vt; $vt <= $t; };
+      return { $b };
+
+  # 3 — derivation-chain($b) -> {memory-item}  (recursive transitive closure)
+  fun derivation-chain($b: memory-item) -> { memory-item } @doc("Recursive transitive closure of the sources $b was derived from, following derivation edges to their roots."):
+      match
+          {
+              (derived: $b, source: $m) isa derivation;
+          } or {
+              (derived: $b, source: $mid) isa derivation;
+              let $m in derivation-chain($mid);
+          };
+      return { $m };
+
+  # 4 — retrieval-score($m,$now) -> double
+  #   THREE validated 3.12 constraints shape this body:
+  #   (a) CONTINUOUS half-life decay is NOT expressible in pure TQL — datetime-datetime yields a
+  #       duration, but duration/duration, duration->scalar, scalar->duration and ln/log are all
+  #       REJECTED. So the smooth 0.5^(age_hours/half_life) multiplier is applied HOST-SIDE (Rust Reader).
+  #   (b) A DURATION value cannot be used as a filtering comparison predicate: `$age <op> <dur-literal>`
+  #       parses but matches ZERO rows (verified for >,>=,< against a computed OR literal duration).
+  #       Temporal filtering must be done on DATETIME values (datetime comparisons filter correctly).
+  #   (c) A variable assigned ONLY inside `or`-branches is NOT bound at `return`. Keep $score top-level.
+  #   So: consume $now via a datetime comparison (last-access must not be in the future) and return
+  #   the static activation component; recency decay is layered on host-side.
+  fun retrieval-score($m: memory-item, $now: datetime) -> double @doc("The static activation component of a memory item's recall score (base-activation + salience); continuous half-life recency decay is applied host-side."):
+      match
+          $m has base-activation $ba, has salience $s, has last-access $la;
+          $la <= $now;                                 # datetime comparison (filters correctly); consumes $now
+          let $score = $ba + $s;                       # top-level binding, visible to `return`
+      return first $score;
+
+  # 6 — contradicts($b1,$b2) -> bool
+  fun contradicts($b1: belief, $b2: belief) -> boolean @doc("True if two distinct beliefs are both claims of the same contradiction."):
+      match
+          $c isa contradiction, links (claim: $b1, claim: $b2);
+          not { $b1 is $b2; };
+      return check;
+
+  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation U population-member->scoped)
+  #   Param is okf-concept (not memory-item) so a population member — a `concept`,
+  #   sibling of memory-item under okf-concept — type-checks as the retractee; the
+  #   population branch then sweeps the cohort beliefs scoped to that member's population.
+  #   Only open membership rows count, matching population-members; blast-radius-at
+  #   answers for a past membership window.
+  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions, derivation sources, and open population-member cohort edges (a retracted current member sweeps the beliefs scoped to its population)."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              not { $pm has valid-to $vt; };
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   not { $pm2 has valid-to $vt2; };
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              let $m in blast-radius($mid);
+          };
+      return { $m };
+
+  # visible-to($n,$agent) -> bool  (the scope rule shared by gate and as-of recall)
+  #   A belief is visible to $agent iff:
+  #     • visibility "team" or "shared" ⇒ visible regardless of owner;
+  #     • visibility "private" (or absent — the restrictive default) ⇒ $agent must own it.
+  #   Visibility lives on the `ownership` relation (`ownership owns visibility`), so the
+  #   scope test joins through ownership, never the belief entity. The two branches are a
+  #   disjunction: a private belief owned by a DIFFERENT agent satisfies neither and is
+  #   not visible; a team/shared belief satisfies the first branch for ANY agent.
+  fun visible-to($n: belief, $agent: agent) -> boolean @doc("True iff belief $n is in $agent's scope: its ownership visibility is team or shared, or $agent owns it."):
+      match
+          {
+              $own isa ownership, links (owned: $n);
+              $own has visibility $vis;
+              { $vis == "team"; } or { $vis == "shared"; };
+          } or {
+              $own2 isa ownership, links (owned: $n, owner: $agent);
+          };
+      return check;
+
+  # 5 — gate($n,$agent,$now) -> bool  (composes is-superseded + validity + visible-to)
+  #   A belief passes gate iff it is (a) NOT superseded, (b) within its validity window
+  #   (valid-from <= now, and valid-to absent or > now), AND (c) visible-to $agent.
+  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean @doc("Access predicate for a belief: true iff it is asserted, not superseded, within its validity window at $now, and visible to $agent (team/shared, or private and owned by $agent)."):
+      match
+          $n isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $now;
+          not { true == is-superseded($n); };
+          not { $n has valid-to $vt; $vt <= $now; };
+          true == visible-to($n, $agent);
+      return check;
+
+  # 8 — select-for-context($agent,$now) -> {belief, double}  (tuple stream)
+  fun select-for-context($agent: agent, $now: datetime) -> { belief, double } @doc("Returns each belief visible to $agent at $now paired with its retrieval score; the gated, scored candidate set for context assembly."):
+      match
+          $b isa belief;
+          true == gate($b, $agent, $now);
+          let $score in retrieval-score($b, $now);
+      return { $b, $score };
+
+  # ── Retrieval-provenance function (A2.10) ─────────────────────────
+  # walks informs-synthesis; MUST NOT be reachable from derivation-chain
+  fun retrieval-provenance-of($b: belief) -> { retrieval-event } @doc("The retrieval events that informed the synthesis of belief $b; walks informs-synthesis and never crosses into the logical derivation chain."):
+      match
+          $r isa retrieval-event;                      # narrow: `retrieval` role is played by execution-episode
+          (retrieval: $r, synthesized: $b) isa informs-synthesis;
+      return { $r };
+
+  # ── Population & resolution functions (A2.9) ──────────────────────
+  # reads the materialized population-member view.
+  #   NOTE: sketch signature was ($pop,$now) but 3.12 rejects unused params ([FRP1]); the
+  #   materialized read does not consume time. The STRICT variant (re-evaluate the stored
+  #   spec-text for a named entity-set) is executed host-side (the spec-text is a runnable
+  #   match clause — validated below), so it does not need a persisted $now-taking function.
+  #   Closed rows (a valid-to is set) are past epochs kept for as-of reads; the
+  #   present-state view excludes them.
+  fun population-members($pop: population) -> { concept } @doc("Reads the materialized membership of a population — the concepts its spec currently evaluates to, excluding closed membership windows; the strict re-evaluation of spec-text runs host-side."):
+      match
+          $pm isa population-member, links (owning-population: $pop, member: $m);
+          not { $pm has valid-to $vt; };
+      return { $m };
+
+  # transitive closure over PROVABLE resolution beliefs; MUST NOT collapse probabilistic
+  #   PROVABLE-ness lives on the resolution belief's `derivation` relation (derivation-method),
+  #   NOT on the belief itself — join through derivation to read the method.
+  fun canonical-entity($rec: concept) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec, following only provable (type-join/cardinality/functional-dependency) resolution beliefs."):
+      match
+          {
+              $res isa resolution, has belief-state "asserted";
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has belief-state "asserted";
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity($mid);
+          };
+      return { $other };
+
+  # ── As-of-t population & identity variants (read off validity windows) ──────
+  #   The present-state population-members/canonical-entity above stay as the fast
+  #   path; these $t-taking variants answer as-of-t by gating on the membership /
+  #   resolution validity WINDOW (valid-from/valid-to), never on belief-state — which
+  #   mutates on supersession. (believed-at does read belief-state, so it is not an
+  #   as-of read of superseded beliefs.)
+  fun population-members-at($pop: population, $t: datetime) -> { concept } @doc("The members of a population as of time $t, read from the windowed materialized membership (valid-from <= $t and no valid-to on or before $t)."):
+      match
+          $pm isa population-member, links (owning-population: $pop, member: $m);
+          $pm has valid-from $vf; $vf <= $t;
+          not { $pm has valid-to $vt; $vt <= $t; };
+      return { $m };
+
+  #   blast-radius as of $t: the rests-on and derivation branches are unchanged, and the
+  #   population-member cohort branch follows only a membership row whose window
+  #   contains $t, so a member that had left the cohort by $t no longer sweeps it.
+  fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r as of time $t — like blast-radius, but the population-member cohort edge is followed only while the membership window contains $t."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              $pm has valid-from $vf; $vf <= $t;
+              not { $pm has valid-to $vt; $vt <= $t; };
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   $pm2 has valid-from $vf2; $vf2 <= $t;
+                   not { $pm2 has valid-to $vt2; $vt2 <= $t; };
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              let $m in blast-radius-at($mid, $t);
+          };
+      return { $m };
+
+  fun canonical-entity-at($rec: concept, $t: datetime) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec as of time $t, following provable resolution beliefs whose validity window contains $t."):
+      match
+          {
+              $res isa resolution, has valid-from $vf; $vf <= $t;
+              not { $res has valid-to $vt; $vt <= $t; };
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has valid-from $vf2; $vf2 <= $t;
+              not { $res2 has valid-to $vt2; $vt2 <= $t; };
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity-at($mid, $t);
+          };
+      return { $other };

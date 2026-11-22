@@ -1834,7 +1834,8 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
         r#"insert
              $pa isa population, has spec-hash "comp/pop/A";
              $ca1 isa concept, has concept-id "comp/a/c1";
-             $ba isa belief, has concept-id "comp/a/B", has belief-state "asserted";
+             $ba isa belief, has concept-id "comp/a/B", has belief-state "asserted",
+                 has valid-from 2026-07-11T00:00:00;
              scoped (scoped-belief: $ba, population: $pa);
              population-member (owning-population: $pa, member: $ca1);"#,
     )
@@ -1856,7 +1857,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
 
     // (b) T5 fix from the SHIPPED window + as-of-t fn: believed-at(t0) and
     //     population-members-at(Pb, t0) agree. Belief Bb scoped to Pb valid-from t0
-    //     (the ONLY belief with a valid-from, so believed-at(t0) = {Bb}); member Cb1
+    //     (the only belief valid by t0, so believed-at(t0) = {Bb}); member Cb1
     //     from t0, Cb2 from today.
     insert(
         &db,

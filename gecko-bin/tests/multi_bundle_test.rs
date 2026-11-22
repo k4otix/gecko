@@ -821,3 +821,30 @@ async fn a_changed_type_hint_on_a_shared_concept_is_refused() {
         .await
         .expect("beta's next sync still succeeds");
 }
+
+#[tokio::test]
+async fn garbage_collecting_a_cross_bundle_link_target_commits() {
+    let (db, alpha, beta) = setup("gecko_test_mb_gc_cross_link").await;
+    sync_dir(&db, alpha.path()).await.expect("sync alpha");
+    sync_dir(&db, beta.path()).await.expect("sync beta");
+    // Relations from beta's concepts to an alpha concept, as an extension or an
+    // earlier sync may have written them.
+    raw_write(
+        &db,
+        r#"match $a isa concept, has concept-id "notes/a1";
+                 $b1 isa concept, has concept-id "notes/b1";
+                 $b2 isa concept, has concept-id "notes/b2";
+           insert (source: $b1, target: $a) isa concept-link;
+                  (parent: $b2, child: $a) isa hierarchy;"#,
+    )
+    .await;
+
+    fs::remove_file(alpha.path().join("notes/a1.md")).unwrap();
+    let r = sync_dir(&db, alpha.path())
+        .await
+        .expect("garbage-collecting a cross-bundle link target commits");
+    assert_eq!(r.concepts_deleted, 1);
+    assert_eq!(links(&db).await, pair_set([("notes/b1", "notes/b2")]));
+    assert_eq!(hierarchy(&db).await, pair_set([("tables", "tables/x")]));
+    assert!(concept_ids(&db).await.contains("notes/b1"));
+}

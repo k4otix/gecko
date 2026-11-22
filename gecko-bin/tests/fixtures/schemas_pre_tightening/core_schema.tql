@@ -1,0 +1,86 @@
+define
+
+  # ── Attribute types ──────────────────────────────────────────
+  attribute concept-id value string;       # path-based, e.g. "tables/orders"
+  attribute bundle-path value string;      # filesystem path to bundle root
+  attribute bundle-name value string;      # name of the bundle
+  attribute concept-type value string;     # OKF 'type' field (free-form)
+  attribute title value string;
+  attribute description value string;
+  attribute resource-uri value string;     # OKF 'resource' field
+  attribute tag value string;              # multi-valued per concept
+  attribute timestamp value datetime;
+  attribute body value string;             # full markdown body
+  attribute code-block value string;       # extracted fenced code blocks
+  attribute metadata-json value string;    # JSON blob for extension frontmatter keys
+  attribute link-text value string;        # display text of a markdown link
+  attribute target-url value string;       # citation target (absolute URL)
+  attribute synced-at value datetime;      # last sync timestamp
+  attribute file-hash value string;        # content hash for change detection
+  attribute retired-at @doc("When a sync retired this concept: its file left the bundle while a belief edge still referenced it."), value datetime;
+
+  # ── Abstract base types (design §4.1) ───────────────────────
+  # Extensions inherit from these via `sub` to add domain-specific types.
+  entity okf-concept @abstract @doc("Abstract base for every ingested OKF concept; carries the path-based concept-id key inherited by all concept subtypes."),
+    owns concept-id @key,
+    owns title @card(0..1),
+    owns timestamp @card(0..1);
+
+  relation okf-link @abstract @doc("Abstract base for a directed link between two OKF concepts."),
+    relates source @doc("The concept the link originates from."),
+    relates target @doc("The concept the link points to.");
+
+  # ── Relation types ───────────────────────────────────────────
+  relation containment @doc("Groups the concepts of a bundle under the bundle that owns them."),
+    relates container @doc("The bundle that contains the members."),
+    relates member @doc("A concept belonging to the containing bundle.");
+
+  relation hierarchy @doc("Structural parent/child nesting between two concepts."),
+    relates parent @doc("The enclosing concept."),
+    relates child @doc("The nested concept.");
+
+  relation concept-link sub okf-link @doc("A concept-to-concept reference (a markdown link between documents), with optional display text."),
+    owns link-text @card(0..1);
+
+  relation citation sub okf-link @doc("A concept's citation of an external resource, resolved from a markdown link to an absolute URL."),
+    relates citing-concept as source @doc("The concept making the citation."),
+    relates cited-resource as target @doc("The external resource being cited."),
+    owns link-text @card(0..1);
+
+  # ── Concrete operational types ──────────────────────────────
+  # Several bundles may share a database; each is keyed on its declared name
+  # (from bundle.json). bundle-path is machine-local provenance, not identity.
+  entity bundle @doc("An OKF documentation bundle synced into this database, keyed by its declared name and containing its concepts; several bundles may share a database, and bundle-path is machine-local provenance, not identity."),
+    owns bundle-name @key,
+    owns bundle-path @card(0..1),
+    owns title @card(0..1),
+    owns description @card(0..1),
+    owns synced-at @card(0..1),
+    plays containment:container;
+
+  attribute engine value string;           # execution engine for code-blocks
+  attribute scope value string;            # granted host-capability scope, e.g. "cyber-gecko:isolate"
+
+  entity concept sub okf-concept @doc("An ingested OKF document node: its markdown body, extracted code blocks, tags, and the engine and host-capability scopes that gate code-block execution."),
+    owns concept-type @card(0..1),
+    owns description @card(0..1),
+    owns resource-uri @card(0..1),
+    owns tag @card(0..),
+    owns body @card(0..1),
+    owns code-block @card(0..),
+    owns engine @card(0..1),
+    owns scope @card(0..),
+    owns metadata-json @card(0..1),
+    owns synced-at @card(0..1),
+    owns file-hash @card(0..1),
+    owns retired-at @card(0..1),
+    plays containment:member,
+    plays hierarchy:parent,
+    plays hierarchy:child,
+    plays okf-link:source,
+    plays okf-link:target,
+    plays citation:citing-concept;
+
+  entity external-resource @doc("An external citation target addressed by absolute URL; the cited endpoint of a citation."),
+    owns target-url @key,
+    plays citation:cited-resource;

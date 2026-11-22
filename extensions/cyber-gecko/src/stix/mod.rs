@@ -596,10 +596,7 @@ const ANALYTIC_REQUIREMENT: RelShape = RelShape {
 /// Every `(relation, role, players)` the adapter links, for checking the player
 /// lists against the schema's `plays` declarations.
 pub fn typed_relation_players() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
-    REL_SHAPES
-        .iter()
-        .map(|(_, s)| s)
-        .chain([&STRATEGY_ANALYTIC, &ANALYTIC_REQUIREMENT])
+    typed_shapes()
         .flat_map(|s| {
             [
                 (s.relation, s.source_role, s.source_players),
@@ -607,6 +604,14 @@ pub fn typed_relation_players() -> Vec<(&'static str, &'static str, &'static [&'
             ]
         })
         .collect()
+}
+
+/// The shape of every relation the adapter links, one per relation.
+fn typed_shapes() -> impl Iterator<Item = &'static RelShape> {
+    REL_SHAPES
+        .iter()
+        .map(|(_, s)| s)
+        .chain([&STRATEGY_ANALYTIC, &ANALYTIC_REQUIREMENT])
 }
 
 /// Resolves a STIX/ATT&CK relationship type to its relation shape.
@@ -629,12 +634,13 @@ fn shape_of(rel_type: &str) -> Option<RelShape> {
 
 /// Builds the writes that link the relations collected by [`to_okf`].
 ///
+/// - **First**, every typed relation left without a player by a concept the sync
+///   deleted is deleted ([`orphan_sweep`]).
 /// - **SROs** other than `detects` become one idempotent relation each, inserted
 ///   under a `not { … }` guard. Relations with an unknown `rel_type` are skipped.
 /// - **Strategy detects, strategy analytics and analytic requirements** are
 ///   replaced: their writes delete every such relation on a strategy or analytic
-///   in the bundle, then every such relation left without a player by a deleted
-///   concept, and then insert the current set.
+///   in the bundle, and then insert the current set.
 ///
 /// The concept IDs are untrusted STIX references and travel as parameterized rows,
 /// as do the log-source names, keys and channels; only fixed schema labels — the
@@ -659,7 +665,7 @@ pub fn cyber_post_sync(rels: &StixRelations) -> Vec<GraphWrite> {
             .insert((rel.source.as_str(), rel.target.as_str()));
     }
 
-    let mut writes: Vec<GraphWrite> = by_shape
+    let mut inserts: Vec<GraphWrite> = by_shape
         .into_iter()
         .map(
             |((shape, source_type, target_type), pairs)| {
@@ -694,9 +700,33 @@ pub fn cyber_post_sync(rels: &StixRelations) -> Vec<GraphWrite> {
         )
         .collect();
     // Deterministic order regardless of hash-map iteration.
-    writes.sort_by(|a, b| a.query.cmp(&b.query));
+    inserts.sort_by(|a, b| a.query.cmp(&b.query));
+    let mut writes = orphan_sweep();
+    writes.extend(inserts);
     writes.extend(replacement_writes(rels));
     writes
+}
+
+/// The `observed-as` roles, which the schema requires but no adapter writes; its
+/// players are STIX concepts, so a re-import can still leave one without a player.
+const OBSERVED_AS: (&str, [&str; 2]) = ("observed-as", ["pattern-indicator", "observable-value"]);
+
+/// One delete per typed relation (every relation in [`typed_relation_players`], and
+/// `observed-as`) of the rows left without a player for either role. A re-import
+/// deletes the concepts it dropped, and only the core relations go with them, so a
+/// typed relation they played would otherwise fail its required roles at commit.
+fn orphan_sweep() -> Vec<GraphWrite> {
+    typed_shapes()
+        .map(|s| (s.relation, [s.source_role, s.target_role]))
+        .chain([OBSERVED_AS])
+        .map(|(relation, [a, b])| {
+            GraphWrite::plain(format!(
+                "match $r isa {relation}; \
+                       {{ not {{ $r links ({a}: $p0); }}; }} or {{ not {{ $r links ({b}: $p1); }}; }}; \
+                 delete $r;"
+            ))
+        })
+        .collect()
 }
 
 /// One row per value, for a single-variable write.
@@ -760,14 +790,6 @@ fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
             rows: id_rows(scope.iter().copied()),
             expect_rows: None,
         },
-        GraphWrite::plain(
-            "match { $r isa analytic-requirement; not { $r links (analytic: $a1); }; } or \
-                   { $r isa strategy-analytic; not { $r links (analytic: $a2); }; } or \
-                   { $r isa strategy-analytic; not { $r links (strategy: $s3); }; } or \
-                   { $r isa strategy-detects; not { $r links (strategy: $s4); }; } or \
-                   { $r isa strategy-detects; not { $r links (technique: $t5); }; }; \
-             delete $r;",
-        ),
         GraphWrite {
             query: "given $s: string, $t: string; \
                     match $st isa detection-strategy, has concept-id $sid; $sid == $s; \
@@ -904,6 +926,37 @@ mod tests {
         assert_eq!(uses.rows.len(), 2);
         assert_eq!(uses.expect_rows, None);
         assert!(writes.iter().all(|w| !w.query.contains("frobnicates")));
+    }
+
+    #[test]
+    fn the_orphan_sweep_covers_every_typed_relation_before_any_insert() {
+        let rels = StixRelations {
+            typed: vec![rel("a1", "b1", "malware", "attack-pattern", "uses")],
+            ..StixRelations::default()
+        };
+        let writes = cyber_post_sync(&rels);
+        let mut relations: Vec<&str> = typed_relation_players()
+            .into_iter()
+            .map(|(relation, _, _)| relation)
+            .chain(["observed-as"])
+            .collect();
+        relations.dedup();
+        let sweep = &writes[..relations.len()];
+        for (relation, w) in relations.iter().zip(sweep) {
+            assert!(
+                w.query.starts_with(&format!("match $r isa {relation};"))
+                    && w.query.contains("not { $r links (")
+                    && w.vars.is_empty(),
+                "{relation}: {}",
+                w.query
+            );
+        }
+        assert!(
+            writes[relations.len()..]
+                .iter()
+                .all(|w| !w.query.starts_with("match $r isa")),
+            "a sweep runs after an insert"
+        );
     }
 
     #[test]
@@ -1206,14 +1259,14 @@ mod tests {
                 .position(|w| w.query.contains(needle))
                 .unwrap_or_else(|| panic!("no op contains {needle:?}"))
         };
-        let scoped_delete = position("delete $r");
         let orphan_delete = position("not { $r links (analytic:");
+        let scoped_delete = position("given $id: string");
         let requirement_insert = position("has log-source-key == $key, has log-source-channel");
         let channel_insert = position("insert $r has log-source-channel");
         let strategy_insert = position("insert $r isa strategy-analytic");
         let detects_insert = position("insert $r isa strategy-detects");
-        assert!(scoped_delete < orphan_delete);
-        assert!(orphan_delete < requirement_insert.min(strategy_insert).min(detects_insert));
+        assert!(orphan_delete < scoped_delete);
+        assert!(scoped_delete < requirement_insert.min(strategy_insert).min(detects_insert));
         assert!(requirement_insert < channel_insert);
         assert_eq!(writes[requirement_insert].rows.len(), 1);
         assert_eq!(writes[requirement_insert].rows[0].len(), 5);

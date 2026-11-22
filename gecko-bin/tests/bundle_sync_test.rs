@@ -607,6 +607,9 @@ async fn a_retired_concept_no_longer_referenced_is_deleted() {
     let tx = db.begin_write().await.expect("Failed to begin write");
     for q in [
         "match $l isa source-link; delete $l;",
+        r#"match $b isa belief, has concept-id "mem/bel/ref";
+                 $o isa ownership, links (owned: $b);
+           delete $o;"#,
         r#"match $b isa belief, has concept-id "mem/bel/ref"; delete $b;"#,
     ] {
         tx.query(q).await.expect("raw delete");
@@ -978,4 +981,256 @@ async fn a_document_citing_the_same_url_twice_gets_one_citation() {
         .expect("sync");
     assert_eq!(r.citations_attempted, 1);
     assert_eq!(count(&mut db, "match $c isa citation;").await, 1);
+}
+
+#[tokio::test]
+async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays() {
+    let test_db = TestDb::new("gecko_test_gc_every_relation");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    #[cfg(feature = "cyber")]
+    db.apply_schema(CyberGecko::new().schema())
+        .await
+        .expect("Failed to apply cyber schema");
+    let dir = TempDir::new().unwrap();
+    write_concepts(dir.path(), &[("a", "Member."), ("b", "Kept.")]);
+    let full = parse_bundle(dir.path()).expect("parse");
+    #[cfg(feature = "cyber")]
+    let full = {
+        let mut full = full;
+        for c in full
+            .concepts
+            .iter_mut()
+            .filter(|c| c.concept_id == "notes/a")
+        {
+            c.type_hint = Some("intrusion-set".to_string());
+        }
+        full
+    };
+    sync_bundle(&mut db, &full, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync both concepts");
+    let tx = db.begin_write().await.expect("write tx");
+    tx.query(
+        r#"match $a isa concept, has concept-id "notes/a";
+                 $b isa concept, has concept-id "notes/b";
+           insert $p isa population, has spec-hash "pop-gc";
+                  (owning-population: $p, member: $a) isa population-member;
+                  (owning-population: $p, member: $b) isa population-member;"#,
+    )
+    .await
+    .expect("insert the memberships");
+    // A STIX `uses` whose user is the plain bundle's concept and whose used
+    // malware no bundle contains.
+    #[cfg(feature = "cyber")]
+    tx.query(
+        r#"match $a isa intrusion-set, has concept-id "notes/a";
+           insert $m isa malware, has concept-id "elsewhere/m";
+                  (user: $a, used: $m) isa uses;"#,
+    )
+    .await
+    .expect("insert the cross-bundle uses");
+    tx.commit().await.expect("commit the extension relations");
+
+    let mut dropped = full.clone();
+    dropped.concepts.retain(|c| c.concept_id != "notes/a");
+    let r = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("garbage-collecting a concept that plays extension relations commits");
+    assert_eq!(r.concepts_deleted, 1);
+    assert_eq!(
+        count(&mut db, "match $m isa population-member;").await,
+        1,
+        "only the kept concept's membership is left"
+    );
+    assert_eq!(
+        count(
+            &mut db,
+            r#"match $c isa concept, has concept-id "notes/b";
+                     $m isa population-member, links (member: $c);"#
+        )
+        .await,
+        1,
+        "the kept concept's membership survives"
+    );
+    #[cfg(feature = "cyber")]
+    {
+        assert_eq!(
+            count(&mut db, "match $u isa uses;").await,
+            0,
+            "no one-player uses remains"
+        );
+        assert_eq!(
+            count(
+                &mut db,
+                r#"match $m isa malware, has concept-id "elsewhere/m";"#
+            )
+            .await,
+            1,
+            "the other player is kept"
+        );
+    }
+}
+
+/// Seeds a bundle, two concepts and an external resource, then asserts that
+/// `insert` (matching `$b`, `$c`, `$d` and `$e`) commits nothing: the commit is
+/// refused naming one of `roles`. A citation's specialized role and the `okf-link`
+/// role it specializes are both required, and either may be reported.
+async fn assert_core_relation_refused(prefix: &str, insert: &str, roles: &[&str]) {
+    let test_db = TestDb::new(prefix);
+    let mut db = test_db.router();
+    apply_core(&mut db, false).await;
+    let tx = db.begin_write().await.expect("write tx");
+    tx.query(
+        "insert $b isa bundle, has bundle-name 'req-b'; \
+         $c isa concept, has concept-id 'req/c'; \
+         $d isa concept, has concept-id 'req/d'; \
+         $e isa external-resource, has target-url 'https://example.com/req';",
+    )
+    .await
+    .expect("seed the players");
+    tx.commit().await.expect("commit the players");
+
+    let tx = db.begin_write().await.expect("write tx");
+    tx.query(&format!(
+        "match $b isa bundle, has bundle-name 'req-b'; \
+               $c isa concept, has concept-id 'req/c'; \
+               $d isa concept, has concept-id 'req/d'; \
+               $e isa external-resource, has target-url 'https://example.com/req'; \
+         insert {insert}"
+    ))
+    .await
+    .expect("the insert itself is accepted; the card is checked at commit");
+    let err = tx
+        .commit()
+        .await
+        .expect_err("a relation missing a required role commits");
+    let msg = err.to_string();
+    assert!(
+        roles
+            .iter()
+            .any(|role| msg.contains(&format!("role type '{role}'"))),
+        "unexpected error: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn a_concept_link_missing_its_target_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_link_no_target",
+        "(source: $c) isa concept-link;",
+        &["okf-link:target"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_concept_link_missing_its_source_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_link_no_source",
+        "(target: $d) isa concept-link;",
+        &["okf-link:source"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_citation_missing_its_cited_resource_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_citation_no_resource",
+        "(citing-concept: $c) isa citation;",
+        &["citation:cited-resource", "okf-link:target"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_citation_missing_its_citing_concept_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_citation_no_concept",
+        "(cited-resource: $e) isa citation;",
+        &["citation:citing-concept", "okf-link:source"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_containment_missing_its_member_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_containment_no_member",
+        "(container: $b) isa containment;",
+        &["containment:member"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_containment_missing_its_container_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_containment_no_container",
+        "(member: $c) isa containment;",
+        &["containment:container"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_hierarchy_missing_its_child_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_hierarchy_no_child",
+        "(parent: $c) isa hierarchy;",
+        &["hierarchy:child"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_hierarchy_missing_its_parent_is_refused_at_commit() {
+    assert_core_relation_refused(
+        "gecko_test_hierarchy_no_parent",
+        "(child: $d) isa hierarchy;",
+        &["hierarchy:parent"],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn garbage_collecting_a_linked_concept_commits() {
+    let test_db = TestDb::new("gecko_test_gc_linked_concept");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concepts(
+        dir.path(),
+        &[
+            ("a", "See [b](b.md) and [x](https://example.com/gc)."),
+            ("b", "Linked."),
+        ],
+    );
+    let full = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &full, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync both concepts");
+    assert_eq!(count(&mut db, "match $l isa concept-link;").await, 1);
+    assert_eq!(count(&mut db, "match $c isa citation;").await, 1);
+
+    // Dropping the link's target deletes the link with it.
+    let mut no_target = full.clone();
+    no_target.concepts.retain(|c| c.concept_id != "notes/b");
+    let r = sync_bundle(&mut db, &no_target, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("garbage-collecting a link target commits");
+    assert_eq!(r.concepts_deleted, 1);
+    assert_eq!(count(&mut db, "match $l isa concept-link;").await, 0);
+
+    // Dropping the linking concept deletes its citation; the resource stays.
+    let mut empty = no_target.clone();
+    empty.concepts.retain(|c| c.concept_id != "notes/a");
+    let r = sync_bundle(&mut db, &empty, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("garbage-collecting a citing concept commits");
+    assert_eq!(r.concepts_deleted, 1);
+    assert_eq!(count(&mut db, "match $c isa citation;").await, 0);
+    assert_eq!(count(&mut db, "match $c isa containment;").await, 0);
+    assert_eq!(count(&mut db, "match $e isa external-resource;").await, 1);
 }

@@ -328,6 +328,11 @@ impl EpistemicWriter for MemWriter {
     }
 
     async fn record_prediction(&self, _ctx: &RunContext, b: MemId, p: f64) -> Result<()> {
+        if !(0.0..=1.0).contains(&p) {
+            return Err(EpistemicError::InvalidInput(format!(
+                "predicted probability must be a number in [0.0, 1.0], got {p}"
+            )));
+        }
         self.graph
             .write(&[tql::record_prediction_op(&b, p)])
             .await

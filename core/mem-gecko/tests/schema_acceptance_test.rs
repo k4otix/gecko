@@ -544,7 +544,9 @@ async fn a_memory_item_with_two_ownerships_is_refused_at_commit() {
         insert
           $ag isa agent, has agent-id "agent-1";
           $run isa doc-run, has run-id "run-1";
-          $b isa belief, has concept-id "mem/bel/two-owners", has belief-state "asserted";
+          $b isa belief, has concept-id "mem/bel/two-owners", has belief-state "asserted",
+              has valid-from 2026-01-01T00:00:00, has salience 0.5,
+              has base-activation 1.0, has last-access 2026-01-01T00:00:00;
           (memory: $b, origin: $run) isa source-link, has origin-kind "test";
           (owned: $b, owner: $ag) isa ownership, has visibility "private";
           (owned: $b, owner: $ag) isa ownership, has visibility "team";
@@ -569,7 +571,9 @@ async fn a_memory_item_with_no_source_link_is_refused_at_commit() {
         r#"
         insert
           $ag isa agent, has agent-id "agent-1";
-          $b isa belief, has concept-id "mem/bel/unsourced", has belief-state "asserted";
+          $b isa belief, has concept-id "mem/bel/unsourced", has belief-state "asserted",
+              has valid-from 2026-01-01T00:00:00, has salience 0.5,
+              has base-activation 1.0, has last-access 2026-01-01T00:00:00;
           (owned: $b, owner: $ag) isa ownership, has visibility "private";
         "#,
     )
@@ -581,4 +585,611 @@ async fn a_memory_item_with_no_source_link_is_refused_at_commit() {
     );
 
     drop_db(router, &name).await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Acceptance: every required role of a mem relation is enforced at commit. Each
+// case inserts the relation with all its players (a control that commits), then
+// again with one required role omitted, and expects the commit to fail naming it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The players every role case draws on, inserted once per database.
+const ROLE_PLAYERS: &str = r#"
+insert
+  $b1 isa belief, has concept-id "mem/bel/p1", has belief-state "asserted";
+  $b2 isa belief, has concept-id "mem/bel/p2", has belief-state "asserted";
+  $ep isa episode, has concept-id "mem/ep/p",
+      has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
+  $an isa anomaly, has concept-id "mem/an/p";
+  $res isa resolution, has concept-id "mem/res/p", has belief-state "asserted";
+  $de isa divergence-exception, has concept-id "mem/de/p", has belief-state "asserted";
+  $re isa retrieval-event, has concept-id "mem/re/p",
+      has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
+  $ag isa agent, has agent-id "agent-p";
+  $run isa doc-run, has run-id "run-p";
+  $pop isa population, has spec-hash "pop-p";
+  $c1 isa concept, has concept-id "c/p1";
+  $c2 isa concept, has concept-id "c/p2";
+"#;
+
+/// Binds each of [`ROLE_PLAYERS`] to the variable it was inserted under.
+const MATCH_PLAYERS: &str = r#"
+match
+  $b1 isa belief, has concept-id "mem/bel/p1";
+  $b2 isa belief, has concept-id "mem/bel/p2";
+  $ep isa episode, has concept-id "mem/ep/p";
+  $an isa anomaly, has concept-id "mem/an/p";
+  $res isa resolution, has concept-id "mem/res/p";
+  $de isa divergence-exception, has concept-id "mem/de/p";
+  $re isa retrieval-event, has concept-id "mem/re/p";
+  $ag isa agent, has agent-id "agent-p";
+  $run isa doc-run, has run-id "run-p";
+  $pop isa population, has spec-hash "pop-p";
+  $c1 isa concept, has concept-id "c/p1";
+  $c2 isa concept, has concept-id "c/p2";
+"#;
+
+/// One mem relation: its required roles, its other players, the attributes it
+/// must own, and a memory item it inserts fresh (`$f`) when a role needs one.
+struct RoleCase {
+    relation: &'static str,
+    required: &'static [(&'static str, &'static str)],
+    others: &'static [(&'static str, &'static str)],
+    attrs: &'static str,
+    fresh: bool,
+}
+
+const fn case(
+    relation: &'static str,
+    required: &'static [(&'static str, &'static str)],
+    others: &'static [(&'static str, &'static str)],
+    attrs: &'static str,
+) -> RoleCase {
+    RoleCase {
+        relation,
+        required,
+        others,
+        attrs,
+        fresh: false,
+    }
+}
+
+const DERIVATION: RoleCase = case(
+    "derivation",
+    &[("derived", "$b1")],
+    &[("source", "$ep")],
+    r#", has derivation-method "type-join""#,
+);
+const EVIDENCE: RoleCase = case(
+    "evidence",
+    &[("evidenced", "$b1")],
+    &[("evidence-item", "$ep")],
+    "",
+);
+const JUSTIFICATION: RoleCase = case(
+    "justification",
+    &[("consequent", "$b1")],
+    &[("antecedent", "$b2")],
+    "",
+);
+const SUPPORT: RoleCase = case(
+    "support",
+    &[("supporter", "$b1"), ("supported", "$b2")],
+    &[],
+    "",
+);
+const ATTACK: RoleCase = case(
+    "attack",
+    &[("attacker", "$b1"), ("attacked", "$b2")],
+    &[],
+    "",
+);
+const CONTRADICTION: RoleCase = case(
+    "contradiction",
+    &[("hub", "$an")],
+    &[("claim", "$b1"), ("claim", "$b2")],
+    "",
+);
+const SUPERSESSION: RoleCase = case(
+    "supersession",
+    &[("superseded", "$b1"), ("superseding", "$b2")],
+    &[],
+    ", has created-at 2026-01-02T00:00:00",
+);
+const SOURCE_LINK: RoleCase = RoleCase {
+    fresh: true,
+    ..case(
+        "source-link",
+        &[("memory", "$f")],
+        &[("origin", "$run")],
+        r#", has origin-kind "test""#,
+    )
+};
+const OWNERSHIP: RoleCase = RoleCase {
+    fresh: true,
+    ..case(
+        "ownership",
+        &[("owned", "$f")],
+        &[("owner", "$ag")],
+        r#", has visibility "private""#,
+    )
+};
+const RESTS_ON: RoleCase = case(
+    "rests-on",
+    &[("resting", "$b1")],
+    &[("assumption", "$b2")],
+    "",
+);
+const EXECUTION: RoleCase = case(
+    "execution",
+    &[("run", "$run"), ("episode-step", "$ep")],
+    &[],
+    "",
+);
+const CONSOLIDATION_STEP: RoleCase = case(
+    "consolidation-step",
+    &[("affected", "$b1"), ("run", "$run"), ("performer", "$ag")],
+    &[],
+    r#", has consolidation-action "dedup", has created-at 2026-01-02T00:00:00"#,
+);
+const SCOPED: RoleCase = case(
+    "scoped",
+    &[("scoped-belief", "$b1"), ("population", "$pop")],
+    &[],
+    "",
+);
+const POPULATION_MEMBER: RoleCase = case(
+    "population-member",
+    &[("owning-population", "$pop"), ("member", "$c1")],
+    &[],
+    "",
+);
+const RESOLVES: RoleCase = case(
+    "resolves",
+    &[
+        ("resolution-belief", "$res"),
+        ("record-a", "$c1"),
+        ("record-b", "$c2"),
+    ],
+    &[],
+    "",
+);
+const SURFACED: RoleCase = case("surfaced", &[("surfacer", "$re"), ("item", "$b1")], &[], "");
+const INFORMS_SYNTHESIS: RoleCase = case(
+    "informs-synthesis",
+    &[("retrieval", "$re"), ("synthesized", "$b1")],
+    &[],
+    "",
+);
+const DIVERGENCE_PRECEDENCE: RoleCase = case(
+    "divergence-precedence",
+    &[("prevailing", "$b1"), ("overridden", "$b2")],
+    &[("exception-belief", "$de")],
+    "",
+);
+
+impl RoleCase {
+    /// The insert of this relation with every player except `omit`'s.
+    fn insert(&self, omit: Option<&str>) -> String {
+        let players: Vec<String> = self
+            .required
+            .iter()
+            .filter(|(role, _)| Some(*role) != omit)
+            .chain(self.others)
+            .map(|(role, var)| format!("{role}: {var}"))
+            .collect();
+        let fresh = if self.fresh {
+            let id = format!("mem/bel/fresh-{}-{}", self.relation, omit.unwrap_or("all"));
+            format!(r#"$f isa belief, has concept-id "{id}", has belief-state "asserted";"#)
+        } else {
+            String::new()
+        };
+        format!(
+            "{MATCH_PLAYERS} insert {fresh} $r isa {}, links ({}){};",
+            self.relation,
+            players.join(", "),
+            self.attrs
+        )
+    }
+}
+
+/// Seeds the players, commits `case` with every player, and asserts that the
+/// commit omitting `role` is refused with an error naming `relation:role`.
+async fn assert_missing_role_refused(case: &RoleCase, role: &str) {
+    assert!(
+        case.required.iter().any(|(r, _)| *r == role),
+        "{role} is not a required role of {}",
+        case.relation
+    );
+    let (mut router, name) = fresh_db().await;
+    write_seed(&mut router, ROLE_PLAYERS)
+        .await
+        .expect("insert the role players");
+    write_seed(&mut router, &case.insert(None))
+        .await
+        .unwrap_or_else(|e| panic!("a fully-played {} commits: {e}", case.relation));
+
+    let refused = write_seed(&mut router, &case.insert(Some(role))).await;
+    let err = refused.expect_err(&format!("a {} missing its {role} commits", case.relation));
+    let named = format!("role type '{}:{role}'", case.relation);
+    assert!(
+        err.contains(&named),
+        "the refusal does not name {named}: {err}"
+    );
+    drop_db(router, &name).await;
+}
+
+macro_rules! missing_role_refused {
+    ($($test:ident: $case:ident, $role:literal;)*) => {
+        $(
+            #[tokio::test]
+            async fn $test() {
+                assert_missing_role_refused(&$case, $role).await;
+            }
+        )*
+    };
+}
+
+missing_role_refused! {
+    a_derivation_missing_its_derived_is_refused_at_commit: DERIVATION, "derived";
+    a_evidence_missing_its_evidenced_is_refused_at_commit: EVIDENCE, "evidenced";
+    a_justification_missing_its_consequent_is_refused_at_commit: JUSTIFICATION, "consequent";
+    a_support_missing_its_supporter_is_refused_at_commit: SUPPORT, "supporter";
+    a_support_missing_its_supported_is_refused_at_commit: SUPPORT, "supported";
+    a_attack_missing_its_attacker_is_refused_at_commit: ATTACK, "attacker";
+    a_attack_missing_its_attacked_is_refused_at_commit: ATTACK, "attacked";
+    a_contradiction_missing_its_hub_is_refused_at_commit: CONTRADICTION, "hub";
+    a_supersession_missing_its_superseded_is_refused_at_commit: SUPERSESSION, "superseded";
+    a_supersession_missing_its_superseding_is_refused_at_commit: SUPERSESSION, "superseding";
+    a_source_link_missing_its_memory_is_refused_at_commit: SOURCE_LINK, "memory";
+    a_ownership_missing_its_owned_is_refused_at_commit: OWNERSHIP, "owned";
+    a_rests_on_missing_its_resting_is_refused_at_commit: RESTS_ON, "resting";
+    a_execution_missing_its_run_is_refused_at_commit: EXECUTION, "run";
+    a_execution_missing_its_episode_step_is_refused_at_commit: EXECUTION, "episode-step";
+    a_consolidation_step_missing_its_affected_is_refused_at_commit: CONSOLIDATION_STEP, "affected";
+    a_consolidation_step_missing_its_run_is_refused_at_commit: CONSOLIDATION_STEP, "run";
+    a_consolidation_step_missing_its_performer_is_refused_at_commit: CONSOLIDATION_STEP, "performer";
+    a_scoped_missing_its_scoped_belief_is_refused_at_commit: SCOPED, "scoped-belief";
+    a_scoped_missing_its_population_is_refused_at_commit: SCOPED, "population";
+    a_population_member_missing_its_owning_population_is_refused_at_commit: POPULATION_MEMBER, "owning-population";
+    a_population_member_missing_its_member_is_refused_at_commit: POPULATION_MEMBER, "member";
+    a_resolves_missing_its_resolution_belief_is_refused_at_commit: RESOLVES, "resolution-belief";
+    a_resolves_missing_its_record_a_is_refused_at_commit: RESOLVES, "record-a";
+    a_resolves_missing_its_record_b_is_refused_at_commit: RESOLVES, "record-b";
+    a_surfaced_missing_its_surfacer_is_refused_at_commit: SURFACED, "surfacer";
+    a_surfaced_missing_its_item_is_refused_at_commit: SURFACED, "item";
+    a_informs_synthesis_missing_its_retrieval_is_refused_at_commit: INFORMS_SYNTHESIS, "retrieval";
+    a_informs_synthesis_missing_its_synthesized_is_refused_at_commit: INFORMS_SYNTHESIS, "synthesized";
+    a_divergence_precedence_missing_its_prevailing_is_refused_at_commit: DIVERGENCE_PRECEDENCE, "prevailing";
+    a_divergence_precedence_missing_its_overridden_is_refused_at_commit: DIVERGENCE_PRECEDENCE, "overridden";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Acceptance: a database written under the schema before roles were required,
+// holding one-player rows, upgrades to the shipped schema. The upgrade deletes
+// the one-player rows and keeps the fully-played ones.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The core and mem schemas as released before mem's roles were required.
+const PRE_CORE: &str =
+    include_str!("../../../gecko-bin/tests/fixtures/schemas_pre_tightening/core_schema.tql");
+const PRE_MEM_TYPES: &str =
+    include_str!("../../../gecko-bin/tests/fixtures/schemas_pre_tightening/mem_types.tql");
+const PRE_MEM_FUNCTIONS: &str =
+    include_str!("../../../gecko-bin/tests/fixtures/schemas_pre_tightening/mem_functions.tql");
+
+/// The pre-change mem types and functions as one `define`, composed as mem-gecko
+/// composes its shipped schema.
+fn pre_mem_schema() -> String {
+    let functions = PRE_MEM_FUNCTIONS
+        .trim_start()
+        .strip_prefix("define")
+        .expect("the functions fragment starts with define");
+    format!("{}\n{functions}", PRE_MEM_TYPES.trim_end())
+}
+
+#[tokio::test]
+async fn a_database_holding_a_one_player_row_upgrades() {
+    let name = format!("memtest_{}", Ulid::generate().to_string().to_lowercase());
+    let mut router = TypeDbRouter::new(DbConfig {
+        address: "localhost:1729".to_string(),
+        database: name.clone(),
+        username: "admin".to_string(),
+        password: "password".to_string(),
+        tls: TlsMode::Disabled,
+    });
+    router
+        .apply_schema(PRE_CORE)
+        .await
+        .expect("pre-change core");
+    router
+        .apply_schema(&pre_mem_schema())
+        .await
+        .expect("pre-change mem");
+    write_seed(
+        &mut router,
+        r#"
+        insert
+          $b isa belief, has concept-id "mem/bel/up", has belief-state "asserted";
+          $ep isa episode, has concept-id "mem/ep/up",
+              has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
+          $p isa population, has spec-hash "pop-up";
+          $c isa concept, has concept-id "c/up";
+          (derived: $b, source: $ep) isa derivation, has derivation-method "type-join";
+          (source: $ep) isa derivation, has derivation-method "type-join";
+          (owning-population: $p, member: $c) isa population-member;
+          (owning-population: $p) isa population-member;
+        "#,
+    )
+    .await
+    .expect("the pre-change schema holds one-player rows");
+
+    let mem = MemGecko::new();
+    for _ in 0..2 {
+        router
+            .apply_schema_with_migrations(CORE_SCHEMA, gecko_engine::db::CORE_MIGRATIONS)
+            .await
+            .expect("core upgrades");
+        router
+            .apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+            .await
+            .expect("mem upgrades over one-player rows");
+    }
+
+    for (rel, full) in [
+        ("derivation", "links (derived: $x, source: $y)"),
+        (
+            "population-member",
+            "links (owning-population: $x, member: $y)",
+        ),
+    ] {
+        let all = fetch(
+            &mut router,
+            &format!(r#"match $r isa {rel}; fetch {{ "kind": "row" }};"#),
+        )
+        .await;
+        let played = fetch(
+            &mut router,
+            &format!(r#"match $r isa {rel}, {full}; fetch {{ "kind": "row" }};"#),
+        )
+        .await;
+        assert_eq!(all.len(), 1, "{rel}: only the fully-played row is left");
+        assert_eq!(played.len(), 1, "{rel}: the fully-played row survives");
+    }
+    drop_db(router, &name).await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Acceptance: a belief carries every field recall reads, and scores stay in
+// range. A missing field is refused at commit; an out-of-range value at write.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The fields recall reads on every belief, with a conforming value each.
+const BELIEF_FIELDS: [(&str, &str); 4] = [
+    ("valid-from", "2026-01-01T00:00:00"),
+    ("salience", "0.5"),
+    ("base-activation", "1.0"),
+    ("last-access", "2026-01-01T00:00:00"),
+];
+
+/// A raw belief `id` with its ownership and source-link, every field of
+/// [`BELIEF_FIELDS`] except `omit`, and the extra `has` clauses in `extra`.
+fn belief_insert(id: &str, omit: Option<&str>, extra: &str) -> String {
+    let fields: String = BELIEF_FIELDS
+        .iter()
+        .filter(|(attr, _)| Some(*attr) != omit)
+        .map(|(attr, value)| format!(", has {attr} {value}"))
+        .collect();
+    format!(
+        r#"insert
+          $ag isa agent, has agent-id "agent-{id}";
+          $run isa doc-run, has run-id "run-{id}";
+          $b isa belief, has concept-id "mem/bel/{id}", has belief-state "asserted"{fields}{extra};
+          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
+          (owned: $b, owner: $ag) isa ownership, has visibility "private";"#
+    )
+}
+
+/// Commits a belief with every field (the control), then asserts the commit of
+/// one without `attr` is refused with an error naming the attribute.
+async fn assert_belief_without_refused(attr: &str) {
+    let (mut router, name) = fresh_db().await;
+    write(&mut router, &belief_insert("full", None, ""))
+        .await
+        .expect("a belief with every field commits");
+    let err = write(&mut router, &belief_insert("partial", Some(attr), ""))
+        .await
+        .expect_err(&format!("a belief without {attr} commits"));
+    assert!(
+        err.contains("@card") && err.contains(&format!("type '{attr}'")),
+        "the refusal does not name {attr}'s card: {err}"
+    );
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_belief_without_valid_from_is_refused() {
+    assert_belief_without_refused("valid-from").await;
+}
+
+#[tokio::test]
+async fn a_belief_without_salience_is_refused() {
+    assert_belief_without_refused("salience").await;
+}
+
+#[tokio::test]
+async fn a_belief_without_base_activation_is_refused() {
+    assert_belief_without_refused("base-activation").await;
+}
+
+#[tokio::test]
+async fn a_belief_without_last_access_is_refused() {
+    assert_belief_without_refused("last-access").await;
+}
+
+/// Whether a refused write's error is an `@range` violation on attribute `attr`.
+fn names_range_violation(err: &str, attr: &str) -> bool {
+    err.contains("@range") && err.contains(&format!("'{attr}'"))
+}
+
+#[tokio::test]
+async fn a_confidence_of_1_5_is_refused() {
+    let (mut router, name) = fresh_db().await;
+    write(
+        &mut router,
+        &belief_insert("edge", None, ", has confidence 1.0"),
+    )
+    .await
+    .expect("a confidence of 1.0 commits");
+    let err = write(
+        &mut router,
+        &belief_insert("over", None, ", has confidence 1.5"),
+    )
+    .await
+    .expect_err("a confidence of 1.5 commits");
+    assert!(names_range_violation(&err, "confidence"), "{err}");
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_negative_candidate_count_is_refused() {
+    let (mut router, name) = fresh_db().await;
+    let event = |id: &str, count: i64| {
+        format!(
+            r#"insert $re isa retrieval-event, has concept-id "mem/re/{id}",
+                   has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
+                   has candidate-count {count};"#
+        )
+    };
+    write_seed(&mut router, &event("zero", 0))
+        .await
+        .expect("a candidate-count of 0 commits");
+    let err = write_seed(&mut router, &event("neg", -1))
+        .await
+        .expect_err("a negative candidate-count commits");
+    assert!(names_range_violation(&err, "candidate-count"), "{err}");
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_similarity_score_outside_minus_1_to_1_is_refused() {
+    let (mut router, name) = fresh_db().await;
+    write_seed(
+        &mut router,
+        r#"insert
+          $b isa belief, has concept-id "mem/bel/s", has belief-state "asserted";
+          $re isa retrieval-event, has concept-id "mem/re/s",
+              has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;"#,
+    )
+    .await
+    .expect("seed the surfacer and item");
+    let surfaced = |score: f64| {
+        format!(
+            r#"match $b isa belief, has concept-id "mem/bel/s";
+                     $re isa retrieval-event, has concept-id "mem/re/s";
+               insert (surfacer: $re, item: $b) isa surfaced, has similarity-score {score:?};"#
+        )
+    };
+    for score in [-1.0, 1.0] {
+        write(&mut router, &surfaced(score))
+            .await
+            .unwrap_or_else(|e| panic!("a similarity-score of {score} commits: {e}"));
+    }
+    for score in [-1.01, 1.01] {
+        let err = write(&mut router, &surfaced(score))
+            .await
+            .expect_err(&format!("a similarity-score of {score} commits"));
+        assert!(names_range_violation(&err, "similarity-score"), "{err}");
+    }
+    drop_db(router, &name).await;
+}
+
+/// Seeds raw memory items with `seed`, commits `control(ok)` and asserts that
+/// `control(bad)` is refused with an `@range` violation naming `attr`.
+async fn assert_out_of_range_refused<F>(seed: &str, attr: &str, ok: &str, bad: &str, control: F)
+where
+    F: Fn(&str) -> String,
+{
+    let (mut router, name) = fresh_db().await;
+    if !seed.is_empty() {
+        write_seed(&mut router, seed)
+            .await
+            .expect("seed the memory items");
+    }
+    write_seed(&mut router, &control(ok))
+        .await
+        .unwrap_or_else(|e| panic!("a {attr} of {ok} commits: {e}"));
+    let err = write_seed(&mut router, &control(bad))
+        .await
+        .expect_err(&format!("a {attr} of {bad} commits"));
+    assert!(names_range_violation(&err, attr), "{err}");
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_derivation_confidence_of_1_5_is_refused() {
+    assert_out_of_range_refused(
+        r#"insert $d isa belief, has concept-id "mem/bel/derived", has belief-state "asserted";
+                  $s isa belief, has concept-id "mem/bel/source", has belief-state "asserted";"#,
+        "confidence",
+        "1.0",
+        "1.5",
+        |value| {
+            format!(
+                r#"match $d isa belief, has concept-id "mem/bel/derived";
+                         $s isa belief, has concept-id "mem/bel/source";
+                   insert (derived: $d, source: $s) isa derivation,
+                       has derivation-method "human-assertion", has confidence {value};"#
+            )
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_predicted_probability_of_1_5_is_refused() {
+    assert_out_of_range_refused(
+        r#"insert $b isa belief, has concept-id "mem/bel/predicted", has belief-state "asserted";
+                  $e isa episode, has concept-id "mem/ep/resolving",
+                      has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;"#,
+        "predicted-probability",
+        "1.0",
+        "1.5",
+        |value| {
+            format!(
+                r#"match $b isa belief, has concept-id "mem/bel/predicted";
+                         $e isa episode, has concept-id "mem/ep/resolving";
+                   insert (predicted-belief: $b, resolving-episode: $e) isa prediction-resolution,
+                       has predicted-probability {value};"#
+            )
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_negative_access_count_is_refused() {
+    assert_out_of_range_refused("", "access-count", "0", "-1", |value| {
+        let id = if value.starts_with('-') {
+            "neg"
+        } else {
+            "zero"
+        };
+        format!(
+            r#"insert $b isa belief, has concept-id "mem/bel/{id}", has belief-state "asserted",
+                   has access-count {value};"#
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_negative_corroboration_count_is_refused() {
+    assert_out_of_range_refused("", "corroboration-count", "0", "-1", |value| {
+        let id = if value.starts_with('-') { "neg" } else { "zero" };
+        format!(
+            r#"insert $p isa playbook, has concept-id "mem/pb/{id}", has corroboration-count {value};"#
+        )
+    })
+    .await;
 }

@@ -1,0 +1,193 @@
+define
+  # ── identity / natural-key attrs (feed invariant-9 resolution) ──
+  attribute stix-id value string;
+  attribute ioc-value value string;
+  attribute ioc-type value string @values("ipv4", "ipv6", "domain", "url", "file-sha256", "file-sha1", "file-md5", "email-addr", "mutex", "registry-key");
+  attribute attack-id value string;
+  attribute platform value string;
+  attribute kill-chain-phase value string;
+  attribute stix-pattern value string;
+  attribute valid-until value datetime;
+  attribute revoked value boolean;
+  attribute deprecated value boolean;
+  attribute log-source-name value string;
+  attribute log-source-key value string;
+  attribute log-source-channel value string;
+  attribute component-key value string;
+  # A data component a sensor declares it covers, as the sensor file spells it
+  # (trimmed), and its trimmed, lowercased key matched against component-key.
+  attribute covered-component-name value string;
+  attribute covered-component-key value string;
+
+  # ── the cyber record root ──
+  # Concrete (not @abstract): it subtypes the concrete core `concept`, and an
+  # unrecognized STIX type is ingested as a bare cyber-object. attack-id is
+  # globally unique across ATT&CK (techniques T####, groups G####, software
+  # S####, data sources DS####), so it keys the whole hierarchy.
+  entity cyber-object sub concept @doc("Root of the cyber knowledge graph: any STIX/ATT&CK object, keyed by its globally-unique ATT&CK id and carrying its STIX id and revoked flag."),
+      owns stix-id @card(0..1) @unique,
+      owns attack-id @card(0..1) @unique,
+      owns revoked @card(0..1),
+      owns deprecated @card(0..1);
+
+  entity attack-pattern sub cyber-object @doc("An ATT&CK technique (STIX attack-pattern): an adversary behavior, with its platforms and kill-chain phases."),
+      owns platform @card(0..),
+      owns kill-chain-phase @card(0..),
+      plays technique-detection:detected-technique,
+      plays strategy-detects:technique,
+      plays mitigates:mitigated,
+      plays indicates:indicated,
+      plays uses:used;
+
+  entity intrusion-set sub cyber-object @doc("An ATT&CK group (STIX intrusion-set): a tracked set of adversary activity attributed to a common actor."),
+      plays attributed-to:attributee,
+      plays attributed-to:actor,
+      plays indicates:indicated,
+      plays uses:user,
+      plays targets:threat-source;
+
+  entity threat-actor sub cyber-object @doc("A STIX threat-actor: an individual or organization believed to operate with malicious intent."),
+      plays attributed-to:actor,
+      plays indicates:indicated,
+      plays uses:user,
+      plays targets:threat-source;
+
+  entity campaign sub cyber-object @doc("A STIX campaign: a grouping of adversary behavior over a period against a set of targets."),
+      plays attributed-to:attributee,
+      plays indicates:indicated,
+      plays uses:user,
+      plays targets:threat-source;
+
+  entity malware sub cyber-object @doc("An ATT&CK/STIX malware: malicious software used by adversaries, with the platforms it runs on."),
+      owns platform @card(0..),
+      plays uses:used,
+      plays uses:user,
+      plays mitigates:mitigated,
+      plays indicates:indicated;
+
+  entity tool sub cyber-object @doc("An ATT&CK/STIX tool: legitimate software that adversaries may repurpose, with the platforms it runs on."),
+      owns platform @card(0..),
+      plays uses:user,
+      plays uses:used,
+      plays mitigates:mitigated,
+      plays indicates:indicated;
+
+  entity indicator sub cyber-object @doc("A STIX indicator: a detection pattern (with an optional expiry) that signals suspected malicious activity when matched."),
+      owns stix-pattern @card(0..1),
+      owns valid-until @card(0..1),
+      plays indicates:indicator-source,
+      plays mitigates:mitigated,
+      plays observed-as:pattern-indicator;
+
+  entity observable sub cyber-object @doc("A STIX cyber-observable (SCO): a concrete artifact such as an IP, domain, URL, file hash, or email, normalized as a typed IOC value."),
+      owns ioc-value @card(1),
+      owns ioc-type @card(1),
+      plays observed-as:observable-value,
+      plays sighting-of:sighted-observable;
+
+  relation indicates @doc("A STIX 'indicates' relationship: an indicator points to the adversary object it signals."),
+      relates indicator-source @doc("The indicator doing the signalling."),
+      relates indicated @doc("The adversary object the indicator points to.");
+
+  relation uses @doc("A STIX 'uses' relationship: an adversary employs a technique, malware, or tool."),
+      relates user @doc("The adversary object that does the using."),
+      relates used @doc("The technique, malware, or tool being used.");
+
+  relation attributed-to @doc("A STIX 'attributed-to' relationship: activity is attributed to an actor."),
+      relates attributee @doc("The activity (campaign or intrusion-set) being attributed."),
+      relates actor @doc("The actor the activity is attributed to.");
+
+  relation targets @doc("A STIX 'targets' relationship: an adversary object aims at a target asset."),
+      relates threat-source @doc("The adversary object doing the targeting."),
+      relates target @doc("The asset being targeted.");
+
+  entity course-of-action sub cyber-object @doc("An ATT&CK mitigation (STIX course-of-action): a defensive measure that reduces a technique's effectiveness."),
+      plays mitigates:mitigation;
+
+  relation mitigates @doc("A STIX 'mitigates' relationship: a course-of-action reduces the risk of an adversary object."),
+      relates mitigation @doc("The course-of-action providing the mitigation."),
+      relates mitigated @doc("The adversary object being mitigated.");
+
+  relation observed-as @doc("Links an indicator's pattern to the concrete observable that instantiates it."),
+      relates pattern-indicator @doc("The indicator whose pattern was observed."),
+      relates observable-value @doc("The concrete observable matching the pattern.");
+
+  entity data-source sub cyber-object @doc("An ATT&CK data source: a category of telemetry (e.g. Process, Network Traffic), imported for reference since ATT&CK deprecates every data source."),
+      owns platform @card(0..);
+
+  entity data-component sub cyber-object @doc("An ATT&CK data component: a specific kind of telemetry (e.g. Process Creation) an analytic reads through a log source, keyed by its trimmed, lowercased name for matching a sensor's fallback components."),
+      owns component-key @card(0..1),
+      plays analytic-requirement:component;
+
+  entity detection-strategy sub cyber-object @doc("An ATT&CK detection strategy: how to detect one technique, carried out by one analytic per platform."),
+      plays strategy-detects:strategy,
+      plays strategy-analytic:strategy;
+
+  entity analytic sub cyber-object @doc("An ATT&CK analytic: a strategy's detection logic for one platform, which reads the log sources its requirements name."),
+      owns platform @card(0..),
+      plays strategy-analytic:analytic,
+      plays analytic-requirement:analytic;
+
+  relation strategy-detects @doc("An ATT&CK 'detects' relationship: a detection strategy detects a technique."),
+      relates strategy @doc("The detection strategy doing the detecting."),
+      relates technique @doc("The technique the strategy detects.");
+
+  relation strategy-analytic @doc("Ties a detection strategy to one of the analytics that carry it out."),
+      relates strategy @doc("The detection strategy the analytic belongs to."),
+      relates analytic @doc("The analytic carrying out the strategy.");
+
+  relation analytic-requirement @doc("A log source an analytic reads for a data component, keyed by its trimmed, lowercased name for matching against sensors."),
+      owns log-source-name @card(1),
+      owns log-source-key @card(1),
+      owns log-source-channel @card(0..),
+      relates analytic @doc("The analytic that needs the log source."),
+      relates component @doc("The data component the log source provides to the analytic.");
+
+  attribute hostname value string;
+  attribute environment value string @values("prod", "staging", "dev", "test");
+  attribute exposure value string @values("internet-facing", "internal", "isolated");
+  attribute sensor-kind value string;
+
+  entity host-asset sub cyber-object @doc("A defended host in the environment, with its hostname, deployment environment, and network exposure; the asset an adversary may target."),
+      owns hostname @card(0..1),
+      owns environment @card(0..1),
+      owns exposure @card(0..1),
+      plays targets:target;
+
+  entity monitored-environment sub cyber-object @doc("The environment a sensor file describes, owning every platform the user runs."),
+      owns platform @card(1..);
+
+  entity sensor sub cyber-object @doc("A deployed telemetry sensor from a sensor file: the platforms it runs on, the log sources it collects and the data components it covers as a fallback."),
+      owns sensor-kind @card(0..1),
+      owns platform @card(1..),
+      owns log-source-name @card(0..),
+      owns log-source-key @card(0..),
+      owns covered-component-name @card(0..),
+      owns covered-component-key @card(0..);
+
+  entity sighting sub execution-episode @doc("An episodic observation that a given IOC was seen; a concrete sighting of an observable."),
+      owns ioc-value @card(0..1),
+      plays sighting-of:sighting-instance;
+
+  relation sighting-of @doc("Ties a sighting episode to the observable that was sighted."),
+      relates sighting-instance @doc("The sighting episode."),
+      relates sighted-observable @doc("The observable that was sighted.");
+
+  relation technique-detection @doc("Asserts, via a mem belief, that a piece of detecting logic covers an ATT&CK technique; the join the coverage-gap functions read."),
+      relates detecting-logic @doc("The concept holding the detection logic."),
+      relates detected-technique @doc("The ATT&CK technique the logic detects."),
+      relates detection-claim @doc("The mem belief carrying and provenancing the detection claim.");
+  concept plays technique-detection:detecting-logic;
+  belief plays technique-detection:detection-claim;
+
+  # An analyst disposition of an alert: the verdict, the detecting logic it
+  # judges, and the mem belief carrying the judgment. `precision` counts these
+  # over a time window (the belief supplies the timestamp).
+  attribute detection-verdict value string @values("true-positive", "false-positive", "benign-true");
+
+  relation alert-disposition @doc("An analyst's verdict on an alert: the detecting logic being judged and the mem belief carrying the judgment; counted by the precision function over a time window."),
+      owns detection-verdict @card(1),
+      relates dispositioned-logic @doc("The detecting logic whose alert is being dispositioned."),
+      relates disposition-belief @doc("The mem belief carrying the disposition verdict and its timestamp.");
+  concept plays alert-disposition:dispositioned-logic;
+  belief plays alert-disposition:disposition-belief;

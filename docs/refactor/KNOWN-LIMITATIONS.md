@@ -77,6 +77,34 @@ proven through the real sandbox against live TypeDB.
   median of about 4.3 ms per sync (23 syncs). The cost grows with the belief
   tier, because each read scans its instances.
 
+## Schema constraints and upgrades
+
+- **The schema enforces required roles, ownership and recall fields.** Every relation
+  role the design lists is required (the bare roles `pivot`, `contextualizes`,
+  `tool-invocation`, the goal-hierarchy roles, `prediction-resolution:predicted-belief`
+  and `sighting-of` stay optional), a memory item needs one ownership and a
+  source-link, a belief needs `valid-from`, `salience`, `base-activation` and
+  `last-access`, and confidence, predicted probability and similarity scores are ranged.
+  `schema-init` (and `sync` / `sync-sensors`, which apply the schema first) deletes each
+  one-player row of a relation that gained a required role and clamps stored similarity
+  scores into `[-1, 1]`, in the schema transaction, before the constraint lands
+  (`tightened_schema_applies_to_a_populated_database`). A database last synced before
+  role `@doc`s shipped carries none of the cleanup triggers, so its cleanups are
+  skipped and a one-player row there fails `schema-init` naming the relation.
+- **Other violating rows fail the upgrade.** An existing database holding a row no
+  cleanup covers (a belief missing a required field, an out-of-range score, a one-player
+  belief edge) fails `schema-init` with TypeDB's constraint error naming the type; it
+  needs a manual cleanup. Core, mem and cyber each apply in their own schema
+  transaction, in that order: the refusing fragment commits nothing, and earlier
+  fragments' cleanups stay committed. The state is consistent, and re-running after the
+  fix completes the upgrade. Today's writers produce no such row.
+- **Garbage collection deletes every relation a concept plays.** A sync that deletes a
+  concept first deletes each relation the concept plays in, of any extension, so a
+  relation linking it to a concept another bundle owns is deleted with it rather than
+  left without a required player
+  (`garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays`). A
+  concept a belief edge references is retired instead.
+
 ## As-of recall and supersede
 
 As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
@@ -154,6 +182,18 @@ any other caller.
   schema requires a sensor's `platform`; a database holding a `sensor` written under the
   earlier cyber schema, which had none, cannot apply it. Nothing in GECKO wrote sensors
   before `gecko sync-sensors`, so only a hand-written one is affected.
+- **A one-player detection claim or disposition fails the schema upgrade.** Today's code
+  cannot produce a `technique-detection` or `alert-disposition` missing a player; an old
+  database holding one fails schema-init with TypeDB's error naming the relation, and
+  because `sync`, `sync-stix` and `sync-sensors` apply the schema first, none of them
+  runs until it is cleaned. `gecko query` is read-only, so run these in a write
+  transaction with an external TypeDB client (for example TypeDB console), then re-run
+  `schema-init`:
+
+  ```
+  match $r isa technique-detection; { not { $r links (detecting-logic: $p0); }; } or { not { $r links (detected-technique: $p1); }; } or { not { $r links (detection-claim: $p2); }; }; delete $r;
+  match $r isa alert-disposition; { not { $r links (dispositioned-logic: $p0); }; } or { not { $r links (disposition-belief: $p1); }; }; delete $r;
+  ```
 - **A type-changed concept loses its incoming extension relations until the post-sync
   writes recreate them.** A sync that retypes a concept (a changed `type_hint`) deletes
   and re-inserts it, which drops the relations other concepts held to it. The STIX

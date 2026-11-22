@@ -44,13 +44,7 @@ static MEM_SCHEMA: LazyLock<String> = LazyLock::new(|| {
     format!("{}\n{}", MEM_TYPES.trim_end(), functions_body)
 });
 
-/// Schema migrations for databases initialized with an earlier mem schema, oldest
-/// first. Each runs only while the database still holds the text it replaces.
-pub const MEM_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
-    id: "mem/population-member-window-doc",
-    applies_when: "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, with a staleness marker.\")",
-    tql: "redefine relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\");",
-}];
+pub use tql::MEM_MIGRATIONS;
 
 /// The root type of the belief tier mem's writer owns.
 pub const BELIEF_TIER_ROOT: &str = "memory-item";
@@ -112,26 +106,44 @@ mod tests {
 
     #[test]
     fn migrations_lead_to_the_shipped_schema() {
-        // Each migration's replaced text is gone from the shipped schema, and the
-        // annotation it installs is the one the shipped schema defines, so applying
-        // the shipped `define` after it is a no-op for that type.
-        for m in MEM_MIGRATIONS {
-            assert!(
-                !MEM_SCHEMA.contains(m.applies_when),
-                "{}: shipped schema still contains the replaced text",
-                m.id
-            );
-            let installed = m
-                .tql
-                .strip_prefix("redefine ")
-                .and_then(|t| t.strip_suffix(';'))
-                .expect("migration is a single redefine statement");
-            assert!(
-                MEM_SCHEMA.contains(installed),
-                "{}: shipped schema does not define {installed}",
-                m.id
-            );
-        }
+        // Each cleanup deletes only rows missing a role the shipped schema requires,
+        // each update clamps a ranged attribute, each `undefine @doc` clears text the
+        // shipped `define` replaces, and each `redefine` installs shipped text.
+        gecko_extension_api::migration::check_migrations(MEM_MIGRATIONS, &MEM_SCHEMA)
+            .unwrap_or_else(|e| {
+                panic!("a mem migration is out of step with the shipped schema: {e}")
+            });
+    }
+
+    fn shape_of(tql: &'static str) -> Result<(), String> {
+        let m = SchemaMigration {
+            id: "mem/test-entry",
+            applies_when: "text no schema holds",
+            tql,
+        };
+        gecko_extension_api::migration::check_migrations(&[m], &MEM_SCHEMA)
+    }
+
+    #[test]
+    fn a_cleanup_naming_an_optional_shipped_role_is_rejected() {
+        let err = shape_of(
+            "match $r isa prediction-resolution; not { $r links (predicted-belief: $x); }; delete $r;",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("does not require role predicted-belief"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_update_reaches_a_range_through_the_supertype_and_refuses_an_unranged_one() {
+        shape_of("match $r isa belief, has access-count $c; $c < 0; update $r has access-count 0;")
+            .expect("memory-item's `owns access-count` carries a @range");
+        let err =
+            shape_of("match $r isa belief, has salience $s; $s > 1.0; update $r has salience 1.0;")
+                .unwrap_err();
+        assert!(err.contains("carries no `@range`"), "{err}");
     }
 
     #[test]

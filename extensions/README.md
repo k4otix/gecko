@@ -163,9 +163,11 @@ Notes and invariants:
   concepts) change any belief-tier type's instance, attribute or link count is
   refused with `DbError::BeliefTierWrite` and commits nothing. A concept's
   `type_hint` must name a `concept` subtype. A changed `type_hint` replaces the
-  concept: the sync deletes it with its OKF relations and inserts it under the new
-  type, so it loses incoming links and extension relations that this sync's links
-  and writes do not recreate. The sync refuses with `DbError::TypeChangeShared` when
+  concept: the sync deletes it with every relation it plays (core or extension,
+  including one such as a STIX `uses` that links it to another bundle's concept) and
+  inserts it under the new type, so it loses incoming links and extension relations
+  that this sync's links and writes do not recreate. Garbage collection of a concept
+  no belief edge references deletes it the same way. The sync refuses with `DbError::TypeChangeShared` when
   another bundle also contains it, and with `DbError::TypeChangeReferenced` when a
   belief edge references it, since the edge cannot follow. Garbage collection retires, rather than
   deletes, a concept a belief edge references: it keeps the entity, its ID and

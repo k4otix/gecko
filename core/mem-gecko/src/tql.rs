@@ -11,7 +11,137 @@
 use gecko_extension_api::{
     ActorId, BeliefDraft, BeliefEdge, BeliefEdgeDecl, ConceptId, DateTime, DerivationMethod,
     Entrenchment, EpisodeDraft, GraphValue, GraphWrite, MemId, ProvenanceSource, RunContext,
+    SchemaMigration,
 };
+
+/// Schema migrations for databases initialized with an earlier mem schema, oldest
+/// first. Each runs only while the database still holds the text it replaces.
+pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
+    SchemaMigration {
+        id: "mem/population-member-window-doc",
+        applies_when: "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, with a staleness marker.\")",
+        tql: "redefine relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\");",
+    },
+    // One cleanup per relation whose roles the shipped schema requires: each
+    // deletes the rows missing a required player, so the `@card(1)` the shipped
+    // `define` adds commits. Each runs while the role still prints without a card.
+    SchemaMigration {
+        id: "mem/derivation-required-roles",
+        applies_when: "relates derived @doc(\"The memory item produced by the derivation.\")",
+        tql: "match $r isa derivation; not { $r links (derived: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/evidence-required-roles",
+        applies_when: "relates evidenced @doc(\"The memory item being evidenced.\")",
+        tql: "match $r isa evidence; not { $r links (evidenced: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/justification-required-roles",
+        applies_when: "relates consequent @doc(\"The memory item justified by the antecedents.\")",
+        tql: "match $r isa justification; not { $r links (consequent: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/support-required-roles",
+        applies_when: "relates supported @doc(\"The memory item being supported.\")",
+        tql: "match $r isa support; { not { $r links (supporter: $p0); }; } or { not { $r links (supported: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/attack-required-roles",
+        applies_when: "relates attacked @doc(\"The memory item being attacked.\")",
+        tql: "match $r isa attack; { not { $r links (attacker: $p0); }; } or { not { $r links (attacked: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/contradiction-required-roles",
+        applies_when: "relates hub @doc(\"The anomaly node collecting the conflicting claims.\")",
+        tql: "match $r isa contradiction; not { $r links (hub: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/supersession-required-roles",
+        applies_when: "relates superseded @doc(\"The memory item being deprecated.\")",
+        tql: "match $r isa supersession; { not { $r links (superseded: $p0); }; } or { not { $r links (superseding: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/source-link-required-roles",
+        applies_when: "relates memory @doc(\"The memory item that was produced.\")",
+        tql: "match $r isa source-link; not { $r links (memory: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/ownership-required-roles",
+        applies_when: "relates owned @doc(\"The memory item being owned.\")",
+        tql: "match $r isa ownership; not { $r links (owned: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/rests-on-required-roles",
+        applies_when: "relates resting @doc(\"The memory item that depends on the assumptions.\")",
+        tql: "match $r isa rests-on; not { $r links (resting: $x); }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/execution-required-roles",
+        applies_when: "relates run @doc(\"The doc-run being executed.\")",
+        tql: "match $r isa execution; { not { $r links (run: $p0); }; } or { not { $r links (episode-step: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/consolidation-step-required-roles",
+        applies_when: "relates affected @doc(\"The memory item the consolidation action was applied to.\")",
+        tql: "match $r isa consolidation-step; { not { $r links (affected: $p0); }; } or { not { $r links (run: $p1); }; } or { not { $r links (performer: $p2); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/scoped-required-roles",
+        applies_when: "relates scoped-belief @doc(\"The belief scoped to the population.\")",
+        tql: "match $r isa scoped; { not { $r links (scoped-belief: $p0); }; } or { not { $r links (population: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/population-member-required-roles",
+        applies_when: "relates owning-population @doc(\"The population the membership belongs to.\")",
+        tql: "match $r isa population-member; { not { $r links (owning-population: $p0); }; } or { not { $r links (member: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/resolves-required-roles",
+        applies_when: "relates resolution-belief @doc(\"The identity belief backing the resolution.\")",
+        tql: "match $r isa resolves; { not { $r links (resolution-belief: $p0); }; } or { not { $r links (record-a: $p1); }; } or { not { $r links (record-b: $p2); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/surfaced-required-roles",
+        applies_when: "relates surfacer @doc(\"The retrieval event that surfaced the item.\")",
+        tql: "match $r isa surfaced; { not { $r links (surfacer: $p0); }; } or { not { $r links (item: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/informs-synthesis-required-roles",
+        applies_when: "relates retrieval @doc(\"The retrieval event that fed the synthesis.\")",
+        tql: "match $r isa informs-synthesis; { not { $r links (retrieval: $p0); }; } or { not { $r links (synthesized: $p1); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "mem/divergence-precedence-required-roles",
+        applies_when: "relates prevailing @doc(\"The belief the disposition resolved toward.\")",
+        tql: "match $r isa divergence-precedence; { not { $r links (prevailing: $p0); }; } or { not { $r links (overridden: $p1); }; }; delete $r;",
+    },
+    // Belief's `@doc` sits on its `sub` declaration, which `redefine` cannot reach;
+    // the shipped `define` sets the new text once the old one is gone.
+    SchemaMigration {
+        id: "mem/belief-required-window-doc",
+        applies_when: "@doc(\"A bitemporal proposition the system holds, with a lifecycle state, optional confidence and entrenchment, and an optional validity window.\")",
+        tql: "undefine @doc from belief sub memory-item;",
+    },
+    // `population-member` prints the same `owns valid-from` line, so the trigger
+    // takes belief's next line and the start of its plays too.
+    SchemaMigration {
+        id: "mem/belief-valid-from-required",
+        applies_when: "  owns valid-from @card(0..1),\n  owns valid-to @card(0..1),\n  plays ",
+        tql: "redefine belief owns valid-from @card(1);",
+    },
+    // The index reports similarity as an unclamped f32, so a recorded score can sit
+    // just outside the cosine range; each runs while the score has no range.
+    SchemaMigration {
+        id: "mem/similarity-score-clamp-high",
+        applies_when: "owns similarity-score @card(0..1),",
+        tql: "match $r isa surfaced, has similarity-score $s; $s > 1.0; update $r has similarity-score 1.0;",
+    },
+    SchemaMigration {
+        id: "mem/similarity-score-clamp-low",
+        applies_when: "owns similarity-score @card(0..1),",
+        tql: "match $r isa surfaced, has similarity-score $s; $s < -1.0; update $r has similarity-score -1.0;",
+    },
+];
 
 /// Open-set `origin-kind` discriminator for a run's provenance source (invariant 9:
 /// `origin-kind` is an adapter-extensible open set, never a closed enum).

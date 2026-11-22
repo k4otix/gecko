@@ -27,24 +27,24 @@ define
     owns timestamp @card(0..1);
 
   relation okf-link @abstract @doc("Abstract base for a directed link between two OKF concepts."),
-    relates source @doc("The concept the link originates from."),
-    relates target @doc("The concept the link points to.");
+    relates source @card(1) @doc("The concept the link originates from."),
+    relates target @card(1) @doc("The concept the link points to.");
 
   # ── Relation types ───────────────────────────────────────────
   relation containment @doc("Groups the concepts of a bundle under the bundle that owns them."),
-    relates container @doc("The bundle that contains the members."),
-    relates member @doc("A concept belonging to the containing bundle.");
+    relates container @card(1) @doc("The bundle that contains the members."),
+    relates member @card(1) @doc("A concept belonging to the containing bundle.");
 
   relation hierarchy @doc("Structural parent/child nesting between two concepts."),
-    relates parent @doc("The enclosing concept."),
-    relates child @doc("The nested concept.");
+    relates parent @card(1) @doc("The enclosing concept."),
+    relates child @card(1) @doc("The nested concept.");
 
   relation concept-link sub okf-link @doc("A concept-to-concept reference (a markdown link between documents), with optional display text."),
     owns link-text @card(0..1);
 
   relation citation sub okf-link @doc("A concept's citation of an external resource, resolved from a markdown link to an absolute URL."),
-    relates citing-concept as source @doc("The concept making the citation."),
-    relates cited-resource as target @doc("The external resource being cited."),
+    relates citing-concept as source @card(1) @doc("The concept making the citation."),
+    relates cited-resource as target @card(1) @doc("The external resource being cited."),
     owns link-text @card(0..1);
 
   # ── Concrete operational types ──────────────────────────────

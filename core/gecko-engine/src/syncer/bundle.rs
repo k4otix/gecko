@@ -251,7 +251,8 @@ pub async fn sync_bundle(
         "Computed sync plan"
     );
     // A stored concept whose exact type differs from its type_hint is retyped:
-    // deleted with its OKF relations and inserted as new, whatever its hash.
+    // deleted with every relation it plays (of any extension, including one that
+    // links it to another bundle's concept) and inserted as new, whatever its hash.
     let retyped = retyped_concepts(&tx, &manifest.concepts, &plan).await?;
     let (retyped_updates, kept_updates): (Vec<usize>, Vec<usize>) = plan
         .to_update
@@ -322,7 +323,7 @@ pub async fn sync_bundle(
 
     // 5. Garbage-collect orphans: retire those this bundle owns alone that a
     //    belief edge references (unless already retired), delete the rest it owns
-    //    alone (with their OKF relations, so none dangle), and release shared ones
+    //    alone (with every relation they play, so none dangle), and release shared ones
     //    from this bundle.
     let gc_ids: Vec<&str> = gc_delete.iter().map(String::as_str).collect();
     let referenced: HashSet<String> = belief_edge_references(&tx, &gc_ids, &surface)
@@ -342,9 +343,9 @@ pub async fn sync_bundle(
         let required = required_attributes(&db.database_schema().await?)?;
         retire_concepts(&tx, &retire_ids, &surface, &required, Utc::now()).await?;
     }
-    delete_concepts_gc(&tx, &delete_ids).await?;
+    delete_concepts_gc(&tx, &delete_ids, &surface).await?;
     // Retyped concepts go the same way, to be inserted under their new type in 6.
-    delete_concepts_gc(&tx, &retyped_ids).await?;
+    delete_concepts_gc(&tx, &retyped_ids, &surface).await?;
     let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
     release_containment(&tx, name, &release_ids).await?;
 
@@ -656,26 +657,36 @@ async fn check_type_hints(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<
 
 /// Garbage-collects concepts removed from the bundle. It is given only concepts
 /// this bundle owns alone (see [`split_gc`]) that no belief edge references
-/// (those are retired by [`retire_concepts`]). Deletes the OKF core relations
-/// each concept plays (containment, hierarchy, concept-link, citation) so none
-/// are left dangling, then the concept entity itself.
-///
-/// Only the OKF core relations are deleted explicitly; any other relation the
-/// concept plays loses that player when the entity goes.
-async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
+/// (those are retired by [`retire_concepts`]). Deletes every relation each
+/// concept plays, so none is left without a required player, then the concept
+/// entity itself. A concept that plays a relation of `surface` is an invariant
+/// violation and deletes nothing.
+async fn delete_concepts_gc(
+    tx: &Transaction,
+    ids: &[&str],
+    surface: &BeliefTierSurface,
+) -> Result<(), DbError> {
     if ids.is_empty() {
         return Ok(());
     }
     let rows = || -> Vec<Vec<GivenRowEntry>> { ids.iter().map(|id| vec![str_entry(id)]).collect() };
 
-    // Each specific OKF relation type the concept may participate in. We target
-    // concrete types (not `okf-link`) so extension relations that also subtype
-    // `okf-link` are not swept up.
-    for rel in ["containment", "hierarchy", "concept-link", "citation"] {
+    let played = played_relations(tx, ids).await?;
+    if let Some((id, relation)) = played
+        .iter()
+        .find(|(_, relation)| surface.relations.contains(relation))
+    {
+        return Err(DbError::Query(format!(
+            "invariant violation: concept `{id}` to delete plays belief-tier relation `{relation}`"
+        )));
+    }
+    let labels: BTreeSet<String> = played.into_iter().map(|(_, relation)| relation).collect();
+    for label in &labels {
+        validate_schema_label(label)?;
         let query = format!(
             "given $id: string; \
              match $c isa concept, has concept-id $cid; $cid == $id; \
-                   $r isa {rel}, links ($c); \
+                   $r isa! {label}, links ($c); \
              delete $r;"
         );
         run_rows(tx, &query, &["id"], rows()).await?;
