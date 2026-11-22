@@ -83,7 +83,8 @@ pub struct SchemaMigration {
     pub id: &'static str,
     /// Text present in the database's exported schema only before this migration.
     pub applies_when: &'static str,
-    /// The TypeQL (`redefine`/`undefine`) that brings the schema forward.
+    /// The TypeQL (`redefine`/`undefine`, or a `match … delete` of rows the new schema
+    /// refuses) that brings the schema forward.
     pub tql: &'static str,
 }
 

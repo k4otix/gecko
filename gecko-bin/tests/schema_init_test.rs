@@ -458,7 +458,7 @@ async fn tightening_forms_apply_to_the_pre_tightening_core_and_mem() {
     let without_cleanup: Vec<_> = mem_migrations
         .iter()
         .copied()
-        .filter(|m| m.id != "probe/population-member-one-player")
+        .filter(|m| !m.tql.starts_with("match $r isa population-member;"))
         .collect();
     let err = db
         .apply_schema_with_migrations(&mem, &without_cleanup)
@@ -471,8 +471,19 @@ async fn tightening_forms_apply_to_the_pre_tightening_core_and_mem() {
             .expect("mem cleanup and redefine, then the tightened mem");
     }
 
+    // mem's shipped cleanups for relations this probe leaves untightened stay
+    // pending; every other migration has run.
     let after = db.database_schema().await.expect("schema");
-    for m in core_migrations.iter().chain(&mem_migrations) {
+    let untightened = |m: &gecko_extension_api::SchemaMigration| {
+        m.id.starts_with("mem/")
+            && m.tql.starts_with("match ")
+            && !m.tql.starts_with("match $r isa population-member;")
+    };
+    for m in core_migrations
+        .iter()
+        .chain(&mem_migrations)
+        .filter(|m| !untightened(m))
+    {
         assert!(!after.contains(m.applies_when), "{} still pending", m.id);
     }
     assert!(

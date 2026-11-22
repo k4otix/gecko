@@ -44,13 +44,7 @@ static MEM_SCHEMA: LazyLock<String> = LazyLock::new(|| {
     format!("{}\n{}", MEM_TYPES.trim_end(), functions_body)
 });
 
-/// Schema migrations for databases initialized with an earlier mem schema, oldest
-/// first. Each runs only while the database still holds the text it replaces.
-pub const MEM_MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
-    id: "mem/population-member-window-doc",
-    applies_when: "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, with a staleness marker.\")",
-    tql: "redefine relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\");",
-}];
+pub use tql::MEM_MIGRATIONS;
 
 /// The root type of the belief tier mem's writer owns.
 pub const BELIEF_TIER_ROOT: &str = "memory-item";
@@ -112,20 +106,29 @@ mod tests {
 
     #[test]
     fn migrations_lead_to_the_shipped_schema() {
-        // Each migration's replaced text is gone from the shipped schema, and the
-        // annotation it installs is the one the shipped schema defines, so applying
-        // the shipped `define` after it is a no-op for that type.
+        // Each migration's replaced text is gone from the shipped schema. A
+        // `redefine` installs the annotation the shipped schema defines, so applying
+        // the shipped `define` after it is a no-op for that type; a cleanup is a
+        // single `match … delete` of the rows the shipped schema refuses.
         for m in MEM_MIGRATIONS {
             assert!(
                 !MEM_SCHEMA.contains(m.applies_when),
                 "{}: shipped schema still contains the replaced text",
                 m.id
             );
+            if m.tql.starts_with("match ") {
+                assert!(
+                    m.tql.ends_with(" delete $r;") && m.tql.matches("delete").count() == 1,
+                    "{}: a cleanup is one `match … delete $r;` statement",
+                    m.id
+                );
+                continue;
+            }
             let installed = m
                 .tql
                 .strip_prefix("redefine ")
                 .and_then(|t| t.strip_suffix(';'))
-                .expect("migration is a single redefine statement");
+                .expect("migration is a single redefine or a match-delete cleanup");
             assert!(
                 MEM_SCHEMA.contains(installed),
                 "{}: shipped schema does not define {installed}",

@@ -607,6 +607,9 @@ async fn a_retired_concept_no_longer_referenced_is_deleted() {
     let tx = db.begin_write().await.expect("Failed to begin write");
     for q in [
         "match $l isa source-link; delete $l;",
+        r#"match $b isa belief, has concept-id "mem/bel/ref";
+                 $o isa ownership, links (owned: $b);
+           delete $o;"#,
         r#"match $b isa belief, has concept-id "mem/bel/ref"; delete $b;"#,
     ] {
         tx.query(q).await.expect("raw delete");
@@ -978,4 +981,50 @@ async fn a_document_citing_the_same_url_twice_gets_one_citation() {
         .expect("sync");
     assert_eq!(r.citations_attempted, 1);
     assert_eq!(count(&mut db, "match $c isa citation;").await, 1);
+}
+
+#[tokio::test]
+async fn garbage_collecting_a_population_member_concept_commits() {
+    let test_db = TestDb::new("gecko_test_gc_population_member");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concepts(dir.path(), &[("a", "Member."), ("b", "Kept.")]);
+    let full = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &full, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync both concepts");
+    let tx = db.begin_write().await.expect("write tx");
+    tx.query(
+        r#"match $a isa concept, has concept-id "notes/a";
+                 $b isa concept, has concept-id "notes/b";
+           insert $p isa population, has spec-hash "pop-gc";
+                  (owning-population: $p, member: $a) isa population-member;
+                  (owning-population: $p, member: $b) isa population-member;"#,
+    )
+    .await
+    .expect("insert the memberships");
+    tx.commit().await.expect("commit the memberships");
+
+    let mut dropped = full.clone();
+    dropped.concepts.retain(|c| c.concept_id != "notes/a");
+    let r = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("garbage-collecting a population member commits");
+    assert_eq!(r.concepts_deleted, 1);
+    assert_eq!(
+        count(&mut db, "match $m isa population-member;").await,
+        1,
+        "only the kept concept's membership is left"
+    );
+    assert_eq!(
+        count(
+            &mut db,
+            r#"match $c isa concept, has concept-id "notes/b";
+                     $m isa population-member, links (member: $c);"#
+        )
+        .await,
+        1,
+        "the kept concept's membership survives"
+    );
 }

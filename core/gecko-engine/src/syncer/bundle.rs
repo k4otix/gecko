@@ -657,21 +657,29 @@ async fn check_type_hints(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<
 /// Garbage-collects concepts removed from the bundle. It is given only concepts
 /// this bundle owns alone (see [`split_gc`]) that no belief edge references
 /// (those are retired by [`retire_concepts`]). Deletes the OKF core relations
-/// each concept plays (containment, hierarchy, concept-link, citation) so none
-/// are left dangling, then the concept entity itself.
+/// each concept plays (containment, hierarchy, concept-link, citation) and its
+/// `population-member` rows, so none is left without a required player, then the
+/// concept entity itself.
 ///
-/// Only the OKF core relations are deleted explicitly; any other relation the
-/// concept plays loses that player when the entity goes.
+/// Only those relations are deleted explicitly; any other relation the concept
+/// plays loses that player when the entity goes.
 async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
     if ids.is_empty() {
         return Ok(());
     }
     let rows = || -> Vec<Vec<GivenRowEntry>> { ids.iter().map(|id| vec![str_entry(id)]).collect() };
 
-    // Each specific OKF relation type the concept may participate in. We target
+    // Each specific OKF relation type the concept may participate in, and mem's
+    // `population-member` cache, whose rows require their member. We target
     // concrete types (not `okf-link`) so extension relations that also subtype
     // `okf-link` are not swept up.
-    for rel in ["containment", "hierarchy", "concept-link", "citation"] {
+    for rel in [
+        "containment",
+        "hierarchy",
+        "concept-link",
+        "citation",
+        "population-member",
+    ] {
         let query = format!(
             "given $id: string; \
              match $c isa concept, has concept-id $cid; $cid == $id; \
