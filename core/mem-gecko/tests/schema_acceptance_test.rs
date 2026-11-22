@@ -1103,3 +1103,93 @@ async fn a_similarity_score_outside_minus_1_to_1_is_refused() {
     }
     drop_db(router, &name).await;
 }
+
+/// Seeds raw memory items with `seed`, commits `control(ok)` and asserts that
+/// `control(bad)` is refused with an `@range` violation naming `attr`.
+async fn assert_out_of_range_refused<F>(seed: &str, attr: &str, ok: &str, bad: &str, control: F)
+where
+    F: Fn(&str) -> String,
+{
+    let (mut router, name) = fresh_db().await;
+    if !seed.is_empty() {
+        write_seed(&mut router, seed)
+            .await
+            .expect("seed the memory items");
+    }
+    write_seed(&mut router, &control(ok))
+        .await
+        .unwrap_or_else(|e| panic!("a {attr} of {ok} commits: {e}"));
+    let err = write_seed(&mut router, &control(bad))
+        .await
+        .expect_err(&format!("a {attr} of {bad} commits"));
+    assert!(names_range_violation(&err, attr), "{err}");
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_derivation_confidence_of_1_5_is_refused() {
+    assert_out_of_range_refused(
+        r#"insert $d isa belief, has concept-id "mem/bel/derived", has belief-state "asserted";
+                  $s isa belief, has concept-id "mem/bel/source", has belief-state "asserted";"#,
+        "confidence",
+        "1.0",
+        "1.5",
+        |value| {
+            format!(
+                r#"match $d isa belief, has concept-id "mem/bel/derived";
+                         $s isa belief, has concept-id "mem/bel/source";
+                   insert (derived: $d, source: $s) isa derivation,
+                       has derivation-method "human-assertion", has confidence {value};"#
+            )
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_predicted_probability_of_1_5_is_refused() {
+    assert_out_of_range_refused(
+        r#"insert $b isa belief, has concept-id "mem/bel/predicted", has belief-state "asserted";
+                  $e isa episode, has concept-id "mem/ep/resolving",
+                      has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;"#,
+        "predicted-probability",
+        "1.0",
+        "1.5",
+        |value| {
+            format!(
+                r#"match $b isa belief, has concept-id "mem/bel/predicted";
+                         $e isa episode, has concept-id "mem/ep/resolving";
+                   insert (predicted-belief: $b, resolving-episode: $e) isa prediction-resolution,
+                       has predicted-probability {value};"#
+            )
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_negative_access_count_is_refused() {
+    assert_out_of_range_refused("", "access-count", "0", "-1", |value| {
+        let id = if value.starts_with('-') {
+            "neg"
+        } else {
+            "zero"
+        };
+        format!(
+            r#"insert $b isa belief, has concept-id "mem/bel/{id}", has belief-state "asserted",
+                   has access-count {value};"#
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_negative_corroboration_count_is_refused() {
+    assert_out_of_range_refused("", "corroboration-count", "0", "-1", |value| {
+        let id = if value.starts_with('-') { "neg" } else { "zero" };
+        format!(
+            r#"insert $p isa playbook, has concept-id "mem/pb/{id}", has corroboration-count {value};"#
+        )
+    })
+    .await;
+}
