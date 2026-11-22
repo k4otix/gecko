@@ -711,9 +711,12 @@ fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
         .map(String::as_str)
         .collect();
 
+    // A requirement is inserted with its first channel; only the further channels
+    // (rare) are attached afterwards, since matching a requirement back by its
+    // name scans every requirement per row.
     let mut channel_rows = Vec::new();
     for r in &rels.requirements {
-        for ch in &r.channels {
+        for ch in r.channels.iter().skip(1) {
             channel_rows.push(vec![
                 GraphValue::String(r.analytic.clone()),
                 GraphValue::String(r.component.clone()),
@@ -771,12 +774,37 @@ fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
             rows: rels
                 .requirements
                 .iter()
+                .filter(|r| r.channels.is_empty())
                 .map(|r| {
                     vec![
                         GraphValue::String(r.analytic.clone()),
                         GraphValue::String(r.component.clone()),
                         GraphValue::String(r.name.clone()),
                         GraphValue::String(r.key.clone()),
+                    ]
+                })
+                .collect(),
+            expect_rows: Some(1),
+        },
+        GraphWrite {
+            query: "given $a: string, $c: string, $name: string, $key: string, $ch: string; \
+                    match $an isa analytic, has concept-id $aid; $aid == $a; \
+                          $co isa data-component, has concept-id $cid; $cid == $c; \
+                    insert $r isa analytic-requirement, links (analytic: $an, component: $co), \
+                           has log-source-name == $name, has log-source-key == $key, has log-source-channel == $ch;"
+                .to_string(),
+            vars: ["a", "c", "name", "key", "ch"].map(String::from).to_vec(),
+            rows: rels
+                .requirements
+                .iter()
+                .filter(|r| !r.channels.is_empty())
+                .map(|r| {
+                    vec![
+                        GraphValue::String(r.analytic.clone()),
+                        GraphValue::String(r.component.clone()),
+                        GraphValue::String(r.name.clone()),
+                        GraphValue::String(r.key.clone()),
+                        GraphValue::String(r.channels[0].clone()),
                     ]
                 })
                 .collect(),
@@ -1090,14 +1118,15 @@ mod tests {
         };
         let scoped_delete = position("delete $r");
         let orphan_delete = position("not { $r links (analytic:");
-        let requirement_insert = position("insert $r isa analytic-requirement");
-        let channel_insert = position("has log-source-channel ==");
+        let requirement_insert = position("has log-source-key == $key, has log-source-channel");
+        let channel_insert = position("insert $r has log-source-channel");
         let strategy_insert = position("insert $r isa strategy-analytic");
         assert!(scoped_delete < orphan_delete);
         assert!(orphan_delete < requirement_insert.min(strategy_insert));
         assert!(requirement_insert < channel_insert);
         assert_eq!(writes[requirement_insert].rows.len(), 1);
-        assert_eq!(writes[channel_insert].rows.len(), 2);
+        assert_eq!(writes[requirement_insert].rows[0].len(), 5);
+        assert_eq!(writes[channel_insert].rows.len(), 1);
         assert_eq!(writes[strategy_insert].rows.len(), 2);
         assert!(
             writes

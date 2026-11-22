@@ -10,9 +10,13 @@
 
 use cyber_gecko::CyberGecko;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Instant;
 
 use cyber_gecko::stix::{cyber_post_sync, to_okf, typed_relation_players};
 use futures_util::StreamExt;
+use gecko_engine::db::CORE_SCHEMA;
+use gecko_engine::db::graph_store::RouterGraphStore;
 use gecko_engine::db::router::TypeDbRouter;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::syncer::bundle::{SyncResult, sync_bundle};
@@ -1036,4 +1040,171 @@ async fn a_reimport_where_an_analytic_loses_every_log_source_leaves_no_requireme
     assert_eq!(requirements(&mut db).await, expected);
     let tx = db.begin_read().await.expect("begin read");
     assert_eq!(count(&tx, "match $r isa strategy-analytic;").await, 3);
+}
+
+/// The sensor file the full-bundle check syncs: three platforms and a few common
+/// log sources.
+const FULL_BUNDLE_SENSORS: &str = r#"
+platforms: [Windows, Linux, macOS]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security]
+  - name: linux-auditd
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL]
+  - name: mac-logging
+    platforms: [macOS]
+    log_sources: [macos:unifiedlog]
+"#;
+
+/// The concept count and the count of every typed relation the adapter writes.
+async fn graph_counts(db: &mut TypeDbRouter) -> BTreeMap<String, usize> {
+    let tx = db.begin_read().await.expect("begin read");
+    let mut counts = BTreeMap::new();
+    counts.insert(
+        "concept".to_string(),
+        count(&tx, "match $c isa concept;").await,
+    );
+    for (relation, _, _) in typed_relation_players() {
+        if !counts.contains_key(relation) {
+            counts.insert(
+                relation.to_string(),
+                count(&tx, &format!("match $r isa {relation};")).await,
+            );
+        }
+    }
+    counts
+}
+
+/// Imports a real ATT&CK bundle twice into one database and asserts the second
+/// import changes no count, then times `blinded` on the full graph. Opt-in: set
+/// `GECKO_ATTACK_BUNDLE` to the path of an ATT&CK STIX bundle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stix_full_bundle_resync_is_stable() {
+    let Ok(path) = std::env::var("GECKO_ATTACK_BUNDLE") else {
+        eprintln!("skipping: GECKO_ATTACK_BUNDLE is not set");
+        return;
+    };
+    let stix = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+
+    let test_db = TestDb::new("gecko_test_stix_full");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+
+    let start = Instant::now();
+    sync_stix(&mut db, &stix).await;
+    let first_sync = start.elapsed();
+    let first = graph_counts(&mut db).await;
+
+    let start = Instant::now();
+    sync_stix(&mut db, &stix).await;
+    let resync = start.elapsed();
+    let second = graph_counts(&mut db).await;
+
+    eprintln!("first sync: {first_sync:?}, re-sync: {resync:?}");
+    eprintln!("counts after the first sync: {first:?}");
+    eprintln!("counts after the re-sync: {second:?}");
+    assert_eq!(first, second, "a re-sync must change no count");
+    for relation in ["strategy-analytic", "analytic-requirement"] {
+        assert!(first[relation] > 0, "no {relation} in the full bundle");
+    }
+
+    // Sensors over the full graph, detection claims, and `blinded` timed twice.
+    let sensor_file = cyber_gecko::sensors::parse(FULL_BUNDLE_SENSORS).expect("sensor file");
+    sync_bundle(
+        &mut db,
+        &cyber_gecko::sensors::to_okf(&sensor_file, cyber_gecko::sensors::DEFAULT_BUNDLE_NAME),
+        &[],
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync the sensor file");
+
+    let logic_id = "playbooks/detect-full";
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("playbooks")).expect("playbooks dir");
+    std::fs::write(
+        dir.path().join("bundle.json"),
+        r#"{ "name": "detect-playbooks" }"#,
+    )
+    .expect("write bundle.json");
+    std::fs::write(
+        dir.path().join(format!("{logic_id}.md")),
+        "---\ntype: playbook\ntitle: Detect\n---\n\n# Detect\n",
+    )
+    .expect("write playbook");
+    let playbooks = gecko_engine::okf::parser::parse_bundle(dir.path()).expect("parse playbooks");
+    sync_bundle(&mut db, &playbooks, &[], mem_gecko::BELIEF_TIER_ROOT)
+        .await
+        .expect("sync playbooks");
+
+    let store = Arc::new(RouterGraphStore::new(Arc::new(tokio::sync::Mutex::new(
+        test_db.router(),
+    ))));
+    let registry = mem_gecko::BeliefEdgeRegistry::from_extensions(
+        CORE_SCHEMA,
+        &[mem_gecko::extension(), cyber_gecko::extension()],
+    )
+    .expect("belief-edge registry");
+    let mem =
+        Arc::new(mem_gecko::MemWriter::without_index(store.clone()).with_belief_edges(registry));
+    let edges = mem
+        .edge_writer_for("cyber-gecko")
+        .expect("cyber-gecko declares belief edges");
+    let ctx = gecko_extension_api::RunContext::new(
+        gecko_extension_api::ActorId::new("system"),
+        gecko_extension_api::ProvenanceSource::ExecutableDoc {
+            concept_id: gecko_extension_api::ConceptId::new(logic_id),
+        },
+        chrono::Utc::now(),
+    );
+    let base: gecko_engine::sandbox::engine::ExtensionCallback =
+        Arc::new(|_, _, _| Err("base".to_string()));
+    let cb = cyber_gecko::detect::cyber_extension_callback(
+        store as Arc<dyn gecko_extension_api::GraphReader>,
+        edges,
+        ctx,
+        base,
+    );
+    let call = |func: &str, args: serde_json::Value| {
+        let cb = cb.clone();
+        let func = func.to_string();
+        move || cb("cyber-gecko", &func, args)
+    };
+    for technique in ["T1059", "T1003", "T1078"] {
+        let claim = call(
+            "claim",
+            serde_json::json!({ "logic_id": logic_id, "technique_id": technique,
+                                "method": "external-tool", "confidence": 0.9 }),
+        );
+        tokio::task::spawn_blocking(claim)
+            .await
+            .expect("claim task")
+            .unwrap_or_else(|e| panic!("claim {technique}: {e}"));
+    }
+
+    let start = Instant::now();
+    let first_blinded = tokio::task::spawn_blocking(call("blinded", serde_json::json!({})))
+        .await
+        .expect("blinded task")
+        .expect("blinded");
+    let first_blinded_time = start.elapsed();
+    let start = Instant::now();
+    let second_blinded = tokio::task::spawn_blocking(call("blinded", serde_json::json!({})))
+        .await
+        .expect("blinded task")
+        .expect("blinded");
+    let second_blinded_time = start.elapsed();
+
+    let entries = first_blinded["blinded_detections"]
+        .as_array()
+        .expect("blinded_detections is a list")
+        .len();
+    eprintln!(
+        "blinded: first {first_blinded_time:?}, second {second_blinded_time:?}, \
+         {entries} blinded detections"
+    );
+    assert!(entries > 0, "blinded reported nothing on the full graph");
+    assert_eq!(first_blinded, second_blinded, "blinded is not stable");
 }
