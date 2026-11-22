@@ -1571,7 +1571,8 @@ async fn a_database_holding_a_one_player_technique_detection_fails_schema_init_n
         .expect_err("a technique-detection without its claim passes the required roles");
     assert!(err.contains("'technique-detection"), "{err}");
 
-    // The failed apply is one schema transaction, so its cleanups are rolled back.
+    // The refusing cyber fragment is one schema transaction, so its own cleanups are
+    // rolled back (core and mem commit first, in their own transactions).
     let tx = db.begin_read().await.expect("begin read");
     assert_eq!(count(&tx, "match $r isa technique-detection;").await, 1);
     assert_eq!(count(&tx, "match $r isa uses;").await, 1);

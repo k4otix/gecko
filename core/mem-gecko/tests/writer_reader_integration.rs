@@ -1273,6 +1273,35 @@ async fn rests_on_with_a_missing_assumption_errors_and_commits_nothing() {
 }
 
 #[tokio::test]
+async fn record_prediction_rejects_an_out_of_range_probability() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    for p in [1.5, -0.1, f64::NAN] {
+        let err = w
+            .record_prediction(&ctx, MemId::new("mem/bel/any"), p)
+            .await
+            .expect_err("an out-of-range probability must be refused");
+        match err {
+            EpistemicError::InvalidInput(m) => {
+                assert!(
+                    m.contains("probability") && m.contains(&p.to_string()),
+                    "{m}"
+                )
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+    let preds = fx
+        .raw_fetch(r#"match $p isa prediction-resolution, has predicted-probability $v; fetch { "v": $v };"#)
+        .await;
+    assert!(preds.is_empty(), "no prediction was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
 async fn record_prediction_on_a_missing_belief_errors_and_commits_nothing() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);

@@ -78,7 +78,7 @@ mod tests {
                 .tql
                 .strip_prefix("redefine ")
                 .and_then(|t| t.strip_suffix(';'))
-                .expect("migration is a single redefine or a match-delete cleanup");
+                .expect("migration is a `match … delete $r;` cleanup or a `redefine …;`");
             assert!(
                 CORE_SCHEMA.contains(installed),
                 "{}: shipped schema does not define {installed}",

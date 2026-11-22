@@ -145,7 +145,9 @@ mod tests {
                 .tql
                 .strip_prefix("redefine ")
                 .and_then(|t| t.strip_suffix(';'))
-                .expect("migration is a single redefine or a match-delete cleanup");
+                .expect(
+                    "migration is a `match` cleanup, an `undefine @doc from …;` or a `redefine …;`",
+                );
             assert!(
                 MEM_SCHEMA.contains(installed),
                 "{}: shipped schema does not define {installed}",
