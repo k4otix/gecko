@@ -109,6 +109,10 @@ any other caller.
 - **A platform with several analytics counts as covered if any can run.** ATT&CK ships
   one analytic per platform per strategy, so this does not occur on v20.1, but a future
   bundle with several could hide a blind analytic behind a covered one.
+- **A pre-existing `sensor` without `platform` fails the schema upgrade.** The current
+  schema requires a sensor's `platform`; a database holding a `sensor` written under the
+  earlier cyber schema, which had none, cannot apply it. Nothing in GECKO wrote sensors
+  before `gecko sync-sensors`, so only a hand-written one is affected.
 - **A type-changed concept loses its incoming extension relations until the post-sync
   writes recreate them.** A sync that retypes a concept (a changed `type_hint`) deletes
   and re-inserts it, which drops the relations other concepts held to it. The STIX
