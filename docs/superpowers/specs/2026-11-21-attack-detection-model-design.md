@@ -146,7 +146,7 @@ Today an existing v20.1 database holds every strategy and analytic as a bare `cy
 - `analytic-requirement` rows come from `x_mitre_log_source_references`, grouped by (analytic, component, trimmed name), with the channel set collected.
 - A reference to a component not in the bundle is dropped, which matches how external endpoints are handled now.
 
-**Replace, not append.** For `strategy-analytic` and `analytic-requirement`, the post-sync writes first delete every such relation whose strategy or analytic is in this manifest, then insert the current set. A re-sync then reflects a changed release exactly. *(Author's call.)* Counts after a re-sync are unchanged; S4 records the timing beside S1's 1.2 s baseline. `strategy-detects` keeps the insert-only shape: a technique's strategy link does not change content in place.
+**Replace, not append.** For `strategy-analytic` and `analytic-requirement`, the post-sync writes first delete every such relation whose strategy or analytic is in this manifest, then insert the current set. A re-sync then reflects a changed release exactly. *(Author's call.)* Counts after a re-sync are unchanged; S4 records the timing beside S1's 1.2 s baseline. `strategy-detects` is replaced the same way, scoped to the bundle's strategies, so a `detects` link a later release drops does not linger. *(Author's call, after the final review.)*
 
 ### 4. Sensor file and `gecko sync-sensors` (new `extensions/cyber-gecko/src/sensors.rs`; a `gecko-bin` CLI arm)
 
