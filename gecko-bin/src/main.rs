@@ -817,7 +817,7 @@ async fn cmd_sync_sensors(
         )));
     sensors::check_bundle_name(&graph, bundle_name)
         .await
-        .map_err(|e| anyhow::anyhow!("--bundle-name refused: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("--bundle-name rejected: {e}"))?;
 
     apply_all_schemas(&mut db, extensions, None)
         .await
@@ -825,7 +825,7 @@ async fn cmd_sync_sensors(
 
     sensors::check_against_graph(&graph, &parsed)
         .await
-        .map_err(|e| anyhow::anyhow!("sensor file refused: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("sensor file rejected: {e}"))?;
 
     let mut manifest = sensors::to_okf(&parsed, bundle_name);
     manifest.bundle_path = tokio::fs::canonicalize(file)

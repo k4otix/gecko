@@ -100,6 +100,10 @@ any other caller.
   source or data component matches a requirement on its trimmed, lowercased name; there
   are no aliases, so `WinEventLog:Sysmon` and `Microsoft-Windows-Sysmon/Operational` are
   different sources.
+- **Platforms match exactly.** A declared platform is compared with ATT&CK's analytic
+  platforms as spelled; `gecko sync-sensors` refuses one that matches only ignoring case
+  (`windows` for `Windows`), and reports one that no live analytic runs on in any case as
+  a notice.
 - **No population-scoped coverage.** A platform is blind or covered for the whole
   database; coverage is not narrowed to a population of hosts.
 - **A platform with several analytics counts as covered if any can run.** ATT&CK ships
