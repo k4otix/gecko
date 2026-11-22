@@ -1241,6 +1241,10 @@ async fn stix_full_bundle_resync_is_stable() {
     assert_eq!(first_blinded, second_blinded, "blinded is not stable");
 }
 
+/// End-to-end check that repeated SROs land as one typed relation. TypeDB 3.15
+/// already collapses identical rows of one `given` batch, so this test passes with
+/// or without host-side deduplication; `stix::tests::repeated_sros_become_one_row`
+/// is the test that discriminates.
 #[tokio::test]
 async fn repeated_sros_become_one_typed_relation() {
     let test_db = TestDb::new("gecko_test_stix_dup_sro");

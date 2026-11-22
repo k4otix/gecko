@@ -1726,6 +1726,69 @@ async fn as_of_recall_is_newest_first_and_truncates_deterministically() {
         );
     }
 
+    let tied_at = dt("2026-01-04T00:00:00Z");
+    let mut tied = Vec::new();
+    for i in 0..2 {
+        tied.push(
+            w.assert_belief(
+                &ctx_at("agent-a", tied_at),
+                belief_vis(
+                    &format!("tied belief {i}"),
+                    "agent-a",
+                    0.8,
+                    Visibility::Team,
+                ),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    tied.sort_by(|x, y| x.0.cmp(&y.0));
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        3,
+    )
+    .await;
+    assert_eq!(
+        got,
+        vec![tied[0].clone(), tied[1].clone(), ids[2].clone()],
+        "beliefs sharing a valid-from are ordered by concept id"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An actor that has never written has no agent node, so its as-of recall is empty.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn as_of_recall_for_an_actor_with_no_history_is_empty() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    w.assert_belief(
+        &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+        belief_vis("a's shared belief", "agent-a", 0.8, Visibility::Shared),
+        &[],
+        DerivationMethod::HumanAssertion,
+    )
+    .await
+    .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-never-wrote",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert!(got.is_empty(), "{got:?}");
+
     fx.drop_db().await;
 }
 

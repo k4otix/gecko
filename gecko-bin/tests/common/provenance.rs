@@ -2,10 +2,14 @@
 //! with `#[path = "common/provenance.rs"] mod provenance;`.
 //!
 //! The schema requires every memory item to play `ownership:owned` exactly once and
-//! `source-link:memory` at least once. [`seed_provenance`] gives each memory item in
-//! the open transaction that lacks one the shape the production writers insert: an
-//! `ownership` by the seed agent with `private` visibility, and a `source-link` to
-//! the seed `doc-run` tagged with an `origin-kind`.
+//! `source-link:memory` at least once. [`seed_provenance`] matches the whole
+//! database, not only the items the open transaction inserted: every memory item
+//! that lacks an ownership gets one by the seed agent, always with `private`
+//! visibility (production writers set a visibility only on beliefs), and every one
+//! that lacks a source-link gets one to the seed `doc-run` tagged with an
+//! `origin-kind`.
+//!
+//! Its twin is `core/mem-gecko/tests/common/provenance.rs`; keep the two files identical.
 
 use gecko_extension_api::{GraphValue, GraphWrite};
 
@@ -15,9 +19,10 @@ pub const SEED_AGENT: &str = "seed-agent";
 /// The run every raw-seeded memory item is sourced from.
 pub const SEED_RUN: &str = "seed-run";
 
-/// Writes that give every memory item lacking an ownership one by [`SEED_AGENT`],
-/// and every memory item lacking a source-link one to [`SEED_RUN`]. Run them in the
-/// transaction that inserts the raw items, before its commit.
+/// Writes that give every memory item in the database lacking an ownership a
+/// `private` one by [`SEED_AGENT`], and every one lacking a source-link one to
+/// [`SEED_RUN`]. Run them in the transaction that inserts the raw items, before its
+/// commit. The twin of this function is in `core/mem-gecko/tests/common/provenance.rs`.
 pub fn seed_provenance() -> Vec<GraphWrite> {
     vec![
         GraphWrite::single(

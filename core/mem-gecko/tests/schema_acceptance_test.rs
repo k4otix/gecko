@@ -74,6 +74,12 @@ async fn write_seed(router: &mut TypeDbRouter, tql: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Whether a refused write's error is an `@values` violation on attribute `attr`:
+/// it names both the `@values` constraint and the attribute type.
+fn names_values_violation(err: &str, attr: &str) -> bool {
+    err.contains("@values") && err.contains(&format!("'{attr}'"))
+}
+
 /// Runs a read `fetch` query and returns the result documents as JSON.
 async fn fetch(router: &mut TypeDbRouter, tql: &str) -> Vec<serde_json::Value> {
     let tx = router.begin_read().await.expect("read tx");
@@ -456,10 +462,8 @@ async fn consolidation_state_machine_present_with_tombstone() {
              has consolidation-state "dreaming";"#,
     )
     .await;
-    assert!(
-        bad.is_err(),
-        "consolidation-state @values rejects an unknown state"
-    );
+    let err = bad.expect_err("consolidation-state @values rejects an unknown state");
+    assert!(names_values_violation(&err, "consolidation-state"), "{err}");
 
     drop_db(router, &name).await;
 }
@@ -476,7 +480,8 @@ async fn illegal_enum_value_rejected() {
         r#"insert $b isa belief, has concept-id "mem/bel/bad", has belief-state "bogus";"#,
     )
     .await;
-    assert!(bad.is_err(), "belief-state @values rejects \"bogus\"");
+    let err = bad.expect_err("belief-state @values rejects \"bogus\"");
+    assert!(names_values_violation(&err, "belief-state"), "{err}");
 
     // A legal value still commits (control).
     write_seed(

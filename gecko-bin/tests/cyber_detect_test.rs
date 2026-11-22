@@ -222,12 +222,41 @@ async fn precision_ignores_a_superseded_disposition() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn precision_with_no_asserted_dispositions_is_zero() {
+async fn precision_with_no_asserted_dispositions_is_null() {
     let test_db = TestDb::new("gecko_test_detect_no_dispositions");
     seed_detection_graph(&test_db).await;
 
     let (graph, edges) = detect_handles(&test_db);
-    let cb = cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base());
+    let ctx = run_ctx(LOGIC_ID);
+    let cb = cyber_extension_callback(graph, edges, ctx.clone(), base());
+
+    // One false-positive disposition exists, but its belief is superseded, so no
+    // asserted disposition remains: 0/0 is reported as a null precision.
+    let disposed = call(
+        &cb,
+        "disposition",
+        json!({ "logic_id": LOGIC_ID, "verdict": "false-positive" }),
+    )
+    .expect("disposition");
+    let writer = MemWriter::without_index(Arc::new(RouterGraphStore::new(Arc::new(Mutex::new(
+        test_db.router(),
+    )))));
+    writer
+        .supersede(
+            &ctx,
+            MemId::new(disposed["belief_id"].as_str().unwrap()),
+            BeliefDraft {
+                text: "the alert was reviewed again".into(),
+                owner: ctx.actor.clone(),
+                visibility: Visibility::Private,
+                confidence: Some(0.5),
+                entrenchment: None,
+            },
+            "corrected",
+        )
+        .await
+        .expect("supersede the false-positive disposition");
+
     let prec = call(
         &cb,
         "precision",

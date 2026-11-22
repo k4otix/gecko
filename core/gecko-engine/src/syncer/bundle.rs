@@ -1182,9 +1182,10 @@ async fn create_hierarchy(tx: &Transaction, manifest: &OkfBundle) -> Result<(), 
 /// bundle.
 async fn create_links(tx: &Transaction, manifest: &OkfBundle) -> Result<usize, DbError> {
     let ids = bundle_ids(manifest);
-    // One write must not carry two identical (source, target) rows: the `not`
-    // guard cannot see relations inserted by the same query. The first
-    // occurrence in document order keeps its link text.
+    // One write must not carry two rows for one (source, target) pair: the `not`
+    // guard cannot see relations inserted by the same query, so it misses rows
+    // for one pair that differ in link text and would insert a link for each.
+    // The first occurrence in document order keeps its link text.
     let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
     let rows: Vec<Vec<GivenRowEntry>> = manifest
         .links
