@@ -86,31 +86,31 @@ define
       plays sighting-of:sighted-observable;
 
   relation indicates @doc("A STIX 'indicates' relationship: an indicator points to the adversary object it signals."),
-      relates indicator-source @doc("The indicator doing the signalling."),
-      relates indicated @doc("The adversary object the indicator points to.");
+      relates indicator-source @card(1) @doc("The indicator doing the signalling."),
+      relates indicated @card(1) @doc("The adversary object the indicator points to.");
 
   relation uses @doc("A STIX 'uses' relationship: an adversary employs a technique, malware, or tool."),
-      relates user @doc("The adversary object that does the using."),
-      relates used @doc("The technique, malware, or tool being used.");
+      relates user @card(1) @doc("The adversary object that does the using."),
+      relates used @card(1) @doc("The technique, malware, or tool being used.");
 
   relation attributed-to @doc("A STIX 'attributed-to' relationship: activity is attributed to an actor."),
-      relates attributee @doc("The activity (campaign or intrusion-set) being attributed."),
-      relates actor @doc("The actor the activity is attributed to.");
+      relates attributee @card(1) @doc("The activity (campaign or intrusion-set) being attributed."),
+      relates actor @card(1) @doc("The actor the activity is attributed to.");
 
   relation targets @doc("A STIX 'targets' relationship: an adversary object aims at a target asset."),
-      relates threat-source @doc("The adversary object doing the targeting."),
-      relates target @doc("The asset being targeted.");
+      relates threat-source @card(1) @doc("The adversary object doing the targeting."),
+      relates target @card(1) @doc("The asset being targeted.");
 
   entity course-of-action sub cyber-object @doc("An ATT&CK mitigation (STIX course-of-action): a defensive measure that reduces a technique's effectiveness."),
       plays mitigates:mitigation;
 
   relation mitigates @doc("A STIX 'mitigates' relationship: a course-of-action reduces the risk of an adversary object."),
-      relates mitigation @doc("The course-of-action providing the mitigation."),
-      relates mitigated @doc("The adversary object being mitigated.");
+      relates mitigation @card(1) @doc("The course-of-action providing the mitigation."),
+      relates mitigated @card(1) @doc("The adversary object being mitigated.");
 
   relation observed-as @doc("Links an indicator's pattern to the concrete observable that instantiates it."),
-      relates pattern-indicator @doc("The indicator whose pattern was observed."),
-      relates observable-value @doc("The concrete observable matching the pattern.");
+      relates pattern-indicator @card(1) @doc("The indicator whose pattern was observed."),
+      relates observable-value @card(1) @doc("The concrete observable matching the pattern.");
 
   entity data-source sub cyber-object @doc("An ATT&CK data source: a category of telemetry (e.g. Process, Network Traffic), imported for reference since ATT&CK deprecates every data source."),
       owns platform @card(0..);
@@ -129,19 +129,19 @@ define
       plays analytic-requirement:analytic;
 
   relation strategy-detects @doc("An ATT&CK 'detects' relationship: a detection strategy detects a technique."),
-      relates strategy @doc("The detection strategy doing the detecting."),
-      relates technique @doc("The technique the strategy detects.");
+      relates strategy @card(1) @doc("The detection strategy doing the detecting."),
+      relates technique @card(1) @doc("The technique the strategy detects.");
 
   relation strategy-analytic @doc("Ties a detection strategy to one of the analytics that carry it out."),
-      relates strategy @doc("The detection strategy the analytic belongs to."),
-      relates analytic @doc("The analytic carrying out the strategy.");
+      relates strategy @card(1) @doc("The detection strategy the analytic belongs to."),
+      relates analytic @card(1) @doc("The analytic carrying out the strategy.");
 
   relation analytic-requirement @doc("A log source an analytic reads for a data component, keyed by its trimmed, lowercased name for matching against sensors."),
       owns log-source-name @card(1),
       owns log-source-key @card(1),
       owns log-source-channel @card(0..),
-      relates analytic @doc("The analytic that needs the log source."),
-      relates component @doc("The data component the log source provides to the analytic.");
+      relates analytic @card(1) @doc("The analytic that needs the log source."),
+      relates component @card(1) @doc("The data component the log source provides to the analytic.");
 
   attribute hostname value string;
   attribute environment value string @values("prod", "staging", "dev", "test");
@@ -174,9 +174,9 @@ define
       relates sighted-observable @doc("The observable that was sighted.");
 
   relation technique-detection @doc("Asserts, via a mem belief, that a piece of detecting logic covers an ATT&CK technique; the join the coverage-gap functions read."),
-      relates detecting-logic @doc("The concept holding the detection logic."),
-      relates detected-technique @doc("The ATT&CK technique the logic detects."),
-      relates detection-claim @doc("The mem belief carrying and provenancing the detection claim.");
+      relates detecting-logic @card(1) @doc("The concept holding the detection logic."),
+      relates detected-technique @card(1) @doc("The ATT&CK technique the logic detects."),
+      relates detection-claim @card(1) @doc("The mem belief carrying and provenancing the detection claim.");
   concept plays technique-detection:detecting-logic;
   belief plays technique-detection:detection-claim;
 
@@ -187,7 +187,7 @@ define
 
   relation alert-disposition @doc("An analyst's verdict on an alert: the detecting logic being judged and the mem belief carrying the judgment; counted by the precision function over a time window."),
       owns detection-verdict @card(1),
-      relates dispositioned-logic @doc("The detecting logic whose alert is being dispositioned."),
-      relates disposition-belief @doc("The mem belief carrying the disposition verdict and its timestamp.");
+      relates dispositioned-logic @card(1) @doc("The detecting logic whose alert is being dispositioned."),
+      relates disposition-belief @card(1) @doc("The mem belief carrying the disposition verdict and its timestamp.");
   concept plays alert-disposition:dispositioned-logic;
   belief plays alert-disposition:disposition-belief;

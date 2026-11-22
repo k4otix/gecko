@@ -1283,3 +1283,272 @@ async fn repeated_sros_become_one_typed_relation() {
         "a repeated SRO must be one relation"
     );
 }
+
+const MALWARE_STIX_ID: &str = "malware--00000000-0000-0000-0000-0000000000b2";
+
+/// Every cyber relation whose roles the schema requires, with those roles.
+const REQUIRED_ROLES: &[(&str, &[&str])] = &[
+    ("indicates", &["indicator-source", "indicated"]),
+    ("uses", &["user", "used"]),
+    ("attributed-to", &["attributee", "actor"]),
+    ("targets", &["threat-source", "target"]),
+    ("mitigates", &["mitigation", "mitigated"]),
+    ("observed-as", &["pattern-indicator", "observable-value"]),
+    ("strategy-detects", &["strategy", "technique"]),
+    ("strategy-analytic", &["strategy", "analytic"]),
+    ("analytic-requirement", &["analytic", "component"]),
+    (
+        "technique-detection",
+        &["detecting-logic", "detected-technique", "detection-claim"],
+    ),
+    (
+        "alert-disposition",
+        &["dispositioned-logic", "disposition-belief"],
+    ),
+];
+
+/// The number of `relation` rows missing a player for any of `roles`.
+async fn one_player_rows(tx: &Transaction, relation: &str, roles: &[&str]) -> usize {
+    let missing = roles
+        .iter()
+        .enumerate()
+        .map(|(i, role)| format!("{{ not {{ $r links ({role}: $p{i}); }}; }}"))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    count(tx, &format!("match $r isa {relation}; {missing};")).await
+}
+
+#[tokio::test]
+async fn a_reimport_that_drops_a_malware_keeps_no_one_player_uses() {
+    let test_db = TestDb::new("gecko_test_stix_drop_malware");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+    sync_stix(&mut db, BUNDLE).await;
+
+    let changed = bundle_without(MALWARE_STIX_ID);
+    let (manifest, rels) = to_okf(&changed).expect("to_okf");
+    let ids: std::collections::HashSet<&str> = manifest
+        .concepts
+        .iter()
+        .map(|c| c.concept_id.as_str())
+        .collect();
+    let expected = rels
+        .typed
+        .iter()
+        .filter(|r| r.rel_type == "uses")
+        .filter(|r| ids.contains(r.source.as_str()) && ids.contains(r.target.as_str()))
+        .count();
+    sync_stix(&mut db, &changed).await;
+
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(count(&tx, "match $r isa uses;").await, expected);
+    for (relation, roles) in REQUIRED_ROLES {
+        assert_eq!(
+            one_player_rows(&tx, relation, roles).await,
+            0,
+            "a {relation} lost a player and survived the re-import"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_uses_missing_its_user_is_refused_at_commit() {
+    let test_db = TestDb::new("gecko_test_stix_uses_refused");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+
+    let tx = db.begin_write().await.expect("begin write");
+    tx.query(
+        "insert $t isa attack-pattern, has concept-id \"raw/t\"; \
+                $r isa uses, links (used: $t);",
+    )
+    .await
+    .expect("the insert itself is accepted");
+    let err = tx
+        .commit()
+        .await
+        .expect_err("a uses without its user commits");
+    assert!(err.to_string().contains("'uses:user'"), "{err}");
+}
+
+const PRE_CORE: &str = include_str!("fixtures/schemas_pre_tightening/core_schema.tql");
+const PRE_MEM_TYPES: &str = include_str!("fixtures/schemas_pre_tightening/mem_types.tql");
+const PRE_MEM_FUNCTIONS: &str = include_str!("fixtures/schemas_pre_tightening/mem_functions.tql");
+const PRE_CYBER: &str = include_str!("fixtures/schemas_pre_tightening/cyber_schema.tql");
+const PRE_CYBER_FUNCTIONS: &str =
+    include_str!("fixtures/schemas_pre_tightening/cyber_functions.tql");
+
+/// The `relation` declaration in a schema export, up to the `;` that ends its
+/// last line.
+fn relation_block<'a>(export: &'a str, relation: &str) -> &'a str {
+    let head = format!("relation {relation}");
+    let start = export
+        .match_indices(&head)
+        .map(|(i, _)| i)
+        .find(|&i| {
+            export[i + head.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == ' ' || c == ',' || c == '\n')
+        })
+        .unwrap_or_else(|| panic!("the export declares no relation {relation}"));
+    let end = export[start..].find(";\n").expect("the declaration ends") + start;
+    &export[start..end]
+}
+
+/// Commits one write query.
+async fn write_query(db: &mut TypeDbRouter, query: &str) {
+    let tx = db.begin_write().await.expect("begin write");
+    tx.query(query).await.expect("write query");
+    tx.commit().await.expect("commit");
+}
+
+#[tokio::test]
+async fn a_database_holding_a_one_player_uses_upgrades() {
+    use gecko_engine::db::CORE_MIGRATIONS;
+
+    let test_db = TestDb::new("gecko_test_stix_one_player_upgrade");
+    let mut db = test_db.router();
+    db.apply_schema(PRE_CORE)
+        .await
+        .expect("pre-tightening core");
+    let functions = PRE_MEM_FUNCTIONS
+        .trim_start()
+        .strip_prefix("define")
+        .expect("the functions fragment starts with define");
+    db.apply_schema(&format!("{}\n{functions}", PRE_MEM_TYPES.trim_end()))
+        .await
+        .expect("pre-tightening mem");
+    db.apply_schema(&format!("{PRE_CYBER}\n{PRE_CYBER_FUNCTIONS}"))
+        .await
+        .expect("pre-tightening cyber");
+
+    // One fully played row and one row per missing role, for every relation.
+    write_query(
+        &mut db,
+        "insert $is isa intrusion-set, has concept-id \"up/is\"; \
+                $ta isa threat-actor, has concept-id \"up/ta\"; \
+                $mw isa malware, has concept-id \"up/mw\"; \
+                $ap isa attack-pattern, has concept-id \"up/ap\"; \
+                $in isa indicator, has concept-id \"up/in\"; \
+                $ob isa observable, has concept-id \"up/ob\", has ioc-value \"1.1.1.1\", \
+                    has ioc-type \"ipv4\"; \
+                $ha isa host-asset, has concept-id \"up/ha\"; \
+                $co isa course-of-action, has concept-id \"up/co\"; \
+                $ds isa detection-strategy, has concept-id \"up/ds\"; \
+                $an isa analytic, has concept-id \"up/an\"; \
+                $dc isa data-component, has concept-id \"up/dc\"; \
+                $pb isa concept, has concept-id \"up/pb\"; \
+                (indicator-source: $in, indicated: $mw) isa indicates; \
+                (indicator-source: $in) isa indicates; \
+                (indicated: $mw) isa indicates; \
+                (user: $is, used: $ap) isa uses; \
+                (user: $is) isa uses; \
+                (used: $ap) isa uses; \
+                (attributee: $is, actor: $ta) isa attributed-to; \
+                (attributee: $is) isa attributed-to; \
+                (actor: $ta) isa attributed-to; \
+                (threat-source: $is, target: $ha) isa targets; \
+                (threat-source: $is) isa targets; \
+                (target: $ha) isa targets; \
+                (mitigation: $co, mitigated: $ap) isa mitigates; \
+                (mitigation: $co) isa mitigates; \
+                (mitigated: $ap) isa mitigates; \
+                (pattern-indicator: $in, observable-value: $ob) isa observed-as; \
+                (pattern-indicator: $in) isa observed-as; \
+                (observable-value: $ob) isa observed-as; \
+                (strategy: $ds, technique: $ap) isa strategy-detects; \
+                (strategy: $ds) isa strategy-detects; \
+                (technique: $ap) isa strategy-detects; \
+                (strategy: $ds, analytic: $an) isa strategy-analytic; \
+                (strategy: $ds) isa strategy-analytic; \
+                (analytic: $an) isa strategy-analytic; \
+                (analytic: $an, component: $dc) isa analytic-requirement, \
+                    has log-source-name \"n\", has log-source-key \"n\"; \
+                (analytic: $an) isa analytic-requirement, \
+                    has log-source-name \"n\", has log-source-key \"n\"; \
+                (component: $dc) isa analytic-requirement, \
+                    has log-source-name \"n\", has log-source-key \"n\";",
+    )
+    .await;
+    claim_with_belief(&mut db, "mem/bel/up", "up/pb").await;
+    write_query(
+        &mut db,
+        "match $b isa belief, has concept-id \"mem/bel/up\"; \
+               $pb isa concept, has concept-id \"up/pb\"; \
+               $ap isa attack-pattern, has concept-id \"up/ap\"; \
+         insert (detecting-logic: $pb, detected-technique: $ap, detection-claim: $b) \
+                    isa technique-detection; \
+                (detected-technique: $ap, detection-claim: $b) isa technique-detection; \
+                (detecting-logic: $pb, detection-claim: $b) isa technique-detection; \
+                (detecting-logic: $pb, detected-technique: $ap) isa technique-detection; \
+                (dispositioned-logic: $pb, disposition-belief: $b) isa alert-disposition, \
+                    has detection-verdict \"true-positive\"; \
+                (disposition-belief: $b) isa alert-disposition, \
+                    has detection-verdict \"false-positive\"; \
+                (dispositioned-logic: $pb) isa alert-disposition, \
+                    has detection-verdict \"benign-true\";",
+    )
+    .await;
+
+    // Each cleanup's trigger is in the pre-tightening export exactly once.
+    let cyber = CyberGecko::new();
+    let cleanups: Vec<_> = cyber
+        .schema_migrations()
+        .iter()
+        .filter(|m| m.id.ends_with("-required-roles"))
+        .collect();
+    assert_eq!(
+        cleanups.len(),
+        REQUIRED_ROLES.len(),
+        "one cleanup per cyber relation"
+    );
+    let before = db.database_schema().await.expect("schema");
+    for m in &cleanups {
+        assert_eq!(before.matches(m.applies_when).count(), 1, "{}", m.id);
+    }
+
+    let mem = MemGecko::new();
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+            .await
+            .expect("the shipped core");
+        db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+            .await
+            .expect("the shipped mem");
+        db.apply_schema_with_migrations(cyber.schema(), cyber.schema_migrations())
+            .await
+            .expect("cyber cleanups, then the shipped cyber");
+    }
+
+    let after = db.database_schema().await.expect("schema");
+    for m in cyber.schema_migrations() {
+        assert!(!after.contains(m.applies_when), "{} still pending", m.id);
+    }
+    let tx = db.begin_read().await.expect("begin read");
+    for (relation, roles) in REQUIRED_ROLES {
+        let block = relation_block(&after, relation);
+        for role in *roles {
+            assert!(
+                block.contains(&format!("relates {role} @card(1..1)")),
+                "{relation}:{role} is not required: {block}"
+            );
+        }
+        let full = roles
+            .iter()
+            .enumerate()
+            .map(|(i, role)| format!("{role}: $p{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            count(&tx, &format!("match $r isa {relation};")).await,
+            1,
+            "only the fully played {relation} survives"
+        );
+        assert_eq!(
+            count(&tx, &format!("match $r isa {relation}, links ({full});")).await,
+            1,
+            "the surviving {relation} is the fully played one"
+        );
+    }
+}

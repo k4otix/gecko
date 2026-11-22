@@ -536,7 +536,14 @@ async fn tightening_forms_apply_to_the_pre_tightening_cyber() {
             ),
         ],
     );
-    let mut cyber_migrations = cyber_gecko::migrations::CYBER_MIGRATIONS.to_vec();
+    // The shipped cleanups are left out: the probe tightens only `uses` and
+    // `technique-detection`, with cleanups of its own.
+    let shipped: Vec<_> = cyber_gecko::migrations::CYBER_MIGRATIONS
+        .iter()
+        .filter(|m| !m.id.ends_with("-required-roles"))
+        .cloned()
+        .collect();
+    let mut cyber_migrations = shipped.clone();
     cyber_migrations.extend([
         gecko_extension_api::SchemaMigration {
             id: "probe/uses-one-player",
@@ -597,7 +604,7 @@ async fn tightening_forms_apply_to_the_pre_tightening_cyber() {
     }
 
     let err = db
-        .apply_schema_with_migrations(&cyber, &cyber_gecko::migrations::CYBER_MIGRATIONS)
+        .apply_schema_with_migrations(&cyber, &shipped)
         .await
         .expect_err("a one-player uses fails the required roles");
     assert!(err.to_string().contains("'uses'"), "{err}");
