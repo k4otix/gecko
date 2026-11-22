@@ -775,8 +775,9 @@ async fn cmd_sync(
 }
 
 /// Syncs a sensor file into an existing ATT&CK database: refuses a missing
-/// database, parses the file, ensures the schema, refuses a file the graph does not
-/// resolve, syncs it, and prints what it declares that ATT&CK does not use.
+/// database, parses the file, refuses a bundle name that holds other records,
+/// ensures the schema, refuses a file the graph does not resolve, syncs it, and
+/// prints what it declares that ATT&CK does not use.
 #[cfg(feature = "cyber")]
 async fn cmd_sync_sensors(
     config: DbConfig,
@@ -810,14 +811,18 @@ async fn cmd_sync_sensors(
         .context("Failed to read sensor file")?;
     let parsed = sensors::parse(&yaml).map_err(|e| anyhow::anyhow!("sensor file error: {e}"))?;
 
-    apply_all_schemas(&mut db, extensions, None)
-        .await
-        .context("Failed to ensure database schema")?;
-
     let graph: std::sync::Arc<dyn gecko_extension_api::GraphReader> =
         std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
             tokio::sync::Mutex::new(TypeDbRouter::new(config.clone())),
         )));
+    sensors::check_bundle_name(&graph, bundle_name)
+        .await
+        .map_err(|e| anyhow::anyhow!("--bundle-name refused: {e}"))?;
+
+    apply_all_schemas(&mut db, extensions, None)
+        .await
+        .context("Failed to ensure database schema")?;
+
     sensors::check_against_graph(&graph, &parsed)
         .await
         .map_err(|e| anyhow::anyhow!("sensor file refused: {e}"))?;

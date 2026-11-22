@@ -1,15 +1,16 @@
 //! The sensor file: the platforms a user runs and the sensors that watch them.
 //!
 //! [`parse`] reads and validates the YAML file, [`to_okf`] converts it to an OKF
-//! bundle holding one `monitored-environment` and one `sensor` per entry, and
-//! [`check_against_graph`] and [`notices`] compare it with the ATT&CK data in the
-//! target database before and after `gecko sync-sensors` syncs it.
+//! bundle holding one `monitored-environment` and one `sensor` per entry,
+//! [`check_bundle_name`] refuses a bundle name that already holds other records,
+//! and [`check_against_graph`] and [`notices`] compare the file with the ATT&CK
+//! data in the target database before and after `gecko sync-sensors` syncs it.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use gecko_extension_api::GraphReader;
 use gecko_extension_api::okf::{OkfBundle, OkfConcept, TypedAttrValue, TypedAttribute};
+use gecko_extension_api::{GraphReader, GraphValue};
 use serde_json::Value as Json;
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
@@ -346,8 +347,42 @@ fn string_field(row: &Json, field: &str) -> Result<String, String> {
         .ok_or_else(|| format!("a graph row has no string `{field}`: {row}"))
 }
 
-/// Refuses a database without ATT&CK, or a file naming a component that does not
-/// match exactly one live data component, naming every such component at once.
+/// Refuses a bundle name whose bundle already holds a concept outside
+/// `<bundle_name>/environment` and `<bundle_name>/sensor/*`, which a sensor sync
+/// would garbage-collect.
+pub async fn check_bundle_name(
+    graph: &Arc<dyn GraphReader>,
+    bundle_name: &str,
+) -> Result<(), String> {
+    let ids = graph
+        .read(
+            "given $bn: string; \
+             match $b has bundle-name $n; $n == $bn; \
+             containment (container: $b, member: $c); $c has concept-id $id; \
+             fetch { \"id\": $id };",
+            &["bn".into()],
+            &[GraphValue::from(bundle_name)],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let environment = format!("{bundle_name}/environment");
+    let sensor_prefix = format!("{bundle_name}/sensor/");
+    for row in &ids {
+        let id = string_field(row, "id")?;
+        if id != environment && !id.starts_with(&sensor_prefix) {
+            return Err(format!(
+                "bundle '{bundle_name}' holds records that are not sensors (such as '{id}'); \
+                 a sensor sync under that name would delete them, so choose another \
+                 --bundle-name"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a database without ATT&CK, or a file naming a platform that matches a
+/// live analytic's platform only ignoring case or a component that does not match
+/// exactly one live data component, naming every such entry in one message.
 pub async fn check_against_graph(
     graph: &Arc<dyn GraphReader>,
     file: &SensorFile,
@@ -363,8 +398,76 @@ pub async fn check_against_graph(
         return Err(NO_ATTACK.to_string());
     }
 
+    let mut bad = misspelled_platforms(graph, file).await?;
+    let component_errors = component_errors(graph, file).await?;
+    if !component_errors.is_empty() {
+        bad.push(format!(
+            "every fallback component must match exactly one live ATT&CK data component: {}",
+            component_errors.join("; ")
+        ));
+    }
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(bad.join("; "))
+    }
+}
+
+/// The platforms live analytics run on, as ATT&CK spells them.
+async fn live_platforms(graph: &Arc<dyn GraphReader>) -> Result<BTreeSet<String>, String> {
+    Ok(read_strings(
+        graph,
+        &format!("match {LIVE_ANALYTIC} $a has platform $p; fetch {{ \"platform\": $p }};"),
+        "platform",
+    )
+    .await?
+    .into_iter()
+    .collect())
+}
+
+/// One error per declared platform that equals a live analytic's platform
+/// ignoring case but none exactly, naming ATT&CK's spelling.
+async fn misspelled_platforms(
+    graph: &Arc<dyn GraphReader>,
+    file: &SensorFile,
+) -> Result<Vec<String>, String> {
+    let live = live_platforms(graph).await?;
+    let spelling = |p: &str| -> Option<String> {
+        if live.contains(p) {
+            return None;
+        }
+        let folded = p.to_lowercase();
+        let matches: Vec<&str> = live
+            .iter()
+            .filter(|l| l.to_lowercase() == folded)
+            .map(String::as_str)
+            .collect();
+        (!matches.is_empty()).then(|| {
+            format!(
+                "platform '{p}' should be spelled '{}'",
+                matches.join("' or '")
+            )
+        })
+    };
+    let mut out: Vec<String> = file.platforms.iter().filter_map(|p| spelling(p)).collect();
+    for s in &file.sensors {
+        for p in &s.platforms {
+            if let Some(e) = spelling(p) {
+                out.push(format!("sensor '{}': {e}", s.name));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One error per fallback component that does not match exactly one live data
+/// component.
+async fn component_errors(
+    graph: &Arc<dyn GraphReader>,
+    file: &SensorFile,
+) -> Result<Vec<String>, String> {
     if file.sensors.iter().all(|s| s.components.is_empty()) {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let rows = graph
         .read(
@@ -401,14 +504,7 @@ pub async fn check_against_graph(
             }
         }
     }
-    if bad.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "every fallback component must match exactly one live ATT&CK data component: {}",
-            bad.join("; ")
-        ))
-    }
+    Ok(bad)
 }
 
 /// What a sensor file declares that ATT&CK does not use: log sources no live
@@ -434,14 +530,7 @@ pub async fn notices(
     .await?
     .into_iter()
     .collect();
-    let used_platforms: HashSet<String> = read_strings(
-        graph,
-        &format!("match {LIVE_ANALYTIC} $a has platform $p; fetch {{ \"platform\": $p }};"),
-        "platform",
-    )
-    .await?
-    .into_iter()
-    .collect();
+    let used_platforms = live_platforms(graph).await?;
 
     let mut out = Vec::new();
     for s in &file.sensors {

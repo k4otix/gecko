@@ -10,7 +10,9 @@
 use std::sync::Arc;
 
 use cyber_gecko::CyberGecko;
-use cyber_gecko::sensors::{SensorFile, check_against_graph, notices, parse, to_okf};
+use cyber_gecko::sensors::{
+    SensorFile, check_against_graph, check_bundle_name, notices, parse, to_okf,
+};
 use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::graph_store::RouterGraphStore;
 use gecko_engine::extension::GeckoExtension;
@@ -160,6 +162,60 @@ async fn refuses_every_unmatched_or_ambiguous_component_at_once() {
 }
 
 #[tokio::test]
+async fn refuses_a_platform_in_the_wrong_case() {
+    let test_db = TestDb::new("gecko_test_sensors_platform_case");
+    attack::sync_fixture(&test_db).await;
+    let file = parse(
+        "platforms: [windows, Linux, AIX]\nsensors:\n  - name: edr\n    \
+         platforms: [MACOS, Linux]\n    components: [No Such Component]\n",
+    )
+    .expect("parses");
+    let graph = graph(&test_db);
+    let err = check_against_graph(&graph, &file)
+        .await
+        .expect_err("two platforms are in the wrong case");
+    for needle in [
+        "platform 'windows' should be spelled 'Windows'",
+        "sensor 'edr': platform 'MACOS' should be spelled 'macOS'",
+        "No Such Component",
+    ] {
+        assert!(err.contains(needle), "{needle} missing from {err}");
+    }
+    assert!(!err.contains("'Linux'"), "{err}");
+    assert!(!err.contains("AIX"), "{err}");
+
+    let ok = parse(
+        "platforms: [Windows, Linux, AIX]\nsensors:\n  - name: edr\n    \
+         platforms: [macOS]\n    log_sources: [a]\n",
+    )
+    .expect("parses");
+    check_against_graph(&graph, &ok)
+        .await
+        .expect("every platform is spelled as ATT&CK spells it");
+}
+
+#[tokio::test]
+async fn refuses_a_bundle_name_that_holds_other_records() {
+    let test_db = TestDb::new("gecko_test_sensors_bundle_name");
+    attack::sync_fixture(&test_db).await;
+    let graph = graph(&test_db);
+
+    let err = check_bundle_name(&graph, "stix-sync")
+        .await
+        .expect_err("stix-sync holds the ATT&CK import");
+    assert!(err.contains("'stix-sync'"), "{err}");
+    assert!(err.contains("not sensors"), "{err}");
+
+    check_bundle_name(&graph, cyber_gecko::sensors::DEFAULT_BUNDLE_NAME)
+        .await
+        .expect("no bundle of that name yet");
+    sync_sensors(&test_db, &parse(WITH_COMPONENT).expect("parses")).await;
+    check_bundle_name(&graph, cyber_gecko::sensors::DEFAULT_BUNDLE_NAME)
+        .await
+        .expect("the bundle holds only the sensor file's records");
+}
+
+#[tokio::test]
 async fn sync_twice_changes_nothing() {
     let test_db = TestDb::new("gecko_test_sensors_twice");
     attack::sync_fixture(&test_db).await;
@@ -228,7 +284,7 @@ async fn notices_name_unused_log_sources_and_platforms() {
 platforms: [Windows, Linux, Solaris]
 sensors:
   - name: windows-edr
-    platforms: [windows]
+    platforms: [AIX]
     log_sources: [WinEventLog:Sysmon, Custom:Unknown]
 "#,
     )
@@ -241,7 +297,7 @@ sensors:
 
     let notes = notices(&graph, &file).await.expect("notices");
     let all = notes.join("\n");
-    for needle in ["'windows'", "Custom:Unknown", "Solaris"] {
+    for needle in ["'AIX'", "Custom:Unknown", "Solaris"] {
         assert!(all.contains(needle), "{needle} missing from {notes:?}");
     }
     for absent in ["WinEventLog:Sysmon", "'Linux'", "'Windows'"] {
