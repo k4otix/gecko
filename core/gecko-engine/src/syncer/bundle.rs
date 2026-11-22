@@ -197,8 +197,9 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 /// (`concept` when absent) is replaced, whatever its hash: deleted with its OKF
 /// relations and inserted under the new type, counted as updated. It loses its
 /// incoming links from other bundles and its extension relations. The sync is
-/// refused with [`DbError::TypeChangeReferenced`] before anything is written when
-/// a belief edge references such a concept.
+/// refused before anything is written when another bundle also contains such a
+/// concept ([`DbError::TypeChangeShared`]) or a belief edge references it
+/// ([`DbError::TypeChangeReferenced`]).
 ///
 /// `belief_tier_root` names the root type of the belief tier, which the schema
 /// must contain (otherwise [`DbError::Schema`]). A concept the sync would
@@ -278,6 +279,26 @@ pub async fn sync_bundle(
         .collect();
     // Refuse a type_hint outside `concept`'s closure before anything is written.
     check_type_hints(&tx, &write_concepts).await?;
+    // Refuse to retype a concept another bundle also contains: replacing it would
+    // drop that bundle's containment.
+    let shared_retypes: BTreeSet<&String> = retyped
+        .keys()
+        .filter(|id| {
+            stored
+                .get(*id)
+                .is_some_and(|s| s.bundles.iter().any(|b| b != name))
+        })
+        .collect();
+    if !shared_retypes.is_empty() {
+        let ids = shared_retypes
+            .into_iter()
+            .map(|id| {
+                let (from, to) = retyped[id].clone();
+                (id.clone(), from, to)
+            })
+            .collect();
+        return Err(DbError::TypeChangeShared { ids });
+    }
     // Refuse to retype a concept a belief edge references: the edge cannot follow.
     let retyped_ids: Vec<&str> = retyped.keys().map(String::as_str).collect();
     let referenced_retypes: BTreeSet<String> = belief_edge_references(&tx, &retyped_ids, &surface)

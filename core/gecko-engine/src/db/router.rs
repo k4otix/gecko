@@ -54,19 +54,40 @@ pub enum DbError {
     /// (concept id, stored type, new type). Nothing was committed.
     #[error("{}", type_change_referenced_message(.ids))]
     TypeChangeReferenced { ids: Vec<(String, String, String)> },
+
+    /// A sync changed the `type_hint` of concepts another bundle also contains, and
+    /// replacing such a concept would drop that bundle's containment. `ids` lists
+    /// every such concept, sorted, as (concept id, stored type, new type). Nothing
+    /// was committed.
+    #[error("{}", type_change_shared_message(.ids))]
+    TypeChangeShared { ids: Vec<(String, String, String)> },
+}
+
+/// Renders a refused type change of concepts another bundle also contains.
+fn type_change_shared_message(ids: &[(String, String, String)]) -> String {
+    format!(
+        "sync refused: another bundle also contains {}, whose type_hint changed, and \
+         replacing it would drop that bundle's containment. Nothing was committed.",
+        type_change_list(ids)
+    )
+}
+
+/// Lists each `(id, stored type, new type)` of a refused type change.
+fn type_change_list(ids: &[(String, String, String)]) -> String {
+    let list: Vec<String> = ids
+        .iter()
+        .map(|(id, from, to)| format!("`{id}` (`{from}` to `{to}`)"))
+        .collect();
+    list.join(", ")
 }
 
 /// Renders a refused type change, naming every belief-referenced concept with its
 /// stored and new type.
 fn type_change_referenced_message(ids: &[(String, String, String)]) -> String {
-    let list: Vec<String> = ids
-        .iter()
-        .map(|(id, from, to)| format!("`{id}` (`{from}` to `{to}`)"))
-        .collect();
     format!(
         "sync refused: a belief edge references {}, whose type_hint changed, and a type \
          change cannot carry the edge. Nothing was committed.",
-        list.join(", ")
+        type_change_list(ids)
     )
 }
 
