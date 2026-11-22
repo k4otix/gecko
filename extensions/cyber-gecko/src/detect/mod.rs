@@ -306,7 +306,8 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     if strategies.is_empty() {
         return Err(
             "no current ATT&CK detection data: the graph holds no detection strategies \
-             (ATT&CK v18 or later)"
+             (ATT&CK v18 or later); sync or re-sync the ATT&CK bundle into this database, \
+             which an upgraded database needs before its first check"
                 .into(),
         );
     }

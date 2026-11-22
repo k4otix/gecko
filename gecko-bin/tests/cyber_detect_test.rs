@@ -982,4 +982,5 @@ async fn blinded_errors_on_a_pre_current_graph() {
     let cb = cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base());
     let err = call(&cb, "blinded", json!({})).expect_err("a pre-current graph is an error");
     assert!(err.contains("no current ATT&CK detection data"), "{err}");
+    assert!(err.contains("re-sync the ATT&CK bundle"), "{err}");
 }
