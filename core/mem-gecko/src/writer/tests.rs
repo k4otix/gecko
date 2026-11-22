@@ -4,8 +4,8 @@ use super::*;
 use DerivationMethod::LlmSynthesis;
 use async_trait::async_trait;
 use gecko_extension_api::{
-    ActorId, BeliefDraft, DerivationMethod, EpistemicWriter, FilterMeta, ProvenanceSource,
-    RunContext, Visibility,
+    ActorId, BeliefDraft, ContextBudget, DerivationMethod, EpistemicReader, EpistemicWriter,
+    FilterMeta, ProvenanceSource, RecallQuery, RunContext, Visibility,
 };
 use gecko_extension_api::{GraphReader, GraphWrite};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -172,6 +172,56 @@ impl SemanticIndex for OkIndex {
     }
 }
 
+/// An index whose `query` surfaces one fixed candidate.
+struct OneCandidateIndex;
+impl SemanticIndex for OneCandidateIndex {
+    fn upsert(&self, _id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<()> {
+        Ok(())
+    }
+    fn remove(&self, _id: ConceptId) -> Result<()> {
+        Ok(())
+    }
+    fn query(&self, _v: &[f32], _k: usize, _p: &FilterMeta) -> Result<Vec<(ConceptId, f32)>> {
+        Ok(vec![(ConceptId("mem/bel/vanishing".into()), 0.9)])
+    }
+    fn model_id(&self) -> &str {
+        "test-embedder"
+    }
+}
+
+#[tokio::test]
+async fn a_retrieval_event_mismatch_names_the_event() {
+    let store = Arc::new(RecordingGraphStore {
+        mismatch_at: Some(|len| len - 1),
+        read_reply: vec![serde_json::json!({ "title": "t", "act": 1.0 })],
+        ..Default::default()
+    });
+    let w = MemWriter::new(
+        store,
+        Some(Arc::new(OkEmbedder)),
+        Some(Arc::new(OneCandidateIndex)),
+    )
+    .with_retrieval_provenance(true);
+    let msg = storage(
+        w.recall(
+            &ctx(),
+            RecallQuery {
+                text: "q".into(),
+                as_of: None,
+            },
+            ContextBudget {
+                max_chunks: 1,
+                max_tokens: None,
+            },
+        )
+        .await
+        .expect_err("a vanished candidate fails the retrieval-event write"),
+    );
+    for want in ["retrieval-event mem/ep/", "nothing was committed"] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+}
+
 #[tokio::test]
 async fn assert_belief_survives_failing_index_and_marks_dirty() {
     let idx = Arc::new(FailingUpsertIndex::default());
@@ -326,7 +376,8 @@ async fn contest_refuses_a_repeated_claim() {
 fn id_matching_ops_require_exactly_one_row() {
     let id = MemId::new("mem/bel/1");
     let ids = [MemId::new("mem/ep/1"), MemId::new("mem/ep/2")];
-    let deriv = crate::tql::derivation_op(&id, &ids, LlmSynthesis, Some(0.5)).unwrap();
+    let deriv =
+        crate::tql::derivation_op(&id, &ctx().actor, &ids, LlmSynthesis, Some(0.5)).unwrap();
     assert_eq!(deriv.expect_rows, Some(1));
     let contest = crate::tql::contest_ops(&ctx(), &MemId::new("mem/anom/1"), &ids);
     assert_eq!(contest.last().unwrap().expect_rows, Some(1));
@@ -340,6 +391,31 @@ fn id_matching_ops_require_exactly_one_row() {
         Some(1),
         "record_prediction"
     );
+    let ev = MemId::new("mem/ep/re");
+    assert_eq!(
+        crate::tql::informs_synthesis_op(&ev, &id).expect_rows,
+        Some(1),
+        "informs-synthesis"
+    );
+    assert_eq!(
+        crate::tql::set_was_used_op(&ev, &ids[0]).expect_rows,
+        Some(1),
+        "was-used"
+    );
+    let resolve =
+        crate::tql::resolve_prediction_ops(&ctx(), &id, &MemId::new("mem/ep/r"), "confirmed");
+    assert_eq!(
+        resolve.last().unwrap().expect_rows,
+        Some(1),
+        "resolve_prediction"
+    );
+    let surfaced = [(ConceptId("mem/bel/1".into()), 0.9_f32)];
+    let retrieval = crate::tql::retrieval_event_ops(&ctx(), &ev, "semantic", 1, &surfaced);
+    assert_eq!(
+        retrieval.last().unwrap().expect_rows,
+        Some(1),
+        "retrieval-event"
+    );
 }
 
 #[test]
@@ -348,14 +424,15 @@ fn belief_ops_reports_the_derivation_index() {
         .with_retrieval_provenance(true);
     let id = MemId::new("mem/bel/1");
     let ev = [MemId::new("mem/ep/1")];
-    let (ops, at) = w.belief_ops(&ctx(), &belief(), &id, &ev, LlmSynthesis);
-    let at = at.expect("evidence ⇒ a derivation op");
+    let built = w.belief_ops(&ctx(), &belief(), &id, &ev, LlmSynthesis);
+    let at = built.derivation.expect("evidence ⇒ a derivation op");
     assert_eq!(
-        ops[at],
-        crate::tql::derivation_op(&id, &ev, LlmSynthesis, belief().confidence).unwrap()
+        built.ops[at],
+        crate::tql::derivation_op(&id, &ctx().actor, &ev, LlmSynthesis, belief().confidence)
+            .unwrap()
     );
-    let (_, none) = w.belief_ops(&ctx(), &belief(), &id, &[], LlmSynthesis);
-    assert_eq!(none, None);
+    let none = w.belief_ops(&ctx(), &belief(), &id, &[], LlmSynthesis);
+    assert_eq!(none.derivation, None);
 }
 
 /// A writer whose every write fails with a row-count mismatch at `at(len)`.
@@ -402,6 +479,63 @@ async fn a_derivation_mismatch_names_the_evidence() {
 }
 
 #[tokio::test]
+async fn a_retrieval_provenance_mismatch_names_the_event_and_item() {
+    let ev = MemId::new("mem/ep/re");
+    let item = MemId::new("mem/ep/1");
+    let c = ctx();
+    c.push_retrieval(
+        ev.clone(),
+        std::iter::once(ConceptId(item.0.clone())).collect(),
+    );
+    // With one matched retrieval the ops end: derivation, informs-synthesis,
+    // was-used, retrieval-provenance.
+    let informs = storage(
+        mismatching_writer(|len| len - 3)
+            .with_retrieval_provenance(true)
+            .assert_belief(&c, belief(), std::slice::from_ref(&item), LlmSynthesis)
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "informs-synthesis",
+        "mem/ep/re",
+        "mem/bel/",
+        "nothing was committed",
+    ] {
+        assert!(informs.contains(want), "{want}: {informs}");
+    }
+    let used = storage(
+        mismatching_writer(|len| len - 2)
+            .with_retrieval_provenance(true)
+            .assert_belief(&c, belief(), std::slice::from_ref(&item), LlmSynthesis)
+            .await
+            .unwrap_err(),
+    );
+    for want in ["was-used", "mem/ep/re", "mem/ep/1", "nothing was committed"] {
+        assert!(used.contains(want), "{want}: {used}");
+    }
+}
+
+#[tokio::test]
+async fn a_resolve_prediction_mismatch_names_the_belief() {
+    let b = MemId::new("mem/bel/p");
+    let msg = storage(
+        mismatching_writer(|len| len - 1)
+            .resolve_prediction(&ctx(), b, gecko_extension_api::Outcome::Confirmed)
+            .await
+            .unwrap_err(),
+    );
+    for want in [
+        "mem/bel/p",
+        "open prediction(s)",
+        "exactly one is required",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+}
+
+#[tokio::test]
 async fn contest_rests_on_and_record_prediction_mismatches_name_their_ids() {
     let a = MemId::new("mem/bel/a");
     let gone = MemId::new("mem/bel/gone");
@@ -439,7 +573,7 @@ async fn contest_rests_on_and_record_prediction_mismatches_name_their_ids() {
             .await
             .unwrap_err(),
     );
-    for want in ["mem/bel/gone", "no belief", "nothing was committed"] {
+    for want in ["mem/bel/gone", "does not exist", "nothing was committed"] {
         assert!(msg.contains(want), "record_prediction {want}: {msg}");
     }
 }
@@ -834,7 +968,9 @@ mod edges {
         let calls = store.write_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "one transaction");
         let ops = &calls[0];
-        let (base, _) = w.belief_ops(&c, &belief(), &id, &[], DerivationMethod::TypeJoin);
+        let base = w
+            .belief_ops(&c, &belief(), &id, &[], DerivationMethod::TypeJoin)
+            .ops;
         assert_eq!(ops.len(), base.len() + 2);
         assert_eq!(queries(&ops[..base.len()]), queries(&base));
         let decl = &PROBE_DECLS[0];

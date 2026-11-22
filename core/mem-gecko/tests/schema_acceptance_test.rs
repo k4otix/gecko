@@ -15,12 +15,15 @@
 
 use futures_util::StreamExt;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
+use gecko_engine::db::run_graph_writes;
 use mem_gecko::MemGecko;
 use ulid::Ulid;
 
 use gecko_extension_api::GeckoExtension;
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 
 /// Core schema (records tier) that the mem substrate extends additively.
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
@@ -57,6 +60,24 @@ async fn write(router: &mut TypeDbRouter, tql: &str) -> Result<(), String> {
     tx.query(tql).await.map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Runs a write transaction whose raw memory items get their ownership and
+/// source-link from [`provenance::seed_provenance`] before the commit.
+async fn write_seed(router: &mut TypeDbRouter, tql: &str) -> Result<(), String> {
+    let tx = router.begin_write().await.map_err(|e| e.to_string())?;
+    tx.query(tql).await.map_err(|e| e.to_string())?;
+    run_graph_writes(&tx, &provenance::seed_provenance())
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Whether a refused write's error is an `@values` violation on attribute `attr`:
+/// it names both the `@values` constraint and the attribute type.
+fn names_values_violation(err: &str, attr: &str) -> bool {
+    err.contains("@values") && err.contains(&format!("'{attr}'"))
 }
 
 /// Runs a read `fetch` query and returns the result documents as JSON.
@@ -101,7 +122,7 @@ async fn schema_applies_clean() {
 async fn belief_evidence_restson_supersession_roundtrip() {
     let (mut router, name) = fresh_db().await;
 
-    write(
+    write_seed(
         &mut router,
         r#"
         insert
@@ -184,7 +205,7 @@ async fn belief_evidence_restson_supersession_roundtrip() {
 async fn population_materialized_and_strict_membership() {
     let (mut router, name) = fresh_db().await;
 
-    write(
+    write_seed(
         &mut router,
         r#"
         insert
@@ -260,7 +281,7 @@ async fn population_materialized_and_strict_membership() {
 async fn provable_resolution_canonicalizes_without_merge() {
     let (mut router, name) = fresh_db().await;
 
-    write(
+    write_seed(
         &mut router,
         r#"
         insert
@@ -341,7 +362,7 @@ async fn same_spec_hash_shares_one_population() {
     let (mut router, name) = fresh_db().await;
 
     // Create the population once, plus the first scoped belief.
-    write(
+    write_seed(
         &mut router,
         r#"
         insert
@@ -354,7 +375,7 @@ async fn same_spec_hash_shares_one_population() {
     .expect("insert population + first belief");
 
     // Second belief attaches to the SAME population, matched by its @key spec-hash.
-    write(
+    write_seed(
         &mut router,
         r#"
         match $p isa population, has spec-hash "cohort-x";
@@ -411,7 +432,7 @@ async fn consolidation_state_machine_present_with_tombstone() {
         .iter()
         .enumerate()
     {
-        write(
+        write_seed(
             &mut router,
             &format!(
                 r#"insert $e isa episode, has concept-id "mem/ep/cs{i}",
@@ -434,17 +455,15 @@ async fn consolidation_state_machine_present_with_tombstone() {
     assert_eq!(tomb[0]["s"], "tombstoned", "the tombstone state is present");
 
     // An illegal consolidation-state is rejected by @values.
-    let bad = write(
+    let bad = write_seed(
         &mut router,
         r#"insert $e isa episode, has concept-id "mem/ep/csbad",
              has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
              has consolidation-state "dreaming";"#,
     )
     .await;
-    assert!(
-        bad.is_err(),
-        "consolidation-state @values rejects an unknown state"
-    );
+    let err = bad.expect_err("consolidation-state @values rejects an unknown state");
+    assert!(names_values_violation(&err, "consolidation-state"), "{err}");
 
     drop_db(router, &name).await;
 }
@@ -456,15 +475,16 @@ async fn consolidation_state_machine_present_with_tombstone() {
 async fn illegal_enum_value_rejected() {
     let (mut router, name) = fresh_db().await;
 
-    let bad = write(
+    let bad = write_seed(
         &mut router,
         r#"insert $b isa belief, has concept-id "mem/bel/bad", has belief-state "bogus";"#,
     )
     .await;
-    assert!(bad.is_err(), "belief-state @values rejects \"bogus\"");
+    let err = bad.expect_err("belief-state @values rejects \"bogus\"");
+    assert!(names_values_violation(&err, "belief-state"), "{err}");
 
     // A legal value still commits (control).
-    write(
+    write_seed(
         &mut router,
         r#"insert $b isa belief, has concept-id "mem/bel/good", has belief-state "asserted";"#,
     )
@@ -482,7 +502,7 @@ async fn illegal_enum_value_rejected() {
 async fn pivot_is_instantiable() {
     let (mut router, name) = fresh_db().await;
 
-    write(
+    write_seed(
         &mut router,
         r#"
         insert
@@ -506,6 +526,59 @@ async fn pivot_is_instantiable() {
     .await;
     assert_eq!(pivots.len(), 1);
     assert_eq!(pivots[0]["agent"], "analyst-1");
+
+    drop_db(router, &name).await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Acceptance: the schema counts ownership and provenance. A memory item is owned
+// exactly once and sourced at least once; anything else is refused at commit.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn a_memory_item_with_two_ownerships_is_refused_at_commit() {
+    let (mut router, name) = fresh_db().await;
+
+    let refused = write(
+        &mut router,
+        r#"
+        insert
+          $ag isa agent, has agent-id "agent-1";
+          $run isa doc-run, has run-id "run-1";
+          $b isa belief, has concept-id "mem/bel/two-owners", has belief-state "asserted";
+          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
+          (owned: $b, owner: $ag) isa ownership, has visibility "private";
+          (owned: $b, owner: $ag) isa ownership, has visibility "team";
+        "#,
+    )
+    .await;
+    let err = refused.expect_err("a second ownership commits");
+    assert!(
+        err.contains("ownership:owned"),
+        "the refusal does not name ownership:owned: {err}"
+    );
+
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_memory_item_with_no_source_link_is_refused_at_commit() {
+    let (mut router, name) = fresh_db().await;
+
+    let refused = write(
+        &mut router,
+        r#"
+        insert
+          $ag isa agent, has agent-id "agent-1";
+          $b isa belief, has concept-id "mem/bel/unsourced", has belief-state "asserted";
+          (owned: $b, owner: $ag) isa ownership, has visibility "private";
+        "#,
+    )
+    .await;
+    let err = refused.expect_err("a memory item with no source-link commits");
+    assert!(
+        err.contains("source-link:memory"),
+        "the refusal does not name source-link:memory: {err}"
+    );
 
     drop_db(router, &name).await;
 }

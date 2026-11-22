@@ -5,18 +5,20 @@
 
 use std::collections::BTreeSet;
 
-use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::router::DbError;
 use gecko_engine::db::surface::{
     BeliefTierChange, BeliefTierMeasure, BeliefTierSurface, belief_tier_fingerprint,
     belief_tier_surface,
 };
+use gecko_engine::db::{CORE_SCHEMA, run_graph_writes};
 use gecko_extension_api::GeckoExtension;
 use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 use common::TestDb;
 
 /// A fresh database with the core schema and, when `with_mem`, mem's schema.
@@ -222,6 +224,9 @@ async fn fingerprint_counts_instances_attributes_and_links() {
     )
     .await
     .expect("insert two beliefs and a rests-on");
+    run_graph_writes(&tx, &provenance::seed_provenance())
+        .await
+        .expect("seed provenance");
     tx.commit().await.expect("commit");
 
     let f1 = {
@@ -243,8 +248,14 @@ async fn fingerprint_counts_instances_attributes_and_links() {
         change("belief", BeliefTierMeasure::Attributes, 0, 4),
         change("memory-item", BeliefTierMeasure::Instances, 0, 2),
         change("memory-item", BeliefTierMeasure::Attributes, 0, 4),
+        change("ownership", BeliefTierMeasure::Instances, 0, 2),
+        change("ownership", BeliefTierMeasure::Attributes, 0, 2),
+        change("ownership", BeliefTierMeasure::Links, 0, 4),
         change("rests-on", BeliefTierMeasure::Instances, 0, 1),
         change("rests-on", BeliefTierMeasure::Links, 0, 2),
+        change("source-link", BeliefTierMeasure::Instances, 0, 2),
+        change("source-link", BeliefTierMeasure::Attributes, 0, 2),
+        change("source-link", BeliefTierMeasure::Links, 0, 4),
     ]
     .iter()
     .map(|c| c.to_string())

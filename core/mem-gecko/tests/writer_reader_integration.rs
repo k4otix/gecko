@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
 
-use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
+use gecko_engine::db::{RouterGraphStore, run_graph_writes};
 use gecko_extension_api::GeckoExtension;
 use gecko_extension_api::{
     ActorId, BeliefDraft, BeliefQuery, ConceptId, ContextBudget, DateTime, DerivationMethod,
@@ -26,6 +26,8 @@ use mem_gecko::{IndexOutcome, MemWriter};
 use ulid::Ulid;
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
@@ -89,6 +91,26 @@ impl Fixture {
         let mut router = self.shared.lock().await;
         let tx = router.begin_write().await.expect("write tx");
         tx.query(tql).await.expect("write query");
+        tx.commit().await.expect("commit");
+    }
+
+    /// Low-level write that returns the server error instead of panicking.
+    async fn try_raw_write(&self, tql: &str) -> Result<(), String> {
+        let mut router = self.shared.lock().await;
+        let tx = router.begin_write().await.map_err(|e| e.to_string())?;
+        tx.query(tql).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())
+    }
+
+    /// Low-level write of raw memory items, each given its ownership and
+    /// source-link by [`provenance::seed_provenance`] in the same transaction.
+    async fn raw_seed(&self, tql: &str) {
+        let mut router = self.shared.lock().await;
+        let tx = router.begin_write().await.expect("write tx");
+        tx.query(tql).await.expect("write query");
+        run_graph_writes(&tx, &provenance::seed_provenance())
+            .await
+            .expect("seed provenance");
         tx.commit().await.expect("commit");
     }
 
@@ -333,7 +355,7 @@ async fn derivation_chain_never_touches_the_retrieval_ledger() {
         .unwrap();
 
     // Seed a retrieval-event + informs-synthesis edge (the OTHER ledger).
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"match $b isa belief, has concept-id "{}";
            insert
              $re isa retrieval-event, has concept-id "mem/ep/re1",
@@ -735,6 +757,401 @@ fn storage_msg(err: EpistemicError) -> String {
     }
 }
 
+/// The supersession edges recorded on belief `id`.
+async fn supersessions_of(fx: &Fixture, id: &MemId) -> usize {
+    fx.raw_fetch(&format!(
+        r#"match $o isa belief, has concept-id "{}";
+             $s isa supersession, links (superseded: $o);
+           fetch {{ "k": "x" }};"#,
+        id.0
+    ))
+    .await
+    .len()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Only a currently asserted belief can be superseded: a second supersede of the
+// same belief is refused and forks nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn superseding_an_already_superseded_belief_is_refused_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("belief a", "agent-1", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.supersede(&ctx, a.clone(), belief("belief b", "agent-1", 0.6), "r")
+        .await
+        .expect("the first supersede succeeds");
+
+    let msg = storage_msg(
+        w.supersede(&ctx, a.clone(), belief("belief c", "agent-1", 0.7), "r")
+            .await
+            .expect_err("a superseded belief cannot be superseded again"),
+    );
+    for want in [
+        a.0.as_str(),
+        "not a current belief visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(supersessions_of(&fx, &a).await, 1, "no B/C fork exists");
+    let c = fx
+        .raw_fetch(r#"match $b isa belief, has title "belief c"; fetch { "k": "x" };"#)
+        .await;
+    assert!(c.is_empty(), "the refused replacement was not committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn superseding_a_retracted_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("retracted belief", "agent-1", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    fx.raw_write(&format!(
+        r#"match $b isa belief, has concept-id "{}";
+           update $b has belief-state "retracted";"#,
+        a.0
+    ))
+    .await;
+
+    let msg = storage_msg(
+        w.supersede(&ctx, a.clone(), belief("replacement", "agent-1", 0.6), "r")
+            .await
+            .expect_err("a retracted belief cannot be superseded"),
+    );
+    assert!(msg.contains(&a.0), "{msg}");
+    assert!(msg.contains("nothing was committed"), "{msg}");
+    let state = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}", has belief-state $s; fetch {{ "s": $s }};"#,
+            a.0
+        ))
+        .await;
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[0]["s"], "retracted", "A stays retracted");
+    assert_eq!(supersessions_of(&fx, &a).await, 0);
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A caller may only act on beliefs visible to it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The belief-state of belief `id`.
+async fn belief_state(fx: &Fixture, id: &MemId) -> String {
+    let rows = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}", has belief-state $s; fetch {{ "s": $s }};"#,
+            id.0
+        ))
+        .await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0]["s"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn superseding_another_agents_private_belief_is_refused_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private belief", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.supersede(
+            &ctx_at("agent-b", at),
+            private.clone(),
+            belief("b's replacement", "agent-b", 0.6),
+            "r",
+        )
+        .await
+        .expect_err("another agent's private belief cannot be superseded"),
+    );
+    for want in [
+        private.0.as_str(),
+        "not a current belief visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(belief_state(&fx, &private).await, "asserted");
+    assert_eq!(supersessions_of(&fx, &private).await, 0);
+    let replacement = fx
+        .raw_fetch(r#"match $b isa belief, has title "b's replacement"; fetch { "k": "x" };"#)
+        .await;
+    assert!(replacement.is_empty(), "no replacement was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn superseding_another_agents_private_user_stated_belief_reports_not_visible_not_entrenchment()
+ {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's firmly held view", "agent-a", 0.9, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let err = w
+        .supersede(
+            &ctx_at("agent-b", at),
+            private.clone(),
+            belief_ent("b's cheap guess", "agent-b", 0.3, Entrenchment::Llm),
+            "r",
+        )
+        .await
+        .expect_err("another agent's private belief cannot be superseded");
+    let msg = storage_msg(err);
+    for want in [
+        private.0.as_str(),
+        "not a current belief visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(belief_state(&fx, &private).await, "asserted");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn superseding_a_team_belief_of_another_agent_is_allowed() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's team belief", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    w.supersede(
+        &ctx_at("agent-b", at),
+        team.clone(),
+        belief("b's revision", "agent-b", 0.6),
+        "r",
+    )
+    .await
+    .expect("a team belief is visible to another agent and may be superseded");
+    assert_eq!(belief_state(&fx, &team).await, "superseded");
+    assert_eq!(supersessions_of(&fx, &team).await, 1);
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn contesting_another_agents_private_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let a = ctx_at("agent-a", at);
+    let b = ctx_at("agent-b", at);
+    let private = w
+        .assert_belief(
+            &a,
+            belief_vis("a's private claim", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let own = w
+        .assert_belief(
+            &b,
+            belief("b's own claim", "agent-b", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.contest(&b, &[own.clone(), private.clone()])
+            .await
+            .expect_err("another agent's private belief cannot be contested"),
+    );
+    for want in [
+        private.0.as_str(),
+        "visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let anomalies = fx
+        .raw_fetch(r#"match $a isa anomaly, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert!(anomalies.is_empty(), "no anomaly was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn deriving_from_another_agents_private_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private evidence", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.assert_belief(
+            &ctx_at("agent-b", at),
+            belief("b's derived belief", "agent-b", 0.5),
+            std::slice::from_ref(&private),
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect_err("another agent's private belief cannot be evidence"),
+    );
+    for want in [
+        private.0.as_str(),
+        "visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let stored = fx
+        .raw_fetch(r#"match $b isa belief, has title "b's derived belief"; fetch { "k": "x" };"#)
+        .await;
+    assert!(stored.is_empty(), "no belief was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn deriving_from_another_agents_episode_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let episode = w
+        .observe(
+            &ctx_at("agent-a", at),
+            EpisodeDraft {
+                text: "a's observation".into(),
+                event_time: at,
+                ingest_time: at,
+            },
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.assert_belief(
+            &ctx_at("agent-b", at),
+            belief("b's belief from a's episode", "agent-b", 0.5),
+            std::slice::from_ref(&episode),
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect_err("another agent's episode cannot be evidence"),
+    );
+    for want in [
+        episode.0.as_str(),
+        "visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let stored = fx
+        .raw_fetch(
+            r#"match $b isa belief, has title "b's belief from a's episode"; fetch { "k": "x" };"#,
+        )
+        .await;
+    assert!(stored.is_empty(), "no belief was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn deriving_from_a_team_belief_and_an_own_episode_is_allowed() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let b = ctx_at("agent-b", at);
+    let episode = w
+        .observe(
+            &b,
+            EpisodeDraft {
+                text: "b's observation".into(),
+                event_time: at,
+                ingest_time: at,
+            },
+        )
+        .await
+        .unwrap();
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's team evidence", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    w.assert_belief(
+        &b,
+        belief("b's synthesis", "agent-b", 0.5),
+        &[team, episode],
+        DerivationMethod::LlmSynthesis,
+    )
+    .await
+    .expect("a team belief and the caller's own episode are visible evidence");
+
+    fx.drop_db().await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // A write whose ids match nothing fails and commits nothing.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -868,7 +1285,7 @@ async fn record_prediction_on_a_missing_belief_errors_and_commits_nothing() {
     );
     for want in [
         "mem/bel/does-not-exist",
-        "no belief",
+        "does not exist",
         "nothing was committed",
     ] {
         assert!(msg.contains(want), "{want}: {msg}");
@@ -877,6 +1294,72 @@ async fn record_prediction_on_a_missing_belief_errors_and_commits_nothing() {
         .raw_fetch(r#"match $p isa prediction-resolution, has predicted-probability $v; fetch { "v": $v };"#)
         .await;
     assert!(preds.is_empty(), "no prediction was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn recording_a_second_open_prediction_is_refused_and_commits_nothing() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("it will rain", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+
+    let msg = storage_msg(
+        w.record_prediction(&ctx, b.clone(), 0.7)
+            .await
+            .expect_err("a second open prediction must be refused"),
+    );
+    for want in [
+        b.0.as_str(),
+        "already has an open prediction",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let preds = fx
+        .raw_fetch(r#"match $p isa prediction-resolution, has predicted-probability $v; fetch { "v": $v };"#)
+        .await;
+    assert_eq!(preds.len(), 1, "exactly one prediction-resolution exists");
+    w.resolve_prediction(&ctx, b, Outcome::Confirmed)
+        .await
+        .expect("the single open prediction still resolves");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn recording_a_prediction_after_resolution_is_allowed() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("it will hail", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+    w.resolve_prediction(&ctx, b.clone(), Outcome::Confirmed)
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.8)
+        .await
+        .expect("a resolved prediction no longer blocks a new one");
 
     fx.drop_db().await;
 }
@@ -1111,6 +1594,249 @@ async fn recall_as_of_t_skips_the_index_entirely() {
     fx.drop_db().await;
 }
 
+/// Has `actor` write one episode at `at`, so its `agent` node exists.
+async fn observe_as(w: &MemWriter, actor: &str, at: DateTime) {
+    w.observe(
+        &ctx_at(actor, at),
+        EpisodeDraft {
+            text: format!("{actor} was here"),
+            event_time: at,
+            ingest_time: at,
+        },
+    )
+    .await
+    .expect("observe commits");
+}
+
+/// An as-of recall by `actor` at `run_at`, asking for the state at `as_of`.
+async fn recall_as_of(
+    w: &MemWriter,
+    actor: &str,
+    run_at: DateTime,
+    as_of: DateTime,
+    max_chunks: usize,
+) -> Vec<MemId> {
+    w.recall(
+        &ctx_at(actor, run_at),
+        RecallQuery {
+            text: String::new(),
+            as_of: Some(as_of),
+        },
+        ContextBudget {
+            max_chunks,
+            max_tokens: None,
+        },
+    )
+    .await
+    .expect("as-of recall")
+    .into_iter()
+    .map(|c| c.id)
+    .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// As-of recall applies the same visibility rule as present-state recall.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn as_of_recall_hides_another_agents_private_belief() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("a's private belief", "agent-a", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert!(
+        !got.contains(&private),
+        "another agent's private belief must not surface in an as-of recall: {got:?}"
+    );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_returns_a_team_belief_to_another_agent() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("a's team belief", "agent-a", 0.8, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert_eq!(got, vec![team], "a team belief is visible to another agent");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_returns_the_owners_private_belief() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-b", dt("2026-01-01T00:00:00Z")),
+            belief_vis("b's private belief", "agent-b", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert_eq!(got, vec![private], "the owner sees its own private belief");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_is_newest_first_and_truncates_deterministically() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let mut ids = Vec::new();
+    for (i, at) in [
+        "2026-01-01T00:00:00Z",
+        "2026-01-02T00:00:00Z",
+        "2026-01-03T00:00:00Z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = w
+            .assert_belief(
+                &ctx_at("agent-a", dt(at)),
+                belief_vis(
+                    &format!("team belief {i}"),
+                    "agent-a",
+                    0.8,
+                    Visibility::Team,
+                ),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let want = vec![ids[2].clone(), ids[1].clone()];
+
+    for call in 0..2 {
+        let got = recall_as_of(
+            &w,
+            "agent-b",
+            dt("2026-06-01T00:00:00Z"),
+            dt("2026-02-01T00:00:00Z"),
+            2,
+        )
+        .await;
+        assert_eq!(
+            got, want,
+            "call {call}: the two newest valid-from, newest first"
+        );
+    }
+
+    let tied_at = dt("2026-01-04T00:00:00Z");
+    let mut tied = Vec::new();
+    for i in 0..2 {
+        tied.push(
+            w.assert_belief(
+                &ctx_at("agent-a", tied_at),
+                belief_vis(
+                    &format!("tied belief {i}"),
+                    "agent-a",
+                    0.8,
+                    Visibility::Team,
+                ),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    tied.sort_by(|x, y| x.0.cmp(&y.0));
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        3,
+    )
+    .await;
+    assert_eq!(
+        got,
+        vec![tied[0].clone(), tied[1].clone(), ids[2].clone()],
+        "beliefs sharing a valid-from are ordered by concept id"
+    );
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An actor that has never written has no agent node, so its as-of recall is empty.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn as_of_recall_for_an_actor_with_no_history_is_empty() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    w.assert_belief(
+        &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+        belief_vis("a's shared belief", "agent-a", 0.8, Visibility::Shared),
+        &[],
+        DerivationMethod::HumanAssertion,
+    )
+    .await
+    .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-never-wrote",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert!(got.is_empty(), "{got:?}");
+
+    fx.drop_db().await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // No index configured → recall falls back to select-for-context cleanly.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1196,7 +1922,7 @@ async fn population_members_and_canonical_entity() {
     let w = fx.writer(None, None);
 
     // Seed a population + materialized members + a provable cross-source resolution.
-    fx.raw_write(
+    fx.raw_seed(
         r#"insert
              $p isa population, has spec-hash "cohort-1", has spec-dialect "typeql-3",
                  has spec-text 'match $c isa concept, has tag "internet-facing";';
@@ -1396,7 +2122,8 @@ async fn dedup_episodes_refuses_non_duplicates() {
 }
 
 /// Seeds an episode of `kind` straight into the graph, with the given optional
-/// title and owner set (`observe` always writes a title and exactly one owner).
+/// title and a non-empty owner set held by its one ownership (`observe` always
+/// writes a title and exactly one owner).
 async fn seed_episode(
     fx: &Fixture,
     kind: &str,
@@ -1406,6 +2133,7 @@ async fn seed_episode(
     ingest: &str,
     owners: &[&str],
 ) {
+    assert!(!owners.is_empty(), "the schema requires an owner for {id}");
     let mut owner_match = String::new();
     let mut owner_links = String::new();
     for (i, o) in owners.iter().enumerate() {
@@ -1417,19 +2145,10 @@ async fn seed_episode(
     let title = title
         .map(|t| format!(r#", has title "{t}""#))
         .unwrap_or_default();
-    let ownership = if owners.is_empty() {
-        String::new()
-    } else {
-        format!("(owned: $e{owner_links}) isa ownership;")
-    };
-    let matching = if owners.is_empty() {
-        String::new()
-    } else {
-        format!("match {owner_match}")
-    };
-    fx.raw_write(&format!(
-        r#"{matching} insert $e isa {kind}, has concept-id "{id}"{title},
-             has event-time {event}, has ingest-time {ingest}; {ownership}"#
+    fx.raw_seed(&format!(
+        r#"match {owner_match} insert $e isa {kind}, has concept-id "{id}"{title},
+             has event-time {event}, has ingest-time {ingest};
+             (owned: $e{owner_links}) isa ownership;"#
     ))
     .await;
 }
@@ -1466,10 +2185,20 @@ async fn dedup_episodes_refuses_and_commits_nothing() {
     seed_episode(&fx, "episode", "e-own2-l", Some("t"), t0, t1, &["x"]).await;
     cases.push(("owners-superset", mid("e-own2-k"), mid("e-own2-l")));
 
-    // Owned vs unowned.
-    seed_episode(&fx, "episode", "e-un-k", Some("t"), t0, t0, &["x"]).await;
-    seed_episode(&fx, "episode", "e-un-l", Some("t"), t0, t1, &[]).await;
-    cases.push(("unowned-loser", mid("e-un-k"), mid("e-un-l")));
+    // An unowned episode cannot be seeded: the schema refuses it at commit.
+    let unowned = fx
+        .try_raw_write(&format!(
+            r#"insert $run isa doc-run, has run-id "unowned-run";
+                 $e isa episode, has concept-id "e-un-l", has title "t",
+                     has event-time {t1}, has ingest-time {t1};
+                 (memory: $e, origin: $run) isa source-link, has origin-kind "test";"#
+        ))
+        .await;
+    let err = unowned.expect_err("an unowned episode commits");
+    assert!(
+        err.contains("ownership:owned"),
+        "the refusal does not name ownership:owned: {err}"
+    );
 
     // Without a title.
     seed_episode(&fx, "episode", "e-nt-k", None, t0, t0, &["x"]).await;
@@ -1690,7 +2419,7 @@ async fn retrieval_events_safe_to_tombstone_only_after_supersession() {
         )
         .await
         .unwrap();
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"match $b isa belief, has concept-id "{}";
            insert
              $re isa retrieval-event, has concept-id "mem/ep/re-ret",
@@ -1764,6 +2493,239 @@ async fn prediction_lifecycle() {
         "prediction resolved with an episode + outcome"
     );
     assert_eq!(rows[0]["o"], "confirmed");
+
+    fx.drop_db().await;
+}
+
+/// The prediction-resolving episodes in the graph.
+async fn resolving_episodes(fx: &Fixture) -> usize {
+    fx.raw_fetch(
+        r#"match $e isa episode, has title $t; $t like "^prediction resolved"; fetch { "t": $t };"#,
+    )
+    .await
+    .len()
+}
+
+#[tokio::test]
+async fn resolve_prediction_without_a_recorded_prediction_is_refused_and_commits_nothing() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("never predicted", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.resolve_prediction(&ctx, b.clone(), Outcome::Confirmed)
+            .await
+            .expect_err("no recorded prediction ⇒ nothing to resolve"),
+    );
+    for want in [
+        b.0.as_str(),
+        "matched 0 open prediction(s)",
+        "exactly one is required",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(resolving_episodes(&fx).await, 0, "no resolving episode");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn resolving_a_prediction_twice_is_refused() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("it will snow", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+    w.resolve_prediction(&ctx, b.clone(), Outcome::Confirmed)
+        .await
+        .expect("the first resolution succeeds");
+
+    let msg = storage_msg(
+        w.resolve_prediction(&ctx, b.clone(), Outcome::Refuted)
+            .await
+            .expect_err("a resolved prediction cannot be resolved again"),
+    );
+    for want in [
+        b.0.as_str(),
+        "matched 0 open prediction(s)",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(
+        resolving_episodes(&fx).await,
+        1,
+        "only the first resolution"
+    );
+    let outcomes = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}";
+                 $pr isa prediction-resolution, links (predicted-belief: $b), has outcome $o;
+               fetch {{ "o": $o }};"#,
+            b.0
+        ))
+        .await;
+    assert_eq!(outcomes.len(), 1, "one outcome: {outcomes:?}");
+    assert_eq!(outcomes[0]["o"], "confirmed");
+
+    fx.drop_db().await;
+}
+
+/// A writer recording retrieval provenance whose recalls surface `evidence`.
+fn recalling_writer(fx: &Fixture, evidence: &MemId) -> MemWriter {
+    let index = StubIndex::with(vec![(ConceptId(evidence.0.clone()), 0.9)]);
+    fx.writer(Some(Arc::new(StubEmbedder)), Some(index))
+        .with_retrieval_provenance(true)
+}
+
+async fn recall_once(w: &MemWriter, ctx: &RunContext) {
+    let chunks = w
+        .recall(
+            ctx,
+            RecallQuery::now("anything"),
+            ContextBudget {
+                max_chunks: 10,
+                max_tokens: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!chunks.is_empty(), "the recall surfaced the evidence");
+}
+
+#[tokio::test]
+async fn a_derive_that_used_two_retrievals_links_both() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-02T00:00:00Z"));
+    let evidence = fx
+        .writer(None, None)
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("shared evidence", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let w = recalling_writer(&fx, &evidence);
+    recall_once(&w, &ctx).await;
+    recall_once(&w, &ctx).await;
+
+    let synth = w
+        .assert_belief(
+            &ctx,
+            belief("synthesized from two recalls", "agent-1", 0.7),
+            std::slice::from_ref(&evidence),
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect("a derive over two retrievals commits");
+
+    let links = fx
+        .raw_fetch(&format!(
+            r#"match
+                 $b isa belief, has concept-id "{}";
+                 $re isa retrieval-event, has concept-id $rid;
+                 (retrieval: $re, synthesized: $b) isa informs-synthesis;
+                 (surfacer: $re, item: $ev) isa surfaced, has was-used $u;
+                 $ev has concept-id "{}";
+               fetch {{ "re": $rid, "u": $u }};"#,
+            synth.0, evidence.0
+        ))
+        .await;
+    assert_eq!(
+        links.len(),
+        2,
+        "both retrievals inform the belief: {links:?}"
+    );
+    assert_ne!(links[0]["re"], links[1]["re"]);
+    assert!(links.iter().all(|l| l["u"] == true), "{links:?}");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn a_retrieval_event_feeding_a_live_belief_is_not_safe_to_tombstone() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-02T00:00:00Z"));
+    let evidence = fx
+        .writer(None, None)
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("evidence", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let w = recalling_writer(&fx, &evidence);
+    recall_once(&w, &ctx).await;
+    let mut informed = Vec::new();
+    for text in ["synthesis one", "synthesis two"] {
+        informed.push(
+            w.assert_belief(
+                &ctx,
+                belief(text, "agent-1", 0.7),
+                std::slice::from_ref(&evidence),
+                DerivationMethod::LlmSynthesis,
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    let events = fx
+        .raw_fetch(r#"match $re isa retrieval-event, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert_eq!(events.len(), 1, "one retrieval-event: {events:?}");
+    let event = MemId(events[0]["c"].as_str().unwrap().to_string());
+
+    w.supersede(
+        &ctx,
+        informed[0].clone(),
+        belief("revised one", "agent-1", 0.8),
+        "r",
+    )
+    .await
+    .unwrap();
+    let partly = w.retrieval_events_safe_to_tombstone().await.unwrap();
+    assert!(
+        !partly.contains(&event),
+        "an event still feeding a live belief is not safe to tombstone: {partly:?}"
+    );
+
+    w.supersede(
+        &ctx,
+        informed[1].clone(),
+        belief("revised two", "agent-1", 0.8),
+        "r",
+    )
+    .await
+    .unwrap();
+    let all = w.retrieval_events_safe_to_tombstone().await.unwrap();
+    assert!(
+        all.contains(&event),
+        "once every informed belief is superseded the event is safe: {all:?}"
+    );
 
     fx.drop_db().await;
 }
@@ -2126,7 +3088,7 @@ async fn blast_radius_at_follows_the_materialized_window() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);
     seed_concepts(&fx, &["asset/a"]).await;
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"insert
              $p isa population, has spec-hash "{POP}", has spec-dialect "typeql-3",
                  has spec-text "match $c isa concept;";

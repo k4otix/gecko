@@ -1,12 +1,13 @@
 //! A belief with a `source-link` to a concept, for tests of what a sync does to a
-//! referenced concept. Included with `#[path = "common/belief.rs"] mod belief;`.
+//! referenced concept. Included with `#[path = "common/belief.rs"] mod belief;`,
+//! beside `#[path = "common/provenance.rs"] mod provenance;`.
 
 use gecko_engine::db::router::TypeDbRouter;
 use gecko_engine::db::run_graph_writes;
 use gecko_extension_api::GraphWrite;
 
-/// Writes the belief `belief_id` and a `source-link` naming the concept
-/// `concept_id` as its origin, in one committed transaction.
+/// Writes the belief `belief_id`, a `source-link` naming the concept `concept_id`
+/// as its origin, and the belief's ownership, in one committed transaction.
 pub async fn claim_with_belief(db: &mut TypeDbRouter, belief_id: &str, concept_id: &str) {
     let tx = db.begin_write().await.expect("begin write");
     let setup = [
@@ -28,6 +29,7 @@ pub async fn claim_with_belief(db: &mut TypeDbRouter, belief_id: &str, concept_i
         )
         .expecting(1),
     ];
+    let setup = [&setup[..], &crate::provenance::seed_provenance()].concat();
     run_graph_writes(&tx, &setup).await.expect("belief setup");
     tx.commit().await.expect("commit belief setup");
 }

@@ -49,13 +49,20 @@ pub(crate) fn entrenchment_rank(entrenchment: &str) -> u8 {
         .unwrap_or(0)
 }
 
-/// Reads a belief's stored `entrenchment` attribute by concept-id (invariant-7
-/// guard input). `None` when the belief is absent or carries no entrenchment.
-pub(crate) fn read_entrenchment_read(old: &MemId) -> (String, Vec<String>, Vec<GraphValue>) {
+/// Reads the stored `entrenchment` attribute of a belief `visible-to` `actor`, by
+/// concept-id (invariant-7 guard input). `None` when the belief is absent, not
+/// visible to `actor`, or carries no entrenchment.
+pub(crate) fn read_entrenchment_read(
+    old: &MemId,
+    actor: &ActorId,
+) -> (String, Vec<String>, Vec<GraphValue>) {
     let mut p = Params::new();
     p.s("bid", old.0.clone());
+    p.s("aid", actor.0.clone());
     p.read(
         "match $b isa belief, has concept-id $bc, has entrenchment $e; $bc == $bid;
+               $ag isa agent, has agent-id $aa; $aa == $aid;
+               true == visible-to($b, $ag);
          fetch { \"e\": $e };",
     )
 }
@@ -235,9 +242,13 @@ pub(crate) fn insert_belief_ops(
 /// `derivation-chain` / `blast-radius` traverse them). Returns `None` for an
 /// evidence-less belief — `derivation relates source @card(1..)` forbids a
 /// sourceless derivation, and a belief with no evidence is a root, not a derived
-/// claim.
+/// claim. Every piece of evidence must be visible to `actor`: a belief through
+/// `visible-to`, any other memory item by the same rule applied to its ownership
+/// (team or shared visibility, or owned by `actor`). Non-belief items carry no
+/// visibility, so in practice they are visible only to their owners.
 pub(crate) fn derivation_op(
     id: &MemId,
+    actor: &ActorId,
     evidence: &[MemId],
     method: DerivationMethod,
     confidence: Option<f64>,
@@ -247,10 +258,13 @@ pub(crate) fn derivation_op(
     }
     let mut p = Params::new();
     p.s("bid", id.0.clone());
+    p.s("aid", actor.0.clone());
     p.s("dm", method.as_str());
-    let mut match_lines = String::from("$b isa belief, has concept-id $bc; $bc == $bid;\n");
+    let mut match_lines = String::from(
+        "$b isa belief, has concept-id $bc; $bc == $bid;\n           $ag isa agent, has agent-id $aa; $aa == $aid;\n",
+    );
     let mut source_roles = String::new();
-    for var in bind_id_list(
+    for (i, var) in bind_id_list(
         &mut p,
         &mut match_lines,
         evidence.iter().map(|e| e.0.clone()),
@@ -258,7 +272,20 @@ pub(crate) fn derivation_op(
         "m",
         "mc",
         "e",
-    ) {
+    )
+    .into_iter()
+    .enumerate()
+    {
+        match_lines.push_str(&format!(
+            "           {{ {var} isa belief; true == visible-to({var}, $ag); }} or {{
+             not {{ {var} isa belief; }};
+             not {{ not {{
+               {{ $vo{i} isa ownership, links (owned: {var}), has visibility $vv{i};
+                 {{ $vv{i} == \"team\"; }} or {{ $vv{i} == \"shared\"; }}; }}
+               or {{ $vp{i} isa ownership, links (owned: {var}, owner: $ag); }};
+             }}; }};
+           }};\n"
+        ));
         source_roles.push_str(&format!(", source: {var}"));
     }
     let conf_frag = if let Some(c) = confidence {
@@ -273,8 +300,11 @@ pub(crate) fn derivation_op(
     Some(p.write(&body).expecting(1))
 }
 
-/// `supersede`: link old → new and flip old's belief-state to "superseded".
+/// `supersede`: link old → new and flip old's belief-state to "superseded". The
+/// link matches only a currently asserted `old` that is `visible-to` `actor`, so
+/// superseding a superseded, retracted or out-of-scope belief matches no row.
 pub(crate) fn supersession_ops(
+    actor: &ActorId,
     old: &MemId,
     new_id: &MemId,
     reason: &str,
@@ -285,10 +315,13 @@ pub(crate) fn supersession_ops(
     link.s("nid", new_id.0.clone());
     link.s("reason", reason);
     link.dt("ca", created_at);
+    link.s("aid", actor.0.clone());
     let link_op = link
         .write(
             "match
-           $o isa belief, has concept-id $oc; $oc == $oid;
+           $o isa belief, has concept-id $oc, has belief-state \"asserted\"; $oc == $oid;
+           $ag isa agent, has agent-id $aa; $aa == $aid;
+           true == visible-to($o, $ag);
            $n isa belief, has concept-id $nc; $nc == $nid;
          insert (superseded: $o, superseding: $n) isa supersession,
              has supersession-reason == $reason, has created-at == $ca;",
@@ -308,7 +341,7 @@ pub(crate) fn supersession_ops(
 }
 
 /// `contest`: a `contradiction` → `anomaly` hub over `claims` (2..), run + actor
-/// stamped.
+/// stamped. Every claim must be `visible-to` the actor.
 pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -> Vec<GraphWrite> {
     let mut p = Params::new();
     p.s("anid", anomaly.0.clone());
@@ -328,6 +361,7 @@ pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -
         "cc",
         "c",
     ) {
+        match_lines.push_str(&format!("           true == visible-to({var}, $ag);\n"));
         claim_roles.push_str(&format!(", claim: {var}"));
     }
     // Strip the leading ", " so the role list starts clean.
@@ -370,13 +404,15 @@ pub(crate) fn rests_on_op(resting: &MemId, assumptions: &[MemId]) -> GraphWrite 
 }
 
 /// `record_prediction`: a `prediction-resolution` seeded with the predicted
-/// probability (resolving-episode filled later by `resolve_prediction`).
+/// probability (resolving-episode filled later by `resolve_prediction`); matches
+/// nothing when the belief is missing or already has an open prediction.
 pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     let mut p = Params::new();
     p.s("bid", b.0.clone());
     p.f("pp", p_prob);
     p.write(
         "match $b isa belief, has concept-id $bc; $bc == $bid;
+         not { $pr isa prediction-resolution, links (predicted-belief: $b); not { $pr has outcome $o; }; };
          insert (predicted-belief: $b) isa prediction-resolution, has predicted-probability == $pp;",
     )
     .expecting(1)
@@ -433,7 +469,8 @@ pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, 
 /// `retrieval-event`: the stamped episodic record that a semantic retrieval
 /// happened, plus a `surfaced` edge per gated candidate (with its similarity score
 /// and `was-used=false`). This is an authoritative episodic write, DISTINCT from
-/// the best-effort index upsert (invariant 8 — two ledgers).
+/// the best-effort index upsert (invariant 8 — two ledgers). The last op must match
+/// exactly one row, so a candidate that vanished since it was gated fails the write.
 pub(crate) fn retrieval_event_ops(
     ctx: &RunContext,
     ev_id: &MemId,
@@ -475,7 +512,11 @@ pub(crate) fn retrieval_event_ops(
            (memory: $re, origin: $run) isa source-link, has origin-kind == $kind;
            (owned: $re, owner: $ag) isa ownership;{surf_inserts}"
     );
-    vec![ensure_run(ctx), ensure_agent(ctx), p.write(&body)]
+    vec![
+        ensure_run(ctx),
+        ensure_agent(ctx),
+        p.write(&body).expecting(1),
+    ]
 }
 
 /// `informs-synthesis(retrieval: $ev, synthesized: $belief)` — ties a synthesized
@@ -490,6 +531,7 @@ pub(crate) fn informs_synthesis_op(ev: &MemId, belief: &MemId) -> GraphWrite {
            $b isa belief, has concept-id $bc; $bc == $bid;
          insert (retrieval: $re, synthesized: $b) isa informs-synthesis;",
     )
+    .expecting(1)
 }
 
 /// Flips `was-used` to `true` on the `surfaced` edge linking retrieval-event `ev`
@@ -505,6 +547,7 @@ pub(crate) fn set_was_used_op(ev: &MemId, item: &MemId) -> GraphWrite {
            $s isa surfaced, links (surfacer: $re, item: $it);
          update $s has was-used true;",
     )
+    .expecting(1)
 }
 
 /// Sets the write-once `retrieval-provenance` summary flag on a belief.
@@ -579,25 +622,26 @@ pub(crate) fn dedup_episodes_ops(
 }
 
 /// Retrieval-provenance retention (concrete helper): the `retrieval-event`s that
-/// are **safe to tombstone** — those whose `informs-synthesis` belief IS superseded.
-/// The retention RULE it enforces: never tombstone a retrieval-event while its
-/// synthesized belief is non-superseded; once the belief is superseded the event may
-/// decay (its episodic detail is lost) — but the belief's write-once
+/// are **safe to tombstone** — those every one of whose `informs-synthesis` beliefs
+/// is superseded. The retention RULE it enforces: never tombstone a retrieval-event
+/// while any belief it synthesized is non-superseded; once all are superseded the
+/// event may decay (its episodic detail is lost) — but each belief's write-once
 /// `retrieval-provenance` flag persists (the axis is retained on the belief, not the
 /// event). A retrieval-event that fed no belief (no `informs-synthesis`) is not
 /// returned here — it is out of scope for provenance-guarded pruning.
 pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
     "match
        $re isa retrieval-event, has concept-id $rid;
-       $b isa belief;
-       (retrieval: $re, synthesized: $b) isa informs-synthesis;
-       true == is-superseded($b);
+       informs-synthesis (retrieval: $re, synthesized: $b);
+       not { informs-synthesis (retrieval: $re, synthesized: $b2); not { true == is-superseded($b2); }; };
        not { $re has consolidation-state \"tombstoned\"; };
+     select $rid; distinct;
      fetch { \"id\": $rid };"
 }
 
 /// `resolve_prediction`: mint a resolving `episode` (run + actor stamped) and attach
-/// it (plus the outcome) to the belief's `prediction-resolution`.
+/// it (plus the outcome) to the belief's open `prediction-resolution`. The last op
+/// matches only a prediction with no outcome yet and must affect exactly one row.
 pub(crate) fn resolve_prediction_ops(
     ctx: &RunContext,
     b: &MemId,
@@ -623,19 +667,22 @@ pub(crate) fn resolve_prediction_ops(
            (owned: $ep, owner: $ag) isa ownership;",
     );
 
-    // 2. link the episode + outcome onto the existing prediction-resolution.
+    // 2. link the episode + outcome onto the open prediction-resolution.
     let mut link = Params::new();
     link.s("bid", b.0.clone());
     link.s("eid", ep_id.0.clone());
     link.s("oc", outcome);
-    let link_op = link.write(
-        "match
+    let link_op = link
+        .write(
+            "match
            $b isa belief, has concept-id $bc; $bc == $bid;
            $pr isa prediction-resolution, links (predicted-belief: $b);
+           not { $pr has outcome $prev; };
            $ep isa episode, has concept-id $ec; $ec == $eid;
          insert $pr links (resolving-episode: $ep);
                 $pr has outcome == $oc;",
-    );
+        )
+        .expecting(1);
 
     vec![ensure_run(ctx), ensure_agent(ctx), ep_op, link_op]
 }
@@ -933,13 +980,20 @@ pub(crate) fn believed_at_read(at: DateTime) -> Read {
     )
 }
 
-/// `believed-at($t)`: each belief's id and title, for as-of recall.
-pub(crate) fn believed_at_chunks_read(at: DateTime) -> Read {
+/// `believed-at($t)` restricted to beliefs `visible-to` `actor`: each belief's id and
+/// title for as-of recall, newest `valid-from` first, ties broken by concept id.
+/// Supersession is not applied as of `at`. An actor with no `agent` node matches
+/// nothing, so its as-of recall is empty, as with `gated_candidate_read`.
+pub(crate) fn believed_at_chunks_read(at: DateTime, actor: &ActorId) -> Read {
     let mut p = Params::new();
     p.dt("t", at);
+    p.s("aid", actor.0.clone());
     p.read(
-        "match let $b in believed-at($t);
-               $b has concept-id $bid;
+        "match $ag isa agent, has agent-id $aa; $aa == $aid;
+               let $b in believed-at($t);
+               true == visible-to($b, $ag);
+               $b has concept-id $bid, has valid-from $vf;
+         sort $vf desc, $bid asc;
          fetch { \"id\": $bid, \"title\": $b.title };",
     )
 }

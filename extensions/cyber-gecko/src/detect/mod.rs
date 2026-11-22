@@ -598,7 +598,7 @@ async fn precision(
                    $d isa alert-disposition, \
                      links (dispositioned-logic: $lc, disposition-belief: $bel), \
                      has detection-verdict $v; \
-                   $bel has valid-from $t; $t >= $cut; \
+                   $bel has belief-state \"asserted\", has valid-from $t; $t >= $cut; \
              fetch { \"verdict\": $v };",
             &["l".into(), "cut".into()],
             &[

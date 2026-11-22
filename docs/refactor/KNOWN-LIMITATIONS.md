@@ -77,6 +77,47 @@ proven through the real sandbox against live TypeDB.
   median of about 4.3 ms per sync (23 syncs). The cost grows with the belief
   tier, because each read scans its instances.
 
+## As-of recall and supersede
+
+As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
+empty result). It filters the *current* (asserted) beliefs by `valid-from`, so a belief
+superseded since T is omitted, and its successor's `valid-from` is after T, so neither
+appears: as-of recall does not reconstruct history across a supersession. A supersede requires a currently asserted
+belief; superseding a retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`). The host trait method
+`EpistemicReader::believed_at` is still unscoped by agent.
+
+## Writes act only on what the caller can see
+
+A caller may only act on beliefs visible to it (`visible-to`: team or shared visibility, or
+owned by the caller). The rule binds every `MemWriter` caller, not only the guest: the caller
+is the `RunContext` actor, which the host stamps and the sandbox cannot forge, and it covers
+cyber's belief-edge seam (`assert_belief_with_edges`), whose evidence ids come from the guest.
+Each write enforces it inside its own write, so a refused write commits nothing:
+
+- **`supersede`** requires the old belief to be asserted and visible to the caller; another
+  agent's private belief is refused like a missing one, and the entrenchment guard reads only
+  a visible belief, so the refusal does not reveal its tier
+  (`superseding_another_agents_private_belief_is_refused_and_commits_nothing`,
+  `superseding_a_team_belief_of_another_agent_is_allowed`).
+- **`contest`** requires every claim to be visible to the caller
+  (`contesting_another_agents_private_belief_is_refused`).
+- **`derive`** (`assert_belief` with evidence) requires every evidence belief to be visible to
+  the caller. Evidence that is not a belief (an episode, an anomaly) is held to the same rule
+  through its `ownership`; those items are written without a visibility, which the substrate
+  treats as private, so only their owners may cite them
+  (`deriving_from_another_agents_private_belief_is_refused`,
+  `deriving_from_another_agents_episode_is_refused`).
+
+`rests_on`, `record_prediction` and `resolve_prediction` are not reachable from the guest
+and do not check visibility.
+
+Another agent may supersede a team or shared belief, including with a private replacement,
+which removes the belief from its original owner's recall.
+
+The consolidation daemon writes as actor `consolidation-daemon` while production runs write as
+`system`, so a daemon job that derives from or supersedes a run's private beliefs or episodes is
+refused by this rule (owed decision: ledger **C9**).
+
 ## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
 `core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait, a no-op

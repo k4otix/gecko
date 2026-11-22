@@ -86,21 +86,16 @@ define
           };
       return { $m };
 
-  # 5 — gate($n,$agent,$now) -> bool  (composes is-superseded + validity + VISIBILITY)
-  #   A belief passes gate iff it is (a) NOT superseded, (b) within its validity window
-  #   (valid-from <= now, and valid-to absent or > now), AND (c) scope-visible to $agent:
+  # visible-to($n,$agent) -> bool  (the scope rule shared by gate and as-of recall)
+  #   A belief is visible to $agent iff:
   #     • visibility "team" or "shared" ⇒ visible regardless of owner;
   #     • visibility "private" (or absent — the restrictive default) ⇒ $agent must own it.
   #   Visibility lives on the `ownership` relation (`ownership owns visibility`), so the
-  #   scope test joins through ownership, never the belief entity. The two scope branches
-  #   are a disjunction: a private belief owned by a DIFFERENT agent satisfies neither and
-  #   is gated OUT; a team/shared belief satisfies the first branch for ANY agent.
-  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean @doc("Access predicate for a belief: true iff it is asserted, not superseded, within its validity window at $now, and visible to $agent (team/shared, or private and owned by $agent)."):
+  #   scope test joins through ownership, never the belief entity. The two branches are a
+  #   disjunction: a private belief owned by a DIFFERENT agent satisfies neither and is
+  #   not visible; a team/shared belief satisfies the first branch for ANY agent.
+  fun visible-to($n: belief, $agent: agent) -> boolean @doc("True iff belief $n is in $agent's scope: its ownership visibility is team or shared, or $agent owns it."):
       match
-          $n isa belief, has belief-state "asserted", has valid-from $vf;
-          $vf <= $now;
-          not { true == is-superseded($n); };
-          not { $n has valid-to $vt; $vt <= $now; };
           {
               $own isa ownership, links (owned: $n);
               $own has visibility $vis;
@@ -108,6 +103,18 @@ define
           } or {
               $own2 isa ownership, links (owned: $n, owner: $agent);
           };
+      return check;
+
+  # 5 — gate($n,$agent,$now) -> bool  (composes is-superseded + validity + visible-to)
+  #   A belief passes gate iff it is (a) NOT superseded, (b) within its validity window
+  #   (valid-from <= now, and valid-to absent or > now), AND (c) visible-to $agent.
+  fun gate($n: belief, $agent: agent, $now: datetime) -> boolean @doc("Access predicate for a belief: true iff it is asserted, not superseded, within its validity window at $now, and visible to $agent (team/shared, or private and owned by $agent)."):
+      match
+          $n isa belief, has belief-state "asserted", has valid-from $vf;
+          $vf <= $now;
+          not { true == is-superseded($n); };
+          not { $n has valid-to $vt; $vt <= $now; };
+          true == visible-to($n, $agent);
       return check;
 
   # 8 — select-for-context($agent,$now) -> {belief, double}  (tuple stream)

@@ -11,7 +11,6 @@ use tempfile::TempDir;
 #[cfg(feature = "cyber")]
 use cyber_gecko::CyberGecko;
 use gecko_engine::db::router::{DbError, TypeDbRouter};
-use gecko_engine::db::run_graph_writes;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::{HierarchyEdge, OkfBundle, OkfLink, TypedAttrValue, TypedAttribute};
@@ -22,6 +21,8 @@ use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
 #[path = "common/belief.rs"]
 mod belief;
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 use belief::claim_with_belief;
 use common::TestDb;
 
@@ -263,12 +264,16 @@ async fn extension_write_into_the_belief_tier_is_refused() {
         vec!["mem/bel/raw".into(), "asserted".into()],
     )
     .expecting(1);
-    let result = sync_bundle(&mut db, &bundle, &[raw], BELIEF_TIER_ROOT).await;
+    let writes = [vec![raw], provenance::seed_provenance()].concat();
+    let result = sync_bundle(&mut db, &bundle, &writes, BELIEF_TIER_ROOT).await;
     let Err(DbError::BeliefTierWrite { changes }) = result else {
         panic!("expected BeliefTierWrite, got {result:?}");
     };
     let labels: HashSet<&str> = changes.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, HashSet::from(["memory-item", "belief"]));
+    assert_eq!(
+        labels,
+        HashSet::from(["memory-item", "belief", "ownership", "source-link"])
+    );
 
     assert_eq!(
         count(&mut db, "match $c isa concept;").await,
@@ -691,34 +696,7 @@ async fn one_sync_retires_two_linked_referenced_concepts_and_deletes_an_unrefere
         .clone();
 
     // The linking concept gains a belief reference, and a third concept nothing references.
-    let tx = db.begin_write().await.expect("Failed to begin write");
-    let setup = [
-        GraphWrite::single(
-            "given $id: string, $st: string; \
-             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
-            vec!["id".into(), "st".into()],
-            vec!["mem/bel/linker".into(), "asserted".into()],
-        )
-        .expecting(1),
-        GraphWrite::single(
-            "given $bid: string, $cid: string, $kind: string; \
-             match $b isa belief, has concept-id $bi; $bi == $bid; \
-                   $c isa concept, has concept-id $ci; $ci == $cid; \
-             insert $l isa source-link, links (memory: $b, origin: $c), \
-                    has origin-kind == $kind;",
-            vec!["bid".into(), "cid".into(), "kind".into()],
-            vec![
-                "mem/bel/linker".into(),
-                linker.clone().into(),
-                "concept".into(),
-            ],
-        )
-        .expecting(1),
-    ];
-    run_graph_writes(&tx, &setup)
-        .await
-        .expect("belief setup writes");
-    tx.commit().await.expect("commit belief setup");
+    claim_with_belief(&mut db, "mem/bel/linker", &linker).await;
 
     let unreferenced = "playbooks/unreferenced".to_string();
     let mut with_third = full.clone();
@@ -924,4 +902,80 @@ async fn a_changed_type_hint_on_a_referenced_concept_is_refused() {
     assert!(message.contains("`a`"), "{message}");
     assert_eq!(exact_type(&mut db, "a").await, vec!["concept".to_string()]);
     assert_eq!(sole_file_hash(&mut db).await, stored_hash);
+}
+
+fn write_concepts(dir: &Path, files: &[(&str, &str)]) {
+    fs::create_dir_all(dir.join("notes")).unwrap();
+    for (name, body) in files {
+        fs::write(
+            dir.join("notes").join(format!("{name}.md")),
+            format!("---\ntype: Note\ntitle: {name}\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_document_linking_the_same_page_twice_gets_one_link() {
+    let test_db = TestDb::new("gecko_test_dup_link");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concepts(
+        dir.path(),
+        &[
+            ("a", "See [first](b.md) and again [second](b.md). Line two."),
+            ("b", "Target."),
+        ],
+    );
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    let r = sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync");
+    assert_eq!(r.links_attempted, 1, "attempted counts deduplicated rows");
+    assert_eq!(count(&mut db, "match $l isa concept-link;").await, 1);
+    assert_eq!(
+        count(
+            &mut db,
+            r#"match $l isa concept-link, has link-text "first";"#
+        )
+        .await,
+        1,
+        "the first occurrence's link text is kept"
+    );
+
+    // Re-sync after editing another line: still one link.
+    write_concepts(
+        dir.path(),
+        &[
+            ("a", "See [first](b.md) and again [second](b.md). Line TWO."),
+            ("b", "Target."),
+        ],
+    );
+    let edited = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &edited, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync");
+    assert_eq!(count(&mut db, "match $l isa concept-link;").await, 1);
+}
+
+#[tokio::test]
+async fn a_document_citing_the_same_url_twice_gets_one_citation() {
+    let test_db = TestDb::new("gecko_test_dup_citation");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concepts(
+        dir.path(),
+        &[(
+            "a",
+            "[one](https://example.com/x) and [two](https://example.com/x).",
+        )],
+    );
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    let r = sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync");
+    assert_eq!(r.citations_attempted, 1);
+    assert_eq!(count(&mut db, "match $c isa citation;").await, 1);
 }
