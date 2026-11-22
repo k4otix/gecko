@@ -82,7 +82,7 @@ proven through the real sandbox against live TypeDB.
 As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
 empty result), but it applies no supersession as of T: a belief later superseded is still
 returned for a time before the supersession. A supersede requires a currently asserted
-belief; superseding a retracted or already superseded belief is refused. The host trait method
+belief; superseding a retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`). The host trait method
 `EpistemicReader::believed_at` is still unscoped by agent.
 
 ## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
