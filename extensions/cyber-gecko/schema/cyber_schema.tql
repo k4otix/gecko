@@ -14,6 +14,10 @@ define
   attribute log-source-key value string;
   attribute log-source-channel value string;
   attribute component-key value string;
+  # A data component a sensor declares it covers, as the sensor file spells it
+  # (trimmed), and its trimmed, lowercased key matched against component-key.
+  attribute covered-component-name value string;
+  attribute covered-component-key value string;
 
   # ── the cyber record root ──
   # Concrete (not @abstract): it subtypes the concrete core `concept`, and an
@@ -164,8 +168,16 @@ define
       owns exposure @card(0..1),
       plays targets:target;
 
+  entity monitored-environment sub cyber-object @doc("The environment a sensor file describes, owning every platform the user runs."),
+      owns platform @card(1..);
+
   entity sensor sub cyber-object @doc("A deployed telemetry sensor whose coverage of data sources and components determines what detection evidence is available."),
       owns sensor-kind @card(0..1),
+      owns platform @card(1..),
+      owns log-source-name @card(0..),
+      owns log-source-key @card(0..),
+      owns covered-component-name @card(0..),
+      owns covered-component-key @card(0..),
       plays sensor-coverage:covering-sensor;
 
   relation sensor-coverage @doc("Records that a sensor covers a data source (and optionally specific components), optionally scoped to a population of assets."),

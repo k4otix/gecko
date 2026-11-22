@@ -53,8 +53,9 @@ struct Cli {
     address: Option<String>,
 
     /// TypeDB database name. Defaults to the bundle's declared name for
-    /// `schema-init`/`sync`/`sync-stix`, otherwise "gecko". One database per bundle
-    /// by default; pass the same `--database` to sync several bundles into one.
+    /// `schema-init`/`sync`/`sync-stix`, otherwise "gecko"; `sync-sensors` requires
+    /// it. One database per bundle by default; pass the same `--database` to sync
+    /// several bundles into one.
     #[arg(long, global = true)]
     database: Option<String>,
 
@@ -125,6 +126,20 @@ enum Commands {
         /// `--database`; without `--database`, the database is named after the bundle.
         /// A re-import under the same name replaces the previous one; a record a
         /// belief edge references is retired rather than deleted.
+        #[arg(long)]
+        bundle_name: Option<String>,
+    },
+
+    #[cfg(feature = "cyber")]
+    /// Sync a sensor file (the platforms you run and their sensors) into the ATT&CK
+    /// database named by `--database`, which must already exist
+    SyncSensors {
+        /// Path to the sensor YAML file
+        file: PathBuf,
+        /// The bundle name to sync under, default `sensors`; its concepts are
+        /// `<name>/environment` and `<name>/sensor/<sensor>`. Two sensor files in one
+        /// database need two names. A re-sync under the same name replaces the
+        /// previous one.
         #[arg(long)]
         bundle_name: Option<String>,
     },
@@ -389,6 +404,21 @@ async fn run(cli: Cli) -> Result<()> {
             print_sync_result(&result);
 
             Ok(())
+        }
+        #[cfg(feature = "cyber")]
+        Commands::SyncSensors { file, bundle_name } => {
+            let database = cli
+                .database
+                .clone()
+                .context("sync-sensors needs --database: the database holding the ATT&CK bundle")?;
+            let extensions = build_extensions(&cfg)?;
+            cmd_sync_sensors(
+                make_config(&cli, &address, database),
+                &extensions,
+                file,
+                bundle_name.as_deref(),
+            )
+            .await
         }
         Commands::Query { query_str } => {
             cmd_query(
@@ -741,6 +771,78 @@ async fn cmd_sync(
     let result = sync_manifest(config, extensions, &manifest, &[]).await?;
     print_sync_result(&result);
 
+    Ok(())
+}
+
+/// Syncs a sensor file into an existing ATT&CK database: refuses a missing
+/// database, parses the file, ensures the schema, refuses a file the graph does not
+/// resolve, syncs it, and prints what it declares that ATT&CK does not use.
+#[cfg(feature = "cyber")]
+async fn cmd_sync_sensors(
+    config: DbConfig,
+    extensions: &[Box<dyn GeckoExtension>],
+    file: &Path,
+    bundle_name: Option<&str>,
+) -> Result<()> {
+    use cyber_gecko::sensors;
+
+    let bundle_name = bundle_name.unwrap_or(sensors::DEFAULT_BUNDLE_NAME);
+    anyhow::ensure!(
+        sensors::is_valid_name(bundle_name),
+        "--bundle-name '{bundle_name}' is not of the form [A-Za-z0-9._-]+"
+    );
+
+    let database = config.database.clone();
+    let mut db = TypeDbRouter::new(config.clone());
+    let exists = db
+        .list_databases()
+        .await
+        .context("Failed to list databases")?
+        .contains(&database);
+    anyhow::ensure!(
+        exists,
+        "database {database} does not exist; sync the ATT&CK bundle into it first"
+    );
+
+    println!("Parsing sensor file at {}...", file.display());
+    let yaml = tokio::fs::read_to_string(file)
+        .await
+        .context("Failed to read sensor file")?;
+    let parsed = sensors::parse(&yaml).map_err(|e| anyhow::anyhow!("sensor file error: {e}"))?;
+
+    apply_all_schemas(&mut db, extensions, None)
+        .await
+        .context("Failed to ensure database schema")?;
+
+    let graph: std::sync::Arc<dyn gecko_extension_api::GraphReader> =
+        std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
+            tokio::sync::Mutex::new(TypeDbRouter::new(config.clone())),
+        )));
+    sensors::check_against_graph(&graph, &parsed)
+        .await
+        .map_err(|e| anyhow::anyhow!("sensor file refused: {e}"))?;
+
+    let mut manifest = sensors::to_okf(&parsed, bundle_name);
+    manifest.bundle_path = tokio::fs::canonicalize(file)
+        .await
+        .context("Failed to resolve sensor file path")?
+        .to_string_lossy()
+        .into_owned();
+    println!(
+        "Found {} sensors. Syncing bundle '{}' to database '{}'...",
+        parsed.sensors.len(),
+        manifest.bundle_name,
+        database
+    );
+    let result = sync_manifest(config, extensions, &manifest, &[]).await?;
+    print_sync_result(&result);
+
+    let notices = sensors::notices(&graph, &parsed)
+        .await
+        .map_err(|e| anyhow::anyhow!("reading the post-sync notices: {e}"))?;
+    for notice in notices {
+        println!("  notice: {notice}");
+    }
     Ok(())
 }
 

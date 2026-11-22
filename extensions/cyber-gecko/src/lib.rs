@@ -6,6 +6,7 @@
 //! and host-imported functions for security operations (e.g., host isolation).
 pub mod detect;
 pub mod migrations;
+pub mod sensors;
 pub mod stix;
 
 use gecko_extension_api::{
