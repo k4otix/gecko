@@ -372,13 +372,15 @@ pub(crate) fn rests_on_op(resting: &MemId, assumptions: &[MemId]) -> GraphWrite 
 }
 
 /// `record_prediction`: a `prediction-resolution` seeded with the predicted
-/// probability (resolving-episode filled later by `resolve_prediction`).
+/// probability (resolving-episode filled later by `resolve_prediction`); matches
+/// nothing when the belief is missing or already has an open prediction.
 pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     let mut p = Params::new();
     p.s("bid", b.0.clone());
     p.f("pp", p_prob);
     p.write(
         "match $b isa belief, has concept-id $bc; $bc == $bid;
+         not { $pr isa prediction-resolution, links (predicted-belief: $b); not { $pr has outcome $o; }; };
          insert (predicted-belief: $b) isa prediction-resolution, has predicted-probability == $pp;",
     )
     .expecting(1)

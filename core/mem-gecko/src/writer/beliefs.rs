@@ -323,7 +323,15 @@ impl EpistemicWriter for MemWriter {
         self.graph
             .write(&[tql::record_prediction_op(&b, p)])
             .await
-            .map_err(|e| name_missing_ids(e, Some(0), "record_prediction", "belief", &[&b]))
+            .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
+                (EpistemicError::Storage(msg), Some(m)) if m.op == 0 => {
+                    EpistemicError::Storage(format!(
+                        "record_prediction matched {} row(s): belief {} does not exist or already has an open prediction; nothing was committed: {msg}",
+                        m.got, b.0
+                    ))
+                }
+                _ => e,
+            })
     }
 
     async fn resolve_prediction(&self, ctx: &RunContext, b: MemId, outcome: Outcome) -> Result<()> {

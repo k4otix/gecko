@@ -514,7 +514,7 @@ async fn contest_rests_on_and_record_prediction_mismatches_name_their_ids() {
             .await
             .unwrap_err(),
     );
-    for want in ["mem/bel/gone", "no belief", "nothing was committed"] {
+    for want in ["mem/bel/gone", "does not exist", "nothing was committed"] {
         assert!(msg.contains(want), "record_prediction {want}: {msg}");
     }
 }

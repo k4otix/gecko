@@ -986,7 +986,7 @@ async fn record_prediction_on_a_missing_belief_errors_and_commits_nothing() {
     );
     for want in [
         "mem/bel/does-not-exist",
-        "no belief",
+        "does not exist",
         "nothing was committed",
     ] {
         assert!(msg.contains(want), "{want}: {msg}");
@@ -995,6 +995,72 @@ async fn record_prediction_on_a_missing_belief_errors_and_commits_nothing() {
         .raw_fetch(r#"match $p isa prediction-resolution, has predicted-probability $v; fetch { "v": $v };"#)
         .await;
     assert!(preds.is_empty(), "no prediction was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn recording_a_second_open_prediction_is_refused_and_commits_nothing() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("it will rain", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+
+    let msg = storage_msg(
+        w.record_prediction(&ctx, b.clone(), 0.7)
+            .await
+            .expect_err("a second open prediction must be refused"),
+    );
+    for want in [
+        b.0.as_str(),
+        "already has an open prediction",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let preds = fx
+        .raw_fetch(r#"match $p isa prediction-resolution, has predicted-probability $v; fetch { "v": $v };"#)
+        .await;
+    assert_eq!(preds.len(), 1, "exactly one prediction-resolution exists");
+    w.resolve_prediction(&ctx, b, Outcome::Confirmed)
+        .await
+        .expect("the single open prediction still resolves");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn recording_a_prediction_after_resolution_is_allowed() {
+    use gecko_extension_api::Outcome;
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("it will hail", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+    w.resolve_prediction(&ctx, b.clone(), Outcome::Confirmed)
+        .await
+        .unwrap();
+    w.record_prediction(&ctx, b.clone(), 0.8)
+        .await
+        .expect("a resolved prediction no longer blocks a new one");
 
     fx.drop_db().await;
 }
