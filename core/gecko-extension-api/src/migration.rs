@@ -3,14 +3,17 @@
 //!
 //! [`check_migrations`] accepts each entry only in one of these forms:
 //!
-//! - a **cleanup**, `match $r isa T; not { $r links (R: $x); }; delete $r;` (one or
-//!   more `not` clauses, joined by `{ … } or { … }`), where every role `R` it names
-//!   is declared `@card(1…)` on `T` or a supertype of `T` in the shipped schema;
-//! - a **type removal**, `match $r isa T; delete $r;`, where the same list also
-//!   undefines `T` and the shipped schema declares no `T`;
-//! - an **update**, `match $r isa T, has A $v; …; update $r has A …;` with nothing
-//!   after it, where the shipped `owns A` of `T` (or a supertype) carries a `@range`;
-//! - an `undefine @doc from X;`, where the shipped schema follows `X` with `@doc(`;
+//! - a **cleanup**, exactly `match $r isa T; not { $r links (R: $x); }; delete $r;`
+//!   or, for several roles, `{ not { $r links (R0: $p0); }; } or { … $p1 … };`
+//!   before the `delete`, where every role it names is declared `@card(1)` or
+//!   `@card(1..…)` on `T` or a supertype of `T` in the shipped schema;
+//! - a **type removal**, `match $r isa T; delete $r;`, where a later entry of the
+//!   list undefines `T` and the shipped schema declares no `T`;
+//! - an **update**, `match $r isa T, has A $v; $v > N; update $r has A M;` (or `<`,
+//!   `>=`, `<=`) with nothing after it, where the shipped `owns A` of `T` (or a
+//!   supertype) carries a `@range`;
+//! - an `undefine @doc from X;`, where a shipped statement declares `X` followed by
+//!   `@doc(`;
 //! - an `undefine T;` or `undefine fun F;`, where the shipped schema declares no `T`
 //!   or `F`;
 //! - a `redefine X;`, where the shipped schema contains `X`.
@@ -21,24 +24,30 @@ use crate::SchemaMigration;
 
 /// Checks every entry of `migrations` against `schema`, the shipped schema text.
 /// The error names the first offending migration's id and the rule it breaks.
+// A schema-consistency check each fragment's tests run over its migration list.
+#[doc(hidden)]
 pub fn check_migrations(migrations: &[SchemaMigration], schema: &str) -> Result<(), String> {
-    let statements = statements(schema);
-    for m in migrations {
+    let raw = raw_statements(schema);
+    let statements: Vec<String> = raw.iter().map(|s| strip_docs(s)).collect();
+    for (at, m) in migrations.iter().enumerate() {
         if schema.contains(m.applies_when) {
             return Err(format!(
                 "{}: the shipped schema still contains the replaced text",
                 m.id
             ));
         }
-        check_one(m, migrations, schema, &statements).map_err(|e| format!("{}: {e}", m.id))?;
+        check_one(m, &migrations[at + 1..], schema, &raw, &statements)
+            .map_err(|e| format!("{}: {e}", m.id))?;
     }
     Ok(())
 }
 
+/// Checks one entry; `later` holds the entries after it in the list.
 fn check_one(
     m: &SchemaMigration,
-    all: &[SchemaMigration],
+    later: &[SchemaMigration],
     schema: &str,
+    raw: &[String],
     statements: &[String],
 ) -> Result<(), String> {
     let tql = m.tql;
@@ -46,11 +55,18 @@ fn check_one(
         if tql.contains(" update ") {
             return check_update(tql, statements);
         }
-        return check_cleanup(tql, all, statements);
+        return check_cleanup(tql, later, statements);
     }
     if let Some(target) = tql.strip_prefix("undefine @doc from ") {
         let target = single_statement(target, "an `undefine @doc from X;`")?;
-        if !schema.contains(&format!("{target} @doc(")) {
+        let reinstalled = raw.iter().any(|s| {
+            let declared = ["entity ", "relation ", "attribute "]
+                .iter()
+                .find_map(|kind| s.strip_prefix(kind))
+                .unwrap_or(s);
+            normalize(declared).starts_with(&format!("{} @doc(", normalize(target)))
+        });
+        if !reinstalled {
             return Err(format!(
                 "the shipped schema gives {target} no @doc to replace the undefined one"
             ));
@@ -99,47 +115,57 @@ fn single_statement<'a>(rest: &'a str, form: &str) -> Result<&'a str, String> {
     }
 }
 
-fn check_cleanup(tql: &str, all: &[SchemaMigration], statements: &[String]) -> Result<(), String> {
-    const FORM: &str = "a cleanup is exactly one `match $r isa T; … delete $r;` statement";
-    let rest = tql.strip_prefix("match $r isa ").ok_or(FORM)?;
-    let (type_name, rest) = rest.split_once(';').ok_or(FORM)?;
-    let body = rest.strip_suffix(" delete $r;").ok_or(FORM)?;
-    if !is_label(type_name) || body.contains("delete") || body.contains("match") {
-        return Err(FORM.to_string());
-    }
-
-    let mut roles = Vec::new();
-    let mut remainder = String::new();
-    let mut tail = body;
-    while let Some(at) = tail.find("not { $r links (") {
-        remainder.push_str(&tail[..at]);
-        let after = &tail[at + "not { $r links (".len()..];
-        let (role, after) = after.split_once(':').ok_or(FORM)?;
-        let (player, after) = after.split_once(");").ok_or(FORM)?;
-        let after = after.trim_start().strip_prefix("};").ok_or(FORM)?;
-        if !is_label(role) || !player.trim().starts_with('$') {
-            return Err(FORM.to_string());
+/// The one cleanup text that deletes the rows of `type_name` missing any of
+/// `roles`: a single `not` clause on `$x`, or one `{ … }` branch per role on
+/// `$p0`, `$p1`, … joined by `or`. With no roles it deletes every row.
+fn canonical_cleanup(type_name: &str, roles: &[String]) -> String {
+    let body = match roles {
+        [] => String::new(),
+        [role] => format!(" not {{ $r links ({role}: $x); }};"),
+        _ => {
+            let branches: Vec<String> = roles
+                .iter()
+                .enumerate()
+                .map(|(i, role)| format!("{{ not {{ $r links ({role}: $p{i}); }}; }}"))
+                .collect();
+            format!(" {};", branches.join(" or "))
         }
-        roles.push(role.to_string());
-        tail = after;
+    };
+    format!("match $r isa {type_name};{body} delete $r;")
+}
+
+fn check_cleanup(
+    tql: &str,
+    later: &[SchemaMigration],
+    statements: &[String],
+) -> Result<(), String> {
+    const FORM: &str = "a cleanup is exactly one `match $r isa T; … delete $r;` statement";
+    let type_name = tql
+        .strip_prefix("match $r isa ")
+        .and_then(|rest| rest.split_once(';'))
+        .map(|(t, _)| t.trim())
+        .filter(|t| is_label(t))
+        .ok_or(FORM)?;
+    let mut roles = Vec::new();
+    let mut tail = tql;
+    while let Some(at) = tail.find("links (") {
+        let after = &tail[at + "links (".len()..];
+        let (role, rest) = after.split_once(':').ok_or(FORM)?;
+        roles.push(role.trim().to_string());
+        tail = rest;
     }
-    remainder.push_str(tail);
-    let joiners_only = remainder
-        .split_whitespace()
-        .all(|t| matches!(t, "{" | "}" | "or" | "};" | ";"));
-    if !joiners_only {
-        return Err(format!(
-            "{FORM}; between `isa {type_name};` and `delete` it holds only `not {{ $r links (…) }}` clauses"
-        ));
+    let canonical = canonical_cleanup(type_name, &roles);
+    if normalize(tql) != normalize(&canonical) {
+        return Err(format!("{FORM}, written as `{canonical}`"));
     }
 
     if roles.is_empty() {
-        let undefined = all
+        let undefined = later
             .iter()
             .any(|o| o.tql == format!("undefine {type_name};"));
         if !undefined || !statements_of(statements, type_name).is_empty() {
             return Err(format!(
-                "a cleanup without a `not` clause removes a type, so the list undefines \
+                "a cleanup without a `not` clause removes a type, so a later entry undefines \
                  {type_name} and the shipped schema no longer declares it"
             ));
         }
@@ -148,7 +174,10 @@ fn check_cleanup(tql: &str, all: &[SchemaMigration], statements: &[String]) -> R
     for role in &roles {
         let clause = find_clause(statements, type_name, &format!("relates {role}"))
             .ok_or_else(|| format!("the shipped {type_name} declares no role {role}"))?;
-        if !clause.contains("@card(1") {
+        let required = clause
+            .split_whitespace()
+            .any(|w| w == "@card(1)" || w.starts_with("@card(1.."));
+        if !required {
             return Err(format!(
                 "the shipped {type_name} does not require role {role} with `@card(1`"
             ));
@@ -158,28 +187,54 @@ fn check_cleanup(tql: &str, all: &[SchemaMigration], statements: &[String]) -> R
 }
 
 fn check_update(tql: &str, statements: &[String]) -> Result<(), String> {
-    const FORM: &str =
-        "an update is exactly one `match $r isa T, …; update $r has A …;` with nothing after it";
-    let rest = tql.strip_prefix("match $r isa ").ok_or(FORM)?;
-    let type_name = rest
-        .split([',', ';'])
-        .next()
-        .map(str::trim)
-        .filter(|t| is_label(t))
-        .ok_or(FORM)?;
-    let (head, update) = rest.split_once(" update ").ok_or(FORM)?;
-    if head.contains("update") || head.contains("delete") || head.contains("insert") {
+    const FORM: &str = "an update is exactly `match $r isa T, has A $v; $v <op> <number>; \
+                        update $r has A <number>;`, with `<op>` one of `>`, `<`, `>=`, `<=`";
+    let words: Vec<String> = normalize(tql)
+        .replace(';', " ; ")
+        .replace(',', " , ")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    let [
+        "match",
+        "$r",
+        "isa",
+        type_name,
+        ",",
+        "has",
+        attribute,
+        var,
+        ";",
+        guard_var,
+        op,
+        bound,
+        ";",
+        "update",
+        "$r",
+        "has",
+        updated,
+        value,
+        ";",
+    ] = w.as_slice()
+    else {
+        return Err(FORM.to_string());
+    };
+    let number = |n: &str| n.parse::<f64>().is_ok();
+    if !is_label(type_name)
+        || !is_label(attribute)
+        || updated != attribute
+        || !var.starts_with('$')
+        || guard_var != var
+        || !matches!(*op, ">" | "<" | ">=" | "<=")
+        || !number(bound)
+        || !number(value)
+    {
         return Err(FORM.to_string());
     }
-    let assignment = single_statement(update, FORM)?;
-    let attribute = assignment
-        .strip_prefix("$r has ")
-        .and_then(|a| a.split_whitespace().next())
-        .filter(|a| is_label(a))
-        .ok_or(FORM)?;
     let clause = find_clause(statements, type_name, &format!("owns {attribute}"))
         .ok_or_else(|| format!("the shipped {type_name} does not own {attribute}"))?;
-    if !clause.contains("@range(") {
+    if !clause.split_whitespace().any(|w| w.starts_with("@range(")) {
         return Err(format!(
             "the shipped `owns {attribute}` of {type_name} carries no `@range`"
         ));
@@ -188,7 +243,7 @@ fn check_update(tql: &str, statements: &[String]) -> Result<(), String> {
 }
 
 /// The first clause of `type_name`'s statements (or its supertypes') whose first
-/// two words are `head`.
+/// two words are `head`. The statements carry no `@doc` text.
 fn find_clause(statements: &[String], type_name: &str, head: &str) -> Option<String> {
     let mut current = type_name.to_string();
     for _ in 0..32 {
@@ -197,10 +252,7 @@ fn find_clause(statements: &[String], type_name: &str, head: &str) -> Option<Str
         for statement in &own {
             let clauses = split_top_level(statement, ',');
             for clause in &clauses {
-                let words: Vec<&str> = clause
-                    .split_whitespace()
-                    .take_while(|w| !w.starts_with("@doc("))
-                    .collect();
+                let words: Vec<&str> = clause.split_whitespace().collect();
                 if matches!(words.first(), Some(&("relates" | "owns" | "plays"))) {
                     continue;
                 }
@@ -232,6 +284,42 @@ fn find_clause(statements: &[String], type_name: &str, head: &str) -> Option<Str
     None
 }
 
+/// `text` with its whitespace runs collapsed to single spaces and trimmed.
+fn normalize(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `statement` with every `@doc("…")` annotation removed.
+fn strip_docs(statement: &str) -> String {
+    let mut out = String::with_capacity(statement.len());
+    let mut rest = statement;
+    while let Some(at) = rest.find("@doc(\"") {
+        out.push_str(&rest[..at]);
+        let inner = &rest[at + "@doc(\"".len()..];
+        let mut escaped = false;
+        let mut close = None;
+        for (i, ch) in inner.char_indices() {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                close = Some(i);
+                break;
+            }
+        }
+        match close.and_then(|i| inner[i + 1..].strip_prefix(')').map(|r| (i, r))) {
+            Some((_, after)) => rest = after,
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The statements declaring `type_name`: those whose first word is the type, or
 /// whose first two words are a kind keyword and the type.
 fn statements_of<'a>(statements: &'a [String], type_name: &str) -> Vec<&'a String> {
@@ -252,7 +340,7 @@ fn statements_of<'a>(statements: &'a [String], type_name: &str) -> Vec<&'a Strin
 }
 
 /// The schema's top-level statements, without comments or a leading `define`.
-fn statements(schema: &str) -> Vec<String> {
+fn raw_statements(schema: &str) -> Vec<String> {
     split_top_level(&strip_comments(schema), ';')
         .into_iter()
         .map(|s| {
@@ -356,11 +444,14 @@ mod tests {
     relates source @card(1) @doc("The source; required."),
     relates target @card(1) @doc("The target.");
   relation link sub base @doc("A link."),
-    relates note @doc("An optional role."),
+    relates note @doc("An optional role, never @card(1) and never @range(0..1)."),
     owns score @card(0..1) @range(-1.0..1.0),   # cosine
     owns count @card(0..1);
   entity thing @doc("A thing."),
     plays link:source;
+  entity x-sensor sub base-sensor @doc("A sensor variant.");
+  entity base-sensor @doc("A sensor; owns count @range(0..) is prose here."),
+    owns count;
 "#;
 
     fn entry(tql: &'static str) -> SchemaMigration {
@@ -423,7 +514,7 @@ mod tests {
         let err =
             check("match $r isa link; $r has score $s; not { $r links (source: $x); }; delete $r;")
                 .unwrap_err();
-        assert!(err.contains("holds only `not"), "{err}");
+        assert!(err.contains("written as"), "{err}");
     }
 
     #[test]
@@ -444,7 +535,7 @@ mod tests {
         let err =
             check("match $r isa link, has score $s; $s > 1.0; update $r has score 1.0; delete $r;")
                 .unwrap_err();
-        assert!(err.contains("an update is exactly one"), "{err}");
+        assert!(err.contains("an update is exactly"), "{err}");
     }
 
     #[test]
@@ -480,6 +571,59 @@ mod tests {
         };
         let err = check_migrations(&[m], SCHEMA).unwrap_err();
         assert!(err.contains("still contains the replaced text"), "{err}");
+    }
+
+    #[test]
+    fn a_cleanup_with_an_empty_branch_is_rejected() {
+        let err =
+            check("match $r isa link; { not { $r links (source: $x); }; } or { }; delete $r;")
+                .unwrap_err();
+        assert!(err.contains("written as"), "{err}");
+    }
+
+    #[test]
+    fn a_role_whose_doc_mentions_a_card_is_still_optional() {
+        let err = check("match $r isa link; not { $r links (note: $x); }; delete $r;").unwrap_err();
+        assert!(err.contains("does not require role note"), "{err}");
+    }
+
+    #[test]
+    fn an_owns_named_only_in_a_doc_is_not_ranged() {
+        let err = check("match $r isa base-sensor, has count $c; $c < 0; update $r has count 0;")
+            .unwrap_err();
+        assert!(err.contains("carries no `@range`"), "{err}");
+    }
+
+    #[test]
+    fn an_update_without_a_guard_on_the_attribute_is_rejected() {
+        for tql in [
+            "match $r isa link, has score $s; update $r has score 1.0;",
+            "match $r isa link, has score $s, has count $c; $c > 1; update $r has score 1.0;",
+            "match $r isa link, has score $s; $s == 1.0; update $r has score 1.0;",
+        ] {
+            let err = check(tql).unwrap_err();
+            assert!(err.contains("an update is exactly"), "{tql}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_undefine_doc_matches_the_whole_type_label() {
+        let err = check("undefine @doc from sensor sub base-sensor;").unwrap_err();
+        assert!(err.contains("no @doc to replace"), "{err}");
+        check("undefine @doc from x-sensor sub base-sensor;").unwrap();
+    }
+
+    #[test]
+    fn a_type_removal_after_its_undefine_is_rejected() {
+        let err = check_migrations(
+            &[
+                entry("undefine gone;"),
+                entry("match $r isa gone; delete $r;"),
+            ],
+            SCHEMA,
+        )
+        .unwrap_err();
+        assert!(err.contains("a later entry undefines gone"), "{err}");
     }
 
     #[test]

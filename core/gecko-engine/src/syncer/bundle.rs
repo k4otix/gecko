@@ -251,7 +251,8 @@ pub async fn sync_bundle(
         "Computed sync plan"
     );
     // A stored concept whose exact type differs from its type_hint is retyped:
-    // deleted with its OKF relations and inserted as new, whatever its hash.
+    // deleted with every relation it plays (of any extension, including one that
+    // links it to another bundle's concept) and inserted as new, whatever its hash.
     let retyped = retyped_concepts(&tx, &manifest.concepts, &plan).await?;
     let (retyped_updates, kept_updates): (Vec<usize>, Vec<usize>) = plan
         .to_update
