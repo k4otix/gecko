@@ -796,7 +796,7 @@ fn attack_with_malware() -> String {
 }
 
 /// A database on the pre-tightening schemas, populated by every current writer path
-/// plus the one-player rows a GC can leave, takes the shipped schemas.
+/// plus the one-player rows an earlier release's GC could leave, takes the shipped schemas.
 #[cfg(feature = "cyber")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tightened_schema_applies_to_a_populated_database() {
@@ -885,20 +885,22 @@ async fn tightened_schema_applies_to_a_populated_database() {
     .await
     .expect("sync the sensor file");
 
-    // Core GC of the malware, without the post-sync sweep, leaves its `uses` and
-    // `indicates` with one player each.
-    let mut no_malware = attack_okf.clone();
-    no_malware
-        .concepts
-        .retain(|c| c.type_hint.as_deref() != Some("malware"));
-    assert_eq!(no_malware.concepts.len() + 1, attack_okf.concepts.len());
-    sync_bundle(&mut db, &no_malware, &[], BELIEF_TIER_ROOT)
-        .await
-        .expect("garbage-collect the malware");
+    // A GC by an earlier release deleted a concept's containment and then the
+    // entity, so the malware's `uses` and `indicates` are left with one player each.
+    {
+        let tx = db.begin_write().await.expect("write tx");
+        tx.query("match $m isa malware; $r isa containment, links (member: $m); delete $r;")
+            .await
+            .expect("delete the malware's containment");
+        tx.query("match $m isa malware; delete $m;")
+            .await
+            .expect("delete the malware");
+        tx.commit().await.expect("commit the earlier release's GC");
+    }
     assert_eq!(
         count_rows(&mut db, "match $r isa uses; not { $r links (user: $u); };").await,
         1,
-        "the GC leaves a one-player uses"
+        "the earlier release's GC leaves a one-player uses"
     );
 
     // Every MemWriter write path the reconciliation rig drives.
@@ -1205,7 +1207,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
     let err = refusal(&mut db, &[seed[0].clone()]).await;
     assert!(err.contains("concept-link"), "{err}");
 
-    // cyber's required roles: the GC's one-player SROs are gone, and another is refused.
+    // cyber's required roles: the one-player SROs are gone, and another is refused.
     for (relation, full) in [
         ("uses", "links (user: $x, used: $y)"),
         ("indicates", "links (indicator-source: $x, indicated: $y)"),
