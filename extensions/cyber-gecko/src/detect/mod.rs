@@ -405,7 +405,7 @@ async fn blind_analytics(
         by_analytic.insert(sort_key, (attack_id, concept_id));
     }
 
-    let mut out = Vec::new();
+    let mut readings = Vec::new();
     for (attack_id, concept_id) in by_analytic.into_values() {
         let requirements = read(
             graph,
@@ -420,21 +420,59 @@ async fn blind_analytics(
             &[&concept_id],
         )
         .await?;
-        let (no_log_sources, missing) = if requirements.is_empty() {
-            (true, Vec::new())
+        let missing = if requirements.is_empty() {
+            Vec::new()
         } else {
-            let missing = missing_log_sources(graph, &concept_id).await?;
-            if missing.is_empty() {
-                // This analytic can run; the platform's blind row is another's.
-                continue;
-            }
-            (false, missing)
+            missing_log_sources(graph, &concept_id).await?
         };
+        readings.push(AnalyticReading {
+            analytic: attack_id,
+            has_requirements: !requirements.is_empty(),
+            missing,
+        });
+    }
+    blind_platform_entries(platform, readings)
+}
+
+/// What the reads after `claim-platforms()` found for one live analytic on a
+/// platform it called blind.
+#[derive(Debug, Clone)]
+struct AnalyticReading {
+    /// The analytic's attack-id, or null when it has none.
+    analytic: Value,
+    /// Whether the analytic has a requirement on a live data component.
+    has_requirements: bool,
+    /// Its uncovered requirements, grouped by log source.
+    missing: Vec<Value>,
+}
+
+/// The `blind_platforms` entries for `platform`, which `claim-platforms()` called
+/// blind and not covered, so every live analytic there cannot run. Each read is its
+/// own snapshot: finding no analytic, or one that can run, means a sync landed
+/// between them, and is an error rather than a dropped platform.
+fn blind_platform_entries(
+    platform: &str,
+    readings: Vec<AnalyticReading>,
+) -> Result<Vec<Value>, String> {
+    let changed = || {
+        format!(
+            "the graph changed during the check: platform '{platform}' was blind but its \
+             analytics no longer read as blind; retry"
+        )
+    };
+    if readings.is_empty() {
+        return Err(changed());
+    }
+    let mut out = Vec::new();
+    for r in readings {
+        if r.has_requirements && r.missing.is_empty() {
+            return Err(changed());
+        }
         out.push(json!({
             "platform": platform,
-            "analytic": attack_id,
-            "no_log_sources": no_log_sources,
-            "missing": missing,
+            "analytic": r.analytic,
+            "no_log_sources": !r.has_requirements,
+            "missing": r.missing,
         }));
     }
     Ok(out)
@@ -674,6 +712,45 @@ async fn ensure_logic_and_technique(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reading(has_requirements: bool, missing: Vec<Value>) -> AnalyticReading {
+        AnalyticReading {
+            analytic: json!("AN0001"),
+            has_requirements,
+            missing,
+        }
+    }
+
+    #[test]
+    fn blind_platform_entries_shape_each_blind_analytic() {
+        let gap = json!({ "log_source": "NSM:Flow", "data_components": ["Network Traffic"] });
+        let entries = blind_platform_entries(
+            "Windows",
+            vec![reading(true, vec![gap.clone()]), reading(false, vec![])],
+        )
+        .expect("blind analytics");
+        assert_eq!(
+            entries,
+            vec![
+                json!({ "platform": "Windows", "analytic": "AN0001", "no_log_sources": false, "missing": [gap] }),
+                json!({ "platform": "Windows", "analytic": "AN0001", "no_log_sources": true, "missing": [] }),
+            ]
+        );
+    }
+
+    #[test]
+    fn blind_platform_with_no_analytic_read_is_an_error() {
+        let err =
+            blind_platform_entries("Windows", vec![]).expect_err("must not drop the platform");
+        assert!(err.contains("retry") && err.contains("Windows"), "{err}");
+    }
+
+    #[test]
+    fn blind_platform_whose_analytic_reads_as_runnable_is_an_error() {
+        let err = blind_platform_entries("Windows", vec![reading(true, vec![])])
+            .expect_err("must not drop the platform");
+        assert!(err.contains("retry") && err.contains("Windows"), "{err}");
+    }
 
     #[test]
     fn precision_ratio_scores_positives() {
