@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
 
-use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
+use gecko_engine::db::{RouterGraphStore, run_graph_writes};
 use gecko_extension_api::GeckoExtension;
 use gecko_extension_api::{
     ActorId, BeliefDraft, BeliefQuery, ConceptId, ContextBudget, DateTime, DerivationMethod,
@@ -26,6 +26,8 @@ use mem_gecko::{IndexOutcome, MemWriter};
 use ulid::Ulid;
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
@@ -89,6 +91,26 @@ impl Fixture {
         let mut router = self.shared.lock().await;
         let tx = router.begin_write().await.expect("write tx");
         tx.query(tql).await.expect("write query");
+        tx.commit().await.expect("commit");
+    }
+
+    /// Low-level write that returns the server error instead of panicking.
+    async fn try_raw_write(&self, tql: &str) -> Result<(), String> {
+        let mut router = self.shared.lock().await;
+        let tx = router.begin_write().await.map_err(|e| e.to_string())?;
+        tx.query(tql).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())
+    }
+
+    /// Low-level write of raw memory items, each given its ownership and
+    /// source-link by [`provenance::seed_provenance`] in the same transaction.
+    async fn raw_seed(&self, tql: &str) {
+        let mut router = self.shared.lock().await;
+        let tx = router.begin_write().await.expect("write tx");
+        tx.query(tql).await.expect("write query");
+        run_graph_writes(&tx, &provenance::seed_provenance())
+            .await
+            .expect("seed provenance");
         tx.commit().await.expect("commit");
     }
 
@@ -333,7 +355,7 @@ async fn derivation_chain_never_touches_the_retrieval_ledger() {
         .unwrap();
 
     // Seed a retrieval-event + informs-synthesis edge (the OTHER ledger).
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"match $b isa belief, has concept-id "{}";
            insert
              $re isa retrieval-event, has concept-id "mem/ep/re1",
@@ -1472,7 +1494,7 @@ async fn population_members_and_canonical_entity() {
     let w = fx.writer(None, None);
 
     // Seed a population + materialized members + a provable cross-source resolution.
-    fx.raw_write(
+    fx.raw_seed(
         r#"insert
              $p isa population, has spec-hash "cohort-1", has spec-dialect "typeql-3",
                  has spec-text 'match $c isa concept, has tag "internet-facing";';
@@ -1672,7 +1694,8 @@ async fn dedup_episodes_refuses_non_duplicates() {
 }
 
 /// Seeds an episode of `kind` straight into the graph, with the given optional
-/// title and owner set (`observe` always writes a title and exactly one owner).
+/// title and a non-empty owner set held by its one ownership (`observe` always
+/// writes a title and exactly one owner).
 async fn seed_episode(
     fx: &Fixture,
     kind: &str,
@@ -1682,6 +1705,7 @@ async fn seed_episode(
     ingest: &str,
     owners: &[&str],
 ) {
+    assert!(!owners.is_empty(), "the schema requires an owner for {id}");
     let mut owner_match = String::new();
     let mut owner_links = String::new();
     for (i, o) in owners.iter().enumerate() {
@@ -1693,19 +1717,10 @@ async fn seed_episode(
     let title = title
         .map(|t| format!(r#", has title "{t}""#))
         .unwrap_or_default();
-    let ownership = if owners.is_empty() {
-        String::new()
-    } else {
-        format!("(owned: $e{owner_links}) isa ownership;")
-    };
-    let matching = if owners.is_empty() {
-        String::new()
-    } else {
-        format!("match {owner_match}")
-    };
-    fx.raw_write(&format!(
-        r#"{matching} insert $e isa {kind}, has concept-id "{id}"{title},
-             has event-time {event}, has ingest-time {ingest}; {ownership}"#
+    fx.raw_seed(&format!(
+        r#"match {owner_match} insert $e isa {kind}, has concept-id "{id}"{title},
+             has event-time {event}, has ingest-time {ingest};
+             (owned: $e{owner_links}) isa ownership;"#
     ))
     .await;
 }
@@ -1742,10 +1757,20 @@ async fn dedup_episodes_refuses_and_commits_nothing() {
     seed_episode(&fx, "episode", "e-own2-l", Some("t"), t0, t1, &["x"]).await;
     cases.push(("owners-superset", mid("e-own2-k"), mid("e-own2-l")));
 
-    // Owned vs unowned.
-    seed_episode(&fx, "episode", "e-un-k", Some("t"), t0, t0, &["x"]).await;
-    seed_episode(&fx, "episode", "e-un-l", Some("t"), t0, t1, &[]).await;
-    cases.push(("unowned-loser", mid("e-un-k"), mid("e-un-l")));
+    // An unowned episode cannot be seeded: the schema refuses it at commit.
+    let unowned = fx
+        .try_raw_write(&format!(
+            r#"insert $run isa doc-run, has run-id "unowned-run";
+                 $e isa episode, has concept-id "e-un-l", has title "t",
+                     has event-time {t1}, has ingest-time {t1};
+                 (memory: $e, origin: $run) isa source-link, has origin-kind "test";"#
+        ))
+        .await;
+    let err = unowned.expect_err("an unowned episode commits");
+    assert!(
+        err.contains("ownership:owned"),
+        "the refusal does not name ownership:owned: {err}"
+    );
 
     // Without a title.
     seed_episode(&fx, "episode", "e-nt-k", None, t0, t0, &["x"]).await;
@@ -1966,7 +1991,7 @@ async fn retrieval_events_safe_to_tombstone_only_after_supersession() {
         )
         .await
         .unwrap();
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"match $b isa belief, has concept-id "{}";
            insert
              $re isa retrieval-event, has concept-id "mem/ep/re-ret",
@@ -2635,7 +2660,7 @@ async fn blast_radius_at_follows_the_materialized_window() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);
     seed_concepts(&fx, &["asset/a"]).await;
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"insert
              $p isa population, has spec-hash "{POP}", has spec-dialect "typeql-3",
                  has spec-text "match $c isa concept;";

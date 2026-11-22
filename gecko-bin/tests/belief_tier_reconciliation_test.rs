@@ -40,6 +40,8 @@ use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 use common::TestDb;
 
 const MEM_PLAYBOOK: &str = "playbooks/rig_mem";
@@ -570,10 +572,11 @@ fn guest_draft(ctx: &RunContext, text: &str, confidence: Option<f64>) -> BeliefD
     }
 }
 
-/// Raw belief-tier writes a hostile extension could send: a bare belief, and a
-/// `technique-detection` edge from `rig_cyber` to T1059 claimed by `belief_id`.
+/// Raw belief-tier writes a hostile extension could send: a belief with the
+/// ownership and source-link the schema requires, and a `technique-detection` edge
+/// from `rig_cyber` to T1059 claimed by `belief_id`.
 fn hostile_writes(belief_id: &str) -> Vec<GraphWrite> {
-    vec![
+    let writes = vec![
         GraphWrite::single(
             "given $id: string, $st: string; \
              insert $b isa belief, has concept-id == $id, has belief-state == $st;",
@@ -599,7 +602,8 @@ fn hostile_writes(belief_id: &str) -> Vec<GraphWrite> {
             ],
         )
         .expecting(1),
-    ]
+    ];
+    [writes, provenance::seed_provenance()].concat()
 }
 
 /// Orders a duplicate pair as (keeper, loser): equal ingest times are broken by the
@@ -1108,10 +1112,16 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
     let guard_labels: BTreeSet<String> = refused.iter().map(|c| c.label.clone()).collect();
     assert_eq!(
         guard_labels,
-        ["memory-item", "belief", "technique-detection"]
-            .into_iter()
-            .map(String::from)
-            .collect::<BTreeSet<_>>(),
+        [
+            "memory-item",
+            "belief",
+            "ownership",
+            "source-link",
+            "technique-detection",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<BTreeSet<_>>(),
         "raw belief writes: refused changes {refused:?}"
     );
     assert_eq!(fingerprint(&db).await, f0, "raw belief writes committed");

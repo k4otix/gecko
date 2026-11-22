@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
 
-use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
+use gecko_engine::db::{RouterGraphStore, run_graph_writes};
 use gecko_extension_api::GeckoExtension;
 use gecko_extension_api::{
     ActorId, ConceptId, DateTime, Embedder, EpisodeDraft, EpistemicError, EpistemicWriter,
@@ -21,6 +21,8 @@ use mem_gecko::{ConsolidationDaemon, MemConsolidationDaemon, MemWriter};
 use ulid::Ulid;
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
@@ -81,6 +83,18 @@ impl Fixture {
         let mut router = self.shared.lock().await;
         let tx = router.begin_write().await.expect("write tx");
         tx.query(tql).await.expect("write query");
+        tx.commit().await.expect("commit");
+    }
+
+    /// Low-level write of raw memory items, each given its ownership and
+    /// source-link by [`provenance::seed_provenance`] in the same transaction.
+    async fn raw_seed(&self, tql: &str) {
+        let mut router = self.shared.lock().await;
+        let tx = router.begin_write().await.expect("write tx");
+        tx.query(tql).await.expect("write query");
+        run_graph_writes(&tx, &provenance::seed_provenance())
+            .await
+            .expect("seed provenance");
         tx.commit().await.expect("commit");
     }
 
@@ -224,7 +238,7 @@ async fn seed_episode(
         owner_match.push_str(&format!(r#"$a{i} isa agent, has agent-id "{o}"; "#));
         owner_links.push_str(&format!(", owner: $a{i}"));
     }
-    fx.raw_write(&format!(
+    fx.raw_seed(&format!(
         r#"match {owner_match} insert $e isa {kind}, has concept-id "{id}", has title "{title}",
              has event-time {event}, has ingest-time {ingest}; (owned: $e{owner_links}) isa ownership;"#
     ))

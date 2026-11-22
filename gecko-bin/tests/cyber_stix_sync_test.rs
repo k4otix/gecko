@@ -31,6 +31,8 @@ mod attack;
 #[path = "common/belief.rs"]
 mod belief;
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 use belief::claim_with_belief;
 use common::TestDb;
 

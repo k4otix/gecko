@@ -55,10 +55,13 @@ use chrono::NaiveDateTime;
 use cyber_gecko::CyberGecko;
 use futures_util::StreamExt;
 use gecko_engine::db::router::DbError;
+use gecko_engine::db::run_graph_writes;
 use gecko_engine::extension::GeckoExtension;
 use mem_gecko::MemGecko;
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 #[path = "common/surface.rs"]
 mod surface;
 use common::TestDb;
@@ -143,11 +146,15 @@ async fn apply_delta(db: &TestDb, delta: &str) -> Result<(), DbError> {
     db.router().apply_schema(delta).await
 }
 
-/// Runs a raw-TQL write as one committed transaction against the test DB.
+/// Runs a raw-TQL write as one committed transaction against the test DB, giving
+/// each raw memory item the ownership and source-link the schema requires.
 async fn insert(db: &TestDb, query: &str) {
     let mut router = db.router();
     let tx = router.begin_write().await.expect("write tx");
     tx.query(query).await.expect("insert query");
+    run_graph_writes(&tx, &provenance::seed_provenance())
+        .await
+        .expect("seed provenance");
     tx.commit().await.expect("commit");
 }
 
@@ -650,6 +657,11 @@ async fn anchorless_divergence_precedence_rejected_at_commit() {
         insert_result.is_ok(),
         "the insert statement itself must be accepted — @card(1) validates at commit, not insert"
     );
+    // The beliefs get their ownership and source-link, so the anchor is the only
+    // cardinality the commit can refuse.
+    run_graph_writes(&tx, &provenance::seed_provenance())
+        .await
+        .expect("seed provenance");
 
     // The cardinality violation surfaces at commit (the insert above is accepted —
     // that insert-ok/commit-err timing is the novel claim).
@@ -661,9 +673,9 @@ async fn anchorless_divergence_precedence_rejected_at_commit() {
     let msg = format!("{commit_err:?}");
     eprintln!("P-PREC-5 commit error: {msg}");
     assert!(
-        msg.contains("exception-belief") || msg.contains("@card") || msg.contains("CNT5"),
-        "the commit must fail specifically on the exception-belief @card(1) violation \
-         (expected 'exception-belief'/'@card'/'[CNT5]' in the error); got: {msg}"
+        msg.contains("divergence-precedence:exception-belief"),
+        "the commit must fail specifically on the exception-belief @card(1) violation; \
+         got: {msg}"
     );
 }
 

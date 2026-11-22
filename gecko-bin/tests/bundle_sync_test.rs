@@ -11,7 +11,6 @@ use tempfile::TempDir;
 #[cfg(feature = "cyber")]
 use cyber_gecko::CyberGecko;
 use gecko_engine::db::router::{DbError, TypeDbRouter};
-use gecko_engine::db::run_graph_writes;
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::{HierarchyEdge, OkfBundle, OkfLink, TypedAttrValue, TypedAttribute};
@@ -22,6 +21,8 @@ use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
 #[path = "common/belief.rs"]
 mod belief;
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 use belief::claim_with_belief;
 use common::TestDb;
 
@@ -263,12 +264,16 @@ async fn extension_write_into_the_belief_tier_is_refused() {
         vec!["mem/bel/raw".into(), "asserted".into()],
     )
     .expecting(1);
-    let result = sync_bundle(&mut db, &bundle, &[raw], BELIEF_TIER_ROOT).await;
+    let writes = [vec![raw], provenance::seed_provenance()].concat();
+    let result = sync_bundle(&mut db, &bundle, &writes, BELIEF_TIER_ROOT).await;
     let Err(DbError::BeliefTierWrite { changes }) = result else {
         panic!("expected BeliefTierWrite, got {result:?}");
     };
     let labels: HashSet<&str> = changes.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, HashSet::from(["memory-item", "belief"]));
+    assert_eq!(
+        labels,
+        HashSet::from(["memory-item", "belief", "ownership", "source-link"])
+    );
 
     assert_eq!(
         count(&mut db, "match $c isa concept;").await,
@@ -691,34 +696,7 @@ async fn one_sync_retires_two_linked_referenced_concepts_and_deletes_an_unrefere
         .clone();
 
     // The linking concept gains a belief reference, and a third concept nothing references.
-    let tx = db.begin_write().await.expect("Failed to begin write");
-    let setup = [
-        GraphWrite::single(
-            "given $id: string, $st: string; \
-             insert $b isa belief, has concept-id == $id, has belief-state == $st;",
-            vec!["id".into(), "st".into()],
-            vec!["mem/bel/linker".into(), "asserted".into()],
-        )
-        .expecting(1),
-        GraphWrite::single(
-            "given $bid: string, $cid: string, $kind: string; \
-             match $b isa belief, has concept-id $bi; $bi == $bid; \
-                   $c isa concept, has concept-id $ci; $ci == $cid; \
-             insert $l isa source-link, links (memory: $b, origin: $c), \
-                    has origin-kind == $kind;",
-            vec!["bid".into(), "cid".into(), "kind".into()],
-            vec![
-                "mem/bel/linker".into(),
-                linker.clone().into(),
-                "concept".into(),
-            ],
-        )
-        .expecting(1),
-    ];
-    run_graph_writes(&tx, &setup)
-        .await
-        .expect("belief setup writes");
-    tx.commit().await.expect("commit belief setup");
+    claim_with_belief(&mut db, "mem/bel/linker", &linker).await;
 
     let unreferenced = "playbooks/unreferenced".to_string();
     let mut with_third = full.clone();
