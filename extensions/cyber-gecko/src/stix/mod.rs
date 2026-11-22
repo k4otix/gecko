@@ -941,7 +941,7 @@ mod tests {
             .concepts
             .iter()
             .find(|c| c.concept_id == id)
-            .unwrap_or_else(|| panic!("{id} not in the bundle"))
+            .expect("the fixture's concept is in the bundle")
     }
 
     fn attr_values(concept: &OkfConcept, name: &str) -> Vec<TypedAttrValue> {
