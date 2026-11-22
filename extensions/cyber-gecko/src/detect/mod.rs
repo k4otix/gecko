@@ -13,13 +13,26 @@
 //!   logic and technique.
 //! - `disposition` records an analyst verdict as a belief with an
 //!   `alert-disposition` edge carrying the verdict, so `precision` can count it.
-//! - `coverage_gaps` / `blinded` run the persisted `undetected-techniques()` /
-//!   `blinded-detections()` TypeDB functions.
+//! - `coverage_gaps` runs the persisted `undetected-techniques()` TypeDB function.
+//! - `blinded` checks each asserted claim against ATT&CK's detection model and the
+//!   synced sensor files. A claim's technique has detection strategies, each carried
+//!   out by one analytic per platform, and an analytic reads log sources for the data
+//!   components its requirements name. On each platform a sensor file declares,
+//!   `claim-platforms()` marks the claim *covered* when the technique's live
+//!   analytic there can run (it has a requirement, and a live sensor on that
+//!   platform collects each requirement's log source or covers its component as a
+//!   fallback), *blind* when it cannot, and *unassessed* when ATT&CK gives no live
+//!   analytic there or the technique itself is retired, revoked or deprecated. The
+//!   report lists each claim with a blind or unassessed platform, what each blind
+//!   analytic lacks (`analytic-gaps`, grouped by log source), and the sensors'
+//!   fallback components that match no live data component. A graph with no sensor
+//!   file or no detection strategies is an error, never an empty report.
 //! - `precision` counts dispositions in a time window and computes true-positive
 //!   precision host-side.
 //!
 //! [`GeckoExtension::call_import`]: gecko_extension_api::GeckoExtension::call_import
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use gecko_extension_api::{
@@ -214,19 +227,311 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     Ok(json!({ "undetected_techniques": rows }))
 }
 
-/// Detection logic whose required evidence has no covering sensor (the
-/// `blinded-detections()` TypeDB function).
-async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
-    let rows = graph
-        .read(
-            "match let $d in blinded-detections(); \
-             fetch { \"concept_id\": $d.concept-id };",
-            &[],
-            &[],
-        )
+/// The pattern that skips `$var` when it has `retired-at`, `revoked true` or
+/// `deprecated true`. `var` is a variable name from this module, never a value.
+fn live(var: &str) -> String {
+    format!(
+        "not {{ ${var} has revoked true; }}; \
+         not {{ ${var} has deprecated true; }}; \
+         not {{ ${var} has retired-at ${var}_retired; }};"
+    )
+}
+
+fn row_str(row: &Value, field: &str) -> Result<String, String> {
+    row.get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("a graph row has no string `{field}`: {row}"))
+}
+
+/// Runs `query` with the string parameters `names` bound to `values`.
+async fn read(
+    graph: &Arc<dyn GraphReader>,
+    query: &str,
+    names: &[&str],
+    values: &[&str],
+) -> Result<Vec<Value>, String> {
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    let values: Vec<GraphValue> = values.iter().map(|v| GraphValue::from(*v)).collect();
+    graph
+        .read(query, &names, &values)
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "blinded_detections": rows }))
+        .map_err(|e| e.to_string())
+}
+
+/// One claim the report covers: its detecting logic and its technique.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ClaimKey {
+    concept_id: String,
+    technique_concept_id: String,
+}
+
+/// What `claim-platforms()` says of one claim: the technique's attack-id, if it
+/// still has one, and every status per declared platform.
+#[derive(Debug, Default)]
+struct ClaimStatuses {
+    technique: Option<String>,
+    platforms: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// For each asserted detection claim with a declared platform it is blind on or
+/// cannot assess: the blind platforms with what each lacks, and the unassessed
+/// platforms. Errors on a graph it cannot judge: one with no sensor file, or with
+/// no current ATT&CK detection data.
+async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
+    let env = read(
+        graph,
+        &format!(
+            "match $e isa monitored-environment; {} limit 1; fetch {{ \"id\": $e.concept-id }};",
+            live("e")
+        ),
+        &[],
+        &[],
+    )
+    .await?;
+    if env.is_empty() {
+        return Err(
+            "no sensor file synced: sync one with `gecko sync-sensors` before checking blindness"
+                .into(),
+        );
+    }
+    let strategies = read(
+        graph,
+        "match strategy-detects (strategy: $s, technique: $t); limit 1; \
+         fetch { \"id\": $s.concept-id };",
+        &[],
+        &[],
+    )
+    .await?;
+    if strategies.is_empty() {
+        return Err(
+            "no current ATT&CK detection data: the graph holds no detection strategies \
+             (ATT&CK v18 or later)"
+                .into(),
+        );
+    }
+
+    let rows = read(
+        graph,
+        "match let $d, $t, $p, $s in claim-platforms(); \
+         fetch { \"concept_id\": $d.concept-id, \"technique_concept_id\": $t.concept-id, \
+                 \"technique\": $t.attack-id, \"platform\": $p, \"status\": $s };",
+        &[],
+        &[],
+    )
+    .await?;
+    let mut claims: BTreeMap<ClaimKey, ClaimStatuses> = BTreeMap::new();
+    for row in &rows {
+        let key = ClaimKey {
+            concept_id: row_str(row, "concept_id")?,
+            technique_concept_id: row_str(row, "technique_concept_id")?,
+        };
+        let entry = claims.entry(key).or_default();
+        if let Some(t) = row.get("technique").and_then(Value::as_str) {
+            entry.technique = Some(t.to_string());
+        }
+        entry
+            .platforms
+            .entry(row_str(row, "platform")?)
+            .or_default()
+            .insert(row_str(row, "status")?);
+    }
+
+    let mut detections = Vec::new();
+    for (key, statuses) in &claims {
+        let mut blind_platforms = Vec::new();
+        let mut unassessed = Vec::new();
+        for (platform, status) in &statuses.platforms {
+            // A platform with an analytic that can run is not blind, whatever
+            // another analytic there lacks.
+            if status.contains("covered") {
+                continue;
+            }
+            if status.contains("blind") {
+                blind_platforms
+                    .extend(blind_analytics(graph, &key.technique_concept_id, platform).await?);
+            } else {
+                unassessed.push(platform.clone());
+            }
+        }
+        if blind_platforms.is_empty() && unassessed.is_empty() {
+            continue;
+        }
+        detections.push(json!({
+            "concept_id": key.concept_id,
+            "technique": statuses.technique,
+            "technique_concept_id": key.technique_concept_id,
+            "blind_platforms": blind_platforms,
+            "unassessed_platforms": unassessed,
+        }));
+    }
+
+    Ok(json!({
+        "blinded_detections": detections,
+        "stale_sensor_components": stale_sensor_components(graph).await?,
+    }))
+}
+
+/// The `blind_platforms` entries for `platform` of the technique
+/// `technique_concept_id`: one per live analytic there that cannot run, sorted by
+/// analytic.
+async fn blind_analytics(
+    graph: &Arc<dyn GraphReader>,
+    technique_concept_id: &str,
+    platform: &str,
+) -> Result<Vec<Value>, String> {
+    let analytics = read(
+        graph,
+        &format!(
+            "given $tid: string, $plat: string; \
+             match $t isa attack-pattern, has concept-id $tc; $tc == $tid; \
+                   strategy-detects (strategy: $st, technique: $t); {} \
+                   strategy-analytic (strategy: $st, analytic: $a); {} \
+                   $a has platform $ap; $ap == $plat; $a has concept-id $ac; \
+             fetch {{ \"analytic_concept_id\": $ac, \"analytic\": $a.attack-id }};",
+            live("st"),
+            live("a")
+        ),
+        &["tid", "plat"],
+        &[technique_concept_id, platform],
+    )
+    .await?;
+
+    let mut by_analytic: BTreeMap<String, (Value, String)> = BTreeMap::new();
+    for row in &analytics {
+        let concept_id = row_str(row, "analytic_concept_id")?;
+        let attack_id = row.get("analytic").cloned().unwrap_or(Value::Null);
+        let sort_key = attack_id.as_str().unwrap_or(&concept_id).to_string();
+        by_analytic.insert(sort_key, (attack_id, concept_id));
+    }
+
+    let mut out = Vec::new();
+    for (attack_id, concept_id) in by_analytic.into_values() {
+        let requirements = read(
+            graph,
+            &format!(
+                "given $aid: string; \
+                 match $a isa analytic, has concept-id $ac; $ac == $aid; \
+                       $r isa analytic-requirement, links (analytic: $a, component: $c); {} \
+                 limit 1; fetch {{ \"key\": $r.log-source-key }};",
+                live("c")
+            ),
+            &["aid"],
+            &[&concept_id],
+        )
+        .await?;
+        let (no_log_sources, missing) = if requirements.is_empty() {
+            (true, Vec::new())
+        } else {
+            let missing = missing_log_sources(graph, &concept_id).await?;
+            if missing.is_empty() {
+                // This analytic can run; the platform's blind row is another's.
+                continue;
+            }
+            (false, missing)
+        };
+        out.push(json!({
+            "platform": platform,
+            "analytic": attack_id,
+            "no_log_sources": no_log_sources,
+            "missing": missing,
+        }));
+    }
+    Ok(out)
+}
+
+/// The `analytic-gaps` of the analytic `analytic_concept_id`, grouped by log-source
+/// key: each key's smallest trimmed spelling and the sorted names of the data
+/// components it would serve, sorted by spelling.
+async fn missing_log_sources(
+    graph: &Arc<dyn GraphReader>,
+    analytic_concept_id: &str,
+) -> Result<Vec<Value>, String> {
+    let gaps = read(
+        graph,
+        "given $aid: string; \
+         match $a isa analytic, has concept-id $ac; $ac == $aid; \
+               let $r in analytic-gaps($a); \
+               $r links (component: $c); \
+         fetch { \"name\": $r.log-source-name, \"key\": $r.log-source-key, \
+                 \"component\": $c.title, \"component_id\": $c.concept-id };",
+        &["aid"],
+        &[analytic_concept_id],
+    )
+    .await?;
+
+    let mut groups: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
+    for row in &gaps {
+        let name = row_str(row, "name")?;
+        let component = row
+            .get("component")
+            .and_then(Value::as_str)
+            .map(|c| c.trim().to_string())
+            .ok_or_else(|| format!("a gap's data component has no name: {row}"))?;
+        let (display, components) = groups
+            .entry(row_str(row, "key")?)
+            .or_insert_with(|| (name.clone(), BTreeSet::new()));
+        if name < *display {
+            *display = name;
+        }
+        components.insert(component);
+    }
+
+    let mut missing: Vec<(String, String, BTreeSet<String>)> = groups
+        .into_iter()
+        .map(|(key, (display, components))| (display, key, components))
+        .collect();
+    missing.sort();
+    Ok(missing
+        .into_iter()
+        .map(|(display, _, components)| {
+            json!({ "log_source": display, "data_components": components })
+        })
+        .collect())
+}
+
+/// Each live sensor's fallback component that matches no live data component,
+/// sorted by sensor and component.
+async fn stale_sensor_components(graph: &Arc<dyn GraphReader>) -> Result<Vec<Value>, String> {
+    let declared = read(
+        graph,
+        &format!(
+            "match $s isa sensor, has covered-component-name $n; {} \
+             fetch {{ \"sensor\": $s.title, \"component\": $n }};",
+            live("s")
+        ),
+        &[],
+        &[],
+    )
+    .await?;
+    if declared.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keys: BTreeSet<String> = read(
+        graph,
+        &format!(
+            "match $c isa data-component, has component-key $k; {} fetch {{ \"key\": $k }};",
+            live("c")
+        ),
+        &[],
+        &[],
+    )
+    .await?
+    .iter()
+    .map(|row| row_str(row, "key"))
+    .collect::<Result<_, _>>()?;
+
+    let mut stale = BTreeSet::new();
+    for row in &declared {
+        let component = row_str(row, "component")?;
+        if !keys.contains(&component.to_lowercase()) {
+            stale.insert((row_str(row, "sensor")?, component));
+        }
+    }
+    Ok(stale
+        .into_iter()
+        .map(|(sensor, component)| json!({ "sensor": sensor, "component": component }))
+        .collect())
 }
 
 /// True-positive precision of a detection over a trailing time window, computed

@@ -34,7 +34,6 @@ define
       owns platform @card(0..),
       owns kill-chain-phase @card(0..),
       plays technique-detection:detected-technique,
-      plays requires-evidence:technique,
       plays strategy-detects:technique,
       plays mitigates:mitigated,
       plays indicates:indicated,
@@ -113,25 +112,12 @@ define
       relates pattern-indicator @doc("The indicator whose pattern was observed."),
       relates observable-value @doc("The concrete observable matching the pattern.");
 
-  entity data-source sub cyber-object @doc("An ATT&CK data source: a category of telemetry (e.g. Process, Network Traffic) from which technique detection can draw evidence."),
-      owns platform @card(0..),
-      plays evidence-of:evidence-source,
-      plays sensor-coverage:covered-source;
+  entity data-source sub cyber-object @doc("An ATT&CK data source: a category of telemetry (e.g. Process, Network Traffic), imported for reference since ATT&CK deprecates every data source."),
+      owns platform @card(0..);
 
-  entity data-component sub cyber-object @doc("An ATT&CK data component: a specific facet of a data source (e.g. Process Creation) that a technique's detection requires as evidence."),
+  entity data-component sub cyber-object @doc("An ATT&CK data component: a specific kind of telemetry (e.g. Process Creation) an analytic reads through a log source, keyed by its trimmed, lowercased name for matching a sensor's fallback components."),
       owns component-key @card(0..1),
-      plays analytic-requirement:component,
-      plays evidence-of:evidence-component,
-      plays requires-evidence:required,
-      plays sensor-coverage:covered-component;
-
-  relation evidence-of @doc("Ties a data component to the data source it is a facet of."),
-      relates evidence-component @doc("The data component (the specific facet)."),
-      relates evidence-source @doc("The data source the component belongs to.");
-
-  relation requires-evidence @doc("Records that detecting a technique requires a given data component as evidence."),
-      relates technique @doc("The technique whose detection needs the evidence."),
-      relates required @doc("The data component required to detect it.");
+      plays analytic-requirement:component;
 
   entity detection-strategy sub cyber-object @doc("An ATT&CK detection strategy: how to detect one technique, carried out by one analytic per platform."),
       plays strategy-detects:strategy,
@@ -171,21 +157,13 @@ define
   entity monitored-environment sub cyber-object @doc("The environment a sensor file describes, owning every platform the user runs."),
       owns platform @card(1..);
 
-  entity sensor sub cyber-object @doc("A deployed telemetry sensor whose coverage of data sources and components determines what detection evidence is available."),
+  entity sensor sub cyber-object @doc("A deployed telemetry sensor from a sensor file: the platforms it runs on, the log sources it collects and the data components it covers as a fallback."),
       owns sensor-kind @card(0..1),
       owns platform @card(1..),
       owns log-source-name @card(0..),
       owns log-source-key @card(0..),
       owns covered-component-name @card(0..),
-      owns covered-component-key @card(0..),
-      plays sensor-coverage:covering-sensor;
-
-  relation sensor-coverage @doc("Records that a sensor covers a data source (and optionally specific components), optionally scoped to a population of assets."),
-      relates covering-sensor @doc("The sensor providing the coverage."),
-      relates covered-source @doc("The data source the sensor covers."),
-      relates covered-component @card(0..) @doc("A specific data component the sensor covers."),
-      relates coverage-scope @card(0..1) @doc("The population of assets the coverage is scoped to.");
-  population plays sensor-coverage:coverage-scope;
+      owns covered-component-key @card(0..);
 
   entity sighting sub execution-episode @doc("An episodic observation that a given IOC was seen; a concrete sighting of an observable."),
       owns ioc-value @card(0..1),

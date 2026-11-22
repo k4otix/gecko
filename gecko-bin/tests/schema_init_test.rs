@@ -127,8 +127,8 @@ async fn previous_core_schema_upgrades_to_the_shipped_schema() {
     assert!(schema.contains(NEW_BUNDLE_SENTENCE));
 }
 
-/// An extension carrying the cyber schema as of the frozen fixture and the
-/// detection-model migrations, as the belief-edge registry reads an extension.
+/// An extension carrying the cyber schema as of the frozen fixture and the cyber
+/// migrations, as the belief-edge registry reads an extension.
 #[cfg(feature = "cyber")]
 struct FrozenCyber {
     schema: &'static str,
@@ -143,7 +143,7 @@ impl GeckoExtension for FrozenCyber {
         self.schema
     }
     fn schema_migrations(&self) -> &[gecko_extension_api::SchemaMigration] {
-        &cyber_gecko::migrations::DETECTION_MODEL_MIGRATIONS
+        &cyber_gecko::migrations::CYBER_MIGRATIONS
     }
     fn belief_edges(&self) -> &[gecko_extension_api::BeliefEdgeDecl] {
         &cyber_gecko::CYBER_BELIEF_EDGES
@@ -167,7 +167,7 @@ async fn old_cyber_detection_types_migrate_away() {
     use gecko_extension_api::GeckoExtension as _;
 
     const FROZEN: &str = include_str!("fixtures/cyber_schema_1cd621d.tql");
-    let migrations = &cyber_gecko::migrations::DETECTION_MODEL_MIGRATIONS;
+    let migrations = &cyber_gecko::migrations::CYBER_MIGRATIONS;
 
     // The registry accepts the migrations: none names a core or mem type.
     let exts: Vec<Box<dyn GeckoExtension>> = vec![
@@ -175,7 +175,7 @@ async fn old_cyber_detection_types_migrate_away() {
         Box::new(FrozenCyber { schema: FROZEN }),
     ];
     mem_gecko::BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &exts)
-        .expect("the registry accepts the detection-model migrations");
+        .expect("the registry accepts the cyber migrations");
 
     let test_db = TestDb::new("gecko_test_cyber_migration");
     let mut db = test_db.router();
@@ -198,27 +198,35 @@ async fn old_cyber_detection_types_migrate_away() {
         assert!(before.contains(gone), "frozen schema lacks {gone}");
     }
 
+    // The seeded coverage names no sensor: the shipped schema requires a sensor to
+    // own a platform, which the frozen schema's sensor cannot.
     let tx = db.begin_write().await.expect("begin write");
-    for q in ["insert $s isa data-source, has concept-id 'ds-1'; \
+    tx.query(
+        "insert $s isa data-source, has concept-id 'ds-1'; \
          $c isa data-component, has concept-id 'dc-1'; \
          $t isa attack-pattern, has concept-id 'tp-1'; \
-         $k isa sensor, has concept-id 'sn-1'; \
          $p isa population, has spec-hash 'pop-1'; \
          (evidence-component: $c, evidence-source: $s) isa evidence-of; \
          (technique: $t, required: $c) isa requires-evidence; \
-         (covering-sensor: $k, covered-source: $s, covered-component: $c, coverage-scope: $p) isa sensor-coverage;"]
-    {
-        tx.query(q).await.expect("seed instances");
-    }
+         (covered-source: $s, covered-component: $c, coverage-scope: $p) isa sensor-coverage;",
+    )
+    .await
+    .expect("seed instances");
     tx.commit().await.expect("commit seed");
 
-    // The migrations run ahead of the schema they accompany. The replacement
-    // schema is a no-op, since the post-migration cyber schema is not yet written.
-    let after_schema = "define attribute probe-noop value string;";
+    // A plain `define` of the shipped schema is refused over the changed `@doc`s.
+    let shipped = CyberGecko::new();
+    let err = db
+        .apply_schema(shipped.schema())
+        .await
+        .expect_err("a changed annotation needs a migration");
+    assert!(err.to_string().contains("DEX16"), "unexpected error: {err}");
+
+    // The migrations run ahead of the shipped schema, and a second run is a no-op.
     for _ in 0..2 {
-        db.apply_schema_with_migrations(after_schema, migrations)
+        db.apply_schema_with_migrations(shipped.schema(), migrations)
             .await
-            .expect("detection-model migrations apply");
+            .expect("cyber migrations apply");
     }
 
     let after = db.database_schema().await.expect("schema");
@@ -233,4 +241,19 @@ async fn old_cyber_detection_types_migrate_away() {
     }
     assert!(after.contains("entity data-source"));
     assert!(after.contains("entity population"));
+    assert!(
+        !migrations.iter().any(|m| after.contains(m.applies_when)),
+        "a migration's replaced text is still in the database"
+    );
+    for doc in [
+        "imported for reference since ATT&CK deprecates every data source.",
+        "an analytic reads through a log source",
+        "A deployed telemetry sensor from a sensor file",
+    ] {
+        assert!(
+            after.contains(doc),
+            "the shipped @doc {doc:?} is not installed"
+        );
+    }
+    assert!(after.contains("fun claim-platforms"));
 }

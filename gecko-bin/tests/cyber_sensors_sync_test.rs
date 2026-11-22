@@ -278,3 +278,59 @@ async fn a_removed_component_leaves_the_sensor() {
         ]
     );
 }
+
+/// Re-syncs the ATT&CK fixture with each object `deprecate` names deprecated.
+async fn resync_deprecated(test_db: &TestDb, deprecate: &[&str]) {
+    let mut bundle: Value = serde_json::from_str(&attack::fixture_json()).expect("fixture json");
+    for o in bundle["objects"].as_array_mut().expect("objects") {
+        if deprecate.iter().any(|d| o["id"] == *d || o["name"] == *d) {
+            o["x_mitre_deprecated"] = serde_json::json!(true);
+        }
+    }
+    let (manifest, rels) = cyber_gecko::stix::to_okf(&bundle.to_string()).expect("converts");
+    let mut db = test_db.router();
+    sync_bundle(
+        &mut db,
+        &manifest,
+        &cyber_gecko::stix::cyber_post_sync(&rels),
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("re-sync the ATT&CK fixture");
+}
+
+#[tokio::test]
+async fn notices_skip_dead_components_and_analytics_of_a_dead_strategy() {
+    let test_db = TestDb::new("gecko_test_sensors_notices_liveness");
+    attack::sync_fixture(&test_db).await;
+    let file = parse(
+        r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon]
+"#,
+    )
+    .expect("parses");
+    let graph = graph(&test_db);
+    assert!(notices(&graph, &file).await.expect("notices").is_empty());
+
+    // WinEventLog:Sysmon serves only Process Creation.
+    resync_deprecated(&test_db, &[attack::PROCESS_CREATION]).await;
+    let notes = notices(&graph, &file).await.expect("notices");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("WinEventLog:Sysmon"), "{notes:?}");
+
+    // A deprecated strategy leaves no live analytic on Windows.
+    resync_deprecated(
+        &test_db,
+        &[attack::PROCESS_CREATION, attack::STRATEGY_STIX_ID],
+    )
+    .await;
+    let notes = notices(&graph, &file).await.expect("notices");
+    assert!(
+        notes.iter().any(|n| n.contains("platform 'Windows'")),
+        "{notes:?}"
+    );
+}

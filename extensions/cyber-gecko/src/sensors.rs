@@ -25,11 +25,16 @@ const SENSOR_MAPPING_VERSION: &str = "sensor-mapping-1";
 const NO_ATTACK: &str = "the database holds no ATT&CK detection strategies; \
                          sync the ATT&CK bundle into this database first";
 
-/// Binds `$a` to an analytic that is neither revoked, deprecated nor retired.
+/// Binds `$a` to a live analytic of a live detection strategy, where live is
+/// neither revoked, deprecated nor retired, as the coverage functions read them.
 const LIVE_ANALYTIC: &str = "$a isa analytic; \
      not { $a has revoked true; }; \
      not { $a has deprecated true; }; \
-     not { $a has retired-at $ra; };";
+     not { $a has retired-at $ra; }; \
+     strategy-analytic (strategy: $st, analytic: $a); \
+     not { $st has revoked true; }; \
+     not { $st has deprecated true; }; \
+     not { $st has retired-at $sra; };";
 
 /// A log source or data component as the sensor file names it: the trimmed
 /// display name and the trimmed, lowercased key it is matched on.
@@ -417,7 +422,11 @@ pub async fn notices(
         graph,
         &format!(
             "match {LIVE_ANALYTIC} \
-             $r isa analytic-requirement, links (analytic: $a), has log-source-key $k; \
+             $r isa analytic-requirement, links (analytic: $a, component: $c), \
+                has log-source-key $k; \
+             not {{ $c has revoked true; }}; \
+             not {{ $c has deprecated true; }}; \
+             not {{ $c has retired-at $cra; }}; \
              fetch {{ \"key\": $k }};"
         ),
         "key",
