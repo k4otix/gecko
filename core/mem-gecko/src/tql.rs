@@ -469,7 +469,8 @@ pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, 
 /// `retrieval-event`: the stamped episodic record that a semantic retrieval
 /// happened, plus a `surfaced` edge per gated candidate (with its similarity score
 /// and `was-used=false`). This is an authoritative episodic write, DISTINCT from
-/// the best-effort index upsert (invariant 8 — two ledgers).
+/// the best-effort index upsert (invariant 8 — two ledgers). The last op must match
+/// exactly one row, so a candidate that vanished since it was gated fails the write.
 pub(crate) fn retrieval_event_ops(
     ctx: &RunContext,
     ev_id: &MemId,

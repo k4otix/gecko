@@ -4,8 +4,8 @@ use super::*;
 use DerivationMethod::LlmSynthesis;
 use async_trait::async_trait;
 use gecko_extension_api::{
-    ActorId, BeliefDraft, DerivationMethod, EpistemicWriter, FilterMeta, ProvenanceSource,
-    RunContext, Visibility,
+    ActorId, BeliefDraft, ContextBudget, DerivationMethod, EpistemicReader, EpistemicWriter,
+    FilterMeta, ProvenanceSource, RecallQuery, RunContext, Visibility,
 };
 use gecko_extension_api::{GraphReader, GraphWrite};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -169,6 +169,56 @@ impl SemanticIndex for OkIndex {
     }
     fn model_id(&self) -> &str {
         "test-embedder"
+    }
+}
+
+/// An index whose `query` surfaces one fixed candidate.
+struct OneCandidateIndex;
+impl SemanticIndex for OneCandidateIndex {
+    fn upsert(&self, _id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<()> {
+        Ok(())
+    }
+    fn remove(&self, _id: ConceptId) -> Result<()> {
+        Ok(())
+    }
+    fn query(&self, _v: &[f32], _k: usize, _p: &FilterMeta) -> Result<Vec<(ConceptId, f32)>> {
+        Ok(vec![(ConceptId("mem/bel/vanishing".into()), 0.9)])
+    }
+    fn model_id(&self) -> &str {
+        "test-embedder"
+    }
+}
+
+#[tokio::test]
+async fn a_retrieval_event_mismatch_names_the_event() {
+    let store = Arc::new(RecordingGraphStore {
+        mismatch_at: Some(|len| len - 1),
+        read_reply: vec![serde_json::json!({ "title": "t", "act": 1.0 })],
+        ..Default::default()
+    });
+    let w = MemWriter::new(
+        store,
+        Some(Arc::new(OkEmbedder)),
+        Some(Arc::new(OneCandidateIndex)),
+    )
+    .with_retrieval_provenance(true);
+    let msg = storage(
+        w.recall(
+            &ctx(),
+            RecallQuery {
+                text: "q".into(),
+                as_of: None,
+            },
+            ContextBudget {
+                max_chunks: 1,
+                max_tokens: None,
+            },
+        )
+        .await
+        .expect_err("a vanished candidate fails the retrieval-event write"),
+    );
+    for want in ["retrieval-event mem/ep/", "nothing was committed"] {
+        assert!(msg.contains(want), "{want}: {msg}");
     }
 }
 
@@ -358,6 +408,13 @@ fn id_matching_ops_require_exactly_one_row() {
         resolve.last().unwrap().expect_rows,
         Some(1),
         "resolve_prediction"
+    );
+    let surfaced = [(ConceptId("mem/bel/1".into()), 0.9_f32)];
+    let retrieval = crate::tql::retrieval_event_ops(&ctx(), &ev, "semantic", 1, &surfaced);
+    assert_eq!(
+        retrieval.last().unwrap().expect_rows,
+        Some(1),
+        "retrieval-event"
     );
 }
 

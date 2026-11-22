@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use gecko_extension_api::{
     ActorId, BeliefQuery, BeliefState, Chunk, ConceptId, ContextBudget, DateTime, Embedder,
-    EpistemicError, EpistemicReader, FilterMeta, MemId, RecallQuery, RunContext, SemanticIndex,
-    Visibility,
+    EpistemicError, EpistemicReader, FilterMeta, MemId, RecallQuery, RowCountMismatch, RunContext,
+    SemanticIndex, Visibility,
 };
 use serde_json::Value;
 
@@ -131,7 +131,14 @@ impl MemWriter {
                 surfaced.len() as i64,
                 &surfaced,
             ))
-            .await?;
+            .await
+            .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
+                (EpistemicError::Storage(msg), Some(m)) => EpistemicError::Storage(format!(
+                    "retrieval-event {} matched {} row(s): one of its candidates no longer exists; nothing was committed: {msg}",
+                    ev_id.0, m.got
+                )),
+                _ => e,
+            })?;
         let candidates: HashSet<ConceptId> = surfaced.into_iter().map(|(c, _)| c).collect();
         ctx.push_retrieval(ev_id, candidates);
         Ok(())
