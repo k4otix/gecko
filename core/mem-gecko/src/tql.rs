@@ -49,13 +49,20 @@ pub(crate) fn entrenchment_rank(entrenchment: &str) -> u8 {
         .unwrap_or(0)
 }
 
-/// Reads a belief's stored `entrenchment` attribute by concept-id (invariant-7
-/// guard input). `None` when the belief is absent or carries no entrenchment.
-pub(crate) fn read_entrenchment_read(old: &MemId) -> (String, Vec<String>, Vec<GraphValue>) {
+/// Reads the stored `entrenchment` attribute of a belief `visible-to` `actor`, by
+/// concept-id (invariant-7 guard input). `None` when the belief is absent, not
+/// visible to `actor`, or carries no entrenchment.
+pub(crate) fn read_entrenchment_read(
+    old: &MemId,
+    actor: &ActorId,
+) -> (String, Vec<String>, Vec<GraphValue>) {
     let mut p = Params::new();
     p.s("bid", old.0.clone());
+    p.s("aid", actor.0.clone());
     p.read(
         "match $b isa belief, has concept-id $bc, has entrenchment $e; $bc == $bid;
+               $ag isa agent, has agent-id $aa; $aa == $aid;
+               true == visible-to($b, $ag);
          fetch { \"e\": $e };",
     )
 }
@@ -235,9 +242,13 @@ pub(crate) fn insert_belief_ops(
 /// `derivation-chain` / `blast-radius` traverse them). Returns `None` for an
 /// evidence-less belief — `derivation relates source @card(1..)` forbids a
 /// sourceless derivation, and a belief with no evidence is a root, not a derived
-/// claim.
+/// claim. Every piece of evidence must be visible to `actor`: a belief through
+/// `visible-to`, any other memory item by the same rule applied to its ownership
+/// (team or shared visibility, or owned by `actor`). Non-belief items carry no
+/// visibility, so in practice they are visible only to their owners.
 pub(crate) fn derivation_op(
     id: &MemId,
+    actor: &ActorId,
     evidence: &[MemId],
     method: DerivationMethod,
     confidence: Option<f64>,
@@ -247,10 +258,13 @@ pub(crate) fn derivation_op(
     }
     let mut p = Params::new();
     p.s("bid", id.0.clone());
+    p.s("aid", actor.0.clone());
     p.s("dm", method.as_str());
-    let mut match_lines = String::from("$b isa belief, has concept-id $bc; $bc == $bid;\n");
+    let mut match_lines = String::from(
+        "$b isa belief, has concept-id $bc; $bc == $bid;\n           $ag isa agent, has agent-id $aa; $aa == $aid;\n",
+    );
     let mut source_roles = String::new();
-    for var in bind_id_list(
+    for (i, var) in bind_id_list(
         &mut p,
         &mut match_lines,
         evidence.iter().map(|e| e.0.clone()),
@@ -258,7 +272,20 @@ pub(crate) fn derivation_op(
         "m",
         "mc",
         "e",
-    ) {
+    )
+    .into_iter()
+    .enumerate()
+    {
+        match_lines.push_str(&format!(
+            "           {{ {var} isa belief; true == visible-to({var}, $ag); }} or {{
+             not {{ {var} isa belief; }};
+             not {{ not {{
+               {{ $vo{i} isa ownership, links (owned: {var}), has visibility $vv{i};
+                 {{ $vv{i} == \"team\"; }} or {{ $vv{i} == \"shared\"; }}; }}
+               or {{ $vp{i} isa ownership, links (owned: {var}, owner: $ag); }};
+             }}; }};
+           }};\n"
+        ));
         source_roles.push_str(&format!(", source: {var}"));
     }
     let conf_frag = if let Some(c) = confidence {
@@ -274,9 +301,10 @@ pub(crate) fn derivation_op(
 }
 
 /// `supersede`: link old → new and flip old's belief-state to "superseded". The
-/// link matches only a currently asserted `old`, so superseding a superseded or
-/// retracted belief matches no row.
+/// link matches only a currently asserted `old` that is `visible-to` `actor`, so
+/// superseding a superseded, retracted or out-of-scope belief matches no row.
 pub(crate) fn supersession_ops(
+    actor: &ActorId,
     old: &MemId,
     new_id: &MemId,
     reason: &str,
@@ -287,10 +315,13 @@ pub(crate) fn supersession_ops(
     link.s("nid", new_id.0.clone());
     link.s("reason", reason);
     link.dt("ca", created_at);
+    link.s("aid", actor.0.clone());
     let link_op = link
         .write(
             "match
            $o isa belief, has concept-id $oc, has belief-state \"asserted\"; $oc == $oid;
+           $ag isa agent, has agent-id $aa; $aa == $aid;
+           true == visible-to($o, $ag);
            $n isa belief, has concept-id $nc; $nc == $nid;
          insert (superseded: $o, superseding: $n) isa supersession,
              has supersession-reason == $reason, has created-at == $ca;",
@@ -310,7 +341,7 @@ pub(crate) fn supersession_ops(
 }
 
 /// `contest`: a `contradiction` → `anomaly` hub over `claims` (2..), run + actor
-/// stamped.
+/// stamped. Every claim must be `visible-to` the actor.
 pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -> Vec<GraphWrite> {
     let mut p = Params::new();
     p.s("anid", anomaly.0.clone());
@@ -330,6 +361,7 @@ pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -
         "cc",
         "c",
     ) {
+        match_lines.push_str(&format!("           true == visible-to({var}, $ag);\n"));
         claim_roles.push_str(&format!(", claim: {var}"));
     }
     // Strip the leading ", " so the role list starts clean.
@@ -479,7 +511,11 @@ pub(crate) fn retrieval_event_ops(
            (memory: $re, origin: $run) isa source-link, has origin-kind == $kind;
            (owned: $re, owner: $ag) isa ownership;{surf_inserts}"
     );
-    vec![ensure_run(ctx), ensure_agent(ctx), p.write(&body)]
+    vec![
+        ensure_run(ctx),
+        ensure_agent(ctx),
+        p.write(&body).expecting(1),
+    ]
 }
 
 /// `informs-synthesis(retrieval: $ev, synthesized: $belief)` — ties a synthesized

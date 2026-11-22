@@ -798,7 +798,7 @@ async fn superseding_an_already_superseded_belief_is_refused_and_commits_nothing
     );
     for want in [
         a.0.as_str(),
-        "no asserted belief with that id",
+        "not a current belief visible to the caller",
         "nothing was committed",
     ] {
         assert!(msg.contains(want), "{want}: {msg}");
@@ -849,6 +849,260 @@ async fn superseding_a_retracted_belief_is_refused() {
     assert_eq!(state.len(), 1);
     assert_eq!(state[0]["s"], "retracted", "A stays retracted");
     assert_eq!(supersessions_of(&fx, &a).await, 0);
+
+    fx.drop_db().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A caller may only act on beliefs visible to it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The belief-state of belief `id`.
+async fn belief_state(fx: &Fixture, id: &MemId) -> String {
+    let rows = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}", has belief-state $s; fetch {{ "s": $s }};"#,
+            id.0
+        ))
+        .await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    rows[0]["s"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn superseding_another_agents_private_belief_is_refused_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private belief", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.supersede(
+            &ctx_at("agent-b", at),
+            private.clone(),
+            belief("b's replacement", "agent-b", 0.6),
+            "r",
+        )
+        .await
+        .expect_err("another agent's private belief cannot be superseded"),
+    );
+    for want in [
+        private.0.as_str(),
+        "not a current belief visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    assert_eq!(belief_state(&fx, &private).await, "asserted");
+    assert_eq!(supersessions_of(&fx, &private).await, 0);
+    let replacement = fx
+        .raw_fetch(r#"match $b isa belief, has title "b's replacement"; fetch { "k": "x" };"#)
+        .await;
+    assert!(replacement.is_empty(), "no replacement was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn superseding_a_team_belief_of_another_agent_is_allowed() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's team belief", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    w.supersede(
+        &ctx_at("agent-b", at),
+        team.clone(),
+        belief("b's revision", "agent-b", 0.6),
+        "r",
+    )
+    .await
+    .expect("a team belief is visible to another agent and may be superseded");
+    assert_eq!(belief_state(&fx, &team).await, "superseded");
+    assert_eq!(supersessions_of(&fx, &team).await, 1);
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn contesting_another_agents_private_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let a = ctx_at("agent-a", at);
+    let b = ctx_at("agent-b", at);
+    let private = w
+        .assert_belief(
+            &a,
+            belief_vis("a's private claim", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let own = w
+        .assert_belief(
+            &b,
+            belief("b's own claim", "agent-b", 0.5),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.contest(&b, &[own.clone(), private.clone()])
+            .await
+            .expect_err("another agent's private belief cannot be contested"),
+    );
+    for want in [
+        private.0.as_str(),
+        "visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let anomalies = fx
+        .raw_fetch(r#"match $a isa anomaly, has concept-id $c; fetch { "c": $c };"#)
+        .await;
+    assert!(anomalies.is_empty(), "no anomaly was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn deriving_from_another_agents_private_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private evidence", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.assert_belief(
+            &ctx_at("agent-b", at),
+            belief("b's derived belief", "agent-b", 0.5),
+            std::slice::from_ref(&private),
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect_err("another agent's private belief cannot be evidence"),
+    );
+    for want in [
+        private.0.as_str(),
+        "visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+    let stored = fx
+        .raw_fetch(r#"match $b isa belief, has title "b's derived belief"; fetch { "k": "x" };"#)
+        .await;
+    assert!(stored.is_empty(), "no belief was committed");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn deriving_from_another_agents_episode_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let episode = w
+        .observe(
+            &ctx_at("agent-a", at),
+            EpisodeDraft {
+                text: "a's observation".into(),
+                event_time: at,
+                ingest_time: at,
+            },
+        )
+        .await
+        .unwrap();
+
+    let msg = storage_msg(
+        w.assert_belief(
+            &ctx_at("agent-b", at),
+            belief("b's belief from a's episode", "agent-b", 0.5),
+            std::slice::from_ref(&episode),
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect_err("another agent's episode cannot be evidence"),
+    );
+    for want in [
+        episode.0.as_str(),
+        "visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(msg.contains(want), "{want}: {msg}");
+    }
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn deriving_from_a_team_belief_and_an_own_episode_is_allowed() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let b = ctx_at("agent-b", at);
+    let episode = w
+        .observe(
+            &b,
+            EpisodeDraft {
+                text: "b's observation".into(),
+                event_time: at,
+                ingest_time: at,
+            },
+        )
+        .await
+        .unwrap();
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's team evidence", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    w.assert_belief(
+        &b,
+        belief("b's synthesis", "agent-b", 0.5),
+        &[team, episode],
+        DerivationMethod::LlmSynthesis,
+    )
+    .await
+    .expect("a team belief and the caller's own episode are visible evidence");
 
     fx.drop_db().await;
 }

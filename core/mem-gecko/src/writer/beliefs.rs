@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use gecko_extension_api::{
-    AnomalyId, BeliefDraft, BeliefState, ConceptId, DerivationMethod, EpisodeDraft, EpistemicError,
-    EpistemicReader, EpistemicWriter, FilterMeta, GraphWrite, MemId, Outcome, RowCountMismatch,
-    RunContext, Visibility,
+    ActorId, AnomalyId, BeliefDraft, BeliefState, ConceptId, DerivationMethod, EpisodeDraft,
+    EpistemicError, EpistemicReader, EpistemicWriter, FilterMeta, GraphWrite, MemId, Outcome,
+    RowCountMismatch, RunContext, Visibility,
 };
 
 use super::{MemWriter, Result, mint, str_field};
@@ -33,10 +33,11 @@ pub(super) struct ProvenanceOp {
 }
 
 impl MemWriter {
-    /// Reads a belief's stored `entrenchment` tier (invariant-7 supersede guard input).
-    /// `None` when the belief carries no entrenchment attribute.
-    async fn read_entrenchment(&self, b: &MemId) -> Result<Option<String>> {
-        let (q, v, r) = tql::read_entrenchment_read(b);
+    /// Reads the stored `entrenchment` tier of a belief visible to `actor`
+    /// (invariant-7 supersede guard input). `None` when the belief is absent, not
+    /// visible to `actor`, or carries no entrenchment attribute.
+    async fn read_entrenchment(&self, b: &MemId, actor: &ActorId) -> Result<Option<String>> {
+        let (q, v, r) = tql::read_entrenchment_read(b, actor);
         let docs = self.graph.read(&q, &v, &r).await?;
         Ok(docs
             .first()
@@ -56,10 +57,11 @@ impl MemWriter {
         method: DerivationMethod,
     ) -> BeliefOps {
         let mut ops = tql::insert_belief_ops(ctx, b, id, tql::entrenchment_for(method));
-        let derivation = tql::derivation_op(id, evidence, method, b.confidence).map(|deriv| {
-            ops.push(deriv);
-            ops.len() - 1
-        });
+        let derivation =
+            tql::derivation_op(id, &ctx.actor, evidence, method, b.confidence).map(|deriv| {
+                ops.push(deriv);
+                ops.len() - 1
+            });
         // Correlate this belief with the run's prior semantic retrievals by
         // evidence overlap (auto-linked; the agent passes nothing). Same transaction
         // as the belief so the retrieval-provenance axis lands atomically with it.
@@ -169,7 +171,7 @@ pub(super) fn name_missing_evidence(
         err,
         derivation,
         &format!("derivation of {}", id.0),
-        "memory item",
+        "memory item visible to the caller",
         &ids,
     )
 }
@@ -230,7 +232,7 @@ impl EpistemicWriter for MemWriter {
         // draft carries one, else it INHERITS the old belief's tier (a revision
         // preserves entrenchment) — falling back to "inferred" only when the old tier
         // is unknown. Reject (writing NOTHING) when the new tier ranks below the old.
-        let old_entrenchment = self.read_entrenchment(&old).await?;
+        let old_entrenchment = self.read_entrenchment(&old, &ctx.actor).await?;
         let new_entrenchment: &str = match new.entrenchment {
             Some(e) => e.as_str(),
             None => old_entrenchment.as_deref().unwrap_or("inferred"),
@@ -248,6 +250,7 @@ impl EpistemicWriter for MemWriter {
         let mut ops = tql::insert_belief_ops(ctx, &new, &new_id, new_entrenchment);
         let first_supersession = ops.len();
         ops.extend(tql::supersession_ops(
+            &ctx.actor,
             &old,
             &new_id,
             reason,
@@ -259,7 +262,7 @@ impl EpistemicWriter for MemWriter {
             .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
                 (EpistemicError::Storage(msg), Some(m)) if m.op >= first_supersession => {
                     EpistemicError::Storage(format!(
-                        "supersede of {}: no asserted belief with that id; nothing was committed: {msg}",
+                        "supersede of {}: not a current belief visible to the caller; nothing was committed: {msg}",
                         old.0
                     ))
                 }
@@ -294,10 +297,15 @@ impl EpistemicWriter for MemWriter {
         let ops = tql::contest_ops(ctx, &anomaly, claims);
         let last = ops.len() - 1;
         let ids: Vec<&MemId> = claims.iter().collect();
-        self.graph
-            .write(&ops)
-            .await
-            .map_err(|e| name_missing_ids(e, Some(last), "contest", "belief", &ids))?;
+        self.graph.write(&ops).await.map_err(|e| {
+            name_missing_ids(
+                e,
+                Some(last),
+                "contest",
+                "belief visible to the caller",
+                &ids,
+            )
+        })?;
         Ok(AnomalyId(anomaly.0))
     }
 

@@ -326,7 +326,8 @@ async fn contest_refuses_a_repeated_claim() {
 fn id_matching_ops_require_exactly_one_row() {
     let id = MemId::new("mem/bel/1");
     let ids = [MemId::new("mem/ep/1"), MemId::new("mem/ep/2")];
-    let deriv = crate::tql::derivation_op(&id, &ids, LlmSynthesis, Some(0.5)).unwrap();
+    let deriv =
+        crate::tql::derivation_op(&id, &ctx().actor, &ids, LlmSynthesis, Some(0.5)).unwrap();
     assert_eq!(deriv.expect_rows, Some(1));
     let contest = crate::tql::contest_ops(&ctx(), &MemId::new("mem/anom/1"), &ids);
     assert_eq!(contest.last().unwrap().expect_rows, Some(1));
@@ -370,7 +371,8 @@ fn belief_ops_reports_the_derivation_index() {
     let at = built.derivation.expect("evidence ⇒ a derivation op");
     assert_eq!(
         built.ops[at],
-        crate::tql::derivation_op(&id, &ev, LlmSynthesis, belief().confidence).unwrap()
+        crate::tql::derivation_op(&id, &ctx().actor, &ev, LlmSynthesis, belief().confidence)
+            .unwrap()
     );
     let none = w.belief_ops(&ctx(), &belief(), &id, &[], LlmSynthesis);
     assert_eq!(none.derivation, None);

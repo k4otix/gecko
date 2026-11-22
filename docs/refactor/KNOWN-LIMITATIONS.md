@@ -86,6 +86,30 @@ appears: as-of recall does not reconstruct history across a supersession. A supe
 belief; superseding a retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`). The host trait method
 `EpistemicReader::believed_at` is still unscoped by agent.
 
+## Writes act only on what the caller can see
+
+A caller may only act on beliefs visible to it (`visible-to`: team or shared visibility, or
+owned by the caller; the caller is the run's actor, which the sandbox cannot forge). Each
+`MemWriter` write the guest reaches enforces this inside its own write, so a refused write
+commits nothing:
+
+- **`supersede`** requires the old belief to be asserted and visible to the caller; another
+  agent's private belief is refused like a missing one, and the entrenchment guard reads only
+  a visible belief, so the refusal does not reveal its tier
+  (`superseding_another_agents_private_belief_is_refused_and_commits_nothing`,
+  `superseding_a_team_belief_of_another_agent_is_allowed`).
+- **`contest`** requires every claim to be visible to the caller
+  (`contesting_another_agents_private_belief_is_refused`).
+- **`derive`** (`assert_belief` with evidence) requires every evidence belief to be visible to
+  the caller. Evidence that is not a belief (an episode, an anomaly) is held to the same rule
+  through its `ownership`; those items are written without a visibility, which the substrate
+  treats as private, so only their owners may cite them
+  (`deriving_from_another_agents_private_belief_is_refused`,
+  `deriving_from_another_agents_episode_is_refused`).
+
+`rests_on`, `record_prediction` and `resolve_prediction` are not reachable from the guest
+and do not check visibility.
+
 ## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
 `core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait, a no-op
