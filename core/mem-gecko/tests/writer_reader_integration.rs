@@ -1111,6 +1111,186 @@ async fn recall_as_of_t_skips_the_index_entirely() {
     fx.drop_db().await;
 }
 
+/// Has `actor` write one episode at `at`, so its `agent` node exists.
+async fn observe_as(w: &MemWriter, actor: &str, at: DateTime) {
+    w.observe(
+        &ctx_at(actor, at),
+        EpisodeDraft {
+            text: format!("{actor} was here"),
+            event_time: at,
+            ingest_time: at,
+        },
+    )
+    .await
+    .expect("observe commits");
+}
+
+/// An as-of recall by `actor` at `run_at`, asking for the state at `as_of`.
+async fn recall_as_of(
+    w: &MemWriter,
+    actor: &str,
+    run_at: DateTime,
+    as_of: DateTime,
+    max_chunks: usize,
+) -> Vec<MemId> {
+    w.recall(
+        &ctx_at(actor, run_at),
+        RecallQuery {
+            text: String::new(),
+            as_of: Some(as_of),
+        },
+        ContextBudget {
+            max_chunks,
+            max_tokens: None,
+        },
+    )
+    .await
+    .expect("as-of recall")
+    .into_iter()
+    .map(|c| c.id)
+    .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// As-of recall applies the same visibility rule as present-state recall.
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn as_of_recall_hides_another_agents_private_belief() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("a's private belief", "agent-a", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert!(
+        !got.contains(&private),
+        "another agent's private belief must not surface in an as-of recall: {got:?}"
+    );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_returns_a_team_belief_to_another_agent() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("a's team belief", "agent-a", 0.8, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert_eq!(got, vec![team], "a team belief is visible to another agent");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_returns_the_owners_private_belief() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-b", dt("2026-01-01T00:00:00Z")),
+            belief_vis("b's private belief", "agent-b", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = recall_as_of(
+        &w,
+        "agent-b",
+        dt("2026-06-01T00:00:00Z"),
+        dt("2026-02-01T00:00:00Z"),
+        5,
+    )
+    .await;
+    assert_eq!(got, vec![private], "the owner sees its own private belief");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_is_newest_first_and_truncates_deterministically() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let mut ids = Vec::new();
+    for (i, at) in [
+        "2026-01-01T00:00:00Z",
+        "2026-01-02T00:00:00Z",
+        "2026-01-03T00:00:00Z",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = w
+            .assert_belief(
+                &ctx_at("agent-a", dt(at)),
+                belief_vis(
+                    &format!("team belief {i}"),
+                    "agent-a",
+                    0.8,
+                    Visibility::Team,
+                ),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    let want = vec![ids[2].clone(), ids[1].clone()];
+
+    for call in 0..2 {
+        let got = recall_as_of(
+            &w,
+            "agent-b",
+            dt("2026-06-01T00:00:00Z"),
+            dt("2026-02-01T00:00:00Z"),
+            2,
+        )
+        .await;
+        assert_eq!(
+            got, want,
+            "call {call}: the two newest valid-from, newest first"
+        );
+    }
+
+    fx.drop_db().await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // No index configured → recall falls back to select-for-context cleanly.
 // ─────────────────────────────────────────────────────────────────────────────

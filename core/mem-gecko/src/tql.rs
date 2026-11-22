@@ -933,13 +933,20 @@ pub(crate) fn believed_at_read(at: DateTime) -> Read {
     )
 }
 
-/// `believed-at($t)`: each belief's id and title, for as-of recall.
-pub(crate) fn believed_at_chunks_read(at: DateTime) -> Read {
+/// `believed-at($t)` restricted to beliefs `visible-to` `actor`: each belief's id and
+/// title for as-of recall, newest `valid-from` first, ties broken by concept id.
+/// Supersession is not applied as of `at`. An actor with no `agent` node matches
+/// nothing, so its as-of recall is empty, as with `gated_candidate_read`.
+pub(crate) fn believed_at_chunks_read(at: DateTime, actor: &ActorId) -> Read {
     let mut p = Params::new();
     p.dt("t", at);
+    p.s("aid", actor.0.clone());
     p.read(
-        "match let $b in believed-at($t);
-               $b has concept-id $bid;
+        "match $ag isa agent, has agent-id $aa; $aa == $aid;
+               let $b in believed-at($t);
+               true == visible-to($b, $ag);
+               $b has concept-id $bid, has valid-from $vf;
+         sort $vf desc, $bid asc;
          fetch { \"id\": $bid, \"title\": $b.title };",
     )
 }

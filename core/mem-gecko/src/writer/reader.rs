@@ -139,10 +139,16 @@ impl MemWriter {
 
     // ── Recall paths (invariant 8) ───────────────────────────────────────────
 
-    /// As-of-time-T recall: routes through `believed-at`, **never touches the
+    /// As-of-time-T recall: the beliefs `believed-at` `at` that are `visible-to` the
+    /// run's actor, newest first and truncated to budget. It **never touches the
     /// index** (present-state only).
-    async fn recall_as_of(&self, at: DateTime, budget: ContextBudget) -> Result<Vec<Chunk>> {
-        let (q, v, r) = tql::believed_at_chunks_read(at);
+    async fn recall_as_of(
+        &self,
+        ctx: &RunContext,
+        at: DateTime,
+        budget: ContextBudget,
+    ) -> Result<Vec<Chunk>> {
+        let (q, v, r) = tql::believed_at_chunks_read(at, &ctx.actor);
         let docs = self.graph.read(&q, &v, &r).await?;
         Ok(docs
             .iter()
@@ -261,7 +267,7 @@ impl EpistemicReader for MemWriter {
     ) -> Result<Vec<Chunk>> {
         // As-of-T ⇒ temporal path; SKIP the index entirely (invariant 8).
         if let Some(t) = q.as_of {
-            return self.recall_as_of(t, budget).await;
+            return self.recall_as_of(ctx, t, budget).await;
         }
         // Present-state: index-seeded when configured, else non-vector fallback.
         match (&self.embedder, &self.index) {
