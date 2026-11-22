@@ -903,3 +903,102 @@ async fn a_changed_type_hint_on_a_referenced_concept_is_refused() {
     assert_eq!(exact_type(&mut db, "a").await, vec!["concept".to_string()]);
     assert_eq!(sole_file_hash(&mut db).await, stored_hash);
 }
+
+/// Applies the core and mem schemas to a fresh router.
+async fn core_router(test_db: &TestDb) -> TypeDbRouter {
+    let mut db = test_db.router();
+    db.apply_schema(include_str!(
+        "../../core/gecko-engine/schema/core_schema.tql"
+    ))
+    .await
+    .expect("core schema");
+    db.apply_schema(MemGecko::new().schema())
+        .await
+        .expect("mem schema");
+    db
+}
+
+async fn count_rows(db: &mut TypeDbRouter, typeql: &str) -> usize {
+    let tx = db.begin_read().await.expect("begin read");
+    tx.query(typeql)
+        .await
+        .expect("count query")
+        .into_rows()
+        .collect::<Vec<_>>()
+        .await
+        .len()
+}
+
+fn write_concepts(dir: &Path, files: &[(&str, &str)]) {
+    fs::create_dir_all(dir.join("notes")).unwrap();
+    for (name, body) in files {
+        fs::write(
+            dir.join("notes").join(format!("{name}.md")),
+            format!("---\ntype: Note\ntitle: {name}\n---\n\n{body}\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_document_linking_the_same_page_twice_gets_one_link() {
+    let test_db = TestDb::new("gecko_test_dup_link");
+    let mut db = core_router(&test_db).await;
+    let dir = TempDir::new().unwrap();
+    write_concepts(
+        dir.path(),
+        &[
+            ("a", "See [first](b.md) and again [second](b.md). Line two."),
+            ("b", "Target."),
+        ],
+    );
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    let r = sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync");
+    assert_eq!(r.links_attempted, 1, "attempted counts deduplicated rows");
+    assert_eq!(count_rows(&mut db, "match $l isa concept-link;").await, 1);
+    assert_eq!(
+        count_rows(
+            &mut db,
+            r#"match $l isa concept-link, has link-text "first";"#
+        )
+        .await,
+        1,
+        "the first occurrence's link text is kept"
+    );
+
+    // Re-sync after editing another line: still one link.
+    write_concepts(
+        dir.path(),
+        &[
+            ("a", "See [first](b.md) and again [second](b.md). Line TWO."),
+            ("b", "Target."),
+        ],
+    );
+    let edited = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &edited, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync");
+    assert_eq!(count_rows(&mut db, "match $l isa concept-link;").await, 1);
+}
+
+#[tokio::test]
+async fn a_document_citing_the_same_url_twice_gets_one_citation() {
+    let test_db = TestDb::new("gecko_test_dup_citation");
+    let mut db = core_router(&test_db).await;
+    let dir = TempDir::new().unwrap();
+    write_concepts(
+        dir.path(),
+        &[(
+            "a",
+            "[one](https://example.com/x) and [two](https://example.com/x).",
+        )],
+    );
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    let r = sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync");
+    assert_eq!(r.citations_attempted, 1);
+    assert_eq!(count_rows(&mut db, "match $c isa citation;").await, 1);
+}

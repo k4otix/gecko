@@ -1240,3 +1240,42 @@ async fn stix_full_bundle_resync_is_stable() {
     assert!(entries > 0, "blinded reported nothing on the full graph");
     assert_eq!(first_blinded, second_blinded, "blinded is not stable");
 }
+
+#[tokio::test]
+async fn repeated_sros_become_one_typed_relation() {
+    let test_db = TestDb::new("gecko_test_stix_dup_sro");
+    let mut db = test_db.router();
+    db.apply_schema(CORE_SCHEMA).await.expect("core schema");
+    for ext in [
+        Box::new(MemGecko::new()) as Box<dyn GeckoExtension>,
+        Box::new(CyberGecko::new()),
+    ] {
+        db.apply_schema(ext.schema())
+            .await
+            .unwrap_or_else(|e| panic!("apply {} schema: {e}", ext.name()));
+    }
+
+    // The same `uses` SRO appears twice under different relationship ids.
+    let mut bundle: serde_json::Value = serde_json::from_str(BUNDLE).expect("bundle json");
+    let objects = bundle["objects"].as_array_mut().expect("objects");
+    let uses = objects
+        .iter()
+        .find(|o| o["relationship_type"] == "uses")
+        .expect("uses SRO")
+        .clone();
+    let mut repeat = uses;
+    repeat["id"] = "relationship--00000000-0000-0000-0000-000000000199".into();
+    objects.push(repeat);
+
+    let (manifest, rels) = to_okf(&bundle.to_string()).expect("to_okf");
+    let writes = cyber_post_sync(&rels);
+    sync_bundle(&mut db, &manifest, &writes, mem_gecko::BELIEF_TIER_ROOT)
+        .await
+        .expect("sync_bundle");
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(
+        count(&tx, "match $r isa uses;").await,
+        1,
+        "a repeated SRO must be one relation"
+    );
+}

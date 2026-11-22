@@ -647,7 +647,7 @@ pub fn cyber_post_sync(rels: &StixRelations) -> Vec<GraphWrite> {
     // Group by the full query shape — relation, roles, and both role-player
     // subtypes — so each distinct shape is one multi-row parameterized write.
     type Shape<'a> = (RelShape, &'a str, &'a str);
-    let mut by_shape: HashMap<Shape, Vec<(&str, &str)>> = HashMap::new();
+    let mut by_shape: HashMap<Shape, BTreeSet<(&str, &str)>> = HashMap::new();
     for rel in typed_rels {
         let Some(roles) = rel_roles(&rel.rel_type).filter(|r| r.relation != STRATEGY_DETECTS_REL)
         else {
@@ -656,7 +656,7 @@ pub fn cyber_post_sync(rels: &StixRelations) -> Vec<GraphWrite> {
         by_shape
             .entry((roles, rel.source_type.as_str(), rel.target_type.as_str()))
             .or_default()
-            .push((rel.source.as_str(), rel.target.as_str()));
+            .insert((rel.source.as_str(), rel.target.as_str()));
     }
 
     let mut writes: Vec<GraphWrite> = by_shape
@@ -904,6 +904,24 @@ mod tests {
         assert_eq!(uses.rows.len(), 2);
         assert_eq!(uses.expect_rows, None);
         assert!(writes.iter().all(|w| !w.query.contains("frobnicates")));
+    }
+
+    #[test]
+    fn repeated_sros_become_one_row() {
+        let rels = StixRelations {
+            typed: vec![
+                rel("a1", "b1", "malware", "attack-pattern", "uses"),
+                rel("a1", "b1", "malware", "attack-pattern", "uses"),
+                rel("a1", "b2", "malware", "attack-pattern", "uses"),
+            ],
+            ..StixRelations::default()
+        };
+        let writes: Vec<GraphWrite> = cyber_post_sync(&rels)
+            .into_iter()
+            .filter(|w| !w.rows.is_empty() && !w.vars.is_empty())
+            .collect();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].rows.len(), 2, "{:?}", writes[0].rows);
     }
 
     const STRATEGY: &str = "x-mitre-detection-strategy--00000000-0000-4000-8000-000000000001";

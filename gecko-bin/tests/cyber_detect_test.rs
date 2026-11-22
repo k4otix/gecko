@@ -25,6 +25,7 @@ use gecko_extension_api::{
     ActorId, BeliefDraft, BeliefEdge, BeliefEdgeWriter, ConceptId, DerivationMethod, GraphReader,
     ProvenanceSource, RunContext, Visibility,
 };
+use gecko_extension_api::{EpistemicWriter, MemId};
 use mem_gecko::{BeliefEdgeRegistry, MemGecko, MemWriter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -164,6 +165,78 @@ async fn detect_bridge_claims_disposes_and_reports() {
     assert_eq!(prec["true_positives"], 1);
     assert_eq!(prec["false_positives"], 1);
     assert_eq!(prec["precision"], 0.5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn precision_ignores_a_superseded_disposition() {
+    let test_db = TestDb::new("gecko_test_detect_superseded");
+    seed_detection_graph(&test_db).await;
+
+    let (graph, edges) = detect_handles(&test_db);
+    let ctx = run_ctx(LOGIC_ID);
+    let cb = cyber_extension_callback(graph.clone(), edges, ctx.clone(), base());
+
+    let mut fp_belief = String::new();
+    for verdict in ["false-positive", "true-positive"] {
+        let disposed = call(
+            &cb,
+            "disposition",
+            json!({ "logic_id": LOGIC_ID, "verdict": verdict }),
+        )
+        .unwrap_or_else(|e| panic!("disposition {verdict}: {e}"));
+        if verdict == "false-positive" {
+            fp_belief = disposed["belief_id"].as_str().unwrap().to_string();
+        }
+    }
+
+    // Superseding the false-positive belief retires it; the successor carries
+    // no disposition edge.
+    let writer = MemWriter::without_index(Arc::new(RouterGraphStore::new(Arc::new(Mutex::new(
+        test_db.router(),
+    )))));
+    writer
+        .supersede(
+            &ctx,
+            MemId::new(fp_belief),
+            BeliefDraft {
+                text: "the alert was reviewed again".into(),
+                owner: ctx.actor.clone(),
+                visibility: Visibility::Private,
+                confidence: Some(0.5),
+                entrenchment: None,
+            },
+            "corrected",
+        )
+        .await
+        .expect("supersede the false-positive disposition");
+
+    let prec = call(
+        &cb,
+        "precision",
+        json!({ "logic_id": LOGIC_ID, "window": 3600 }),
+    )
+    .expect("precision");
+    assert_eq!(prec["true_positives"], 1);
+    assert_eq!(prec["false_positives"], 0);
+    assert_eq!(prec["precision"], 1.0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn precision_with_no_asserted_dispositions_is_zero() {
+    let test_db = TestDb::new("gecko_test_detect_no_dispositions");
+    seed_detection_graph(&test_db).await;
+
+    let (graph, edges) = detect_handles(&test_db);
+    let cb = cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base());
+    let prec = call(
+        &cb,
+        "precision",
+        json!({ "logic_id": LOGIC_ID, "window": 3600 }),
+    )
+    .expect("precision");
+    assert_eq!(prec["true_positives"], 0);
+    assert_eq!(prec["false_positives"], 0);
+    assert!(prec["precision"].is_null(), "{prec}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
