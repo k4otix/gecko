@@ -118,6 +118,10 @@ pub struct StixRelations {
     pub typed: Vec<TypedRelation>,
     /// Every analytic's log-source requirements on in-bundle data components.
     pub requirements: Vec<AnalyticRequirement>,
+    /// The concept id of every analytic in the bundle, sorted.
+    pub analytics: Vec<String>,
+    /// The concept id of every detection strategy in the bundle, sorted.
+    pub strategies: Vec<String>,
 }
 
 /// The version of the STIX-to-graph mapping, folded into every concept's content
@@ -137,6 +141,12 @@ fn concept_hash(version: &str, obj: &Value) -> String {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect()
+}
+
+fn sorted(mut ids: Vec<String>) -> Vec<String> {
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// The relation label of a synthesized strategy-to-analytic link, used as its
@@ -221,6 +231,8 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
     // typed role players after every concept's subtype is known.
     let mut raw_rels: Vec<(String, String, String)> = Vec::new();
     let mut raw_requirements: BTreeMap<RequirementKey, BTreeSet<String>> = BTreeMap::new();
+    let mut analytics = Vec::new();
+    let mut strategies = Vec::new();
 
     for obj in objects {
         let type_str = get_str(obj, "type")
@@ -321,6 +333,11 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
             collect_requirements(&concept_id, id_str, obj, &mut raw_requirements)?;
         }
 
+        match type_hint {
+            "analytic" => analytics.push(concept_id.clone()),
+            "detection-strategy" => strategies.push(concept_id.clone()),
+            _ => {}
+        }
         id_types.insert(concept_id.clone(), type_hint);
 
         let mut tags = Vec::new();
@@ -440,6 +457,8 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
         StixRelations {
             typed: typed_rels,
             requirements,
+            analytics: sorted(analytics),
+            strategies: sorted(strategies),
         },
     ))
 }
@@ -601,7 +620,7 @@ fn shape_of(rel_type: &str) -> Option<RelShape> {
 /// - **SROs** become one idempotent relation each, inserted under a `not { … }`
 ///   guard. Relations with an unknown `rel_type` are skipped.
 /// - **Strategy analytics and analytic requirements** are replaced: their writes
-///   delete every such relation on a strategy or analytic these relations name,
+///   delete every such relation on a strategy or analytic in the bundle,
 ///   then every such relation left without its analytic (or strategy) player by a
 ///   deleted concept, and then insert the current set.
 ///
@@ -683,17 +702,14 @@ fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
         .filter(|r| r.rel_type == STRATEGY_ANALYTIC_REL)
         .collect();
 
-    // Every strategy and analytic these relations name: an end of a typed
-    // relation, or the analytic of a requirement.
-    let mut scope: BTreeSet<&str> = BTreeSet::new();
-    for r in &rels.typed {
-        for (id, ty) in [(&r.source, &r.source_type), (&r.target, &r.target_type)] {
-            if matches!(ty.as_str(), "detection-strategy" | "analytic") {
-                scope.insert(id);
-            }
-        }
-    }
-    scope.extend(rels.requirements.iter().map(|r| r.analytic.as_str()));
+    // Every strategy and analytic in the bundle, so that one which lost all its
+    // references also loses its old relations.
+    let scope: BTreeSet<&str> = rels
+        .strategies
+        .iter()
+        .chain(&rels.analytics)
+        .map(String::as_str)
+        .collect();
 
     let mut channel_rows = Vec::new();
     for r in &rels.requirements {
@@ -804,7 +820,7 @@ mod tests {
                 rel("i1", "t1", "indicator", "attack-pattern", "indicates"),
                 rel("x", "y", "malware", "attack-pattern", "frobnicates"),
             ],
-            requirements: Vec::new(),
+            ..StixRelations::default()
         };
         let writes: Vec<GraphWrite> = cyber_post_sync(&rels)
             .into_iter()
@@ -1042,6 +1058,20 @@ mod tests {
         .expect("to_okf");
         assert_eq!(rels.requirements.len(), 1, "{:?}", rels.requirements);
         assert_eq!(rels.requirements[0].component, derive_id(COMPONENT));
+    }
+
+    #[test]
+    fn every_analytic_and_strategy_in_the_bundle_is_listed() {
+        let (_, rels) = to_okf(&detection_bundle(serde_json::json!([]))).expect("to_okf");
+        let mut analytics = vec![derive_id(WINDOWS), derive_id(LINUX)];
+        analytics.sort();
+        assert_eq!(rels.analytics, analytics);
+        assert_eq!(rels.strategies, vec![derive_id(STRATEGY)]);
+        let scoped = cyber_post_sync(&rels)
+            .into_iter()
+            .find(|w| w.query.contains("delete $r") && !w.vars.is_empty())
+            .expect("the scoped delete");
+        assert_eq!(scoped.rows.len(), 3);
     }
 
     #[test]

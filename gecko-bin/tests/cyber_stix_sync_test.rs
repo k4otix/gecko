@@ -1004,3 +1004,36 @@ async fn a_database_synced_by_the_previous_adapter_is_retyped() {
     );
     assert_eq!(requirements(&mut db).await, fixture_requirements());
 }
+
+#[tokio::test]
+async fn a_reimport_where_an_analytic_loses_every_log_source_leaves_no_requirement() {
+    let test_db = TestDb::new("gecko_test_stix_analytic_unreferenced");
+    attack::sync_fixture(&test_db).await;
+    let mut db = test_db.router();
+
+    // The Windows analytic stays in the bundle, but no strategy references it and
+    // it names no log source.
+    let changed = edited_fixture(|objects| {
+        let windows = object_mut(objects, attack::WINDOWS_ANALYTIC_STIX_ID);
+        windows
+            .as_object_mut()
+            .expect("analytic object")
+            .remove("x_mitre_log_source_references")
+            .expect("log-source references");
+        let strategy = object_mut(objects, attack::STRATEGY_STIX_ID);
+        strategy["x_mitre_analytic_refs"]
+            .as_array_mut()
+            .expect("analytic refs")
+            .retain(|r| r != attack::WINDOWS_ANALYTIC_STIX_ID);
+    });
+    sync_stix(&mut db, &changed).await;
+
+    let windows = concept_id(attack::WINDOWS_ANALYTIC_STIX_ID);
+    let expected: Requirements = fixture_requirements()
+        .into_iter()
+        .filter(|((analytic, _, _), _)| *analytic != windows)
+        .collect();
+    assert_eq!(requirements(&mut db).await, expected);
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(count(&tx, "match $r isa strategy-analytic;").await, 3);
+}
