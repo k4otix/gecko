@@ -2,6 +2,7 @@
 //!
 //! [`parse`] reads and validates the YAML file, [`to_okf`] converts it to an OKF
 //! bundle holding one `monitored-environment` and one `sensor` per entry,
+//! [`check_attack`] refuses a database without ATT&CK detection data,
 //! [`check_bundle_name`] refuses a bundle name that already holds other records,
 //! and [`check_against_graph`] and [`notices`] compare the file with the ATT&CK
 //! data in the target database before and after `gecko sync-sensors` syncs it.
@@ -380,23 +381,38 @@ pub async fn check_bundle_name(
     Ok(())
 }
 
-/// Refuses a database without ATT&CK, or a file naming a platform that matches a
-/// live analytic's platform only ignoring case or a component that does not match
-/// exactly one live data component, naming every such entry in one message.
-pub async fn check_against_graph(
-    graph: &Arc<dyn GraphReader>,
-    file: &SensorFile,
-) -> Result<(), String> {
+/// Refuses a database that holds no strategy-detects relation, including one whose
+/// schema does not define `strategy-detects` (TypeDB's unknown-label error).
+pub async fn check_attack(graph: &Arc<dyn GraphReader>) -> Result<(), String> {
     let strategies = read_strings(
         graph,
         "match $d isa strategy-detects, links (strategy: $s); $s has concept-id $id; \
          limit 1; fetch { \"id\": $id };",
         "id",
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        if e.contains("[INF2]") {
+            NO_ATTACK.to_string()
+        } else {
+            e
+        }
+    })?;
     if strategies.is_empty() {
         return Err(NO_ATTACK.to_string());
     }
+    Ok(())
+}
+
+/// Refuses a database without ATT&CK (see [`check_attack`]), or a file naming a
+/// platform that matches a live analytic's platform only ignoring case or a
+/// component that does not match exactly one live data component, naming every
+/// such entry in one message.
+pub async fn check_against_graph(
+    graph: &Arc<dyn GraphReader>,
+    file: &SensorFile,
+) -> Result<(), String> {
+    check_attack(graph).await?;
 
     let mut bad = misspelled_platforms(graph, file).await?;
     let component_errors = component_errors(graph, file).await?;

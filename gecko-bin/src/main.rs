@@ -775,7 +775,8 @@ async fn cmd_sync(
 }
 
 /// Syncs a sensor file into an existing ATT&CK database: refuses a missing
-/// database, parses the file, refuses a bundle name that holds other records,
+/// database, parses the file, refuses a database without ATT&CK detection data
+/// and a bundle name that holds other records,
 /// ensures the schema, refuses a file the graph does not resolve, syncs it, and
 /// prints what it declares that ATT&CK does not use.
 #[cfg(feature = "cyber")]
@@ -815,6 +816,9 @@ async fn cmd_sync_sensors(
         std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
             tokio::sync::Mutex::new(TypeDbRouter::new(config.clone())),
         )));
+    sensors::check_attack(&graph)
+        .await
+        .map_err(|e| anyhow::anyhow!("database {database} rejected: {e}"))?;
     sensors::check_bundle_name(&graph, bundle_name)
         .await
         .map_err(|e| anyhow::anyhow!("--bundle-name rejected: {e}"))?;

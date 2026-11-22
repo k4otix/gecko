@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use cyber_gecko::CyberGecko;
 use cyber_gecko::sensors::{
-    SensorFile, check_against_graph, check_bundle_name, notices, parse, to_okf,
+    SensorFile, check_against_graph, check_attack, check_bundle_name, notices, parse, to_okf,
 };
 use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::graph_store::RouterGraphStore;
@@ -112,6 +112,35 @@ async fn refuses_a_database_without_attack() {
 
     let file = parse(WITHOUT_COMPONENT).expect("parses");
     let err = check_against_graph(&graph(&test_db), &file)
+        .await
+        .expect_err("no ATT&CK in the database");
+    assert!(
+        err.contains("sync the ATT&CK bundle into this database first"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn refuses_a_database_without_a_schema() {
+    let test_db = TestDb::new("gecko_test_sensors_no_schema");
+    test_db
+        .router()
+        .ensure_database()
+        .await
+        .expect("create the database");
+
+    // `gecko sync-sensors` checks for ATT&CK before the bundle name, whose query
+    // a database without the schema cannot type.
+    let graph = graph(&test_db);
+    let err = check_attack(&graph)
+        .await
+        .expect_err("no ATT&CK in the database");
+    assert!(
+        err.contains("sync the ATT&CK bundle into this database first"),
+        "{err}"
+    );
+    let file = parse(WITHOUT_COMPONENT).expect("parses");
+    let err = check_against_graph(&graph, &file)
         .await
         .expect_err("no ATT&CK in the database");
     assert!(
