@@ -115,7 +115,11 @@ These are ledgered as follow-ons.
    - `@range(0.0..1.0)` on belief and derivation `confidence`, and on `predicted-probability`.
    - `@range(-1.0..1.0)` on `similarity-score`.
    - `@range(0..)` on `access-count`, `corroboration-count` and `candidate-count`.
-5. **Upgrade check.** A database populated by every current writer path (the reconciliation
+5. **Upgrade cleanup.** Today's GC leaves one-player relations behind, and `sync` applies the
+   schema before it syncs. So each relation that gains a required role gets a migration that
+   deletes its one-player rows in the same schema transaction, before the card lands. GC also
+   deletes `population-member` rows of a deleted concept.
+6. **Upgrade check.** A database populated by every current writer path (the reconciliation
    rig's drives) re-applies the tightened schema and commits.
 
 ## Left to the builder

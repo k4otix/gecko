@@ -47,7 +47,7 @@
   - `believed_at_chunks_read(at: DateTime, actor: &ActorId) -> Read`;
   - `recall_as_of(&self, ctx: &RunContext, at: DateTime, budget: ContextBudget)`.
 
-- [ ] **Step 1: Write the failing tests:**
+- [ ] **Step 1: Write the failing tests.** An `agent` node exists only once that actor has written something. Each test therefore has agent B `observe` an episode first. An actor with no `agent` node gets an empty as-of recall, matching `gated_candidate_read` (`tql.rs:956`). That is intended; state it in the read's doc comment.
   - `as_of_recall_hides_another_agents_private_belief`: agent A asserts a private belief, and B's `recall` with `as_of` after its `valid-from` does not return it;
   - `as_of_recall_returns_a_team_belief_to_another_agent`;
   - `as_of_recall_returns_the_owners_private_belief`;
@@ -69,12 +69,20 @@
   - `informs_synthesis_op` ~483;
   - `set_was_used_op` ~497;
   - `retrieval_events_safe_to_tombstone_read` ~589.
-- Modify: `core/mem-gecko/src/writer/beliefs.rs` (`supersede` error mapping ~190; `resolve_prediction` ~260) and the writer that issues the `informs-synthesis` / `was-used` ops (find with `grep -n informs_synthesis_op core/mem-gecko/src`).
-- Test: `core/mem-gecko/tests/writer_reader_integration.rs`, `core/mem-gecko/tests/consolidation_daemon_test.rs` (or wherever `retrieval_events_safe_to_tombstone` is tested today).
+- Modify:
+  - `core/mem-gecko/src/writer/beliefs.rs`: the `supersede` error mapping ~190, `resolve_prediction` ~260, and `belief_ops` ~32-65 with its caller ~139;
+  - `core/mem-gecko/src/writer/edges.rs` ~92, the second `belief_ops` caller;
+  - `core/mem-gecko/src/writer/tests.rs`: the unit tests at ~351, ~357 and ~837 that read `belief_ops`'s return.
+- Test: `core/mem-gecko/tests/writer_reader_integration.rs`. The existing tombstone test is at ~1678. Any raw retrieval-event a test inserts must carry one `ownership` and one `source-link`, because Task 3 makes both required. Copy the shape `retrieval_event_ops` writes, not the bare seed at ~1696.
 
-**Interfaces:** none new. The error messages:
+**Interfaces:**
+- `belief_ops` returns `BeliefOps { ops: Vec<GraphWrite>, derivation: Option<usize>, provenance: Vec<ProvenanceOp> }` instead of the tuple.
+- `ProvenanceOp { index: usize, event: MemId, item: Option<MemId> }`, where `item` is `None` for the `informs-synthesis` op and `Some(item)` for a `was-used` op.
+- Both callers map a mismatch on a provenance index to a `Storage` error naming the event and item ids.
+
+The error messages:
 - supersede of a non-asserted belief: `supersede of <id>: no asserted belief with that id; nothing was committed: <raw>`;
-- `resolve_prediction` with no open prediction: `name_missing_ids(…, "resolve_prediction", "open prediction", &[&b])`;
+- `resolve_prediction` with no open prediction, or more than one: `resolve_prediction of <id> matched <n> open prediction(s); exactly one is required; nothing was committed: <raw>`;
 - `informs-synthesis` / `was-used` misses name both ids.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -83,7 +91,7 @@
   - `resolve_prediction_without_a_recorded_prediction_is_refused_and_commits_nothing`: no resolving episode exists afterwards.
   - `resolving_a_prediction_twice_is_refused`.
   - `a_derive_that_used_two_retrievals_links_both`: the Review Focus normal path; it must still pass.
-  - `a_retrieval_event_feeding_a_live_belief_is_not_safe_to_tombstone`: one event informs B1 and B2, and only B1 is superseded, so the event is not returned. It is returned once both are superseded, and appears once.
+  - `a_retrieval_event_feeding_a_live_belief_is_not_safe_to_tombstone`: one event informs B1 and B2, and only B1 is superseded, so the event is not returned. It is returned once both are superseded. Host-side `dedup_mapped` already removes repeats, so no "appears once" assertion is needed.
 - [ ] **Step 2: Run, and expect the refused-path and tombstone tests to fail.**
 - [ ] **Step 3: Implement.**
   - Supersede: add `$o has belief-state "asserted";` to the link op's match.
@@ -105,6 +113,19 @@
 
 **Files:**
 - Modify: `core/mem-gecko/schema/mem_types.tql` (~80-81, `memory-item`'s `plays`)
+- Create: one shared seed helper per test crate that inserts a raw memory item with one `ownership` (agent and visibility) and one `source-link` (to a `doc-run`). Use it in `core/mem-gecko/tests/common/` and `gecko-bin/tests/common/belief.rs`.
+- Modify the raw seeds that the probe showed break, each moved to the helper:
+  - `gecko-bin/tests/common/belief.rs:15`, used by `bundle_sync_test` and `cyber_stix_sync_test`;
+  - `gecko-bin/tests/belief_tier_reconciliation_test.rs:579` and the hostile raw write ~1178-1181;
+  - `gecko-bin/tests/belief_tier_surface_test.rs:218`;
+  - `gecko-bin/tests/bundle_sync_test.rs:261, 698`;
+  - `core/mem-gecko/tests/schema_acceptance_test.rs:108-115, 200, 270, 349, 362, 417, 469, 490`;
+  - `core/mem-gecko/tests/writer_reader_integration.rs:339, 1209, 1696, 2133`, and the no-owner branch ~1420;
+  - `core/mem-gecko/tests/consolidation_daemon_test.rs:229`, which has ownership but no source-link.
+
+  Find any others with `grep -rn "isa belief\|isa episode\|isa retrieval-event" --include=*.rs gecko-bin/tests core/mem-gecko/tests`.
+- **Ruling, already made:** `hostile_extension_raw_belief_write_is_flagged` seeds a conforming raw belief. The belief-tier fingerprint guard, not a TypeDB cardinality error, must stay the thing that refuses it.
+- **The no-owner branch at ~1420** tests behaviour for a belief with no owner. That is now unrepresentable, so turn it into an assertion that such an insert is refused at commit.
 - Test: `core/mem-gecko/tests/schema_acceptance_test.rs`
 
 **Interfaces:** `memory-item plays ownership:owned @card(1), plays source-link:memory @card(1..);`. Both are additive (no explicit annotation exists today); confirm that by reading the current lines.
@@ -134,11 +155,13 @@
   - `a_document_linking_the_same_page_twice_gets_one_link`: also re-sync after editing another line; still one link.
   - `a_document_citing_the_same_url_twice_gets_one_citation`.
   - `repeated_sros_become_one_typed_relation`: unit test on `cyber_post_sync` rows, plus a live count.
-  - `precision_ignores_a_superseded_disposition`: dispose FP, supersede that disposition belief with TP, and the counts show one TP and zero FP.
+  - `precision_ignores_a_superseded_disposition`: dispose FP, dispose TP, then `supersede` the FP disposition's belief (a superseding belief carries no disposition edge). The counts show one TP and zero FP.
   - `precision_with_no_asserted_dispositions_is_zero`.
 - [ ] **Step 2: Run, and expect them to fail.**
 - [ ] **Step 3: Implement.**
   - Deduplicate rows host-side with a `BTreeSet` keyed as the spec says.
+  - For a repeated link, keep the first occurrence's `link-text` in document order.
+  - `SyncResult.links_attempted` and `citations_attempted` count the deduplicated rows.
   - Add `$bel has belief-state "asserted";` to the `precision` read.
 - [ ] **Step 4: Run `bundle_sync_test`, `multi_bundle_test`, `cyber_stix_sync_test`, `cyber_detect_test` (`--features cyber`). All pass.**
 - [ ] **Step 5: Commit** `fix: one link per (source, target) within a sync; precision counts only current verdicts`.
