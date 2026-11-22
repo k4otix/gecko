@@ -319,9 +319,18 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
         // components it reads, through embedded references rather than
         // relationship objects; synthesize those links here.
         if type_hint == "detection-strategy"
-            && let Some(refs) = obj.get("x_mitre_analytic_refs").and_then(Value::as_array)
+            && let Some(refs) = obj.get("x_mitre_analytic_refs")
         {
-            for analytic in refs.iter().filter_map(Value::as_str) {
+            let refs = refs.as_array().ok_or_else(|| {
+                format!("detection strategy {id_str} has non-array x_mitre_analytic_refs")
+            })?;
+            for analytic in refs {
+                let analytic = analytic.as_str().ok_or_else(|| {
+                    format!(
+                        "detection strategy {id_str} has a non-string entry {analytic} in \
+                         x_mitre_analytic_refs"
+                    )
+                })?;
                 raw_rels.push((
                     concept_id.clone(),
                     derive_id(analytic),
@@ -1011,6 +1020,37 @@ mod tests {
         ])))
         .unwrap_err();
         assert!(err.contains(WINDOWS) && err.contains("name"), "got: {err}");
+    }
+
+    /// A bundle holding one strategy whose `x_mitre_analytic_refs` is `refs`.
+    fn strategy_bundle(refs: Value) -> String {
+        serde_json::json!({
+            "type": "bundle",
+            "objects": [
+                { "type": "x-mitre-detection-strategy", "id": STRATEGY, "name": "S",
+                  "x_mitre_analytic_refs": refs },
+                { "type": "x-mitre-analytic", "id": WINDOWS, "name": "W" },
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn non_array_analytic_refs_are_refused() {
+        let err = to_okf(&strategy_bundle(serde_json::json!(WINDOWS))).unwrap_err();
+        assert!(
+            err.contains(STRATEGY) && err.contains("x_mitre_analytic_refs"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_non_string_analytic_ref_is_refused() {
+        let err = to_okf(&strategy_bundle(serde_json::json!([WINDOWS, 7]))).unwrap_err();
+        assert!(
+            err.contains(STRATEGY) && err.contains("x_mitre_analytic_refs"),
+            "got: {err}"
+        );
     }
 
     #[test]
