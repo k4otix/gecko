@@ -11,7 +11,7 @@
 
 **Reading the IDs.** Items are grouped by track: **F** fix-now, **A** seam ①, **B** bitemporal
 correctness, **P** populations, **C** consolidation daemon, **S** STIX/ATT&CK ingest,
-**O** OKF bundles and OKF v0.2, **U** TypeDB upgrade, **D-** open decisions. A number in
+**O** OKF bundles and OKF v0.2, **U** TypeDB upgrade, **R** TypeDB review fixes, **D-** open decisions. A number in
 parentheses — "(was #12)" — is the row number the item had in the previous ledger, kept so
 references in specs and commit messages still resolve.
 
@@ -58,6 +58,13 @@ references in specs and commit messages still resolve.
   (a derive, contest, `rests_on` or `record_prediction` whose ids match nothing fails and
   commits nothing; the sandbox bridge refuses a malformed id list) and **C8** ✅ (a daemon tick
   is a counted drive in the reconciliation rig).
+- **Landed in the TypeDB review's correctness pass (branch `fix/query-correctness`, pass 1):**
+  as-of recall is gated by the `visible-to` function and returns newest first; a supersede
+  requires an asserted belief; `resolve_prediction`, `informs-synthesis` and `was-used` require
+  exactly one row; retrieval tombstoning waits for every informed belief; a memory item requires
+  one ownership and at least one source-link; link, citation and SRO rows are deduplicated
+  host-side; precision counts only asserted dispositions (**R1**). Pass 2 (schema tightening)
+  is owed (**R2**).
 - **Landed in the daemon tick PR (branch `feat/daemon-tick-dedup`):** **C1** ✅ (a
   `MemConsolidationDaemon` tick mints one run and its writes share it) and the `dedup_content_hash`
   half of **C2** ✅ (`dedup_episodes` enforces the duplicate rule in one guarded write and records a
@@ -78,6 +85,7 @@ A6 contested half ─► needs D-E only (no seam)
 A7 ────────────────► no blocker
 A10 ✅ ─────────────► landed with A4
 A11 ───────────────► entries 1–3 ✅; entry 4 needs a uniqueness decision
+R1 ✅ ──► R2 (schema tightening plan)
 
 D-A ──► B1 ──► B2, B3 ──► B4 (optional; also needs D-F)
 
@@ -133,7 +141,7 @@ in one transaction, the `GeckoExtension` declaration hook — are A1's to settle
 | **A9** ✅ | **Read-only graph handle and neutral sync writes — LANDED in PR #57.** Cyber's bridge holds an `Arc<dyn GraphReader>` and a bound `BeliefEdgeWriter`; the post-sync hook returns `GraphWrite`s that run inside the sync transaction | SPEC-W5 §3.5 (D-D steps 1–2) | extension-API + engine + cyber | ✅ `failing_extension_write_rolls_back_the_whole_sync` (`gecko-bin/tests/bundle_sync_test.rs`), `post_sync_groups_relations_into_one_write_per_shape` (`extensions/cyber-gecko/src/stix/mod.rs`) |
 | **A10** ✅ | **Extensions depend only on `gecko-extension-api` — LANDED in the belief-tier guard PR.** `ExtensionCallback` and the OKF import types live in the API crate; `scripts/check-extension-deps.sh` fails CI if a crate under `extensions/` depends on `typedb-driver` or `gecko-engine`; no extension is offered the `EpistemicWriter` (`inject_epistemic_host_fns` is removed) | SPEC-W5 §3.5 (D-D step 3) | API refactor + CI | — |
 | **A8** | Cyber episodic-sighting writer (`sighting-of` through the seam) (was #14) | SPEC-W5 §3.3, §3.4 | writer | A1 + a cyber sighting-ingestion feature (parked) |
-| **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op. Entries 1–3 ✅ (mem write-counts PR): `derivation_op` (via `mem.derive`), the last op of `contest_ops` (via `mem.contest`), `rests_on_op` and `record_prediction_op` each require exactly one row, and the writer names the given ids in a `Storage` error ending "nothing was committed"; `contest` refuses a repeated claim, and the sandbox bridge and cyber's detect bridge refuse a non-array id list or a non-string entry. Still owed: (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs`), so the right count needs a decision first. Deferred, same shape, not guest-supplied ids: `retrieval_event_ops`, `informs_synthesis_op`, `set_was_used_op`, and `set_retrieval_provenance_op`. The dedup loser-tombstone is counted inside `dedup_episodes_ops`, whose guarded op requires exactly one row. Deferred, needs a `quickjs.wasm` rebuild: the guest drops a non-array `evidence` and turns a non-array `claims` into `[]` (`core/js-sandbox/src/main.rs`) before the host sees them. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3 ✅ `derive_with_a_missing_evidence_id_errors_and_commits_nothing`, `contest_with_a_missing_claim_errors_and_commits_nothing`, `rests_on_with_a_missing_assumption_errors_and_commits_nothing`, `record_prediction_on_a_missing_belief_errors_and_commits_nothing` (`core/mem-gecko/tests/writer_reader_integration.rs`), `belief_with_edges_and_a_missing_evidence_id_names_the_evidence` (`belief_edge_integration.rs`), `a_malformed_id_list_is_refused_before_the_writer_runs` (`mem_host.rs`); entry 4: a uniqueness decision for predictions |
+| **A11** | **Write-count audit of the remaining mem writes.** A `match … insert` that matches nothing commits as a silent no-op. Entries 1–3 ✅ (mem write-counts PR): `derivation_op` (via `mem.derive`), the last op of `contest_ops` (via `mem.contest`), `rests_on_op` and `record_prediction_op` each require exactly one row, and the writer names the given ids in a `Storage` error ending "nothing was committed"; `contest` refuses a repeated claim, and the sandbox bridge and cyber's detect bridge refuse a non-array id list or a non-string entry. Still owed: (4) `resolve_prediction_ops`: `record_prediction` has no uniqueness guard (`core/mem-gecko/src/writer/beliefs.rs`), so the right count needs a decision first. `informs_synthesis_op` and `set_was_used_op` are now counted (`ProvenanceOp`), as are `resolve_prediction` and supersede (`BeliefOps`). Deferred, same shape, not guest-supplied ids: `retrieval_event_ops` (no expecting(1)) and `set_retrieval_provenance_op`. The dedup loser-tombstone is counted inside `dedup_episodes_ops`, whose guarded op requires exactly one row. Deferred, needs a `quickjs.wasm` rebuild: the guest drops a non-array `evidence` and turns a non-array `claims` into `[]` (`core/js-sandbox/src/main.rs`) before the host sees them. The populations ops match zero rows by design, as their guards, and get no count | Belief-edge seam design §2 | writer correctness | Entries 1–3 ✅ `derive_with_a_missing_evidence_id_errors_and_commits_nothing`, `contest_with_a_missing_claim_errors_and_commits_nothing`, `rests_on_with_a_missing_assumption_errors_and_commits_nothing`, `record_prediction_on_a_missing_belief_errors_and_commits_nothing` (`core/mem-gecko/tests/writer_reader_integration.rs`), `belief_with_edges_and_a_missing_evidence_id_names_the_evidence` (`belief_edge_integration.rs`), `a_malformed_id_list_is_refused_before_the_writer_runs` (`mem_host.rs`); entry 4: a uniqueness decision for predictions |
 | **A12** ✅ | **Registry coverage of `undefine` and `redefine` — LANDED in PR #57.** The registry refuses an extension fragment or migration that `undefine`s or `redefine`s a type or function the core or mem schema introduces, including an own function whose redefined body names a base type. `check_extension_schemas` runs the check at schema time, before any schema is applied | SPEC-W5 §3.5 (D-B) | registry | ✅ `refuses_an_extension_that_modifies_a_base_type_or_function`, `accepts_an_extension_that_modifies_only_its_own_types`, `refuses_an_explicit_redefine_of_an_own_function_whose_body_names_a_base_type` (`belief_edge/registry.rs`); `check_refuses_an_extension_that_undefines_a_mem_type` (`gecko-bin/src/config.rs`); `apply_all_schemas_refuses_before_touching_the_database` (`gecko-bin/src/main.rs`) |
 
 Tests owed with these items (names reserved by the specs):
@@ -246,6 +254,14 @@ CONTRACT-W8 §3 (rows 1–4, 6) land with the job each one names: rows 1, 6 with
 derivation and so has nothing to check yet); row 2 with C3; row 3 with C4; row 4 with C5/C6.
 
 ---
+
+## Track R — TypeDB review fixes
+
+| ID | Item | Source | Kind | Done when |
+|---|---|---|---|---|
+| **R1** ✅ | **Correctness pass (pass 1).** As-of recall returns only beliefs visible to the caller (`visible-to`), newest first, with no supersession applied as of T; supersede requires an asserted belief; resolve_prediction, informs-synthesis and was-used refuse a write that matches nothing; retrieval tombstoning waits for every informed belief; the schema requires one ownership and at least one source-link per memory item; one link per (source, target) per sync; precision counts only current verdicts | `docs/superpowers/specs/2026-11-22-typedb-review-fixes-design.md` | queries and writers | ✅ `as_of_recall_hides_another_agents_private_belief`, `as_of_recall_returns_a_team_belief_to_another_agent`, `as_of_recall_returns_the_owners_private_belief`, `as_of_recall_is_newest_first_and_truncates_deterministically`, `superseding_an_already_superseded_belief_is_refused_and_commits_nothing`, `resolve_prediction_without_a_recorded_prediction_is_refused_and_commits_nothing`, `a_resolve_prediction_mismatch_names_the_belief`, `a_retrieval_event_feeding_a_live_belief_is_not_safe_to_tombstone`, `a_memory_item_with_two_ownerships_is_refused_at_commit`, `a_memory_item_with_no_source_link_is_refused_at_commit`, `precision_ignores_a_superseded_disposition`, `precision_with_no_asserted_dispositions_is_zero` |
+| **R2** | **Schema tightening (pass 2).** Owed; plan `docs/superpowers/plans/2026-11-22-schema-tightening.md` | same spec | schema | the plan's tasks landed |
+| **R3** | **Follow-ons from pass 1.** Batched multi-row reads (`GraphReader::read_rows`); deprecated relation syntax; function-body dedup; `EpistemicReader::believed_at` (a host trait method with no production caller) is still unscoped by agent; the retrieval-event write has no expecting(1). Declined: verb-named relations | same spec | cleanup | each item landed or dropped |
 
 ## Track M — mem belief-tier types with no production writer
 

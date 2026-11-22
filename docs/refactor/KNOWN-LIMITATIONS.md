@@ -77,6 +77,14 @@ proven through the real sandbox against live TypeDB.
   median of about 4.3 ms per sync (23 syncs). The cost grows with the belief
   tier, because each read scans its instances.
 
+## As-of recall and supersede
+
+As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
+empty result), but it applies no supersession as of T: a belief later superseded is still
+returned for a time before the supersession. A supersede requires a currently asserted
+belief; superseding a retracted or already superseded belief is refused. The host trait method
+`EpistemicReader::believed_at` is still unscoped by agent.
+
 ## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
 `core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait, a no-op
