@@ -98,11 +98,12 @@ proven through the real sandbox against live TypeDB.
   transaction, in that order: the refusing fragment commits nothing, and earlier
   fragments' cleanups stay committed. The state is consistent, and re-running after the
   fix completes the upgrade. Today's writers produce no such row.
-- **A cyber-typed concept shared across bundles.** A STIX relationship can link a
-  cyber-typed concept another bundle in the same database owns; if a sync of that bundle
-  deleted the concept, the relation would lose a required player and the sync's commit
-  would fail. Today only `sync-stix` and `sync-sensors` create cyber-typed concepts, and
-  every `sync-stix` re-sync sweeps one-player relations.
+- **Garbage collection deletes every relation a concept plays.** A sync that deletes a
+  concept first deletes each relation the concept plays in, of any extension, so a
+  relation linking it to a concept another bundle owns is deleted with it rather than
+  left without a required player
+  (`garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays`). A
+  concept a belief edge references is retired instead.
 
 ## As-of recall and supersede
 

@@ -984,13 +984,29 @@ async fn a_document_citing_the_same_url_twice_gets_one_citation() {
 }
 
 #[tokio::test]
-async fn garbage_collecting_a_population_member_concept_commits() {
-    let test_db = TestDb::new("gecko_test_gc_population_member");
+async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays() {
+    let test_db = TestDb::new("gecko_test_gc_every_relation");
     let mut db = test_db.router();
     apply_core(&mut db, true).await;
+    #[cfg(feature = "cyber")]
+    db.apply_schema(CyberGecko::new().schema())
+        .await
+        .expect("Failed to apply cyber schema");
     let dir = TempDir::new().unwrap();
     write_concepts(dir.path(), &[("a", "Member."), ("b", "Kept.")]);
     let full = parse_bundle(dir.path()).expect("parse");
+    #[cfg(feature = "cyber")]
+    let full = {
+        let mut full = full;
+        for c in full
+            .concepts
+            .iter_mut()
+            .filter(|c| c.concept_id == "notes/a")
+        {
+            c.type_hint = Some("intrusion-set".to_string());
+        }
+        full
+    };
     sync_bundle(&mut db, &full, &[], BELIEF_TIER_ROOT)
         .await
         .expect("sync both concepts");
@@ -1004,13 +1020,23 @@ async fn garbage_collecting_a_population_member_concept_commits() {
     )
     .await
     .expect("insert the memberships");
-    tx.commit().await.expect("commit the memberships");
+    // A STIX `uses` whose user is the plain bundle's concept and whose used
+    // malware no bundle contains.
+    #[cfg(feature = "cyber")]
+    tx.query(
+        r#"match $a isa intrusion-set, has concept-id "notes/a";
+           insert $m isa malware, has concept-id "elsewhere/m";
+                  (user: $a, used: $m) isa uses;"#,
+    )
+    .await
+    .expect("insert the cross-bundle uses");
+    tx.commit().await.expect("commit the extension relations");
 
     let mut dropped = full.clone();
     dropped.concepts.retain(|c| c.concept_id != "notes/a");
     let r = sync_bundle(&mut db, &dropped, &[], BELIEF_TIER_ROOT)
         .await
-        .expect("garbage-collecting a population member commits");
+        .expect("garbage-collecting a concept that plays extension relations commits");
     assert_eq!(r.concepts_deleted, 1);
     assert_eq!(
         count(&mut db, "match $m isa population-member;").await,
@@ -1027,6 +1053,23 @@ async fn garbage_collecting_a_population_member_concept_commits() {
         1,
         "the kept concept's membership survives"
     );
+    #[cfg(feature = "cyber")]
+    {
+        assert_eq!(
+            count(&mut db, "match $u isa uses;").await,
+            0,
+            "no one-player uses remains"
+        );
+        assert_eq!(
+            count(
+                &mut db,
+                r#"match $m isa malware, has concept-id "elsewhere/m";"#
+            )
+            .await,
+            1,
+            "the other player is kept"
+        );
+    }
 }
 
 /// Seeds a bundle, two concepts and an external resource, then asserts that
