@@ -423,7 +423,7 @@ async fn blind_analytics(
         let missing = if requirements.is_empty() {
             Vec::new()
         } else {
-            missing_log_sources(graph, &concept_id).await?
+            missing_log_sources(graph, &concept_id, platform).await?
         };
         readings.push(AnalyticReading {
             analytic: attack_id,
@@ -478,23 +478,24 @@ fn blind_platform_entries(
     Ok(out)
 }
 
-/// The `analytic-gaps` of the analytic `analytic_concept_id`, grouped by log-source
-/// key: each key's smallest trimmed spelling and the sorted names of the data
+/// The `analytic-gaps` of the analytic `analytic_concept_id` on `platform`, grouped
+/// by log-source key: each key's smallest trimmed spelling and the sorted names of the data
 /// components it would serve, sorted by spelling.
 async fn missing_log_sources(
     graph: &Arc<dyn GraphReader>,
     analytic_concept_id: &str,
+    platform: &str,
 ) -> Result<Vec<Value>, String> {
     let gaps = read(
         graph,
-        "given $aid: string; \
+        "given $aid: string, $plat: string; \
          match $a isa analytic, has concept-id $ac; $ac == $aid; \
-               let $r in analytic-gaps($a); \
+               let $r in analytic-gaps($a, $plat); \
                $r links (component: $c); \
          fetch { \"name\": $r.log-source-name, \"key\": $r.log-source-key, \
                  \"component\": $c.title, \"component_id\": $c.concept-id };",
-        &["aid"],
-        &[analytic_concept_id],
+        &["aid", "plat"],
+        &[analytic_concept_id, platform],
     )
     .await?;
 

@@ -15,11 +15,11 @@ fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: A
 # technique is the exception: a claim on a dead technique is reported, as
 # unassessed on every declared platform.
 
-fun requirement-covered($r: analytic-requirement) -> boolean @doc("Whether a live sensor on the requirement's analytic's platform collects its log source, or covers its data component as a fallback."):
+fun requirement-covered($r: analytic-requirement, $p: string) -> boolean @doc("Whether a live sensor on platform $p collects the requirement's log source, or covers its data component as a fallback."):
     match
-        $r links (analytic: $a, component: $c);
-        $a has platform $p;
-        $s isa sensor, has platform $p;
+        $r links (component: $c);
+        $s isa sensor, has platform $sp;
+        $sp == $p;
         not { $s has revoked true; };
         not { $s has deprecated true; };
         not { $s has retired-at $sra; };
@@ -27,13 +27,13 @@ fun requirement-covered($r: analytic-requirement) -> boolean @doc("Whether a liv
         or { $c has component-key $ck; $s has covered-component-key $sk; $sk == $ck; };
     return check;
 
-fun analytic-gaps($a: analytic) -> { analytic-requirement } @doc("The analytic's requirements on a live data component that no live sensor on its platform covers."):
+fun analytic-gaps($a: analytic, $p: string) -> { analytic-requirement } @doc("The analytic's requirements on a live data component that no live sensor on platform $p covers."):
     match
         $r isa analytic-requirement, links (analytic: $a, component: $c);
         not { $c has revoked true; };
         not { $c has deprecated true; };
         not { $c has retired-at $cra; };
-        let $covered = requirement-covered($r);
+        let $covered = requirement-covered($r, $p);
         $covered == false;
     return { $r };
 
@@ -66,7 +66,8 @@ fun claim-platforms() -> { concept, attack-pattern, string, string } @doc("One r
                     not { $c1 has retired-at $cra1; };
                 };
             } or {
-                let $g1 in analytic-gaps($a1);
+                let $pv1 = $p;
+                let $g1 in analytic-gaps($a1, $pv1);
             };
             let $s = "blind";
         } or {
@@ -86,7 +87,8 @@ fun claim-platforms() -> { concept, attack-pattern, string, string } @doc("One r
             not { $c2 has revoked true; };
             not { $c2 has deprecated true; };
             not { $c2 has retired-at $cra2; };
-            not { let $g2 in analytic-gaps($a2); };
+            let $pv2 = $p;
+            not { let $g2 in analytic-gaps($a2, $pv2); };
             let $s = "covered";
         } or {
             not {

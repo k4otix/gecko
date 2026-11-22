@@ -608,6 +608,39 @@ sensors:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_platform_analytic_is_covered_only_by_a_sensor_on_the_assessed_platform() {
+    // The Windows analytic also runs on Linux; a Windows sensor collecting every
+    // log source it reads covers it on Windows, not on Linux.
+    let rig = Rig::new("gecko_test_blinded_multi_platform", &[LOGIC_ID]).await;
+    let json = attack_bundle(|objects| {
+        object_mut(objects, attack::WINDOWS_ANALYTIC_STIX_ID)["x_mitre_platforms"] =
+            json!(["Windows", "Linux"]);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    rig.sensors(
+        r#"
+platforms: [Linux]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security, NSM:Flow]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([
+                blind("Linux", attack::WINDOWS_ANALYTIC, windows_missing()),
+                blind("Linux", attack::LINUX_ANALYTIC, linux_missing()),
+            ]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn removed_sensor_stops_covering() {
     let rig = Rig::with_sensors("gecko_test_blinded_removed_sensor", WINDOWS_FULL).await;
     assert_eq!(rig.blinded(), report(vec![]));
