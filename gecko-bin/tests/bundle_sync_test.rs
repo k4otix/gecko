@@ -756,3 +756,172 @@ async fn one_sync_retires_two_linked_referenced_concepts_and_deletes_an_unrefere
     );
     assert_eq!(count(&mut db, "match $l isa concept-link;").await, 0);
 }
+
+/// A test-only concept subtype a re-sync retypes a concept into.
+const RETYPE_PROBE: &str = "retype-probe";
+
+/// Applies the core and mem schemas plus [`RETYPE_PROBE`], and syncs a bundle
+/// whose single concept `a` has no `type_hint`. Returns the bundle and its dir.
+async fn synced_untyped_a(db: &mut TypeDbRouter) -> (OkfBundle, TempDir) {
+    apply_core(db, true).await;
+    db.apply_schema(
+        "define entity retype-probe sub concept @doc(\"A test-only concept subtype.\");",
+    )
+    .await
+    .expect("Failed to apply the retype-probe schema");
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(
+        temp_dir.path().join("a.md"),
+        "---\ntype: Playbook\ntitle: First\n---\n\nThe first body.\n",
+    )
+    .unwrap();
+    let bundle = parse_bundle(temp_dir.path()).expect("Failed to parse bundle");
+    assert_eq!(bundle.concepts.len(), 1);
+    assert_eq!(bundle.concepts[0].concept_id, "a");
+    assert!(bundle.concepts[0].type_hint.is_none());
+    let r = sync_bundle(db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("Failed to sync bundle");
+    assert_eq!(r.concepts_inserted, 1);
+    (bundle, temp_dir)
+}
+
+/// The exact type label of the concept `id`.
+async fn exact_type(db: &mut TypeDbRouter, id: &str) -> Vec<String> {
+    let tx = db.begin_read().await.expect("Failed to begin read");
+    let rows: Vec<_> = tx
+        .query(format!(
+            r#"match $c isa! $t, has concept-id "{id}"; $t sub concept;
+               let $l = label($t); select $l;"#
+        ))
+        .await
+        .expect("type query failed")
+        .into_rows()
+        .collect::<Vec<_>>()
+        .await;
+    rows.into_iter()
+        .map(|r| {
+            r.expect("type row")
+                .get("l")
+                .expect("column l")
+                .expect("l bound")
+                .try_get_string()
+                .expect("l is a string")
+                .to_string()
+        })
+        .collect()
+}
+
+/// Asserts that `a` is a [`RETYPE_PROBE`] contained once, carrying `expected`'s
+/// title, body and hash and no other copy of them.
+async fn assert_retyped(db: &mut TypeDbRouter, expected: &OkfBundle, title: &str) {
+    assert_eq!(exact_type(db, "a").await, vec![RETYPE_PROBE.to_string()]);
+    assert_eq!(count(db, "match $c isa concept;").await, 1);
+    assert_eq!(plays(db, "a", "containment").await, 1);
+    let c = &expected.concepts[0];
+    for (attr, value) in [
+        ("title", title),
+        ("file-hash", c.file_hash.as_str()),
+        ("concept-type", c.concept_type.as_str()),
+    ] {
+        assert_eq!(
+            count(
+                db,
+                &format!(r#"match $c isa retype-probe, has concept-id "a", has {attr} $v;"#)
+            )
+            .await,
+            1,
+            "`a` owns exactly one {attr}"
+        );
+        assert_eq!(
+            count(
+                db,
+                &format!(
+                    r#"match $c isa retype-probe, has concept-id "a", has {attr} == {value:?};"#
+                )
+            )
+            .await,
+            1,
+            "`a`'s {attr} is the second manifest's"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_changed_type_hint_retypes_the_concept() {
+    let test_db = TestDb::new("gecko_test_sync_retype");
+    let mut db = test_db.router();
+    let (first, temp_dir) = synced_untyped_a(&mut db).await;
+
+    fs::write(
+        temp_dir.path().join("a.md"),
+        "---\ntype: Playbook\ntitle: Second\n---\n\nThe second body.\n",
+    )
+    .unwrap();
+    let mut second = parse_bundle(temp_dir.path()).expect("Failed to re-parse bundle");
+    assert_ne!(second.concepts[0].file_hash, first.concepts[0].file_hash);
+    second.concepts[0].type_hint = Some(RETYPE_PROBE.into());
+
+    let r = sync_bundle(&mut db, &second, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("a changed type_hint retypes the concept");
+    assert_eq!(r.concepts_updated, 1);
+    assert_eq!(r.concepts_inserted, 0);
+    assert_eq!(r.concepts_skipped, 0);
+    assert_eq!(r.concepts_deleted, 0);
+    assert_retyped(&mut db, &second, "Second").await;
+}
+
+#[tokio::test]
+async fn a_changed_type_hint_with_an_unchanged_hash_still_retypes() {
+    let test_db = TestDb::new("gecko_test_sync_retype_same_hash");
+    let mut db = test_db.router();
+    let (first, _temp_dir) = synced_untyped_a(&mut db).await;
+
+    let mut second = first.clone();
+    second.concepts[0].type_hint = Some(RETYPE_PROBE.into());
+
+    let r = sync_bundle(&mut db, &second, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("a changed type_hint retypes the concept");
+    assert_eq!(r.concepts_updated, 1);
+    assert_eq!(r.concepts_inserted, 0);
+    assert_eq!(r.concepts_skipped, 0);
+    assert_retyped(&mut db, &second, "First").await;
+
+    let again = sync_bundle(&mut db, &second, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync of the retyped concept");
+    assert_eq!(again.concepts_skipped, 1);
+    assert_eq!(again.concepts_updated, 0);
+}
+
+#[tokio::test]
+async fn a_changed_type_hint_on_a_referenced_concept_is_refused() {
+    let test_db = TestDb::new("gecko_test_sync_retype_referenced");
+    let mut db = test_db.router();
+    let (first, _temp_dir) = synced_untyped_a(&mut db).await;
+    let stored_hash = sole_file_hash(&mut db).await;
+    claim_with_belief(&mut db, "mem/bel/retype", "a").await;
+
+    let mut second = first.clone();
+    second.concepts[0].file_hash = format!("{stored_hash}-changed");
+    second.concepts[0].type_hint = Some(RETYPE_PROBE.into());
+
+    let result = sync_bundle(&mut db, &second, &[], BELIEF_TIER_ROOT).await;
+    let Err(DbError::TypeChangeReferenced { ids }) = result else {
+        panic!("expected TypeChangeReferenced, got {result:?}");
+    };
+    assert_eq!(
+        ids,
+        vec![(
+            "a".to_string(),
+            "concept".to_string(),
+            RETYPE_PROBE.to_string()
+        )]
+    );
+    let message = DbError::TypeChangeReferenced { ids }.to_string();
+    assert!(message.contains("`a`"), "{message}");
+    assert_eq!(exact_type(&mut db, "a").await, vec!["concept".to_string()]);
+    assert_eq!(sole_file_hash(&mut db).await, stored_hash);
+}

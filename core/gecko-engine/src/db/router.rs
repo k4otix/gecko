@@ -48,6 +48,26 @@ pub enum DbError {
     /// transaction and just before its commit. Nothing was committed.
     #[error("{}", belief_tier_write_message(.changes))]
     BeliefTierWrite { changes: Vec<BeliefTierChange> },
+
+    /// A sync changed the `type_hint` of concepts a belief edge references, and a
+    /// type change cannot carry the edge. `ids` lists every such concept, sorted, as
+    /// (concept id, stored type, new type). Nothing was committed.
+    #[error("{}", type_change_referenced_message(.ids))]
+    TypeChangeReferenced { ids: Vec<(String, String, String)> },
+}
+
+/// Renders a refused type change, naming every belief-referenced concept with its
+/// stored and new type.
+fn type_change_referenced_message(ids: &[(String, String, String)]) -> String {
+    let list: Vec<String> = ids
+        .iter()
+        .map(|(id, from, to)| format!("`{id}` (`{from}` to `{to}`)"))
+        .collect();
+    format!(
+        "sync refused: a belief edge references {}, whose type_hint changed, and a type \
+         change cannot carry the edge. Nothing was committed.",
+        list.join(", ")
+    )
 }
 
 /// Renders a refused belief-tier change, listing every differing count.

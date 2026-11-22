@@ -162,7 +162,11 @@ Notes and invariants:
   sync transaction. The sync is guarded: a sync whose writes (or whose importer's
   concepts) change any belief-tier type's instance, attribute or link count is
   refused with `DbError::BeliefTierWrite` and commits nothing. A concept's
-  `type_hint` must name a `concept` subtype. Garbage collection retires, rather than
+  `type_hint` must name a `concept` subtype. A changed `type_hint` replaces the
+  concept: the sync deletes it with its OKF relations and inserts it under the new
+  type, so it loses incoming links and extension relations that this sync's links
+  and writes do not recreate. The sync refuses with `DbError::TypeChangeReferenced`
+  when a belief edge references it, since the edge cannot follow. Garbage collection retires, rather than
   deletes, a concept a belief edge references: it keeps the entity, its ID and
   containment, removes its other attributes and relations, and sets `retired-at`.
   A required attribute on a concept subtype is kept across retirement.
