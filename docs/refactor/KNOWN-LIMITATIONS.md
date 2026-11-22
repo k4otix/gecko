@@ -89,9 +89,10 @@ belief; superseding a retracted or already superseded belief is refused (`supers
 ## Writes act only on what the caller can see
 
 A caller may only act on beliefs visible to it (`visible-to`: team or shared visibility, or
-owned by the caller; the caller is the run's actor, which the sandbox cannot forge). Each
-`MemWriter` write the guest reaches enforces this inside its own write, so a refused write
-commits nothing:
+owned by the caller). The rule binds every `MemWriter` caller, not only the guest: the caller
+is the `RunContext` actor, which the host stamps and the sandbox cannot forge, and it covers
+cyber's belief-edge seam (`assert_belief_with_edges`), whose evidence ids come from the guest.
+Each write enforces it inside its own write, so a refused write commits nothing:
 
 - **`supersede`** requires the old belief to be asserted and visible to the caller; another
   agent's private belief is refused like a missing one, and the entrenchment guard reads only
@@ -109,6 +110,13 @@ commits nothing:
 
 `rests_on`, `record_prediction` and `resolve_prediction` are not reachable from the guest
 and do not check visibility.
+
+Another agent may supersede a team or shared belief, including with a private replacement,
+which removes the belief from its original owner's recall.
+
+The consolidation daemon writes as actor `consolidation-daemon` while production runs write as
+`system`, so a daemon job that derives from or supersedes a run's private beliefs or episodes is
+refused by this rule (owed decision: ledger **C9**).
 
 ## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
