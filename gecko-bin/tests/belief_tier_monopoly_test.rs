@@ -505,40 +505,9 @@ fn production_tql_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The one belief-tier write an extension's schema migrations may carry: for each
-/// belief edge it declares, the cleanup deleting the edge's rows that lack a declared
-/// player, exactly as built here, keyed by the extension's `migrations.rs`. It runs in
-/// the schema transaction before the `define` that makes those players required,
-/// never at run time, and must be one of the extension's `schema_migrations()`.
-#[cfg(feature = "cyber")]
-fn belief_edge_cleanups(ext: &dyn GeckoExtension) -> Vec<String> {
-    ext.belief_edges()
-        .iter()
-        .map(|decl| {
-            let missing = decl
-                .roles
-                .iter()
-                .map(|r| r.role)
-                .chain([decl.belief_role])
-                .enumerate()
-                .map(|(i, role)| format!("{{ not {{ $r links ({role}: $p{i}); }}; }}"))
-                .collect::<Vec<_>>()
-                .join(" or ");
-            let tql = format!("match $r isa {}; {missing}; delete $r;", decl.relation);
-            assert!(
-                ext.schema_migrations().iter().any(|m| m.tql == tql),
-                "{}: no schema migration is the cleanup {tql:?}",
-                ext.name()
-            );
-            tql
-        })
-        .collect()
-}
-
 /// No production source outside `core/mem-gecko/src/tql.rs` carries raw write TQL
 /// against the introspected belief-tier surface; belief-tier writes go through mem's
-/// writers and the belief-edge seam. The only exception is each extension's
-/// [`belief_edge_cleanups`] in its `src/migrations.rs`.
+/// writers and the belief-edge seam.
 #[cfg(feature = "cyber")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_raw_belief_tier_tql_outside_mem_tql() {
@@ -573,34 +542,18 @@ async fn no_raw_belief_tier_tql_outside_mem_tql() {
     let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
         .canonicalize()
         .expect("workspace root");
-    let cyber = CyberGecko::new();
-    let mut cleanups: BTreeMap<&str, Vec<String>> = BTreeMap::from([(
-        "extensions/cyber-gecko/src/migrations.rs",
-        belief_edge_cleanups(&cyber),
-    )]);
     let mut hits_by_file: BTreeMap<String, Vec<(usize, String)>> = BTreeMap::new();
     let mut scan = |path: &Path, kind: SourceKind| {
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+        let text = match kind {
+            SourceKind::Rust => production_text(&text),
+            SourceKind::Tql => text,
+        };
         let rel = path
             .strip_prefix(&root)
             .expect("scanned path is under the workspace root")
             .to_string_lossy()
             .into_owned();
-        let mut text = match kind {
-            SourceKind::Rust => production_text(&text),
-            SourceKind::Tql => text,
-        };
-        if let Some(admitted) = cleanups.remove(rel.as_str()) {
-            for tql in admitted {
-                let quoted = format!("\"{tql}\"");
-                assert_eq!(
-                    text.matches(&quoted).count(),
-                    1,
-                    "{rel} must carry the cleanup {tql:?} once"
-                );
-                text = text.replace(&quoted, "\"\"");
-            }
-        }
         hits_by_file.insert(rel, belief_tier_hits(&text, kind, &surface));
     };
     for path in production_rust_files(&root) {
@@ -609,11 +562,6 @@ async fn no_raw_belief_tier_tql_outside_mem_tql() {
     for path in production_tql_files(&root) {
         scan(&path, SourceKind::Tql);
     }
-    assert!(
-        cleanups.is_empty(),
-        "the scan must cover {:?}",
-        cleanups.keys().collect::<Vec<_>>()
-    );
 
     for expected in [
         "extensions/cyber-gecko/src/detect/mod.rs",

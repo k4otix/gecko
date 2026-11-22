@@ -14,9 +14,11 @@ use gecko_extension_api::SchemaMigration;
 /// `sub` declaration, which `redefine` cannot address (`[REX15]`), so these
 /// migrations `undefine` the annotation instead. `cyber-object`'s `@doc` sits on
 /// `sub concept`, and the belief-edge registry refuses any migration naming a core
-/// type, so that `@doc` is left as first shipped. The last eleven delete each
-/// typed relation's rows that lack a player for a role the schema requires.
-pub static CYBER_MIGRATIONS: [SchemaMigration; 21] = [
+/// type, so that `@doc` is left as first shipped. The last nine delete each
+/// STIX and detection-model relation's rows that lack a player for a role the
+/// schema requires. The belief edges `technique-detection` and `alert-disposition`
+/// have no cleanup: no GECKO write leaves one without a player.
+pub static CYBER_MIGRATIONS: [SchemaMigration; 19] = [
     SchemaMigration {
         id: "cyber/delete-evidence-of-instances",
         applies_when: "relation evidence-of",
@@ -114,16 +116,6 @@ pub static CYBER_MIGRATIONS: [SchemaMigration; 21] = [
         id: "cyber/analytic-requirement-required-roles",
         applies_when: "relates component @doc(\"The data component the log source provides to the analytic.\")",
         tql: "match $r isa analytic-requirement; { not { $r links (analytic: $p0); }; } or { not { $r links (component: $p1); }; }; delete $r;",
-    },
-    SchemaMigration {
-        id: "cyber/technique-detection-required-roles",
-        applies_when: "relates detecting-logic @doc(\"The concept holding the detection logic.\")",
-        tql: "match $r isa technique-detection; { not { $r links (detecting-logic: $p0); }; } or { not { $r links (detected-technique: $p1); }; } or { not { $r links (detection-claim: $p2); }; }; delete $r;",
-    },
-    SchemaMigration {
-        id: "cyber/alert-disposition-required-roles",
-        applies_when: "relates dispositioned-logic @doc(\"The detecting logic whose alert is being dispositioned.\")",
-        tql: "match $r isa alert-disposition; { not { $r links (dispositioned-logic: $p0); }; } or { not { $r links (disposition-belief: $p1); }; }; delete $r;",
     },
 ];
 

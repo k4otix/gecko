@@ -154,6 +154,10 @@ any other caller.
   schema requires a sensor's `platform`; a database holding a `sensor` written under the
   earlier cyber schema, which had none, cannot apply it. Nothing in GECKO wrote sensors
   before `gecko sync-sensors`, so only a hand-written one is affected.
+- **A one-player detection claim or disposition fails the schema upgrade.** Today's code
+  cannot produce a `technique-detection` or `alert-disposition` missing a player; an old
+  database holding one fails schema-init with TypeDB's error naming the relation and
+  needs a manual cleanup.
 - **A type-changed concept loses its incoming extension relations until the post-sync
   writes recreate them.** A sync that retypes a concept (a changed `type_hint`) deletes
   and re-inserts it, which drops the relations other concepts held to it. The STIX

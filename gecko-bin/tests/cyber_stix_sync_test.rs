@@ -1403,12 +1403,11 @@ async fn write_query(db: &mut TypeDbRouter, query: &str) {
     tx.commit().await.expect("commit");
 }
 
-#[tokio::test]
-async fn a_database_holding_a_one_player_uses_upgrades() {
-    use gecko_engine::db::CORE_MIGRATIONS;
+/// The belief edges cyber declares, which have no upgrade cleanup.
+const BELIEF_EDGES: [&str; 2] = ["technique-detection", "alert-disposition"];
 
-    let test_db = TestDb::new("gecko_test_stix_one_player_upgrade");
-    let mut db = test_db.router();
+/// Applies the frozen pre-tightening core, mem and cyber schemas.
+async fn apply_pre_tightening_schemas(db: &mut TypeDbRouter) {
     db.apply_schema(PRE_CORE)
         .await
         .expect("pre-tightening core");
@@ -1422,8 +1421,32 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
     db.apply_schema(&format!("{PRE_CYBER}\n{PRE_CYBER_FUNCTIONS}"))
         .await
         .expect("pre-tightening cyber");
+}
 
-    // One fully played row and one row per missing role, for every relation.
+/// Applies the shipped core and mem with their migrations, then returns the result
+/// of applying the shipped cyber with its migrations.
+async fn apply_shipped_schemas(db: &mut TypeDbRouter) -> Result<(), String> {
+    let mem = MemGecko::new();
+    let cyber = CyberGecko::new();
+    db.apply_schema_with_migrations(CORE_SCHEMA, gecko_engine::db::CORE_MIGRATIONS)
+        .await
+        .expect("the shipped core");
+    db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+        .await
+        .expect("the shipped mem");
+    db.apply_schema_with_migrations(cyber.schema(), cyber.schema_migrations())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tokio::test]
+async fn a_database_holding_a_one_player_uses_upgrades() {
+    let test_db = TestDb::new("gecko_test_stix_one_player_upgrade");
+    let mut db = test_db.router();
+    apply_pre_tightening_schemas(&mut db).await;
+
+    // One fully played row and one row per missing role, for every relation that
+    // is not a belief edge.
     write_query(
         &mut db,
         "insert $is isa intrusion-set, has concept-id \"up/is\"; \
@@ -1438,7 +1461,6 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
                 $ds isa detection-strategy, has concept-id \"up/ds\"; \
                 $an isa analytic, has concept-id \"up/an\"; \
                 $dc isa data-component, has concept-id \"up/dc\"; \
-                $pb isa concept, has concept-id \"up/pb\"; \
                 (indicator-source: $in, indicated: $mw) isa indicates; \
                 (indicator-source: $in) isa indicates; \
                 (indicated: $mw) isa indicates; \
@@ -1471,26 +1493,6 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
                     has log-source-name \"n\", has log-source-key \"n\";",
     )
     .await;
-    claim_with_belief(&mut db, "mem/bel/up", "up/pb").await;
-    write_query(
-        &mut db,
-        "match $b isa belief, has concept-id \"mem/bel/up\"; \
-               $pb isa concept, has concept-id \"up/pb\"; \
-               $ap isa attack-pattern, has concept-id \"up/ap\"; \
-         insert (detecting-logic: $pb, detected-technique: $ap, detection-claim: $b) \
-                    isa technique-detection; \
-                (detected-technique: $ap, detection-claim: $b) isa technique-detection; \
-                (detecting-logic: $pb, detection-claim: $b) isa technique-detection; \
-                (detecting-logic: $pb, detected-technique: $ap) isa technique-detection; \
-                (dispositioned-logic: $pb, disposition-belief: $b) isa alert-disposition, \
-                    has detection-verdict \"true-positive\"; \
-                (disposition-belief: $b) isa alert-disposition, \
-                    has detection-verdict \"false-positive\"; \
-                (dispositioned-logic: $pb) isa alert-disposition, \
-                    has detection-verdict \"benign-true\";",
-    )
-    .await;
-
     // Each cleanup's trigger is in the pre-tightening export exactly once.
     let cyber = CyberGecko::new();
     let cleanups: Vec<_> = cyber
@@ -1500,23 +1502,16 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
         .collect();
     assert_eq!(
         cleanups.len(),
-        REQUIRED_ROLES.len(),
-        "one cleanup per cyber relation"
+        REQUIRED_ROLES.len() - BELIEF_EDGES.len(),
+        "one cleanup per cyber relation that is not a belief edge"
     );
     let before = db.database_schema().await.expect("schema");
     for m in &cleanups {
         assert_eq!(before.matches(m.applies_when).count(), 1, "{}", m.id);
     }
 
-    let mem = MemGecko::new();
     for _ in 0..2 {
-        db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
-            .await
-            .expect("the shipped core");
-        db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
-            .await
-            .expect("the shipped mem");
-        db.apply_schema_with_migrations(cyber.schema(), cyber.schema_migrations())
+        apply_shipped_schemas(&mut db)
             .await
             .expect("cyber cleanups, then the shipped cyber");
     }
@@ -1533,6 +1528,9 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
                 block.contains(&format!("relates {role} @card(1..1)")),
                 "{relation}:{role} is not required: {block}"
             );
+        }
+        if BELIEF_EDGES.contains(relation) {
+            continue;
         }
         let full = roles
             .iter()
@@ -1551,4 +1549,30 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
             "the surviving {relation} is the fully played one"
         );
     }
+}
+
+#[tokio::test]
+async fn a_database_holding_a_one_player_technique_detection_fails_schema_init_naming_the_relation()
+{
+    let test_db = TestDb::new("gecko_test_stix_one_player_detection");
+    let mut db = test_db.router();
+    apply_pre_tightening_schemas(&mut db).await;
+    write_query(
+        &mut db,
+        "insert $ap isa attack-pattern, has concept-id \"up/ap\"; \
+                $pb isa concept, has concept-id \"up/pb\"; \
+                (used: $ap) isa uses; \
+                (detecting-logic: $pb, detected-technique: $ap) isa technique-detection;",
+    )
+    .await;
+
+    let err = apply_shipped_schemas(&mut db)
+        .await
+        .expect_err("a technique-detection without its claim passes the required roles");
+    assert!(err.contains("'technique-detection"), "{err}");
+
+    // The failed apply is one schema transaction, so its cleanups are rolled back.
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(count(&tx, "match $r isa technique-detection;").await, 1);
+    assert_eq!(count(&tx, "match $r isa uses;").await, 1);
 }
