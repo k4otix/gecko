@@ -125,14 +125,13 @@ mod tests {
 
     #[test]
     fn migrations_lead_to_the_shipped_schema() {
+        // Each type removal precedes its `undefine`, each cleanup deletes only rows
+        // missing a role the shipped schema requires, and each `undefine @doc` clears
+        // text the shipped `define` replaces.
         let shipped = crate::CyberGecko::new();
         let schema = gecko_extension_api::GeckoExtension::schema(&shipped);
-        for m in &CYBER_MIGRATIONS {
-            assert!(
-                !schema.contains(m.applies_when),
-                "{}: the shipped schema still contains the replaced text",
-                m.id
-            );
-        }
+        gecko_extension_api::migration::check_migrations(&CYBER_MIGRATIONS, schema).unwrap_or_else(
+            |e| panic!("a cyber migration is out of step with the shipped schema: {e}"),
+        );
     }
 }

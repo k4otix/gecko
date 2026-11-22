@@ -56,34 +56,11 @@ mod tests {
 
     #[test]
     fn core_migrations_lead_to_the_shipped_schema() {
-        // Each migration's replaced text is gone from the shipped schema. A
-        // `redefine` installs the annotation the shipped schema defines, so applying
-        // the shipped `define` after it is a no-op for that type; a cleanup is a
-        // single `match … delete` of the rows the shipped schema refuses.
-        for m in CORE_MIGRATIONS {
-            assert!(
-                !CORE_SCHEMA.contains(m.applies_when),
-                "{}: shipped schema still contains the replaced text",
-                m.id
-            );
-            if m.tql.starts_with("match ") {
-                assert!(
-                    m.tql.ends_with(" delete $r;") && m.tql.matches("delete").count() == 1,
-                    "{}: a cleanup is one `match … delete $r;` statement",
-                    m.id
-                );
-                continue;
-            }
-            let installed = m
-                .tql
-                .strip_prefix("redefine ")
-                .and_then(|t| t.strip_suffix(';'))
-                .expect("migration is a `match … delete $r;` cleanup or a `redefine …;`");
-            assert!(
-                CORE_SCHEMA.contains(installed),
-                "{}: shipped schema does not define {installed}",
-                m.id
-            );
-        }
+        // Each cleanup deletes only rows missing a role the shipped schema requires,
+        // and each `redefine` installs text the shipped schema defines.
+        gecko_extension_api::migration::check_migrations(CORE_MIGRATIONS, CORE_SCHEMA)
+            .unwrap_or_else(|e| {
+                panic!("a core migration is out of step with the shipped schema: {e}")
+            });
     }
 }

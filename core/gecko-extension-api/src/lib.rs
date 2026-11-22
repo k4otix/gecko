@@ -33,6 +33,7 @@ pub mod epistemic;
 pub mod error;
 pub mod graph;
 pub mod ids;
+pub mod migration;
 pub mod okf;
 pub mod provenance;
 pub mod semantic;
@@ -83,8 +84,9 @@ pub struct SchemaMigration {
     pub id: &'static str,
     /// Text present in the database's exported schema only before this migration.
     pub applies_when: &'static str,
-    /// The TypeQL (`redefine`/`undefine`, or a `match … delete` of rows the new schema
-    /// refuses) that brings the schema forward.
+    /// The TypeQL (`redefine`/`undefine`, or a `match … delete` or `match … update` of
+    /// rows the new schema refuses) that brings the schema forward; the forms are
+    /// listed in [`migration`].
     pub tql: &'static str,
 }
 
