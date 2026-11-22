@@ -153,6 +153,9 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
 /// [`TypedRelation::rel_type`].
 const STRATEGY_ANALYTIC_REL: &str = "strategy-analytic";
 
+/// The relation a strategy's `detects` SRO becomes, which a re-import replaces.
+const STRATEGY_DETECTS_REL: &str = "strategy-detects";
+
 /// A requirement's grouping key: (analytic id, component id, trimmed name).
 type RequirementKey = (String, String, String);
 
@@ -561,7 +564,7 @@ const REL_SHAPES: &[(&str, RelShape)] = &[
     (
         "detects",
         RelShape {
-            relation: "strategy-detects",
+            relation: STRATEGY_DETECTS_REL,
             source_role: "strategy",
             target_role: "technique",
             source_players: &["detection-strategy"],
@@ -626,12 +629,12 @@ fn shape_of(rel_type: &str) -> Option<RelShape> {
 
 /// Builds the writes that link the relations collected by [`to_okf`].
 ///
-/// - **SROs** become one idempotent relation each, inserted under a `not { … }`
-///   guard. Relations with an unknown `rel_type` are skipped.
-/// - **Strategy analytics and analytic requirements** are replaced: their writes
-///   delete every such relation on a strategy or analytic in the bundle,
-///   then every such relation left without its analytic (or strategy) player by a
-///   deleted concept, and then insert the current set.
+/// - **SROs** other than `detects` become one idempotent relation each, inserted
+///   under a `not { … }` guard. Relations with an unknown `rel_type` are skipped.
+/// - **Strategy detects, strategy analytics and analytic requirements** are
+///   replaced: their writes delete every such relation on a strategy or analytic
+///   in the bundle, then every such relation left without a player by a deleted
+///   concept, and then insert the current set.
 ///
 /// The concept IDs are untrusted STIX references and travel as parameterized rows,
 /// as do the log-source names, keys and channels; only fixed schema labels — the
@@ -646,7 +649,8 @@ pub fn cyber_post_sync(rels: &StixRelations) -> Vec<GraphWrite> {
     type Shape<'a> = (RelShape, &'a str, &'a str);
     let mut by_shape: HashMap<Shape, Vec<(&str, &str)>> = HashMap::new();
     for rel in typed_rels {
-        let Some(roles) = rel_roles(&rel.rel_type) else {
+        let Some(roles) = rel_roles(&rel.rel_type).filter(|r| r.relation != STRATEGY_DETECTS_REL)
+        else {
             continue;
         };
         by_shape
@@ -702,13 +706,20 @@ fn id_rows<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<Vec<GraphValue>> {
         .collect()
 }
 
-/// The replace-then-insert writes for `strategy-analytic` and
+/// The replace-then-insert writes for `strategy-detects`, `strategy-analytic` and
 /// `analytic-requirement`, in the order they must run.
 fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
     let links: Vec<&TypedRelation> = rels
         .typed
         .iter()
         .filter(|r| r.rel_type == STRATEGY_ANALYTIC_REL)
+        .collect();
+    // Two `detects` SROs may name the same pair; the relation is written once.
+    let detects: BTreeSet<(&str, &str)> = rels
+        .typed
+        .iter()
+        .filter(|r| rel_roles(&r.rel_type).is_some_and(|s| s.relation == STRATEGY_DETECTS_REL))
+        .map(|r| (r.source.as_str(), r.target.as_str()))
         .collect();
 
     // Every strategy and analytic in the bundle, so that one which lost all its
@@ -739,6 +750,7 @@ fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
         GraphWrite {
             query: "given $id: string; \
                     match $x isa cyber-object, has concept-id $xid; $xid == $id; \
+                          { $r isa strategy-detects, links (strategy: $x); } or \
                           { $r isa strategy-analytic, links (strategy: $x); } or \
                           { $r isa strategy-analytic, links (analytic: $x); } or \
                           { $r isa analytic-requirement, links (analytic: $x); }; \
@@ -751,9 +763,29 @@ fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
         GraphWrite::plain(
             "match { $r isa analytic-requirement; not { $r links (analytic: $a1); }; } or \
                    { $r isa strategy-analytic; not { $r links (analytic: $a2); }; } or \
-                   { $r isa strategy-analytic; not { $r links (strategy: $s3); }; }; \
+                   { $r isa strategy-analytic; not { $r links (strategy: $s3); }; } or \
+                   { $r isa strategy-detects; not { $r links (strategy: $s4); }; } or \
+                   { $r isa strategy-detects; not { $r links (technique: $t5); }; }; \
              delete $r;",
         ),
+        GraphWrite {
+            query: "given $s: string, $t: string; \
+                    match $st isa detection-strategy, has concept-id $sid; $sid == $s; \
+                          $te isa attack-pattern, has concept-id $tid; $tid == $t; \
+                    insert $r isa strategy-detects, links (strategy: $st, technique: $te);"
+                .to_string(),
+            vars: vec!["s".to_string(), "t".to_string()],
+            rows: detects
+                .iter()
+                .map(|(s, t)| {
+                    vec![
+                        GraphValue::String(s.to_string()),
+                        GraphValue::String(t.to_string()),
+                    ]
+                })
+                .collect(),
+            expect_rows: Some(1),
+        },
         GraphWrite {
             query: "given $s: string, $a: string; \
                     match $st isa detection-strategy, has concept-id $sid; $sid == $s; \
@@ -1161,18 +1193,20 @@ mod tests {
         let requirement_insert = position("has log-source-key == $key, has log-source-channel");
         let channel_insert = position("insert $r has log-source-channel");
         let strategy_insert = position("insert $r isa strategy-analytic");
+        let detects_insert = position("insert $r isa strategy-detects");
         assert!(scoped_delete < orphan_delete);
-        assert!(orphan_delete < requirement_insert.min(strategy_insert));
+        assert!(orphan_delete < requirement_insert.min(strategy_insert).min(detects_insert));
         assert!(requirement_insert < channel_insert);
         assert_eq!(writes[requirement_insert].rows.len(), 1);
         assert_eq!(writes[requirement_insert].rows[0].len(), 5);
         assert_eq!(writes[channel_insert].rows.len(), 1);
         assert_eq!(writes[strategy_insert].rows.len(), 2);
+        assert_eq!(writes[detects_insert].rows.len(), 1);
         assert!(
-            writes
+            !writes
                 .iter()
-                .any(|w| w.query.contains("isa strategy-detects") && w.query.contains("not {")),
-            "strategy-detects is insert-only under a not guard"
+                .any(|w| w.query.contains("insert $nr isa strategy-detects")),
+            "strategy-detects is replaced, not inserted under a not guard"
         );
     }
 }

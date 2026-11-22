@@ -944,6 +944,36 @@ async fn a_reimport_without_an_analytic_leaves_no_requirement() {
 }
 
 #[tokio::test]
+async fn a_reimport_without_a_detects_relationship_leaves_no_strategy_detects() {
+    let test_db = TestDb::new("gecko_test_stix_detects_removed");
+    attack::sync_fixture(&test_db).await;
+    let mut db = test_db.router();
+
+    let changed = edited_fixture(|objects| {
+        let before = objects.len();
+        objects.retain(|o| o["relationship_type"] != "detects");
+        assert_eq!(objects.len(), before - 1);
+    });
+    sync_stix(&mut db, &changed).await;
+
+    let tx = db.begin_read().await.expect("begin read");
+    assert_eq!(
+        count(
+            &tx,
+            &format!(
+                r#"match $s isa detection-strategy, has attack-id "{}";
+                   $r isa strategy-detects, links (strategy: $s);"#,
+                attack::STRATEGY_ATTACK_ID
+            )
+        )
+        .await,
+        0,
+        "a strategy-detects outlived its detects relationship"
+    );
+    assert_eq!(count(&tx, "match $r isa strategy-analytic;").await, 4);
+}
+
+#[tokio::test]
 async fn stix_resync_is_stable() {
     let test_db = TestDb::new("gecko_test_stix_detection_resync");
     attack::sync_fixture(&test_db).await;
