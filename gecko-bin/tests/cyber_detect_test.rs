@@ -1,7 +1,8 @@
 // End-to-end proof of the cyber-gecko detect host bridge: claim writes a real
 // detection belief + technique-detection edge through the belief-edge seam,
-// coverage_gaps/blinded run the persisted TypeDB functions, and
-// disposition/precision compute over real dispositions. Exercises the sync->async
+// coverage_gaps and blinded run the persisted TypeDB functions, and
+// disposition/precision compute over real dispositions. The blinded cases each
+// sync a sensor file over the ATT&CK fixture and assert the whole report. Exercises the sync->async
 // bridge over a read-only graph handle and an edge writer bound to cyber-gecko.
 //
 // Gated on `cyber`; needs the multi-thread runtime the bridge's block_in_place
@@ -13,7 +14,7 @@ use std::sync::Arc;
 
 use cyber_gecko::CyberGecko;
 use cyber_gecko::detect::cyber_extension_callback;
-use cyber_gecko::stix::{cyber_post_sync, to_okf};
+use cyber_gecko::sensors;
 use gecko_engine::db::CORE_SCHEMA;
 use gecko_engine::db::graph_store::RouterGraphStore;
 use gecko_engine::extension::GeckoExtension;
@@ -29,42 +30,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
 
+#[path = "common/attack.rs"]
+mod attack;
 mod common;
 use common::TestDb;
-
-// A minimal ATT&CK bundle: one technique with an attack-id, plus a data
-// source/component wired by `detects` (so the technique has required evidence but
-// no covering sensor -> it will show up as blinded).
-const BUNDLE: &str = r#"{
-  "type": "bundle",
-  "objects": [
-    {
-      "type": "attack-pattern",
-      "id": "attack-pattern--00000000-0000-0000-0000-0000000000a1",
-      "name": "Command and Scripting Interpreter",
-      "external_references": [{ "source_name": "mitre-attack", "external_id": "T1059" }]
-    },
-    {
-      "type": "x-mitre-data-source",
-      "id": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5",
-      "name": "Command",
-      "external_references": [{ "source_name": "mitre-attack", "external_id": "DS0017" }]
-    },
-    {
-      "type": "x-mitre-data-component",
-      "id": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
-      "name": "Command Execution",
-      "x_mitre_data_source_ref": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5"
-    },
-    {
-      "type": "relationship",
-      "id": "relationship--00000000-0000-0000-0000-000000000103",
-      "relationship_type": "detects",
-      "source_ref": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
-      "target_ref": "attack-pattern--00000000-0000-0000-0000-0000000000a1"
-    }
-  ]
-}"#;
 
 const LOGIC_ID: &str = "playbooks/detect-t1059";
 
@@ -86,20 +55,11 @@ async fn apply_schemas(test_db: &TestDb) {
     }
 }
 
-/// Applies the schemas, syncs the ATT&CK backbone, then syncs a playbook bundle
-/// holding the detection-logic concept the claims reference.
+/// Syncs the ATT&CK fixture, then a playbook bundle holding the detection-logic
+/// concept the claims reference.
 async fn seed_detection_graph(test_db: &TestDb) {
-    apply_schemas(test_db).await;
+    attack::sync_fixture(test_db).await;
     let mut db = test_db.router();
-    let (manifest, typed_rels) = to_okf(BUNDLE).expect("to_okf");
-    sync_bundle(
-        &mut db,
-        &manifest,
-        &cyber_post_sync(&typed_rels),
-        mem_gecko::BELIEF_TIER_ROOT,
-    )
-    .await
-    .expect("sync_bundle");
 
     let dir = TempDir::new().expect("tempdir");
     fs::create_dir_all(dir.path().join("playbooks")).expect("playbooks dir");
@@ -168,7 +128,7 @@ async fn detect_bridge_claims_disposes_and_reports() {
     let claimed = call(
         &cb,
         "claim",
-        json!({ "logic_id": LOGIC_ID, "technique_id": "T1059", "method": "external-tool", "confidence": 0.9 }),
+        json!({ "logic_id": LOGIC_ID, "technique_id": attack::TECHNIQUE_ATTACK_ID, "method": "external-tool", "confidence": 0.9 }),
     )
     .expect("claim");
     assert!(
@@ -184,20 +144,6 @@ async fn detect_bridge_claims_disposes_and_reports() {
         gaps["undetected_techniques"].as_array().unwrap().len(),
         0,
         "claim should remove T1059 from the gap list"
-    );
-
-    // The claim's required evidence (the data component) has no covering sensor,
-    // so the detecting logic is blinded.
-    let blind = call(&cb, "blinded", json!({})).expect("blinded");
-    let blinded_ids: Vec<&str> = blind["blinded_detections"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|d| d["concept_id"].as_str())
-        .collect();
-    assert!(
-        blinded_ids.contains(&LOGIC_ID),
-        "logic should be blinded (no sensor covers its evidence): {blinded_ids:?}"
     );
 
     // Dispose two alerts (1 TP, 1 FP) -> precision 0.5.
@@ -314,4 +260,727 @@ async fn edge_to_an_unknown_technique_commits_no_belief() {
         after_control,
         "a failed edge must commit no belief"
     );
+}
+
+// ── blinded ─────────────────────────────────────────────────────────────────
+
+/// The technique's concept id, which `blinded` reports even once its attack-id is gone.
+const TECHNIQUE_CONCEPT_ID: &str = "stix/attack-pattern/a0000000-0000-4000-8000-000000000001";
+
+/// The Windows analytic's requirements, grouped by log source, with no sensor.
+fn windows_missing() -> Value {
+    json!([
+        { "log_source": "NSM:Flow", "data_components": [attack::NETWORK_CONNECTION_CREATION] },
+        { "log_source": "WinEventLog:Security",
+          "data_components": [attack::COMMAND_EXECUTION, attack::PROCESS_CREATION] },
+        { "log_source": "WinEventLog:Sysmon", "data_components": [attack::PROCESS_CREATION] },
+    ])
+}
+
+/// The Linux analytic's requirements, grouped by log source, with no sensor.
+fn linux_missing() -> Value {
+    json!([
+        { "log_source": "auditd:SYSCALL", "data_components": [attack::PROCESS_CREATION] },
+        { "log_source": "linux:syslog", "data_components": [attack::COMMAND_EXECUTION] },
+        { "log_source": "nsm:flow", "data_components": [attack::NETWORK_CONNECTION_CREATION] },
+    ])
+}
+
+fn blind(platform: &str, analytic: &str, missing: Value) -> Value {
+    json!({ "platform": platform, "analytic": analytic, "no_log_sources": false, "missing": missing })
+}
+
+fn macos_blind() -> Value {
+    json!({ "platform": "macOS", "analytic": attack::MACOS_ANALYTIC, "no_log_sources": true, "missing": [] })
+}
+
+/// One `blinded_detections` entry for the claim of `logic` on T1059.
+fn entry(logic: &str, blind_platforms: Value, unassessed: &[&str]) -> Value {
+    json!({
+        "concept_id": logic,
+        "technique": attack::TECHNIQUE_ATTACK_ID,
+        "technique_concept_id": TECHNIQUE_CONCEPT_ID,
+        "blind_platforms": blind_platforms,
+        "unassessed_platforms": unassessed,
+    })
+}
+
+/// The whole `blinded` report for `entries` and no stale components.
+fn report(entries: Vec<Value>) -> Value {
+    json!({ "blinded_detections": entries, "stale_sensor_components": [] })
+}
+
+/// Syncs a playbook bundle holding one detection-logic concept per id in `logic_ids`.
+async fn sync_playbooks(test_db: &TestDb, logic_ids: &[&str]) {
+    let dir = TempDir::new().expect("tempdir");
+    fs::create_dir_all(dir.path().join("playbooks")).expect("playbooks dir");
+    fs::write(
+        dir.path().join("bundle.json"),
+        json!({ "name": "detect-playbooks" }).to_string(),
+    )
+    .expect("write bundle.json");
+    for id in logic_ids {
+        fs::write(
+            dir.path().join(format!("{id}.md")),
+            format!("---\ntype: playbook\ntitle: {id}\n---\n\n# {id}\n"),
+        )
+        .expect("write playbook");
+    }
+    let playbooks = parse_bundle(dir.path()).expect("parse playbook bundle");
+    let mut db = test_db.router();
+    sync_bundle(&mut db, &playbooks, &[], mem_gecko::BELIEF_TIER_ROOT)
+        .await
+        .expect("sync playbook bundle");
+}
+
+/// The ATT&CK fixture as JSON, with `edit` applied to its object list.
+fn attack_bundle(edit: impl FnOnce(&mut Vec<Value>)) -> String {
+    let mut bundle: Value = serde_json::from_str(&attack::fixture_json()).expect("fixture json");
+    edit(bundle["objects"].as_array_mut().expect("objects"));
+    bundle.to_string()
+}
+
+/// The fixture object `stix_id`.
+fn object_mut<'a>(objects: &'a mut [Value], stix_id: &str) -> &'a mut Value {
+    objects
+        .iter_mut()
+        .find(|o| o["id"] == stix_id)
+        .unwrap_or_else(|| panic!("no fixture object {stix_id}"))
+}
+
+/// Re-syncs the ATT&CK bundle `json` with its post-sync writes.
+async fn resync_attack(test_db: &TestDb, json: &str) {
+    let (manifest, rels) = cyber_gecko::stix::to_okf(json).expect("bundle converts");
+    let mut db = test_db.router();
+    sync_bundle(
+        &mut db,
+        &manifest,
+        &cyber_gecko::stix::cyber_post_sync(&rels),
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("re-sync the ATT&CK bundle");
+}
+
+/// Syncs the sensor file `yaml` under the bundle `bundle_name`.
+async fn sync_sensor_file(test_db: &TestDb, yaml: &str, bundle_name: &str) {
+    let file = sensors::parse(yaml).expect("the sensor file parses");
+    let mut db = test_db.router();
+    sync_bundle(
+        &mut db,
+        &sensors::to_okf(&file, bundle_name),
+        &[],
+        mem_gecko::BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync the sensor file");
+}
+
+/// The `blinded` test rig: the ATT&CK fixture (technique, strategy, analytics for
+/// Windows, Linux and the zero-requirement macOS, components), the detection
+/// logic `logic_ids`, each claiming T1059, and the bridge.
+struct Rig {
+    test_db: TestDb,
+    cb: ExtensionCallback,
+}
+
+impl Rig {
+    async fn new(name: &str, logic_ids: &[&str]) -> Self {
+        let test_db = TestDb::new(name);
+        attack::sync_fixture(&test_db).await;
+        sync_playbooks(&test_db, logic_ids).await;
+        let (graph, edges) = detect_handles(&test_db);
+        let cb = cyber_extension_callback(graph, edges, run_ctx(logic_ids[0]), base());
+        for logic in logic_ids {
+            call(
+                &cb,
+                "claim",
+                json!({ "logic_id": logic, "technique_id": attack::TECHNIQUE_ATTACK_ID,
+                        "method": "external-tool", "confidence": 0.9 }),
+            )
+            .unwrap_or_else(|e| panic!("claim {logic}: {e}"));
+        }
+        Rig { test_db, cb }
+    }
+
+    /// A rig with the single claim of [`LOGIC_ID`] and the sensor file `yaml`.
+    async fn with_sensors(name: &str, yaml: &str) -> Self {
+        let rig = Rig::new(name, &[LOGIC_ID]).await;
+        rig.sensors(yaml).await;
+        rig
+    }
+
+    async fn sensors(&self, yaml: &str) {
+        sync_sensor_file(&self.test_db, yaml, sensors::DEFAULT_BUNDLE_NAME).await;
+    }
+
+    fn blinded(&self) -> Value {
+        call(&self.cb, "blinded", json!({})).expect("blinded")
+    }
+}
+
+const WINDOWS_FULL: &str = r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security, NSM:Flow]
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blind_with_no_sensor_lists_every_requirement_by_log_source() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_no_sensor",
+        "platforms: [Windows]\nsensors: []\n",
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Windows",
+                attack::WINDOWS_ANALYTIC,
+                windows_missing()
+            )]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn covered_by_log_source_including_a_whitespace_or_case_variant() {
+    // ATT&CK spells `NSM:Flow ` with a trailing space and `wineventlog:security`
+    // in lower case; clean, differently-cased sensor entries cover both.
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_by_log_source",
+        r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WINEVENTLOG:Security, nsm:FLOW]
+"#,
+    )
+    .await;
+    assert_eq!(rig.blinded(), report(vec![]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn covered_by_component_fallback() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_by_component",
+        r#"
+platforms: [Linux]
+sensors:
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL]
+    components: [command execution, Network Connection Creation]
+"#,
+    )
+    .await;
+    assert_eq!(rig.blinded(), report(vec![]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_coverage_is_blind_listing_only_gaps() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_partial",
+        r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, NSM:Flow]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Windows",
+                attack::WINDOWS_ANALYTIC,
+                json!([{ "log_source": "WinEventLog:Security",
+                         "data_components": [attack::COMMAND_EXECUTION, attack::PROCESS_CREATION] }]),
+            )]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undeclared_platform_is_never_reported() {
+    // Linux and macOS have analytics that cannot run, but only Windows is declared,
+    // and a sensor on an undeclared platform does not bring it in.
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_undeclared",
+        r#"
+platforms: [Windows]
+sensors:
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL]
+"#,
+    )
+    .await;
+    let out = rig.blinded();
+    let platforms: Vec<&str> = out["blinded_detections"][0]["blind_platforms"]
+        .as_array()
+        .expect("blind platforms")
+        .iter()
+        .map(|p| p["platform"].as_str().expect("platform"))
+        .collect();
+    assert_eq!(platforms, ["Windows"]);
+    assert_eq!(
+        out["blinded_detections"][0]["unassessed_platforms"],
+        json!([])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_platform_without_analytic_is_unassessed() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_unassessed",
+        r#"
+platforms: [Windows, Containers]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security, NSM:Flow]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(LOGIC_ID, json!([]), &["Containers"])])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_requirement_analytic_reports_no_log_sources() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_zero_requirement",
+        r#"
+platforms: [macOS]
+sensors:
+  - name: mac-edr
+    platforms: [macOS]
+    log_sources: [macos:unifiedlog]
+    components: [Process Creation]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(LOGIC_ID, json!([macos_blind()]), &[])])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensor_on_wrong_platform_does_not_cover() {
+    // The Linux sensor collects every Windows log source too, but only Linux's.
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_wrong_platform",
+        r#"
+platforms: [Windows, Linux]
+sensors:
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL, linux:syslog, nsm:flow, WinEventLog:Sysmon, WinEventLog:Security]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Windows",
+                attack::WINDOWS_ANALYTIC,
+                windows_missing()
+            )]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_platform_analytic_is_covered_only_by_a_sensor_on_the_assessed_platform() {
+    // The Windows analytic also runs on Linux; a Windows sensor collecting every
+    // log source it reads covers it on Windows, not on Linux.
+    let rig = Rig::new("gecko_test_blinded_multi_platform", &[LOGIC_ID]).await;
+    let json = attack_bundle(|objects| {
+        object_mut(objects, attack::WINDOWS_ANALYTIC_STIX_ID)["x_mitre_platforms"] =
+            json!(["Windows", "Linux"]);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    rig.sensors(
+        r#"
+platforms: [Linux]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security, NSM:Flow]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([
+                blind("Linux", attack::WINDOWS_ANALYTIC, windows_missing()),
+                blind("Linux", attack::LINUX_ANALYTIC, linux_missing()),
+            ]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_sensor_stops_covering() {
+    let rig = Rig::with_sensors("gecko_test_blinded_removed_sensor", WINDOWS_FULL).await;
+    assert_eq!(rig.blinded(), report(vec![]));
+
+    rig.sensors("platforms: [Windows]\nsensors: []\n").await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Windows",
+                attack::WINDOWS_ANALYTIC,
+                windows_missing()
+            )]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_component_stops_covering() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_removed_component",
+        r#"
+platforms: [Linux]
+sensors:
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL, nsm:flow]
+    components: [Command Execution]
+"#,
+    )
+    .await;
+    assert_eq!(rig.blinded(), report(vec![]));
+
+    rig.sensors(
+        r#"
+platforms: [Linux]
+sensors:
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL, nsm:flow]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Linux",
+                attack::LINUX_ANALYTIC,
+                json!([{ "log_source": "linux:syslog", "data_components": [attack::COMMAND_EXECUTION] }]),
+            )]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deprecated_analytic_is_ignored() {
+    // The deprecated Windows analytic reads only WinEventLog:Security, which this
+    // sensor covers; were it counted, Windows would be covered.
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_deprecated_analytic",
+        r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Security]
+"#,
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Windows",
+                attack::WINDOWS_ANALYTIC,
+                json!([
+                    { "log_source": "NSM:Flow", "data_components": [attack::NETWORK_CONNECTION_CREATION] },
+                    { "log_source": "WinEventLog:Sysmon", "data_components": [attack::PROCESS_CREATION] },
+                ]),
+            )]),
+            &[],
+        )])
+    );
+}
+
+/// The report for a claim of [`LOGIC_ID`] whose technique is dead, with
+/// `technique` as the output carries it.
+fn dead_technique_report(technique: Value) -> Value {
+    json!({
+        "blinded_detections": [{
+            "concept_id": LOGIC_ID,
+            "technique": technique,
+            "technique_concept_id": TECHNIQUE_CONCEPT_ID,
+            "blind_platforms": [],
+            "unassessed_platforms": ["Linux", "Windows"],
+        }],
+        "stale_sensor_components": [],
+    })
+}
+
+const WINDOWS_LINUX_FULL: &str = r#"
+platforms: [Windows, Linux]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security, NSM:Flow]
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL, linux:syslog, nsm:flow]
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_on_retired_technique_is_unassessed() {
+    let rig = Rig::with_sensors("gecko_test_blinded_retired_technique", WINDOWS_LINUX_FULL).await;
+    assert_eq!(rig.blinded(), report(vec![]));
+
+    // The technique leaves ATT&CK, which keeps another technique's strategy; the
+    // claim's belief edge retires it, and its attack-id goes with its other
+    // attributes.
+    let json = attack_bundle(|objects| {
+        objects.retain(|o| o["id"] != attack::TECHNIQUE_STIX_ID && o["type"] != "relationship");
+        let other = "attack-pattern--a0000000-0000-4000-8000-000000000002";
+        let strategy = "x-mitre-detection-strategy--d0000000-0000-4000-8000-000000000002";
+        objects.extend([
+            json!({ "type": "attack-pattern", "id": other, "name": "Valid Accounts",
+                    "external_references": [{ "source_name": "mitre-attack", "external_id": "T1078" }] }),
+            json!({ "type": "x-mitre-detection-strategy", "id": strategy, "name": "Detect Valid Accounts",
+                    "external_references": [{ "source_name": "mitre-attack", "external_id": "DET0002" }] }),
+            json!({ "type": "relationship", "id": "relationship--e0000000-0000-4000-8000-000000000003",
+                    "relationship_type": "detects", "source_ref": strategy, "target_ref": other }),
+        ]);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    assert_eq!(rig.blinded(), dead_technique_report(Value::Null));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_on_deprecated_technique_is_unassessed() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_deprecated_technique",
+        WINDOWS_LINUX_FULL,
+    )
+    .await;
+    let json = attack_bundle(|objects| {
+        object_mut(objects, attack::TECHNIQUE_STIX_ID)["x_mitre_deprecated"] = json!(true);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    // A deprecated object does not claim its unique attack-id.
+    assert_eq!(rig.blinded(), dead_technique_report(Value::Null));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claim_on_technique_with_only_deprecated_strategy_is_unassessed() {
+    let rig = Rig::with_sensors("gecko_test_blinded_deprecated_strategy", WINDOWS_LINUX_FULL).await;
+    let json = attack_bundle(|objects| {
+        object_mut(objects, attack::STRATEGY_STIX_ID)["x_mitre_deprecated"] = json!(true);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    assert_eq!(
+        rig.blinded(),
+        dead_technique_report(json!(attack::TECHNIQUE_ATTACK_ID))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_order_is_deterministic() {
+    let (a, b) = ("playbooks/detect-a", "playbooks/detect-b");
+    // Claimed b first, so the report's order is its own, not the claims'.
+    let rig = Rig::new("gecko_test_blinded_order", &[b, a]).await;
+    rig.sensors("platforms: [Windows, Linux]\nsensors: []\n")
+        .await;
+    let platforms = json!([
+        blind("Linux", attack::LINUX_ANALYTIC, linux_missing()),
+        blind("Windows", attack::WINDOWS_ANALYTIC, windows_missing()),
+    ]);
+    let expected = report(vec![
+        entry(a, platforms.clone(), &[]),
+        entry(b, platforms, &[]),
+    ]);
+    assert_eq!(rig.blinded(), expected);
+    assert_eq!(rig.blinded(), expected, "a second call reports the same");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_groups_log_source_spellings_by_key() {
+    // ATT&CK names `WinEventLog:Security` for Process Creation and
+    // `wineventlog:security` for Command Execution: one entry, the smaller spelling.
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_grouping",
+        r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, NSM:Flow]
+"#,
+    )
+    .await;
+    let out = rig.blinded();
+    assert_eq!(
+        out["blinded_detections"][0]["blind_platforms"][0]["missing"],
+        json!([{ "log_source": "WinEventLog:Security",
+                 "data_components": [attack::COMMAND_EXECUTION, attack::PROCESS_CREATION] }])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_fallback_component_is_reported() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_stale",
+        r#"
+platforms: [Linux]
+sensors:
+  - name: linux-audit
+    platforms: [Linux]
+    log_sources: [auditd:SYSCALL, nsm:flow]
+    components: [Command Execution]
+"#,
+    )
+    .await;
+    assert_eq!(rig.blinded(), report(vec![]));
+
+    // Command Execution leaves ATT&CK, along with the requirements naming it.
+    let json = attack_bundle(|objects| {
+        objects.retain(|o| o["name"] != attack::COMMAND_EXECUTION);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    assert_eq!(
+        rig.blinded(),
+        json!({
+            "blinded_detections": [],
+            "stale_sensor_components": [{ "sensor": "linux-audit", "component": attack::COMMAND_EXECUTION }],
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_sensor_files_union_platforms_and_coverage() {
+    let rig = Rig::new("gecko_test_blinded_two_files", &[LOGIC_ID]).await;
+    sync_sensor_file(
+        &rig.test_db,
+        r#"
+platforms: [Windows]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security]
+"#,
+        "sensors-a",
+    )
+    .await;
+    sync_sensor_file(
+        &rig.test_db,
+        r#"
+platforms: [Linux]
+sensors:
+  - name: network
+    platforms: [Windows, Linux]
+    log_sources: [NSM:Flow, auditd:SYSCALL]
+"#,
+        "sensors-b",
+    )
+    .await;
+    // Windows is covered by the two files together; Linux, declared by the
+    // second, still lacks linux:syslog.
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([blind(
+                "Linux",
+                attack::LINUX_ANALYTIC,
+                json!([{ "log_source": "linux:syslog", "data_components": [attack::COMMAND_EXECUTION] }]),
+            )]),
+            &[],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_sensor_list_is_blind_everywhere_assessed() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_empty_list",
+        "platforms: [Windows, Linux, macOS, Containers]\nsensors: []\n",
+    )
+    .await;
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([
+                blind("Linux", attack::LINUX_ANALYTIC, linux_missing()),
+                blind("Windows", attack::WINDOWS_ANALYTIC, windows_missing()),
+                macos_blind(),
+            ]),
+            &["Containers"],
+        )])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blinded_errors_without_a_sensor_file() {
+    let rig = Rig::new("gecko_test_blinded_no_file", &[LOGIC_ID]).await;
+    let err = call(&rig.cb, "blinded", json!({})).expect_err("no sensor file is an error");
+    assert!(err.contains("no sensor file synced"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blinded_errors_on_a_pre_current_graph() {
+    // A pre-v18 bundle: a data component detects the technique directly.
+    let test_db = TestDb::new("gecko_test_blinded_pre_current");
+    apply_schemas(&test_db).await;
+    let json = json!({
+        "type": "bundle",
+        "id": "bundle--f0000000-0000-4000-8000-000000000002",
+        "objects": [
+            { "type": "attack-pattern", "id": attack::TECHNIQUE_STIX_ID, "name": "T",
+              "external_references": [{ "source_name": "mitre-attack", "external_id": "T1059" }] },
+            { "type": "x-mitre-data-component",
+              "id": "x-mitre-data-component--c0000000-0000-4000-8000-000000000001",
+              "name": attack::PROCESS_CREATION },
+            { "type": "relationship", "id": "relationship--e0000000-0000-4000-8000-000000000002",
+              "relationship_type": "detects",
+              "source_ref": "x-mitre-data-component--c0000000-0000-4000-8000-000000000001",
+              "target_ref": attack::TECHNIQUE_STIX_ID },
+        ],
+    })
+    .to_string();
+    resync_attack(&test_db, &json).await;
+    sync_sensor_file(&test_db, WINDOWS_FULL, sensors::DEFAULT_BUNDLE_NAME).await;
+
+    let (graph, edges) = detect_handles(&test_db);
+    let cb = cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base());
+    let err = call(&cb, "blinded", json!({})).expect_err("a pre-current graph is an error");
+    assert!(err.contains("no current ATT&CK detection data"), "{err}");
+    assert!(err.contains("re-sync the ATT&CK bundle"), "{err}");
 }

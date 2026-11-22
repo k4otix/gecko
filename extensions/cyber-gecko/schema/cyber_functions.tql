@@ -10,11 +10,102 @@ fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: A
               $b has belief-state "asserted"; };
     return { $t };
 
-# detections whose required evidence has NO covering sensor — blinded logic
-fun blinded-detections() -> { concept } @doc("Detecting logic that is blinded: its technique's required evidence has no covering sensor, so the asserted detection cannot actually fire."):
+# Liveness: every function below skips a strategy, analytic, data component or
+# sensor that has `retired-at`, `revoked true` or `deprecated true`. A claim's
+# technique is the exception: a claim on a dead technique is reported, as
+# unassessed on every declared platform.
+
+fun requirement-covered($r: analytic-requirement, $p: string) -> boolean @doc("Whether a live sensor on platform $p collects the requirement's log source, or covers its data component as a fallback."):
+    match
+        $r links (component: $c);
+        $s isa sensor, has platform $sp;
+        $sp == $p;
+        not { $s has revoked true; };
+        not { $s has deprecated true; };
+        not { $s has retired-at $sra; };
+        { $r has log-source-key $k; $s has log-source-key $k; }
+        or { $c has component-key $ck; $s has covered-component-key $sk; $sk == $ck; };
+    return check;
+
+fun analytic-gaps($a: analytic, $p: string) -> { analytic-requirement } @doc("The analytic's requirements on a live data component that no live sensor on platform $p covers."):
+    match
+        $r isa analytic-requirement, links (analytic: $a, component: $c);
+        not { $c has revoked true; };
+        not { $c has deprecated true; };
+        not { $c has retired-at $cra; };
+        let $covered = requirement-covered($r, $p);
+        $covered == false;
+    return { $r };
+
+fun claim-platforms() -> { concept, attack-pattern, string, string } @doc("One row per asserted detection claim and declared platform: the detecting logic, its technique, the platform, and whether the technique's live analytic there is blind, covered or absent (unassessed)."):
     match
         (detecting-logic: $d, detected-technique: $t, detection-claim: $b) isa technique-detection;
         $b has belief-state "asserted";
-        (technique: $t, required: $comp) isa requires-evidence;
-        not { (covering-sensor: $s, covered-component: $comp) isa sensor-coverage; };
-    return { $d };
+        $e isa monitored-environment, has platform $p;
+        not { $e has revoked true; };
+        not { $e has deprecated true; };
+        not { $e has retired-at $era; };
+        {
+            not { $t has revoked true; };
+            not { $t has deprecated true; };
+            not { $t has retired-at $tra1; };
+            strategy-detects (strategy: $st1, technique: $t);
+            not { $st1 has revoked true; };
+            not { $st1 has deprecated true; };
+            not { $st1 has retired-at $sra1; };
+            strategy-analytic (strategy: $st1, analytic: $a1);
+            not { $a1 has revoked true; };
+            not { $a1 has deprecated true; };
+            not { $a1 has retired-at $ara1; };
+            $a1 has platform $p;
+            {
+                not {
+                    $r1 isa analytic-requirement, links (analytic: $a1, component: $c1);
+                    not { $c1 has revoked true; };
+                    not { $c1 has deprecated true; };
+                    not { $c1 has retired-at $cra1; };
+                };
+            } or {
+                let $pv1 = $p;
+                let $g1 in analytic-gaps($a1, $pv1);
+            };
+            let $s = "blind";
+        } or {
+            not { $t has revoked true; };
+            not { $t has deprecated true; };
+            not { $t has retired-at $tra2; };
+            strategy-detects (strategy: $st2, technique: $t);
+            not { $st2 has revoked true; };
+            not { $st2 has deprecated true; };
+            not { $st2 has retired-at $sra2; };
+            strategy-analytic (strategy: $st2, analytic: $a2);
+            not { $a2 has revoked true; };
+            not { $a2 has deprecated true; };
+            not { $a2 has retired-at $ara2; };
+            $a2 has platform $p;
+            $r2 isa analytic-requirement, links (analytic: $a2, component: $c2);
+            not { $c2 has revoked true; };
+            not { $c2 has deprecated true; };
+            not { $c2 has retired-at $cra2; };
+            let $pv2 = $p;
+            not { let $g2 in analytic-gaps($a2, $pv2); };
+            let $s = "covered";
+        } or {
+            not {
+                not { $t has revoked true; };
+                not { $t has deprecated true; };
+                not { $t has retired-at $tra3; };
+                strategy-detects (strategy: $st3, technique: $t);
+                not { $st3 has revoked true; };
+                not { $st3 has deprecated true; };
+                not { $st3 has retired-at $sra3; };
+                strategy-analytic (strategy: $st3, analytic: $a3);
+                not { $a3 has revoked true; };
+                not { $a3 has deprecated true; };
+                not { $a3 has retired-at $ara3; };
+                $a3 has platform $p;
+            };
+            let $s = "unassessed";
+        };
+        let $pv = $p;
+    return { $d, $t, $pv, $s };

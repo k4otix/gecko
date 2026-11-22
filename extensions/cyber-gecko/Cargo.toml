@@ -10,5 +10,6 @@ repository.workspace = true
 gecko-extension-api = { path = "../../core/gecko-extension-api" }
 chrono.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 sha2 = "0.11"
 tokio.workspace = true

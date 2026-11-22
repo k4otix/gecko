@@ -764,3 +764,60 @@ gecko.callExtension("cyber-gecko", "claim", { logic_id: "playbooks/detect-t1059"
         }
     }
 }
+
+#[tokio::test]
+async fn a_changed_type_hint_on_a_shared_concept_is_refused() {
+    let db = TestDb::new("gecko_test_mb_retype_shared");
+    apply_schemas(&db).await;
+    db.router()
+        .apply_schema(
+            "define entity retype-probe sub concept @doc(\"A test-only concept subtype.\");",
+        )
+        .await
+        .expect("apply the retype-probe schema");
+    let alpha = TempDir::new().unwrap();
+    write_bundle(alpha.path(), "alpha", &[("a.md", "A", "Note a.")]);
+    let beta = TempDir::new().unwrap();
+    write_bundle(beta.path(), "beta", &[("a.md", "A", "Note a.")]);
+    sync_dir(&db, alpha.path()).await.expect("sync alpha");
+    raw_write(
+        &db,
+        r#"match $c isa concept, has concept-id "a";
+           insert $b isa bundle, has bundle-name "beta";
+                  $ct isa containment, links (container: $b, member: $c);"#,
+    )
+    .await;
+    sync_dir(&db, beta.path()).await.expect("sync beta");
+    let shared = pair_set([("a", "alpha"), ("a", "beta")]);
+    assert_eq!(membership(&db).await, shared);
+
+    let mut retyped = parse_bundle(alpha.path()).expect("parse alpha");
+    retyped.concepts[0].type_hint = Some("retype-probe".into());
+    let result = sync_bundle(&mut db.router(), &retyped, &[], mem_gecko::BELIEF_TIER_ROOT).await;
+    let Err(e @ DbError::TypeChangeShared { .. }) = result else {
+        panic!("expected TypeChangeShared, got {result:?}");
+    };
+    let message = e.to_string();
+    assert!(message.contains("`a`"), "{message}");
+    let DbError::TypeChangeShared { ids } = e else {
+        unreachable!()
+    };
+    assert_eq!(
+        ids,
+        vec![(
+            "a".to_string(),
+            "concept".to_string(),
+            "retype-probe".to_string()
+        )]
+    );
+
+    assert_eq!(
+        count(&db, r#"match $c isa! concept, has concept-id "a";"#).await,
+        1,
+        "`a` keeps its type"
+    );
+    assert_eq!(membership(&db).await, shared);
+    sync_dir(&db, beta.path())
+        .await
+        .expect("beta's next sync still succeeds");
+}

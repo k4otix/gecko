@@ -117,16 +117,36 @@ const STIX_BUNDLE: &str = r#"{
       "revoked": true
     },
     {
+      "type": "x-mitre-detection-strategy",
+      "id": "x-mitre-detection-strategy--00000000-0000-0000-0000-0000000000a6",
+      "name": "Detect Command and Scripting Interpreter",
+      "x_mitre_analytic_refs": ["x-mitre-analytic--00000000-0000-0000-0000-0000000000a7"]
+    },
+    {
       "type": "x-mitre-analytic",
       "id": "x-mitre-analytic--00000000-0000-0000-0000-0000000000a7",
       "name": "Analytic 0001",
-      "x_mitre_platforms": ["Linux"]
+      "x_mitre_platforms": ["Linux"],
+      "x_mitre_log_source_references": [
+        {
+          "x_mitre_data_component_ref": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
+          "name": "auditd:SYSCALL",
+          "channel": "execve"
+        }
+      ]
     },
     {
       "type": "x-mitre-data-component",
       "id": "x-mitre-data-component--00000000-0000-0000-0000-0000000000f6",
       "name": "Command Execution",
       "x_mitre_data_source_ref": "x-mitre-data-source--00000000-0000-0000-0000-0000000000e5"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--00000000-0000-0000-0000-000000000104",
+      "relationship_type": "detects",
+      "source_ref": "x-mitre-detection-strategy--00000000-0000-0000-0000-0000000000a6",
+      "target_ref": "attack-pattern--00000000-0000-0000-0000-0000000000a1"
     },
     {
       "type": "relationship",
@@ -1077,10 +1097,10 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
         .expect("disposition belief id")
         .to_string();
     let f0 = fingerprint(&db).await;
-    let (manifest, typed_rels) = to_okf(STIX_BUNDLE).expect("STIX bundle converts");
+    let (manifest, rels) = to_okf(STIX_BUNDLE).expect("STIX bundle converts");
 
     // Raw belief and belief-edge inserts alongside the real extension writes.
-    let writes = [cyber_post_sync(&typed_rels), hostile_writes(&belief_id)].concat();
+    let writes = [cyber_post_sync(&rels), hostile_writes(&belief_id)].concat();
     let refused = match sync_bundle(&mut db.router(), &manifest, &writes, BELIEF_TIER_ROOT).await {
         Err(DbError::BeliefTierWrite { changes }) => changes,
         other => panic!("raw belief writes: expected BeliefTierWrite, got {other:?}"),

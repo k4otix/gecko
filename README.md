@@ -42,7 +42,7 @@ The project is divided into core abstractions, domain extensions, and the final 
 *   **`core/mem-gecko/`**: The epistemic memory substrate (always-on; not an optional feature). Bitemporal belief/provenance schema, index-seeded recall, and the A5.7 retrieval-provenance write path.
 *   **`core/gecko-semantic-index/`**: The in-process HNSW semantic index and embedder (a deterministic stub by default; a candle-backed `bge-large-en-v1.5` embedder behind the `real-embedder` feature).
 *   **`core/js-sandbox/`**: Source for the WebAssembly JS guest (Boa), compiled to `wasm32-wasip1` and checked in as a prebuilt binary. See [`docs/refactor/guest-wasm.md`](docs/refactor/guest-wasm.md) for rebuilding.
-*   **`extensions/cyber-gecko/`**: A domain extension for cybersecurity operations, defining entities like networks, vulnerabilities, and host configurations, and subtyping the core schema.
+*   **`extensions/cyber-gecko/`**: A domain extension for cybersecurity operations, defining entities like networks, vulnerabilities, and host configurations, and subtyping the core schema. It imports STIX/ATT&CK bundles (`gecko sync-stix`), loads a sensor file (`gecko sync-sensors`), and reports blind detections; see [`extensions/cyber-gecko/README.md`](extensions/cyber-gecko/README.md).
 *   **`gecko-bin/`**: The final Assembler executable (`gecko`). It parses CLI arguments, instantiates the core engine, wires the selected extensions, and dispatches the execution lifecycle.
 
 ## Getting Started

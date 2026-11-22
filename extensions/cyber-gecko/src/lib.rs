@@ -5,10 +5,13 @@
 //! Provides domain-specific TypeDB schema types (indicators, assets, threat actors)
 //! and host-imported functions for security operations (e.g., host isolation).
 pub mod detect;
+pub mod migrations;
+pub mod sensors;
 pub mod stix;
 
 use gecko_extension_api::{
     AttrDecl, AttrValueType, BeliefEdgeDecl, GeckoExtension, HostImportDef, RoleDecl,
+    SchemaMigration,
 };
 
 /// The cyber-gecko TypeQL schema: cyber entities and relations subtyping the
@@ -86,6 +89,10 @@ impl GeckoExtension for CyberGecko {
         &self.schema_string
     }
 
+    fn schema_migrations(&self) -> &[SchemaMigration] {
+        &migrations::CYBER_MIGRATIONS
+    }
+
     fn belief_edges(&self) -> &[BeliefEdgeDecl] {
         &CYBER_BELIEF_EDGES
     }
@@ -106,7 +113,7 @@ impl GeckoExtension for CyberGecko {
             },
             HostImportDef {
                 name: "blinded".to_string(),
-                description: "List blinded detections".to_string(),
+                description: "Report the declared platforms each detection claim is blind on or cannot assess".to_string(),
             },
             HostImportDef {
                 name: "precision".to_string(),

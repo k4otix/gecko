@@ -37,8 +37,13 @@ references in specs and commit messages still resolve.
   at schema time (**A12** ✅); the W5a static lint is green (**A3** ✅). **A10** was partial.
 - **Found while timing a full ATT&CK import:** the cyber schema and STIX adapter were written
   for ATT&CK's earlier data model and could not import the current Enterprise bundle. The
-  import fix landed in PR #58 (**S1** ✅); modelling ATT&CK's current detection data is owed
-  (**S2**); until it lands, cyber's `blinded` check reports nothing on current data.
+  import fix landed in PR #58 (**S1** ✅).
+- **Landed in the detection-model branch (`feat/attack-detection-model`):** cyber models
+  ATT&CK's current detection data (**S2** ✅, **D-L** decided): detection strategies, analytics
+  and their log-source requirements are typed, `gecko sync-sensors` loads the platforms and
+  sensors a user runs, and `blinded` reports per claim the blind and unassessed platforms.
+  The sync engine retypes a concept whose `type_hint` changed. The opt-in full-bundle check
+  (**S4** ✅) is validated against Enterprise ATT&CK 20.1.
 - **Landed in the multi-bundle databases PR (branch `feat/multi-bundle-databases`):** several
   bundles can share a database (**O1** ✅), which unblocks cyber's detection flow end to end.
   OKF v0.2 adoption is owed (**O2–O5**).
@@ -88,12 +93,11 @@ O1 ✅ ─► A4 ✅ + A10 ✅
 O2, O3, O4 ─► independent        O5 ─► needs D-N
 S5 ─► needs a design (after O1)
 
-S1 ✅ ─► A4 ✅ + A10 ✅ ─► S2 (needs D-L) ─► S3 (needs D-M)
-                           S4 alongside S2 (the full-bundle check S2 is accepted against)
+S1 ✅ ─► A4 ✅ + A10 ✅ ─► D-L ✅ ─► S2 ✅ ─► S3 (needs D-M)
+                                    S4 ✅ (the full-bundle check S2 is accepted against)
 ```
 
-Recommended next, now that **O1**, **A4** and **A10** have landed: settle **D-L** so **S2** starts (the adapter rework
-in S2/S3 lands once, on the final OKF imports now in `gecko-extension-api`).
+Recommended next, now that **S2** has landed: settle **D-M** so **S3** starts.
 
 ---
 
@@ -158,19 +162,20 @@ SRO outside the typed subset lands as a `concept-link` — was never run against
 (the tests used a hand-built fixture); running it surfaced S1. Current Enterprise ATT&CK instead links a
 technique to data components through a detection strategy (`detects`) and its analytics
 (`x_mitre_analytic_refs`, then each analytic's `x_mitre_log_source_references[].x_mitre_data_component_ref`),
-and its data components no longer reference a data source. So `requires-evidence` and
-`evidence-of` are empty after a current import, and `blinded` (the `blinded-detections()`
-function, which joins `requires-evidence` to `sensor-coverage`) can never report anything;
-`coverage_gaps` and `precision` read detection claims and dispositions and are unaffected. [typedb-cti](https://github.com/typedb-osi/typedb-cti) was compared as a
+and its data components no longer reference a data source. Against a current import the
+plan's `requires-evidence` and `evidence-of` stayed empty, so its `blinded` (the
+`blinded-detections()` function, joining `requires-evidence` to `sensor-coverage`) could
+never report anything; S2 replaced that model and removed those types. `coverage_gaps` and
+`precision` read detection claims and dispositions and were unaffected. [typedb-cti](https://github.com/typedb-osi/typedb-cti) was compared as a
 reference: it models STIX 2.1 core faithfully but has none of ATT&CK's `x-mitre-*`
 extensions, so it informs S3, not S2.
 
 | ID | Item | Owning section | Type | Blocked on |
 |---|---|---|---|---|
 | **S1** ✅ | **The current Enterprise ATT&CK bundle imports — LANDED in PR #58.** `data-source` owns `platform` and the adapter writes platforms only on subtypes that own it; deprecated and revoked objects (224 reused ids) are ingested without the unique `attack-id`; `tool` plays `uses:user`; each relation shape lists its role-player subtypes and a relation whose ends cannot play its roles is kept as a concept-link (706 strategy→`detects` today). Full bundle: 4,877 concepts and 20,478 typed relations in one transaction, 148 s first sync and 1.2 s re-sync, counts unchanged (debug build, local 3.15.0) | — | adapter + schema | ✅ `stix_sync_persists_typed_attributes_and_backbone`, `stix_sync_links_tool_uses_and_records_unmodeled_shapes_as_links`, `typed_relation_players_match_the_schema` |
-| **S2** | **Model ATT&CK's current detection data.** Detection strategies and analytics get cyber subtypes (analytics own `platform`); `requires-evidence` (data component → technique) is derived from strategy → analytics → log-source data components, as a sync-time `GraphWrite` (A9's neutral path); `evidence-of` is either dropped, kept only for pre-current bundles, or re-sourced, per D-L. `blinded-detections()` and `cyber_detect_test`'s fixtures move to the current shape | — (design owed, D-L) | schema + adapter + cyber functions | D-L; after A10 so the adapter rework lands on the final OKF imports |
-| **S3** | **STIX core coverage.** Relationship types dropped today: `subtechnique-of` (481), `revoked-by` (157); object types ingested as bare `cyber-object`: `x-mitre-tactic`, `x-mitre-matrix`, `x-mitre-collection`, `identity`, `marking-definition`; `kill_chain_phases` and `external_references` flattened to attributes. typedb-cti is the reference for these shapes | — (design owed, D-M) | schema + adapter | D-M; after S2 |
-| **S4** | **Real-bundle regression check.** Record which ATT&CK release the adapter is validated against, and add an opt-in check (Tier-3 style: the bundle is a runtime asset, never in the build tree) that imports the full bundle twice and asserts the re-sync leaves every relation count unchanged. The S1 timing is the baseline | — | test (opt-in) | Lands with S2, which it accepts |
+| **S2** ✅ | **ATT&CK's current detection data is modelled — LANDED (branch `feat/attack-detection-model`, D-L).** `detection-strategy`, `analytic` and `analytic-requirement` are cyber types (analytics own `platform`; a requirement carries the log-source name, key and channels); the adapter returns `(OkfBundle, StixRelations)` and `cyber_post_sync` replaces a bundle's strategy→technique (`detects`), strategy→analytic and analytic→requirement relations. `gecko sync-sensors` loads a sensor file (platforms, sensors, log sources, fallback data components). `blinded` reports per claim `blind_platforms` and `unassessed_platforms`, built on the functions `requirement-covered`, `analytic-gaps` and `claim-platforms`; a platform with several analytics counts covered if any can run. `evidence-of`, `requires-evidence`, `sensor-coverage` and `blinded-detections` are removed by schema migrations, and pre-current bundles are no longer supported | — | schema + adapter + sensors + cyber functions | ✅ `stix_sync_persists_typed_attributes_and_backbone`, `cyber_detect_test`, `stix_full_bundle_resync_is_stable` |
+| **S3** | **STIX core coverage.** Relationship types dropped today: `subtechnique-of` (481), `revoked-by` (157); object types ingested as bare `cyber-object`: `x-mitre-tactic`, `x-mitre-matrix`, `x-mitre-collection`, `identity`, `marking-definition`; `kill_chain_phases` and `external_references` flattened to attributes. typedb-cti is the reference for these shapes. The sync engine already retypes a concept whose `type_hint` changed (refused when a belief edge references it or another bundle contains it), so promoting a bare `cyber-object` to a subtype re-syncs in place | — (design owed, D-M) | schema + adapter | D-M; after S2 |
+| **S4** ✅ | **Real-bundle regression check — LANDED.** Validated against **Enterprise ATT&CK 20.1**. The opt-in `stix_full_bundle_resync_is_stable` (skips unless `GECKO_ATTACK_BUNDLE` names the bundle, which stays a runtime asset, never in the build tree) imports the bundle twice into one database and asserts the concept count and every typed relation count are unchanged. 20.1 result: 4,877 concepts, 4,203 analytic requirements, 1,771 strategy-analytic, 706 strategy-detects, 1,477 mitigates, 18,975 uses and 26 attributed-to, identical across both syncs; first sync 156 s and re-sync 1.7 s (debug build, local 3.15.0; S1 baseline 148 s and 1.2 s). It then syncs a sensor file (Windows, Linux, macOS), claims three techniques and times `blinded` on the full graph: 1.25 s first call, 83 ms second, the two results equal and non-empty. Its first run failed: attaching channels by matching each requirement back by name took 147 s and the sync passed TypeDB's 300 s transaction timeout, so the adapter now inserts a requirement with its first channel and attaches only the further ones. The upgrade path was timed once by hand against 20.1: a sync with main's binary (`027f36a`, 150 s, 4,877 inserted), then a re-sync with this branch's binary, which applies the cyber schema migrations and updates all 4,877 concepts in place in one transaction (retypes included): 31.3 s in all, the sync transaction about 30 s, well inside the 300 s limit; a further re-sync skipped all 4,877 in 2.5 s (debug builds, local 3.15.0) | — | test (opt-in) + adapter | ✅ `stix_full_bundle_resync_is_stable` |
 | **S5** | **Objects shared across STIX imports.** Two ATT&CK domains (Enterprise and Mobile) cannot share a database. They ship the same MITRE `identity` and `marking-definition` objects, and some groups and software, under the same STIX ids, so the second import is refused as a concept-ID collision (O1). Under the default bundle name `stix-sync`, a second domain replaces the first instead, and a record the new import drops that a belief edge references is retired, not deleted (O6). Sharing objects across imports needs a design: an object held by several imports (multi-containment ownership, collected only when no import holds it) and `attack-id` uniqueness across domains. | — (design owed) | design + engine + adapter | O1; the design |
 
 ---
@@ -286,7 +291,7 @@ images and `docker-compose.yml`.
 | **D-H** | Shape of the offline similarity-recording method (which edge, which run identity) | CONTRACT-W8 §2, §5 | C3 |
 | **D-I** | Whether blast-radius caching stays a daemon job or becomes a separate `SemanticIndex`-style mechanism | CONTRACT-W8 §5 | C7 |
 | **D-J** | Collapse granularity: which provenance is summarizable and which must survive | CONTRACT-W8 §5 / CF-2 | C5 |
-| **D-L** | ATT&CK's current detection model in the cyber schema: subtypes for detection strategies and analytics (or not), whether `requires-evidence` is derived through them at sync time, and what replaces `evidence-of` now that data components carry no data-source reference. Includes whether pre-current bundles stay supported | — (Track S) | S2 |
+| **D-L** ✅ | **Decided 2026-11-21 — detection model.** Strategies, analytics and analytic requirements are cyber types; `requires-evidence` and `evidence-of` are dropped (not derived, not re-sourced) and pre-current bundles are unsupported; blindness is computed from analytic log-source requirements against a user-declared sensor file | docs/superpowers/specs/2026-11-21-attack-detection-model-design.md | S2 |
 | **D-M** | STIX core shape: align the cyber schema with typedb-cti's STIX 2.1 model (kill-chain-phase and external-reference entities, the full relationship set), or keep the ATT&CK-keyed model and add only what cyber queries. `attack-id` stays the unique key either way, since detection edges resolve techniques by it | — (Track S) | S3 |
 | **D-K** | C2 `out-entrenches` schema hardening (OP-5). The §8.3 trigger has fired; shipping it owes a 5×5 drift-lock test against `Entrenchment::strength()` | SPEC-W2-W3 §2.3 (conditional); SPEC-W5 §2; INVARIANTS §8.3 | — (deliberate decision; D-D may make it unnecessary) |
 | **D-N** | How GECKO treats an Attested Computation: as a playbook (engine, scopes and sandbox run), with its attester as a second sandboxed program, or as its own concept kind; where receipts and verdicts live (the record tier, or beliefs with provenance); how the attester is sandboxed | OKF v0.2 §10 | O5 |

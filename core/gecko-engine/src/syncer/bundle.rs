@@ -11,7 +11,8 @@
 //! Idempotency is content-hash based ([`plan_sync`]): unchanged concepts are
 //! skipped, changed ones updated **in place** (the entity is preserved so its
 //! containment, hierarchy, incoming links, and any extension-created relations
-//! survive an edit). Orphans this bundle owns alone are garbage-collected;
+//! survive an edit). A concept whose `type_hint` changed is replaced instead: it
+//! is deleted and reinserted under its new type. Orphans this bundle owns alone are garbage-collected;
 //! orphans another bundle also contains are released (only this bundle's
 //! containment is removed).
 //!
@@ -192,6 +193,14 @@ pub fn plan_sync(concepts: &[OkfConcept], existing: &HashMap<String, Option<Stri
 /// concept whose `type_hint` is not `concept` or a subtype of it, with
 /// [`DbError::Schema`].
 ///
+/// A stored manifest concept whose exact type differs from its `type_hint`
+/// (`concept` when absent) is replaced, whatever its hash: deleted with its OKF
+/// relations and inserted under the new type, counted as updated. It loses its
+/// incoming links from other bundles and its extension relations. The sync is
+/// refused before anything is written when another bundle also contains such a
+/// concept ([`DbError::TypeChangeShared`]) or a belief edge references it
+/// ([`DbError::TypeChangeReferenced`]).
+///
 /// `belief_tier_root` names the root type of the belief tier, which the schema
 /// must contain (otherwise [`DbError::Schema`]). A concept the sync would
 /// garbage-collect that plays a role in a belief-tier relation is retired instead
@@ -241,19 +250,72 @@ pub async fn sync_bundle(
         release = gc_release.len(),
         "Computed sync plan"
     );
-    let new_concepts: Vec<&OkfConcept> = plan
+    // A stored concept whose exact type differs from its type_hint is retyped:
+    // deleted with its OKF relations and inserted as new, whatever its hash.
+    let retyped = retyped_concepts(&tx, &manifest.concepts, &plan).await?;
+    let (retyped_updates, kept_updates): (Vec<usize>, Vec<usize>) = plan
+        .to_update
+        .iter()
+        .copied()
+        .partition(|i| retyped.contains_key(&manifest.concepts[*i].concept_id));
+    let insert_idx: Vec<usize> = plan
         .to_insert
         .iter()
-        .map(|&i| &manifest.concepts[i])
+        .copied()
+        .chain(
+            manifest
+                .concepts
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| retyped.contains_key(&c.concept_id).then_some(i)),
+        )
         .collect();
-    let write_concepts: Vec<&OkfConcept> = plan
-        .to_insert
+    let new_concepts: Vec<&OkfConcept> =
+        insert_idx.iter().map(|&i| &manifest.concepts[i]).collect();
+    let write_concepts: Vec<&OkfConcept> = insert_idx
         .iter()
-        .chain(plan.to_update.iter())
+        .chain(kept_updates.iter())
         .map(|&i| &manifest.concepts[i])
         .collect();
     // Refuse a type_hint outside `concept`'s closure before anything is written.
     check_type_hints(&tx, &write_concepts).await?;
+    // Refuse to retype a concept another bundle also contains: replacing it would
+    // drop that bundle's containment.
+    let shared_retypes: BTreeSet<&String> = retyped
+        .keys()
+        .filter(|id| {
+            stored
+                .get(*id)
+                .is_some_and(|s| s.bundles.iter().any(|b| b != name))
+        })
+        .collect();
+    if !shared_retypes.is_empty() {
+        let ids = shared_retypes
+            .into_iter()
+            .map(|id| {
+                let (from, to) = retyped[id].clone();
+                (id.clone(), from, to)
+            })
+            .collect();
+        return Err(DbError::TypeChangeShared { ids });
+    }
+    // Refuse to retype a concept a belief edge references: the edge cannot follow.
+    let retyped_ids: Vec<&str> = retyped.keys().map(String::as_str).collect();
+    let referenced_retypes: BTreeSet<String> = belief_edge_references(&tx, &retyped_ids, &surface)
+        .await?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    if !referenced_retypes.is_empty() {
+        let ids = referenced_retypes
+            .into_iter()
+            .map(|id| {
+                let (from, to) = retyped[&id].clone();
+                (id, from, to)
+            })
+            .collect();
+        return Err(DbError::TypeChangeReferenced { ids });
+    }
 
     // 4. Ensure the bundle entity and its metadata.
     upsert_bundle(&tx, manifest).await?;
@@ -281,14 +343,16 @@ pub async fn sync_bundle(
         retire_concepts(&tx, &retire_ids, &surface, &required, Utc::now()).await?;
     }
     delete_concepts_gc(&tx, &delete_ids).await?;
+    // Retyped concepts go the same way, to be inserted under their new type in 6.
+    delete_concepts_gc(&tx, &retyped_ids).await?;
     let release_ids: Vec<&str> = gc_release.iter().map(String::as_str).collect();
     release_containment(&tx, name, &release_ids).await?;
 
-    // 6. Reconcile new + changed concepts. Changed concepts are updated IN PLACE:
-    //    the entity is preserved (keeping containment, hierarchy, incoming links,
-    //    and extension relations) and only file-derived content is refreshed.
-    let update_ids: Vec<&str> = plan
-        .to_update
+    // 6. Reconcile new, retyped and changed concepts. Retyped concepts were
+    //    deleted above and are inserted as new. Changed concepts are updated IN
+    //    PLACE: the entity is preserved (keeping containment, hierarchy, incoming
+    //    links, and extension relations) and only file-derived content is refreshed.
+    let update_ids: Vec<&str> = kept_updates
         .iter()
         .map(|&i| manifest.concepts[i].concept_id.as_str())
         .collect();
@@ -329,8 +393,8 @@ pub async fn sync_bundle(
 
     let result = SyncResult {
         concepts_inserted: plan.to_insert.len(),
-        concepts_updated: plan.to_update.len(),
-        concepts_skipped: plan.skipped,
+        concepts_updated: kept_updates.len() + retyped.len(),
+        concepts_skipped: plan.skipped - (retyped.len() - retyped_updates.len()),
         concepts_deleted: delete_ids.len(),
         concepts_released: gc_release.len(),
         concepts_retired: retire_ids.len(),
@@ -628,8 +692,47 @@ async fn delete_concepts_gc(tx: &Transaction, ids: &[&str]) -> Result<(), DbErro
     .await
 }
 
+/// The manifest concepts already stored (those `plan` does not insert) whose
+/// exact stored type differs from `type_hint` (`concept` when absent), keyed by
+/// concept ID with their (stored type, new type).
+async fn retyped_concepts(
+    tx: &Transaction,
+    concepts: &[OkfConcept],
+    plan: &SyncPlan,
+) -> Result<HashMap<String, (String, String)>, DbError> {
+    let inserted: HashSet<usize> = plan.to_insert.iter().copied().collect();
+    let stored: Vec<&OkfConcept> = concepts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !inserted.contains(i))
+        .map(|(_, c)| c)
+        .collect();
+    let ids: Vec<&str> = stored.iter().map(|c| c.concept_id.as_str()).collect();
+    let types = concept_types(tx, &ids).await?;
+    let mut out = HashMap::new();
+    for c in stored {
+        let stored_type = types.get(&c.concept_id).ok_or_else(|| {
+            DbError::Query(format!(
+                "invariant violation: stored concept `{}` has no concept type row",
+                c.concept_id
+            ))
+        })?;
+        let new_type = c.type_hint.as_deref().unwrap_or("concept");
+        if stored_type != new_type {
+            out.insert(
+                c.concept_id.clone(),
+                (stored_type.clone(), new_type.to_string()),
+            );
+        }
+    }
+    Ok(out)
+}
+
 /// The exact type label of each concept `ids` names, keyed by concept ID.
 async fn concept_types(tx: &Transaction, ids: &[&str]) -> Result<HashMap<String, String>, DbError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let what = "concept type read";
     let mut given = GivenRows::new(vec!["id".to_string()], ids.len());
     for id in ids {
