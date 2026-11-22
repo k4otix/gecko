@@ -77,6 +77,26 @@ proven through the real sandbox against live TypeDB.
   median of about 4.3 ms per sync (23 syncs). The cost grows with the belief
   tier, because each read scans its instances.
 
+## Schema constraints and upgrades
+
+- **The schema enforces required roles, ownership and recall fields.** Every relation
+  role without an explicit card is required, a memory item needs one ownership and a
+  source-link, a belief needs `valid-from`, `salience`, `base-activation` and
+  `last-access`, and confidence, predicted probability and similarity scores are ranged.
+  `schema-init` (and `sync` / `sync-sensors`, which apply the schema first) deletes each
+  one-player row of a relation that gained a required role and clamps stored similarity
+  scores into `[-1, 1]`, in the schema transaction, before the constraint lands
+  (`tightened_schema_applies_to_a_populated_database`).
+- **Other violating rows fail the upgrade.** An existing database holding a row no
+  cleanup covers (a belief missing a required field, an out-of-range score, a one-player
+  belief edge) fails `schema-init` with TypeDB's constraint error naming the type, and
+  nothing is deleted; it needs a manual cleanup. Today's writers produce no such row.
+- **A cyber-typed concept shared across bundles.** A STIX relationship can link a
+  cyber-typed concept another bundle in the same database owns; if a sync of that bundle
+  deleted the concept, the relation would lose a required player and the sync's commit
+  would fail. Today only `sync-stix` and `sync-sensors` create cyber-typed concepts, and
+  every `sync-stix` re-sync sweeps one-player relations.
+
 ## As-of recall and supersede
 
 As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an

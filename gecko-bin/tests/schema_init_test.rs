@@ -9,6 +9,9 @@ use cyber_gecko::CyberGecko;
 use gecko_engine::extension::GeckoExtension;
 use mem_gecko::MemGecko;
 
+#[cfg(feature = "cyber")]
+#[path = "common/attack.rs"]
+mod attack;
 mod common;
 use common::TestDb;
 
@@ -262,6 +265,18 @@ async fn old_cyber_detection_types_migrate_away() {
 const PRE_CORE: &str = include_str!("fixtures/schemas_pre_tightening/core_schema.tql");
 const PRE_MEM_TYPES: &str = include_str!("fixtures/schemas_pre_tightening/mem_types.tql");
 const PRE_MEM_FUNCTIONS: &str = include_str!("fixtures/schemas_pre_tightening/mem_functions.tql");
+
+#[cfg(feature = "cyber")]
+const PRE_CYBER: &str = include_str!("fixtures/schemas_pre_tightening/cyber_schema.tql");
+#[cfg(feature = "cyber")]
+const PRE_CYBER_FUNCTIONS: &str =
+    include_str!("fixtures/schemas_pre_tightening/cyber_functions.tql");
+
+/// The cyber schema and functions as released before the schema tightening.
+#[cfg(feature = "cyber")]
+fn pre_cyber_schema() -> String {
+    format!("{PRE_CYBER}\n{PRE_CYBER_FUNCTIONS}")
+}
 
 /// The mem types and functions as one `define`, composed as mem-gecko composes them.
 fn pre_mem_schema() -> String {
@@ -526,11 +541,7 @@ async fn tightening_forms_apply_to_the_pre_tightening_core_and_mem() {
 #[cfg(feature = "cyber")]
 #[tokio::test]
 async fn tightening_forms_apply_to_the_pre_tightening_cyber() {
-    const PRE_CYBER: &str = include_str!("fixtures/schemas_pre_tightening/cyber_schema.tql");
-    const PRE_CYBER_FUNCTIONS: &str =
-        include_str!("fixtures/schemas_pre_tightening/cyber_functions.tql");
-
-    let pre_cyber = format!("{PRE_CYBER}\n{PRE_CYBER_FUNCTIONS}");
+    let pre_cyber = pre_cyber_schema();
     let cyber = tightened(
         &pre_cyber,
         &[
@@ -715,4 +726,534 @@ async fn a_database_holding_a_one_player_core_relation_upgrades() {
             "the surviving {relation} is the fully played one"
         );
     }
+}
+
+/// Whether a shipped migration is one the schema tightening adds: a one-player
+/// cleanup ahead of a required role, belief's required fields, or the similarity
+/// clamp ahead of its range.
+#[cfg(feature = "cyber")]
+fn added_by_the_tightening(id: &str) -> bool {
+    id.ends_with("-required-roles")
+        || matches!(
+            id,
+            "mem/belief-required-window-doc"
+                | "mem/belief-valid-from-required"
+                | "mem/similarity-score-clamp-high"
+                | "mem/similarity-score-clamp-low"
+        )
+}
+
+/// Runs `writes` in one write transaction and returns the error that refuses them,
+/// at the query or at the commit.
+#[cfg(feature = "cyber")]
+async fn refusal(
+    db: &mut gecko_engine::db::router::TypeDbRouter,
+    writes: &[gecko_extension_api::GraphWrite],
+) -> String {
+    let tx = db.begin_write().await.expect("write tx");
+    if let Err(e) = gecko_engine::db::run_graph_writes(&tx, writes).await {
+        return e.to_string();
+    }
+    tx.commit()
+        .await
+        .expect_err("the write commits over the tightened schema")
+        .to_string()
+}
+
+/// The ATT&CK fixture with a malware that uses its technique and an indicator that
+/// indicates the malware.
+#[cfg(feature = "cyber")]
+fn attack_with_malware() -> String {
+    const MALWARE: &str = "malware--b0000000-0000-4000-8000-000000000001";
+    const INDICATOR: &str = "indicator--c0000000-0000-4000-8000-000000000001";
+    let mut bundle: serde_json::Value =
+        serde_json::from_str(&attack::fixture_json()).expect("the fixture is JSON");
+    let objects = bundle["objects"].as_array_mut().expect("objects");
+    objects.extend([
+        serde_json::json!({ "type": "malware", "id": MALWARE, "name": "ExampleRAT" }),
+        serde_json::json!({
+            "type": "indicator",
+            "id": INDICATOR,
+            "name": "Bad IP",
+            "pattern": "[ipv4-addr:value = '1.1.1.1']",
+        }),
+        serde_json::json!({
+            "type": "relationship",
+            "id": "relationship--e0000000-0000-4000-8000-000000000002",
+            "relationship_type": "uses",
+            "source_ref": MALWARE,
+            "target_ref": attack::TECHNIQUE_STIX_ID,
+        }),
+        serde_json::json!({
+            "type": "relationship",
+            "id": "relationship--e0000000-0000-4000-8000-000000000003",
+            "relationship_type": "indicates",
+            "source_ref": INDICATOR,
+            "target_ref": MALWARE,
+        }),
+    ]);
+    bundle.to_string()
+}
+
+/// A database on the pre-tightening schemas, populated by every current writer path
+/// plus the one-player rows a GC can leave, takes the shipped schemas.
+#[cfg(feature = "cyber")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tightened_schema_applies_to_a_populated_database() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA, RouterGraphStore};
+    use gecko_engine::okf::parser::parse_bundle;
+    use gecko_engine::syncer::bundle::sync_bundle;
+    use gecko_extension_api::{
+        ActorId, BeliefDraft, BeliefEdge, ConceptId, ContextBudget, DerivationMethod, Embedder,
+        EpisodeDraft, EpistemicWriter, GraphValue, GraphWrite, Outcome, ProvenanceSource,
+        RecallQuery, RunContext, Visibility,
+    };
+    use gecko_semantic_index::{HnswIndex, StubEmbedder};
+    use mem_gecko::{
+        BELIEF_TIER_ROOT, BeliefEdgeRegistry, ConsolidationDaemon, MemConsolidationDaemon,
+        MemWriter,
+    };
+
+    const LOGIC: &str = "notes/a";
+    let test_db = TestDb::new("gecko_test_tightened_populated");
+    let mut db = test_db.router();
+    db.apply_schema(PRE_CORE)
+        .await
+        .expect("pre-tightening core");
+    db.apply_schema(&pre_mem_schema())
+        .await
+        .expect("pre-tightening mem");
+    db.apply_schema(&pre_cyber_schema())
+        .await
+        .expect("pre-tightening cyber");
+
+    // An OKF bundle with a concept link, a citation and a hierarchy.
+    let okf = tempfile::TempDir::new().expect("temp dir");
+    std::fs::create_dir_all(okf.path().join("notes/deep")).expect("okf dirs");
+    std::fs::write(
+        okf.path().join("bundle.json"),
+        serde_json::json!({ "name": "upgrade-notes" }).to_string(),
+    )
+    .expect("bundle.json");
+    for (path, body) in [
+        (
+            "notes/a.md",
+            "See [b](b.md) and [x](https://example.com/upgrade).",
+        ),
+        ("notes/b.md", "Linked."),
+        ("notes/deep/c.md", "Nested."),
+    ] {
+        std::fs::write(
+            okf.path().join(path),
+            format!("---\ntype: Note\ntitle: {path}\n---\n\n{body}\n"),
+        )
+        .expect("write a concept");
+    }
+    let notes = parse_bundle(okf.path()).expect("parse the OKF bundle");
+    let r = sync_bundle(&mut db, &notes, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync the OKF bundle");
+    assert!(
+        r.links_attempted >= 1 && r.citations_attempted >= 1,
+        "{r:?}"
+    );
+
+    // ATT&CK with its post-sync writes, then a sensor file.
+    let (attack_okf, rels) = cyber_gecko::stix::to_okf(&attack_with_malware()).expect("converts");
+    sync_bundle(
+        &mut db,
+        &attack_okf,
+        &cyber_gecko::stix::cyber_post_sync(&rels),
+        BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync ATT&CK");
+    let sensors = cyber_gecko::sensors::parse(
+        "platforms: [Windows]\nsensors:\n  - name: windows-edr\n    platforms: [Windows]\n    \
+         log_sources: [WinEventLog:Sysmon]\n    components: [Process Creation]\n",
+    )
+    .expect("the sensor file parses");
+    sync_bundle(
+        &mut db,
+        &cyber_gecko::sensors::to_okf(&sensors, cyber_gecko::sensors::DEFAULT_BUNDLE_NAME),
+        &[],
+        BELIEF_TIER_ROOT,
+    )
+    .await
+    .expect("sync the sensor file");
+
+    // Core GC of the malware, without the post-sync sweep, leaves its `uses` and
+    // `indicates` with one player each.
+    let mut no_malware = attack_okf.clone();
+    no_malware
+        .concepts
+        .retain(|c| c.type_hint.as_deref() != Some("malware"));
+    assert_eq!(no_malware.concepts.len() + 1, attack_okf.concepts.len());
+    sync_bundle(&mut db, &no_malware, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("garbage-collect the malware");
+    assert_eq!(
+        count_rows(&mut db, "match $r isa uses; not { $r links (user: $u); };").await,
+        1,
+        "the GC leaves a one-player uses"
+    );
+
+    // Every MemWriter write path the reconciliation rig drives.
+    let store = Arc::new(RouterGraphStore::new(Arc::new(tokio::sync::Mutex::new(
+        test_db.router(),
+    ))));
+    let embedder = Arc::new(StubEmbedder::new(384));
+    let index_dir = tempfile::TempDir::new().expect("index dir");
+    let index = HnswIndex::open(
+        index_dir.path().join("upgrade.hnsw"),
+        embedder.model_id(),
+        384,
+    )
+    .expect("open the index");
+    let registry = BeliefEdgeRegistry::from_extensions(
+        CORE_SCHEMA,
+        &[mem_gecko::extension(), cyber_gecko::extension()],
+    )
+    .expect("belief-edge registry");
+    let writer = Arc::new(
+        MemWriter::new(store, Some(embedder), Some(Arc::new(index)))
+            .with_retrieval_provenance(true)
+            .with_belief_edges(registry),
+    );
+    let ctx = RunContext::new(
+        ActorId::new("system"),
+        ProvenanceSource::ExecutableDoc {
+            concept_id: ConceptId::new(LOGIC),
+        },
+        chrono::Utc::now(),
+    );
+    let draft = |text: &str, confidence: Option<f64>| BeliefDraft {
+        text: text.to_string(),
+        owner: ctx.actor.clone(),
+        visibility: Visibility::Private,
+        confidence,
+        entrenchment: None,
+    };
+    let episode = || EpisodeDraft {
+        text: "smb lateral movement observed".to_string(),
+        event_time: ctx.occurred_at,
+        ingest_time: ctx.occurred_at,
+    };
+    writer.observe(&ctx, episode()).await.expect("observe");
+    let asserted = writer
+        .assert_belief(
+            &ctx,
+            draft("host is not compromised", None),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .expect("assert");
+    let chunks = writer
+        .clone()
+        .as_epistemic_reader()
+        .expect("mem writer is a reader")
+        .recall(
+            &ctx,
+            RecallQuery {
+                text: "host is not compromised".to_string(),
+                as_of: None,
+            },
+            ContextBudget {
+                max_chunks: 5,
+                max_tokens: None,
+            },
+        )
+        .await
+        .expect("recall");
+    assert!(!chunks.is_empty(), "recall surfaced nothing");
+    let recalled: Vec<_> = chunks.iter().map(|c| c.id.clone()).collect();
+    let derived = writer
+        .assert_belief(
+            &ctx,
+            draft("host is compromised via smb", Some(0.6)),
+            &recalled,
+            DerivationMethod::LlmSynthesis,
+        )
+        .await
+        .expect("derive from the recall");
+    let superseding = writer
+        .supersede(
+            &ctx,
+            derived,
+            draft("host is compromised via smb and rdp", None),
+            "revised",
+        )
+        .await
+        .expect("supersede");
+    writer
+        .contest(&ctx, &[superseding.clone(), asserted.clone()])
+        .await
+        .expect("contest");
+    writer
+        .rests_on(&ctx, asserted.clone(), std::slice::from_ref(&superseding))
+        .await
+        .expect("rests_on");
+    writer
+        .record_prediction(&ctx, asserted.clone(), 0.7)
+        .await
+        .expect("record_prediction");
+    writer
+        .resolve_prediction(&ctx, asserted.clone(), Outcome::Confirmed)
+        .await
+        .expect("resolve_prediction");
+    assert!(
+        writer
+            .define_population("upgrade-pop", "typeql-3", "match $c isa concept;")
+            .await
+            .expect("define_population")
+    );
+    writer
+        .materialize_population(
+            "upgrade-pop",
+            &[ConceptId::new("notes/a"), ConceptId::new("notes/b")],
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("materialize_population");
+    assert!(
+        writer
+            .close_population_membership(
+                "upgrade-pop",
+                &ConceptId::new("notes/b"),
+                chrono::Utc::now()
+            )
+            .await
+            .expect("close_population_membership")
+    );
+    let pair = [
+        writer.observe(&ctx, episode()).await.expect("observe"),
+        writer.observe(&ctx, episode()).await.expect("observe"),
+    ];
+    let (keeper, loser) = if pair[0].0 < pair[1].0 {
+        (&pair[0], &pair[1])
+    } else {
+        (&pair[1], &pair[0])
+    };
+    writer
+        .dedup_episodes(&ctx, keeper, loser)
+        .await
+        .expect("dedup_episodes");
+    writer.observe(&ctx, episode()).await.expect("observe");
+    let report = MemConsolidationDaemon::new(writer.clone())
+        .tick(chrono::Utc::now())
+        .await
+        .expect("daemon tick");
+    assert!(report.episodes_deduped >= 1, "{report:?}");
+
+    // cyber-gecko's two belief-edge writes.
+    let edges = writer
+        .edge_writer_for("cyber-gecko")
+        .expect("cyber-gecko edge writer");
+    edges
+        .assert_belief_with_edges(
+            &ctx,
+            draft("notes/a detects T1059", Some(0.9)),
+            &[],
+            DerivationMethod::ExternalTool,
+            &[BeliefEdge {
+                relation: "technique-detection".into(),
+                players: vec![
+                    ("detecting-logic".into(), GraphValue::from(LOGIC)),
+                    (
+                        "detected-technique".into(),
+                        GraphValue::from(attack::TECHNIQUE_ATTACK_ID),
+                    ),
+                ],
+                attrs: vec![],
+            }],
+        )
+        .await
+        .expect("claim");
+    edges
+        .assert_belief_with_edges(
+            &ctx,
+            draft("disposition of notes/a: true-positive", None),
+            &[],
+            DerivationMethod::HumanAssertion,
+            &[BeliefEdge {
+                relation: "alert-disposition".into(),
+                players: vec![("dispositioned-logic".into(), GraphValue::from(LOGIC))],
+                attrs: vec![(
+                    "detection-verdict".into(),
+                    GraphValue::from("true-positive"),
+                )],
+            }],
+        )
+        .await
+        .expect("disposition");
+
+    // One-player rows a database synced by an earlier release can hold, which
+    // today's GC deletes with their concept: a concept link and a population
+    // membership.
+    let seed = [
+        GraphWrite::single(
+            "given $id: string; \
+             match $c isa concept, has concept-id $cid; $cid == $id; \
+             insert (source: $c) isa concept-link;",
+            vec!["id".into()],
+            vec![GraphValue::from(LOGIC)],
+        )
+        .expecting(1),
+        GraphWrite::single(
+            "given $h: string; \
+             match $p isa population, has spec-hash $s; $s == $h; \
+             insert (owning-population: $p) isa population-member;",
+            vec!["h".into()],
+            vec![GraphValue::from("upgrade-pop")],
+        )
+        .expecting(1),
+    ];
+    {
+        let tx = db.begin_write().await.expect("write tx");
+        gecko_engine::db::run_graph_writes(&tx, &seed)
+            .await
+            .expect("seed one-player rows");
+        tx.commit().await.expect("commit the one-player rows");
+    }
+
+    // Every trigger the tightening adds is in the populated database's export once.
+    let migrations: Vec<(&str, &[gecko_extension_api::SchemaMigration])> = vec![
+        ("core", CORE_MIGRATIONS),
+        ("mem", mem_gecko::MEM_MIGRATIONS),
+        ("cyber", &cyber_gecko::migrations::CYBER_MIGRATIONS),
+    ];
+    let before = db.database_schema().await.expect("schema");
+    let mut added = BTreeMap::new();
+    for (owner, list) in &migrations {
+        for m in list.iter().filter(|m| added_by_the_tightening(m.id)) {
+            assert_eq!(
+                before.matches(m.applies_when).count(),
+                1,
+                "{}: the trigger is not in the pre-tightening export once",
+                m.id
+            );
+            *added.entry(*owner).or_insert(0) += 1;
+        }
+    }
+    assert_eq!(
+        added,
+        BTreeMap::from([("core", 4), ("mem", 22), ("cyber", 9)]),
+        "the triggers checked"
+    );
+
+    // The shipped schemas with their migrations, as `schema-init` applies them.
+    let extensions = [mem_gecko::extension(), cyber_gecko::extension()];
+    BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &extensions)
+        .expect("the registry accepts the shipped schemas");
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+            .await
+            .expect("the shipped core applies to the populated database");
+        for ext in &extensions {
+            db.apply_schema_with_migrations(ext.schema(), ext.schema_migrations())
+                .await
+                .unwrap_or_else(|e| panic!("the shipped {} applies: {e}", ext.name()));
+        }
+    }
+    let after = db.database_schema().await.expect("schema");
+    for (_, list) in &migrations {
+        for m in list.iter() {
+            assert!(!after.contains(m.applies_when), "{} still pending", m.id);
+        }
+    }
+
+    // The upgraded schema is the one a fresh database gets.
+    let fresh_db = TestDb::new("gecko_test_tightened_fresh");
+    attack::sync_fixture(&fresh_db).await;
+    let fresh = fresh_db.router().database_schema().await.expect("schema");
+    assert_eq!(after, fresh, "the upgraded schema differs from a fresh one");
+
+    // mem's required roles: the one-player membership is gone, and another is refused.
+    assert_eq!(
+        count_rows(
+            &mut db,
+            "match $r isa population-member; not { $r links (member: $m); };"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        count_rows(&mut db, "match $r isa population-member;").await,
+        2
+    );
+    let err = refusal(&mut db, &[seed[1].clone()]).await;
+    assert!(err.contains("population-member"), "{err}");
+
+    // core's required roles: the one-player link is gone, the synced link stays.
+    assert_eq!(
+        count_rows(&mut db, "match $r isa concept-link;").await,
+        1,
+        "only the synced concept link survives"
+    );
+    assert_eq!(
+        count_rows(
+            &mut db,
+            "match $r isa concept-link, links (source: $s, target: $t);"
+        )
+        .await,
+        1
+    );
+    let err = refusal(&mut db, &[seed[0].clone()]).await;
+    assert!(err.contains("concept-link"), "{err}");
+
+    // cyber's required roles: the GC's one-player SROs are gone, and another is refused.
+    for (relation, full) in [
+        ("uses", "links (user: $x, used: $y)"),
+        ("indicates", "links (indicator-source: $x, indicated: $y)"),
+    ] {
+        assert_eq!(
+            count_rows(&mut db, &format!("match $r isa {relation};")).await,
+            count_rows(&mut db, &format!("match $r isa {relation}, {full};")).await,
+            "a one-player {relation} survived"
+        );
+    }
+    let err = refusal(
+        &mut db,
+        &[GraphWrite::single(
+            "given $id: string; \
+             match $t isa attack-pattern, has attack-id $a; $a == $id; \
+             insert (used: $t) isa uses;",
+            vec!["id".into()],
+            vec![GraphValue::from(attack::TECHNIQUE_ATTACK_ID)],
+        )],
+    )
+    .await;
+    assert!(err.contains("uses"), "{err}");
+
+    // belief's required fields and the score range hold on every written row.
+    assert!(count_rows(&mut db, "match $b isa belief;").await >= 5);
+    for attr in ["valid-from", "salience", "base-activation", "last-access"] {
+        assert_eq!(
+            count_rows(
+                &mut db,
+                &format!("match $b isa belief; not {{ $b has {attr} $v; }};")
+            )
+            .await,
+            0,
+            "a belief lacks {attr}"
+        );
+    }
+    assert!(count_rows(&mut db, "match $r isa surfaced, has similarity-score $s;").await >= 1);
+    let err = refusal(
+        &mut db,
+        &[GraphWrite::single(
+            "given $id: string; \
+             match $b isa belief, has concept-id $cid, has valid-from $v; $cid == $id; \
+             delete has $v of $b;",
+            vec!["id".into()],
+            vec![GraphValue::from(asserted.0.as_str())],
+        )
+        .expecting(1)],
+    )
+    .await;
+    assert!(err.contains("valid-from"), "{err}");
 }
