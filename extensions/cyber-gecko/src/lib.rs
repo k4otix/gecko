@@ -5,6 +5,7 @@
 //! Provides domain-specific TypeDB schema types (indicators, assets, threat actors)
 //! and host-imported functions for security operations (e.g., host isolation).
 pub mod detect;
+pub mod migrations;
 pub mod stix;
 
 use gecko_extension_api::{

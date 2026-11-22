@@ -126,3 +126,111 @@ async fn previous_core_schema_upgrades_to_the_shipped_schema() {
     );
     assert!(schema.contains(NEW_BUNDLE_SENTENCE));
 }
+
+/// An extension carrying the cyber schema as of the frozen fixture and the
+/// detection-model migrations, as the belief-edge registry reads an extension.
+#[cfg(feature = "cyber")]
+struct FrozenCyber {
+    schema: &'static str,
+}
+
+#[cfg(feature = "cyber")]
+impl GeckoExtension for FrozenCyber {
+    fn name(&self) -> &str {
+        "cyber-gecko"
+    }
+    fn schema(&self) -> &str {
+        self.schema
+    }
+    fn schema_migrations(&self) -> &[gecko_extension_api::SchemaMigration] {
+        &cyber_gecko::migrations::DETECTION_MODEL_MIGRATIONS
+    }
+    fn belief_edges(&self) -> &[gecko_extension_api::BeliefEdgeDecl] {
+        &cyber_gecko::CYBER_BELIEF_EDGES
+    }
+    fn host_imports(&self) -> Vec<gecko_extension_api::HostImportDef> {
+        vec![]
+    }
+    fn call_import(
+        &self,
+        name: &str,
+        _args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!("no import {name}"))
+    }
+}
+
+#[cfg(feature = "cyber")]
+#[tokio::test]
+async fn old_cyber_detection_types_migrate_away() {
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA};
+    use gecko_extension_api::GeckoExtension as _;
+
+    const FROZEN: &str = include_str!("fixtures/cyber_schema_1cd621d.tql");
+    let migrations = &cyber_gecko::migrations::DETECTION_MODEL_MIGRATIONS;
+
+    // The registry accepts the migrations: none names a core or mem type.
+    let exts: Vec<Box<dyn GeckoExtension>> = vec![
+        Box::new(MemGecko::new()),
+        Box::new(FrozenCyber { schema: FROZEN }),
+    ];
+    mem_gecko::BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &exts)
+        .expect("the registry accepts the detection-model migrations");
+
+    let test_db = TestDb::new("gecko_test_cyber_migration");
+    let mut db = test_db.router();
+    db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+        .await
+        .expect("core schema");
+    let mem = MemGecko::new();
+    db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+        .await
+        .expect("mem schema");
+    db.apply_schema(FROZEN).await.expect("frozen cyber schema");
+
+    let before = db.database_schema().await.expect("schema");
+    for gone in [
+        "relation evidence-of",
+        "relation requires-evidence",
+        "relation sensor-coverage",
+        "fun blinded-detections",
+    ] {
+        assert!(before.contains(gone), "frozen schema lacks {gone}");
+    }
+
+    let tx = db.begin_write().await.expect("begin write");
+    for q in ["insert $s isa data-source, has concept-id 'ds-1'; \
+         $c isa data-component, has concept-id 'dc-1'; \
+         $t isa attack-pattern, has concept-id 'tp-1'; \
+         $k isa sensor, has concept-id 'sn-1'; \
+         $p isa population, has spec-hash 'pop-1'; \
+         (evidence-component: $c, evidence-source: $s) isa evidence-of; \
+         (technique: $t, required: $c) isa requires-evidence; \
+         (covering-sensor: $k, covered-source: $s, covered-component: $c, coverage-scope: $p) isa sensor-coverage;"]
+    {
+        tx.query(q).await.expect("seed instances");
+    }
+    tx.commit().await.expect("commit seed");
+
+    // The migrations run ahead of the schema they accompany. The replacement
+    // schema is a no-op, since the post-migration cyber schema is not yet written.
+    let after_schema = "define attribute probe-noop value string;";
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(after_schema, migrations)
+            .await
+            .expect("detection-model migrations apply");
+    }
+
+    let after = db.database_schema().await.expect("schema");
+    for gone in [
+        "evidence-of",
+        "requires-evidence",
+        "sensor-coverage",
+        "blinded-detections",
+        "coverage-scope",
+    ] {
+        assert!(!after.contains(gone), "{gone} survived the migration");
+    }
+    assert!(after.contains("entity data-source"));
+    assert!(after.contains("entity population"));
+}
