@@ -7,7 +7,7 @@
 
 use futures_util::StreamExt;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
-use gecko_extension_api::GeckoExtension;
+use gecko_extension_api::{GeckoExtension, SchemaMigration};
 use ulid::Ulid;
 
 mod common;
@@ -215,4 +215,275 @@ async fn callee_signature_change_lands_before_its_caller() {
     );
     assert!(schema.contains("pick($w, \"a\")"), "{schema}");
     common::drop_db_with_retry(&mut router, &name).await;
+}
+
+/// The probe's schema before tightening. `probe-mark` is owned with an explicit
+/// card by two types, like `valid-from` on `belief` and `population-member`.
+const PROBE_BEFORE: &str = r#"define
+  attribute probe-weight @doc("A score the probe bounds to [0, 1]."), value double;
+  attribute probe-count @doc("A count the probe bounds below by zero."), value integer;
+  attribute probe-mark @doc("A mark the probe makes required on one owner."), value string;
+  attribute probe-label @doc("A label the probe makes required on a subtype."), value string;
+  entity probe-base @abstract @doc("An abstract owner of an optional label."),
+      owns probe-label @card(0..1);
+  entity probe-leaf sub probe-base @doc("A subtype that comes to require the inherited label.");
+  entity probe-node @doc("A node the probe links and scores."),
+      owns probe-weight @card(0..1),
+      owns probe-count @card(0..1),
+      owns probe-mark @card(0..1),
+      plays probe-link:probe-from,
+      plays probe-link:probe-to,
+      plays probe-pair:left,
+      plays probe-pair:right;
+  relation probe-link @doc("A link whose roles the probe makes required."),
+      relates probe-from @doc("The node the link starts at."),
+      relates probe-to @doc("The node the link ends at.");
+  relation probe-pair @doc("A pair that keeps an optional mark."),
+      relates left @doc("The first node of the pair."),
+      relates right @doc("The second node of the pair."),
+      owns probe-mark @card(0..1);
+"#;
+
+/// The probe's schema after tightening: required roles and an inherited owns
+/// specialized by additive `define`, ranges beside the existing cards, and a
+/// standalone statement for the card a migration replaces.
+const PROBE_AFTER: &str = r#"define
+  attribute probe-weight @doc("A score the probe bounds to [0, 1]."), value double;
+  attribute probe-count @doc("A count the probe bounds below by zero."), value integer;
+  attribute probe-mark @doc("A mark the probe makes required on one owner."), value string;
+  attribute probe-label @doc("A label the probe makes required on a subtype."), value string;
+  entity probe-base @abstract @doc("An abstract owner of an optional label."),
+      owns probe-label @card(0..1);
+  entity probe-leaf sub probe-base @doc("A subtype that comes to require the inherited label.");
+  probe-leaf owns probe-label @card(1);
+  entity probe-node @doc("A node the probe links and scores."),
+      owns probe-weight @card(0..1) @range(0.0..1.0),
+      owns probe-count @card(0..1) @range(0..),
+      plays probe-link:probe-from,
+      plays probe-link:probe-to,
+      plays probe-pair:left,
+      plays probe-pair:right;
+  probe-node owns probe-mark @card(1);
+  relation probe-link @doc("A link whose roles the probe makes required."),
+      relates probe-from @card(1) @doc("The node the link starts at."),
+      relates probe-to @card(1) @doc("The node the link ends at.");
+  relation probe-pair @doc("A pair that keeps an optional mark."),
+      relates left @doc("The first node of the pair."),
+      relates right @doc("The second node of the pair."),
+      owns probe-mark @card(0..1);
+"#;
+
+/// The exported text of `probe-node`'s mark before tightening. The export lists a
+/// type's owns alphabetically and prints `probe-pair`'s identical line, so the
+/// trigger spans to the next line, which only `probe-node` has.
+const PROBE_MARK_TRIGGER: &str = "  owns probe-mark @card(0..1),\n  owns probe-weight";
+
+/// The probe's upgrade: drop links missing either role, then replace the mark's
+/// explicit card. Each trigger is exported text the shipped schema no longer shows.
+const PROBE_MIGRATIONS: &[SchemaMigration] = &[
+    SchemaMigration {
+        id: "probe/delete-one-player-links",
+        applies_when: "relates probe-from @doc(\"The node the link starts at.\")",
+        tql: "match $r isa probe-link; { not { $r links (probe-from: $f); }; } or { not { $r links (probe-to: $t); }; }; delete $r;",
+    },
+    SchemaMigration {
+        id: "probe/node-mark-required",
+        applies_when: PROBE_MARK_TRIGGER,
+        tql: "redefine probe-node owns probe-mark @card(1);",
+    },
+];
+
+async fn write(router: &mut TypeDbRouter, tql: &str) -> Result<(), String> {
+    let tx = router.begin_write().await.map_err(|e| e.to_string())?;
+    tx.query(tql).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+async fn count(router: &mut TypeDbRouter, tql: &str) -> usize {
+    let tx = router.begin_read().await.expect("read tx");
+    let answer = tx.query(tql).await.expect("count query");
+    answer.into_rows().collect::<Vec<_>>().await.len()
+}
+
+const SEED_NODES: &str = r#"insert
+    $a isa probe-node, has probe-mark "a";
+    $b isa probe-node, has probe-mark "b";
+    (probe-from: $a, probe-to: $b) isa probe-link;
+    (left: $a, right: $b) isa probe-pair;"#;
+
+const SEED_ONE_PLAYER_LINK: &str = r#"match $a isa probe-node, has probe-mark "a";
+    insert (probe-from: $a) isa probe-link;"#;
+
+#[tokio::test]
+async fn tightening_forms_probe() {
+    // Forms 1–4 and 8 on conforming data: the tightened schema and its migrations
+    // apply, a second apply is a no-op, and each constraint refuses a violation.
+    let (mut router, name) = router();
+    router
+        .apply_schema(PROBE_BEFORE)
+        .await
+        .expect("probe schema");
+    write(&mut router, SEED_NODES).await.expect("seed");
+    let before = router.database_schema().await.expect("schema");
+    for m in PROBE_MIGRATIONS {
+        assert_eq!(
+            before.matches(m.applies_when).count(),
+            1,
+            "{}: the trigger is not unique to its target:\n{before}",
+            m.id
+        );
+    }
+    // `define` cannot replace an explicit card; the migration's `redefine` does.
+    let err = router
+        .apply_schema(PROBE_AFTER)
+        .await
+        .expect_err("define over an explicit card is refused");
+    eprintln!("define over an explicit card: {err}");
+    assert!(format!("{err}").contains("DEX16"), "{err}");
+    for _ in 0..2 {
+        router
+            .apply_schema_with_migrations(PROBE_AFTER, PROBE_MIGRATIONS)
+            .await
+            .expect("tightened probe schema");
+    }
+    let after = router.database_schema().await.expect("schema");
+    eprintln!("probe export after tightening:\n{after}");
+    for m in PROBE_MIGRATIONS {
+        assert!(!after.contains(m.applies_when), "{} still pending", m.id);
+    }
+    // A repeated identical `redefine` is refused, which the trigger prevents.
+    let err = {
+        let tx = router.begin_schema().await.expect("schema tx");
+        tx.query(PROBE_MIGRATIONS[1].tql).await.err()
+    };
+    eprintln!("repeated redefine: {err:?}");
+    assert!(format!("{err:?}").contains("REX27"), "{err:?}");
+
+    let refusals = [
+        // Form 1: a required role.
+        (SEED_ONE_PLAYER_LINK, "probe-link"),
+        // Form 2: an inherited owns specialized to a required card.
+        ("insert $l isa probe-leaf;", "probe-leaf"),
+        // Form 3: an explicit card replaced by `redefine`.
+        ("insert $n isa probe-node;", "probe-node"),
+        // Form 4: ranges on the owns.
+        (
+            r#"insert $n isa probe-node, has probe-mark "c", has probe-weight 1.5;"#,
+            "probe-weight",
+        ),
+        (
+            r#"insert $n isa probe-node, has probe-mark "d", has probe-count -1;"#,
+            "probe-count",
+        ),
+    ];
+    for (tql, names) in refusals {
+        let err = write(&mut router, tql)
+            .await
+            .expect_err("the tightened schema refuses the write");
+        eprintln!("refused {names}: {err}");
+        assert!(err.contains(names), "{err}");
+    }
+    // The other owner of the mark keeps its optional card.
+    write(
+        &mut router,
+        r#"match $a isa probe-node, has probe-mark "a"; $b isa probe-node, has probe-mark "b";
+           insert (left: $a, right: $b) isa probe-pair;"#,
+    )
+    .await
+    .expect("probe-pair's mark stays optional");
+    write(
+        &mut router,
+        r#"insert $l isa probe-leaf, has probe-label "l";
+           $n isa probe-node, has probe-mark "e", has probe-weight 1.0, has probe-count 0;"#,
+    )
+    .await
+    .expect("conforming rows commit");
+    common::drop_db_with_retry(&mut router, &name).await;
+    drop(router);
+
+    // Forms 6 and 7 on a database holding a one-player link: the tightened schema
+    // alone is refused with an error naming the relation, and with the cleanup
+    // ahead of it in the same schema transaction it commits.
+    let (mut router, name) = self::router();
+    router
+        .apply_schema(PROBE_BEFORE)
+        .await
+        .expect("probe schema");
+    write(&mut router, SEED_NODES).await.expect("seed");
+    write(&mut router, SEED_ONE_PLAYER_LINK)
+        .await
+        .expect("a one-player link commits before tightening");
+    write(
+        &mut router,
+        r#"match $b isa probe-node, has probe-mark "b"; insert (probe-to: $b) isa probe-link;"#,
+    )
+    .await
+    .expect("a link missing its other role commits before tightening");
+    let err = router
+        .apply_schema_with_migrations(PROBE_AFTER, &PROBE_MIGRATIONS[1..])
+        .await
+        .expect_err("the one-player links fail the required roles");
+    eprintln!("tightening over violating data: {err}");
+    assert!(format!("{err}").contains("probe-link"), "{err}");
+    for _ in 0..2 {
+        router
+            .apply_schema_with_migrations(PROBE_AFTER, PROBE_MIGRATIONS)
+            .await
+            .expect("cleanup, then the tightened schema");
+    }
+    assert_eq!(count(&mut router, "match $r isa probe-link;").await, 1);
+    common::drop_db_with_retry(&mut router, &name).await;
+}
+
+/// The shipped mem extension with extra migrations appended, for the registry probe.
+struct ProbeMem {
+    mem: mem_gecko::MemGecko,
+    migrations: Vec<SchemaMigration>,
+}
+
+impl GeckoExtension for ProbeMem {
+    fn name(&self) -> &str {
+        "mem-gecko"
+    }
+    fn schema(&self) -> &str {
+        self.mem.schema()
+    }
+    fn schema_migrations(&self) -> &[SchemaMigration] {
+        &self.migrations
+    }
+    fn host_imports(&self) -> Vec<gecko_extension_api::HostImportDef> {
+        vec![]
+    }
+    fn call_import(
+        &self,
+        name: &str,
+        _args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!("no import {name}"))
+    }
+}
+
+#[test]
+fn the_registry_accepts_the_tightening_migrations() {
+    // Form 5: a `redefine` of a mem type's owns card and a one-player cleanup, as
+    // mem migrations, pass the belief-edge registry.
+    let mut migrations = mem_gecko::MEM_MIGRATIONS.to_vec();
+    migrations.extend([
+        SchemaMigration {
+            id: "probe/population-member-one-player",
+            applies_when: "relates member @doc(\"A concept the population's spec currently matches.\")",
+            tql: "match $r isa population-member; { not { $r links (owning-population: $p); }; } or { not { $r links (member: $m); }; }; delete $r;",
+        },
+        SchemaMigration {
+            id: "probe/belief-valid-from-required",
+            applies_when: "  owns valid-from @card(0..1),\n  owns valid-to @card(0..1),\n  plays ",
+            tql: "redefine belief owns valid-from @card(1);",
+        },
+    ]);
+    let exts: Vec<Box<dyn GeckoExtension>> = vec![Box::new(ProbeMem {
+        mem: mem_gecko::MemGecko::new(),
+        migrations,
+    })];
+    mem_gecko::BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &exts)
+        .expect("the registry accepts the tightening migrations");
 }
