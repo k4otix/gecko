@@ -355,9 +355,23 @@ fn tightened_mem() -> String {
 }
 
 /// mem's migrations ahead of the tightened fragment: a one-player cleanup, then the
-/// `redefine` of `belief`'s explicit valid-from card.
+/// `redefine` of `belief`'s explicit valid-from card. The shipped belief-field
+/// migrations are left out: this probe carries its own valid-from `redefine`, and
+/// its fragment keeps belief's old `@doc` and an unranged similarity score.
 fn tightened_mem_migrations() -> Vec<gecko_extension_api::SchemaMigration> {
-    let mut migrations = mem_gecko::MEM_MIGRATIONS.to_vec();
+    let mut migrations: Vec<_> = mem_gecko::MEM_MIGRATIONS
+        .iter()
+        .copied()
+        .filter(|m| {
+            !matches!(
+                m.id,
+                "mem/belief-required-window-doc"
+                    | "mem/belief-valid-from-required"
+                    | "mem/similarity-score-clamp-high"
+                    | "mem/similarity-score-clamp-low"
+            )
+        })
+        .collect();
     migrations.extend([
         gecko_extension_api::SchemaMigration {
             id: "probe/population-member-one-player",

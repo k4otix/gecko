@@ -108,8 +108,9 @@ mod tests {
     fn migrations_lead_to_the_shipped_schema() {
         // Each migration's replaced text is gone from the shipped schema. A
         // `redefine` installs the annotation the shipped schema defines, so applying
-        // the shipped `define` after it is a no-op for that type; a cleanup is a
-        // single `match … delete` of the rows the shipped schema refuses.
+        // the shipped `define` after it is a no-op for that type; an `undefine @doc`
+        // clears text the shipped `define` replaces; a cleanup is a single
+        // `match … delete` or `match … update` of the rows the shipped schema refuses.
         for m in MEM_MIGRATIONS {
             assert!(
                 !MEM_SCHEMA.contains(m.applies_when),
@@ -117,9 +118,25 @@ mod tests {
                 m.id
             );
             if m.tql.starts_with("match ") {
+                let delete = m.tql.ends_with(" delete $r;") && m.tql.matches("delete").count() == 1;
+                let update = m.tql.contains("; update $r has ")
+                    && m.tql.matches("update").count() == 1
+                    && !m.tql.contains("delete");
                 assert!(
-                    m.tql.ends_with(" delete $r;") && m.tql.matches("delete").count() == 1,
-                    "{}: a cleanup is one `match … delete $r;` statement",
+                    delete || update,
+                    "{}: a cleanup is one `match … delete $r;` or `match … update $r has …;` statement",
+                    m.id
+                );
+                continue;
+            }
+            if let Some(target) = m
+                .tql
+                .strip_prefix("undefine @doc from ")
+                .and_then(|t| t.strip_suffix(';'))
+            {
+                assert!(
+                    MEM_SCHEMA.contains(&format!("{target} @doc(")),
+                    "{}: shipped schema gives {target} no @doc to replace the undefined one",
                     m.id
                 );
                 continue;

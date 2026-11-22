@@ -62,7 +62,7 @@ define
   entity memory-item @abstract, sub okf-concept @doc("Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies."),
       owns salience @card(0..1),
       owns base-activation @card(0..1),
-      owns access-count @card(0..1),
+      owns access-count @card(0..1) @range(0..),
       owns last-access @card(0..1),
       owns consolidation-state @card(0..1),
       plays derivation:derived,
@@ -94,11 +94,10 @@ define
       plays execution:episode-step,
       plays tool-invocation:invocation-episode;
 
-  entity belief sub memory-item @doc("A bitemporal proposition the system holds, with a lifecycle state, optional confidence and entrenchment, and an optional validity window."),
+  entity belief sub memory-item @doc("A bitemporal proposition the system holds, with a lifecycle state, a validity window that opens at valid-from and may close at valid-to, optional confidence and entrenchment, and the salience, activation and last access recall ranks it by."),
       owns belief-state @card(1),
-      owns confidence @card(0..1),
+      owns confidence @card(0..1) @range(0.0..1.0),
       owns entrenchment @card(0..1),
-      owns valid-from @card(0..1),
       owns valid-to @card(0..1),
       owns retrieval-provenance @card(0..1),   # write-once summary flag (A2.10)
       plays contradiction:claim,
@@ -106,9 +105,15 @@ define
       plays prediction-resolution:predicted-belief,
       plays informs-synthesis:synthesized;
 
+  # Every belief carries the window start and the decay inputs recall reads.
+  belief owns valid-from @card(1);
+  belief owns salience @card(1);
+  belief owns base-activation @card(1);
+  belief owns last-access @card(1);
+
   entity playbook sub memory-item @doc("A reusable procedure held in memory, with a stability tier and a count of how many times it has been corroborated."),
       owns stability-tier @card(0..1),
-      owns corroboration-count @card(0..1);
+      owns corroboration-count @card(0..1) @range(0..);
 
   entity working-set sub memory-item @doc("A transient grouping of memory items held together for the duration of a task.");
 
@@ -123,7 +128,7 @@ define
       relates derived @card(1) @doc("The memory item produced by the derivation."),
       relates source @card(1..) @doc("A memory item the derivation drew on."),
       owns derivation-method @card(1),
-      owns confidence @card(0..1);
+      owns confidence @card(0..1) @range(0.0..1.0);
 
   relation evidence @doc("Ties a memory item to the one or more evidence items that support it."),                       # n-ary
       relates evidenced @card(1) @doc("The memory item being evidenced."),
@@ -219,7 +224,7 @@ define
   relation prediction-resolution @doc("Ties a predicted belief to the episode that resolved it, recording the predicted probability and the observed outcome."),
       relates predicted-belief @doc("The belief whose prediction is being resolved."),
       relates resolving-episode @doc("The episode that resolved the prediction."),
-      owns predicted-probability @card(0..1),
+      owns predicted-probability @card(0..1) @range(0.0..1.0),
       owns outcome @card(0..1);
 
   # doc-run provenance
@@ -302,7 +307,7 @@ define
   relation surfaced @doc("Reified record of what a retrieval surfaced, and the search signal behind it — similarity score and whether the item was actually used."),                       # reified: what was surfaced + the SEARCH signal
       relates surfacer @card(1) @doc("The retrieval event that surfaced the item."),
       relates item @card(1) @doc("A memory item (typically a belief) surfaced by the retrieval."),
-      owns similarity-score @card(0..1),   # cosine; meaningful only for semantic method
+      owns similarity-score @card(0..1) @range(-1.0..1.0),   # cosine; meaningful only for semantic method
       owns was-used @card(0..1);           # consumed by synthesis vs merely returned
 
   relation informs-synthesis @doc("Ties a synthesized belief to the retrieval that informed it; episodic provenance kept firewalled from the logical derivation chain."),              # ties a synthesized belief to the retrieval
@@ -312,7 +317,7 @@ define
   # retrieval-event: episodic record that a retrieval happened
   entity retrieval-event sub execution-episode @doc("An episodic record that a recall happened: the retrieval method used and how many candidates it considered."),
       owns retrieval-method @card(0..1),
-      owns candidate-count @card(0..1),
+      owns candidate-count @card(0..1) @range(0..),
       plays surfaced:surfacer;
 
   # ══════════════════════════════════════════════════════════════════

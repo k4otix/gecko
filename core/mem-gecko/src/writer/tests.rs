@@ -1,5 +1,5 @@
 use super::beliefs::validate_confidence;
-use super::reader::{DEFAULT_HALF_LIFE_HOURS, recency_decay};
+use super::reader::{DEFAULT_HALF_LIFE_HOURS, clamp_similarity, recency_decay};
 use super::*;
 use DerivationMethod::LlmSynthesis;
 use async_trait::async_trait;
@@ -22,6 +22,19 @@ fn confidence_validation_enforces_range_and_invariant_7() {
     assert!(validate_confidence(Some(1.0), Some(TypeJoin)).is_ok());
     assert!(validate_confidence(Some(0.0), Some(HumanAssertion)).is_ok());
     assert!(validate_confidence(None, Some(LlmSynthesis)).is_ok());
+}
+
+#[test]
+fn similarity_score_is_clamped() {
+    // The index reports `1 - distance` as an f32, which can land just outside the
+    // cosine range the schema's `@range(-1.0..1.0)` allows.
+    let just_above = 1.0 - (-f32::EPSILON);
+    assert!(just_above > 1.0);
+    assert_eq!(clamp_similarity(just_above), 1.0);
+    assert_eq!(clamp_similarity(-1.0 - f32::EPSILON), -1.0);
+    for s in [-1.0, -0.25, 0.0, 0.75, 1.0] {
+        assert_eq!(clamp_similarity(s), s);
+    }
 }
 
 fn ctx() -> RunContext {

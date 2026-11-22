@@ -115,6 +115,32 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         applies_when: "relates prevailing @doc(\"The belief the disposition resolved toward.\")",
         tql: "match $r isa divergence-precedence; { not { $r links (prevailing: $p0); }; } or { not { $r links (overridden: $p1); }; }; delete $r;",
     },
+    // Belief's `@doc` sits on its `sub` declaration, which `redefine` cannot reach;
+    // the shipped `define` sets the new text once the old one is gone.
+    SchemaMigration {
+        id: "mem/belief-required-window-doc",
+        applies_when: "@doc(\"A bitemporal proposition the system holds, with a lifecycle state, optional confidence and entrenchment, and an optional validity window.\")",
+        tql: "undefine @doc from belief sub memory-item;",
+    },
+    // `population-member` prints the same `owns valid-from` line, so the trigger
+    // takes belief's next line and the start of its plays too.
+    SchemaMigration {
+        id: "mem/belief-valid-from-required",
+        applies_when: "  owns valid-from @card(0..1),\n  owns valid-to @card(0..1),\n  plays ",
+        tql: "redefine belief owns valid-from @card(1);",
+    },
+    // The index reports similarity as an unclamped f32, so a recorded score can sit
+    // just outside the cosine range; each runs while the score has no range.
+    SchemaMigration {
+        id: "mem/similarity-score-clamp-high",
+        applies_when: "owns similarity-score @card(0..1),",
+        tql: "match $r isa surfaced, has similarity-score $s; $s > 1.0; update $r has similarity-score 1.0;",
+    },
+    SchemaMigration {
+        id: "mem/similarity-score-clamp-low",
+        applies_when: "owns similarity-score @card(0..1),",
+        tql: "match $r isa surfaced, has similarity-score $s; $s < -1.0; update $r has similarity-score -1.0;",
+    },
 ];
 
 /// Open-set `origin-kind` discriminator for a run's provenance source (invariant 9:

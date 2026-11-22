@@ -544,7 +544,9 @@ async fn a_memory_item_with_two_ownerships_is_refused_at_commit() {
         insert
           $ag isa agent, has agent-id "agent-1";
           $run isa doc-run, has run-id "run-1";
-          $b isa belief, has concept-id "mem/bel/two-owners", has belief-state "asserted";
+          $b isa belief, has concept-id "mem/bel/two-owners", has belief-state "asserted",
+              has valid-from 2026-01-01T00:00:00, has salience 0.5,
+              has base-activation 1.0, has last-access 2026-01-01T00:00:00;
           (memory: $b, origin: $run) isa source-link, has origin-kind "test";
           (owned: $b, owner: $ag) isa ownership, has visibility "private";
           (owned: $b, owner: $ag) isa ownership, has visibility "team";
@@ -569,7 +571,9 @@ async fn a_memory_item_with_no_source_link_is_refused_at_commit() {
         r#"
         insert
           $ag isa agent, has agent-id "agent-1";
-          $b isa belief, has concept-id "mem/bel/unsourced", has belief-state "asserted";
+          $b isa belief, has concept-id "mem/bel/unsourced", has belief-state "asserted",
+              has valid-from 2026-01-01T00:00:00, has salience 0.5,
+              has base-activation 1.0, has last-access 2026-01-01T00:00:00;
           (owned: $b, owner: $ag) isa ownership, has visibility "private";
         "#,
     )
@@ -951,6 +955,151 @@ async fn a_database_holding_a_one_player_row_upgrades() {
         .await;
         assert_eq!(all.len(), 1, "{rel}: only the fully-played row is left");
         assert_eq!(played.len(), 1, "{rel}: the fully-played row survives");
+    }
+    drop_db(router, &name).await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Acceptance: a belief carries every field recall reads, and scores stay in
+// range. A missing field is refused at commit; an out-of-range value at write.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The fields recall reads on every belief, with a conforming value each.
+const BELIEF_FIELDS: [(&str, &str); 4] = [
+    ("valid-from", "2026-01-01T00:00:00"),
+    ("salience", "0.5"),
+    ("base-activation", "1.0"),
+    ("last-access", "2026-01-01T00:00:00"),
+];
+
+/// A raw belief `id` with its ownership and source-link, every field of
+/// [`BELIEF_FIELDS`] except `omit`, and the extra `has` clauses in `extra`.
+fn belief_insert(id: &str, omit: Option<&str>, extra: &str) -> String {
+    let fields: String = BELIEF_FIELDS
+        .iter()
+        .filter(|(attr, _)| Some(*attr) != omit)
+        .map(|(attr, value)| format!(", has {attr} {value}"))
+        .collect();
+    format!(
+        r#"insert
+          $ag isa agent, has agent-id "agent-{id}";
+          $run isa doc-run, has run-id "run-{id}";
+          $b isa belief, has concept-id "mem/bel/{id}", has belief-state "asserted"{fields}{extra};
+          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
+          (owned: $b, owner: $ag) isa ownership, has visibility "private";"#
+    )
+}
+
+/// Commits a belief with every field (the control), then asserts the commit of
+/// one without `attr` is refused with an error naming the attribute.
+async fn assert_belief_without_refused(attr: &str) {
+    let (mut router, name) = fresh_db().await;
+    write(&mut router, &belief_insert("full", None, ""))
+        .await
+        .expect("a belief with every field commits");
+    let err = write(&mut router, &belief_insert("partial", Some(attr), ""))
+        .await
+        .expect_err(&format!("a belief without {attr} commits"));
+    assert!(
+        err.contains("@card") && err.contains(&format!("type '{attr}'")),
+        "the refusal does not name {attr}'s card: {err}"
+    );
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_belief_without_valid_from_is_refused() {
+    assert_belief_without_refused("valid-from").await;
+}
+
+#[tokio::test]
+async fn a_belief_without_salience_is_refused() {
+    assert_belief_without_refused("salience").await;
+}
+
+#[tokio::test]
+async fn a_belief_without_base_activation_is_refused() {
+    assert_belief_without_refused("base-activation").await;
+}
+
+#[tokio::test]
+async fn a_belief_without_last_access_is_refused() {
+    assert_belief_without_refused("last-access").await;
+}
+
+/// Whether a refused write's error is an `@range` violation on attribute `attr`.
+fn names_range_violation(err: &str, attr: &str) -> bool {
+    err.contains("@range") && err.contains(&format!("'{attr}'"))
+}
+
+#[tokio::test]
+async fn a_confidence_of_1_5_is_refused() {
+    let (mut router, name) = fresh_db().await;
+    write(
+        &mut router,
+        &belief_insert("edge", None, ", has confidence 1.0"),
+    )
+    .await
+    .expect("a confidence of 1.0 commits");
+    let err = write(
+        &mut router,
+        &belief_insert("over", None, ", has confidence 1.5"),
+    )
+    .await
+    .expect_err("a confidence of 1.5 commits");
+    assert!(names_range_violation(&err, "confidence"), "{err}");
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_negative_candidate_count_is_refused() {
+    let (mut router, name) = fresh_db().await;
+    let event = |id: &str, count: i64| {
+        format!(
+            r#"insert $re isa retrieval-event, has concept-id "mem/re/{id}",
+                   has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
+                   has candidate-count {count};"#
+        )
+    };
+    write_seed(&mut router, &event("zero", 0))
+        .await
+        .expect("a candidate-count of 0 commits");
+    let err = write_seed(&mut router, &event("neg", -1))
+        .await
+        .expect_err("a negative candidate-count commits");
+    assert!(names_range_violation(&err, "candidate-count"), "{err}");
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
+async fn a_similarity_score_outside_minus_1_to_1_is_refused() {
+    let (mut router, name) = fresh_db().await;
+    write_seed(
+        &mut router,
+        r#"insert
+          $b isa belief, has concept-id "mem/bel/s", has belief-state "asserted";
+          $re isa retrieval-event, has concept-id "mem/re/s",
+              has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;"#,
+    )
+    .await
+    .expect("seed the surfacer and item");
+    let surfaced = |score: f64| {
+        format!(
+            r#"match $b isa belief, has concept-id "mem/bel/s";
+                     $re isa retrieval-event, has concept-id "mem/re/s";
+               insert (surfacer: $re, item: $b) isa surfaced, has similarity-score {score:?};"#
+        )
+    };
+    for score in [-1.0, 1.0] {
+        write(&mut router, &surfaced(score))
+            .await
+            .unwrap_or_else(|e| panic!("a similarity-score of {score} commits: {e}"));
+    }
+    for score in [-1.01, 1.01] {
+        let err = write(&mut router, &surfaced(score))
+            .await
+            .expect_err(&format!("a similarity-score of {score} commits"));
+        assert!(names_range_violation(&err, "similarity-score"), "{err}");
     }
     drop_db(router, &name).await;
 }

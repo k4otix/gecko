@@ -245,9 +245,9 @@ async fn fingerprint_counts_instances_attributes_and_links() {
     let got: BTreeSet<String> = f0.changes_to(&f1).iter().map(|c| c.to_string()).collect();
     let want: BTreeSet<String> = [
         change("belief", BeliefTierMeasure::Instances, 0, 2),
-        change("belief", BeliefTierMeasure::Attributes, 0, 4),
+        change("belief", BeliefTierMeasure::Attributes, 0, 12),
         change("memory-item", BeliefTierMeasure::Instances, 0, 2),
-        change("memory-item", BeliefTierMeasure::Attributes, 0, 4),
+        change("memory-item", BeliefTierMeasure::Attributes, 0, 12),
         change("ownership", BeliefTierMeasure::Instances, 0, 2),
         change("ownership", BeliefTierMeasure::Attributes, 0, 2),
         change("ownership", BeliefTierMeasure::Links, 0, 4),

@@ -25,6 +25,12 @@ pub(super) const DEFAULT_HALF_LIFE_HOURS: f64 = 168.0;
 /// Bounds how many gated-candidate fetches `recall` runs concurrently.
 const RECALL_FETCH_CONCURRENCY: usize = 8;
 
+/// Clamps an index similarity to the cosine range `[-1, 1]` the schema's
+/// `similarity-score` allows; the index's f32 `1 - distance` can land just outside.
+pub(super) fn clamp_similarity(similarity: f32) -> f32 {
+    similarity.clamp(-1.0, 1.0)
+}
+
 impl MemWriter {
     // ── Persisted-function readers ───────────────────────────────────────────
 
@@ -220,7 +226,7 @@ impl MemWriter {
                         Chunk {
                             id: MemId(cid.0),
                             text: title,
-                            score: sim,
+                            score: clamp_similarity(sim),
                         },
                         rank,
                     )

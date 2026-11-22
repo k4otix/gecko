@@ -11,6 +11,8 @@ use gecko_extension_api::{GeckoExtension, SchemaMigration};
 use ulid::Ulid;
 
 mod common;
+#[path = "common/provenance.rs"]
+mod provenance;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
@@ -486,4 +488,134 @@ fn the_registry_accepts_the_tightening_migrations() {
     })];
     mem_gecko::BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &exts)
         .expect("the registry accepts the tightening migrations");
+}
+
+/// The core and mem schemas as released before belief fields were required.
+const PRE_CORE: &str =
+    include_str!("../../../gecko-bin/tests/fixtures/schemas_pre_tightening/core_schema.tql");
+const PRE_MEM_TYPES: &str =
+    include_str!("../../../gecko-bin/tests/fixtures/schemas_pre_tightening/mem_types.tql");
+const PRE_MEM_FUNCTIONS: &str =
+    include_str!("../../../gecko-bin/tests/fixtures/schemas_pre_tightening/mem_functions.tql");
+
+/// The pre-change mem types and functions as one `define`, composed as mem-gecko
+/// composes its shipped schema.
+fn pre_mem_schema() -> String {
+    let functions = PRE_MEM_FUNCTIONS
+        .trim_start()
+        .strip_prefix("define")
+        .expect("the functions fragment starts with define");
+    format!("{}\n{functions}", PRE_MEM_TYPES.trim_end())
+}
+
+/// The migration that makes `belief owns valid-from` required.
+fn valid_from_migration() -> &'static SchemaMigration {
+    mem_gecko::MEM_MIGRATIONS
+        .iter()
+        .find(|m| m.tql == "redefine belief owns valid-from @card(1);")
+        .expect("a migration makes belief's valid-from required")
+}
+
+/// Runs a write transaction whose raw memory items get their ownership, source-link
+/// and belief fields from [`provenance::seed_provenance`] before the commit.
+async fn write_seed(router: &mut TypeDbRouter, tql: &str) -> Result<(), String> {
+    let tx = router.begin_write().await.map_err(|e| e.to_string())?;
+    tx.query(tql).await.map_err(|e| e.to_string())?;
+    gecko_engine::db::run_graph_writes(&tx, &provenance::seed_provenance())
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+#[tokio::test]
+async fn the_valid_from_migration_applies_once_to_an_existing_database() {
+    let (mut router, name) = router();
+    router
+        .apply_schema(PRE_CORE)
+        .await
+        .expect("pre-change core");
+    router
+        .apply_schema(&pre_mem_schema())
+        .await
+        .expect("pre-change mem");
+    // A belief as the writer stores it, a population membership whose window
+    // stays optional, and a similarity score just above 1 from an f32 cosine.
+    write_seed(
+        &mut router,
+        r#"insert
+          $b isa belief, has concept-id "mem/bel/vf", has belief-state "asserted",
+              has valid-from 2026-01-01T00:00:00, has salience 0.5,
+              has base-activation 1.0, has last-access 2026-01-01T00:00:00;
+          $p isa population, has spec-hash "pop-vf";
+          $c isa concept, has concept-id "c/vf";
+          (owning-population: $p, member: $c) isa population-member;
+          $re isa retrieval-event, has concept-id "mem/re/vf",
+              has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
+          (surfacer: $re, item: $b) isa surfaced, has similarity-score 1.0000001192092896;"#,
+    )
+    .await
+    .expect("seed the pre-change database");
+
+    let migration = valid_from_migration();
+    let before = router.database_schema().await.expect("schema");
+    assert_eq!(
+        before.matches(migration.applies_when).count(),
+        1,
+        "the valid-from trigger is not unique to belief:\n{before}"
+    );
+    let mem = mem_gecko::MemGecko::new();
+    for _ in 0..2 {
+        router
+            .apply_schema_with_migrations(CORE_SCHEMA, gecko_engine::db::CORE_MIGRATIONS)
+            .await
+            .expect("core upgrades");
+        router
+            .apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+            .await
+            .expect("mem upgrades, and a second apply is a no-op");
+    }
+    let after = router.database_schema().await.expect("schema");
+    for m in mem.schema_migrations() {
+        assert!(!after.contains(m.applies_when), "{} left old text", m.id);
+    }
+    assert_eq!(
+        after.matches("owns valid-from @card(1..1)").count(),
+        1,
+        "belief's valid-from is required:\n{after}"
+    );
+    assert_eq!(
+        after.matches("owns valid-from @card(0..1)").count(),
+        1,
+        "population-member's valid-from stays optional:\n{after}"
+    );
+    assert!(
+        after.contains("validity window that opens at valid-from"),
+        "belief's @doc describes the required valid-from:\n{after}"
+    );
+
+    // The upgraded database refuses a belief without valid-from…
+    let err = write(
+        &mut router,
+        r#"insert
+          $ag isa agent, has agent-id "agent-vf";
+          $run isa doc-run, has run-id "run-vf";
+          $b isa belief, has concept-id "mem/bel/no-vf", has belief-state "asserted",
+              has salience 0.5, has base-activation 1.0, has last-access 2026-01-01T00:00:00;
+          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
+          (owned: $b, owner: $ag) isa ownership, has visibility "private";"#,
+    )
+    .await
+    .expect_err("a belief without valid-from commits after the upgrade");
+    assert!(err.contains("type 'valid-from'"), "{err}");
+    // …and holds the out-of-range similarity score clamped to 1.
+    assert_eq!(
+        count(
+            &mut router,
+            "match $s isa surfaced, has similarity-score $v; $v == 1.0;"
+        )
+        .await,
+        1,
+        "the similarity score above 1 is clamped"
+    );
+    common::drop_db_with_retry(&mut router, &name).await;
 }
