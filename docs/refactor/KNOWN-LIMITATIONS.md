@@ -178,6 +178,12 @@ any other caller.
 - **A platform with several analytics counts as covered if any can run.** ATT&CK ships
   one analytic per platform per strategy, so this does not occur on v20.1, but a future
   bundle with several could hide a blind analytic behind a covered one.
+- **`recommend_sources` is greedy, not optimal.** Each step takes the analytic gap set
+  with the most (claim, platform) pairs unblinded per new log source; a different order
+  can sometimes unblind the same claims with fewer sources. Every log source costs the
+  same, and the list names log sources only, never a fallback data component. Its
+  `no-analytic` reason also covers a claim on a retired, revoked or deprecated technique,
+  which `blinded` reports as unassessed on every platform.
 - **A pre-existing `sensor` without `platform` fails the schema upgrade.** The current
   schema requires a sensor's `platform`; a database holding a `sensor` written under the
   earlier cyber schema, which had none, cannot apply it. Nothing in GECKO wrote sensors

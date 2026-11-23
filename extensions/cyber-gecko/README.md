@@ -3,7 +3,7 @@
 A GECKO domain extension for detection engineering. It imports STIX 2.1 / MITRE
 ATT&CK bundles into typed cyber entities, loads a sensor file describing what you
 monitor, and gives playbooks the `cyber-gecko` host imports `claim`, `disposition`,
-`coverage_gaps`, `blinded` and `precision`. It compiles in under the `cyber` feature
+`coverage_gaps`, `blinded`, `recommend_sources` and `precision`. It compiles in under the `cyber` feature
 and is activated with `cyber-gecko` in `gecko.toml`'s `[extensions] enabled`. The
 extension contract it follows is [`extensions/README.md`](../README.md); its caveats
 are in [`docs/refactor/KNOWN-LIMITATIONS.md`](../../docs/refactor/KNOWN-LIMITATIONS.md).
@@ -123,3 +123,48 @@ data component.
 
 `blinded` returns an error, never an empty report, when no sensor file is synced or
 the graph holds no current ATT&CK detection data (sync or re-sync the ATT&CK bundle).
+
+## `recommend_sources`
+
+A playbook granted the `cyber-gecko:recommend_sources` scope calls
+`gecko.callExtension("cyber-gecko", "recommend_sources", {})`. It turns `blinded`'s
+blind platforms into an ordered list of ATT&CK log sources to start collecting. Each
+step adds one analytic's remaining missing log sources on one platform: the step that
+unblinds the most (claim, platform) pairs per new log source, ties going to the step
+that unblinds more, then to the smaller platform and keys. A later step counts only the
+sources earlier steps have not already added. `cumulative_unblinded` is the running
+count of (claim, platform) pairs that can run once every step so far is in place.
+
+Claims no log source can fix are listed under `unfixable`: `no-requirements` when every
+live analytic on that platform names no live log source, and `no-analytic` when the
+platform is unassessed (no live analytic there, or the technique is retired, revoked or
+deprecated).
+
+```json
+{
+  "steps": [
+    {
+      "platform": "Windows",
+      "add": [
+        { "log_source": "WinEventLog:Security", "key": "wineventlog:security",
+          "channels": ["EventCode=4103", "EventCode=4688"] }
+      ],
+      "unblinds": [
+        { "concept_id": "playbooks/detect-t1059", "technique": "T1059",
+          "technique_concept_id": "stix/attack-pattern/..." }
+      ],
+      "cumulative_unblinded": 1
+    }
+  ],
+  "unfixable": [
+    { "concept_id": "playbooks/detect-t1059", "technique": "T1059",
+      "technique_concept_id": "stix/attack-pattern/...", "platform": "macOS",
+      "reason": "no-requirements" }
+  ]
+}
+```
+
+`channels` lists every channel ATT&CK names for that log source on that platform,
+across all blind claims, since each source is recommended once, in the first step that
+needs it. The list recommends log sources only, never a fallback data component, and
+errors on the same graphs as `blinded`.

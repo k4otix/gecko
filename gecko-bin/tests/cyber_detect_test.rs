@@ -1058,8 +1058,16 @@ async fn blinded_errors_without_a_sensor_file() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn blinded_errors_on_a_pre_current_graph() {
-    // A pre-v18 bundle: a data component detects the technique directly.
-    let test_db = TestDb::new("gecko_test_blinded_pre_current");
+    let (_test_db, cb) = pre_current_bridge("gecko_test_blinded_pre_current").await;
+    let err = call(&cb, "blinded", json!({})).expect_err("a pre-current graph is an error");
+    assert!(err.contains("no current ATT&CK detection data"), "{err}");
+    assert!(err.contains("re-sync the ATT&CK bundle"), "{err}");
+}
+
+/// A graph holding a pre-v18 bundle, where a data component detects the technique
+/// directly, and a sensor file; and the bridge over it.
+async fn pre_current_bridge(name: &str) -> (TestDb, ExtensionCallback) {
+    let test_db = TestDb::new(name);
     apply_schemas(&test_db).await;
     let json = json!({
         "type": "bundle",
@@ -1082,7 +1090,119 @@ async fn blinded_errors_on_a_pre_current_graph() {
 
     let (graph, edges) = detect_handles(&test_db);
     let cb = cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base());
-    let err = call(&cb, "blinded", json!({})).expect_err("a pre-current graph is an error");
-    assert!(err.contains("no current ATT&CK detection data"), "{err}");
-    assert!(err.contains("re-sync the ATT&CK bundle"), "{err}");
+    (test_db, cb)
+}
+
+// ── recommend_sources ───────────────────────────────────────────────────────
+
+impl Rig {
+    fn recommend(&self) -> Value {
+        call(&self.cb, "recommend_sources", json!({})).expect("recommend_sources")
+    }
+}
+
+fn source(log_source: &str, key: &str, channels: &[&str]) -> Value {
+    json!({ "log_source": log_source, "key": key, "channels": channels })
+}
+
+fn claim_ref(logic: &str) -> Value {
+    json!({ "concept_id": logic, "technique": attack::TECHNIQUE_ATTACK_ID,
+            "technique_concept_id": TECHNIQUE_CONCEPT_ID })
+}
+
+fn unfixable(logic: &str, platform: &str, reason: &str) -> Value {
+    json!({ "concept_id": logic, "technique": attack::TECHNIQUE_ATTACK_ID,
+            "technique_concept_id": TECHNIQUE_CONCEPT_ID, "platform": platform,
+            "reason": reason })
+}
+
+fn linux_sources() -> Value {
+    json!([
+        source("auditd:SYSCALL", "auditd:syscall", &["execve"]),
+        source("linux:syslog", "linux:syslog", &[]),
+        source("nsm:flow", "nsm:flow", &["connect"]),
+    ])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_sensor_recommends_each_platform_in_order() {
+    let (a, b) = ("playbooks/detect-a", "playbooks/detect-b");
+    let rig = Rig::new("gecko_test_recommend_no_sensor", &[b, a]).await;
+    rig.sensors("platforms: [Windows, Linux, macOS, Containers]\nsensors: []\n")
+        .await;
+    let both = json!([claim_ref(a), claim_ref(b)]);
+    assert_eq!(
+        rig.recommend(),
+        json!({
+            "steps": [
+                { "platform": "Linux", "add": linux_sources(), "unblinds": both,
+                  "cumulative_unblinded": 2 },
+                { "platform": "Windows",
+                  "add": [
+                      source("NSM:Flow", "nsm:flow", &[]),
+                      source("WinEventLog:Security", "wineventlog:security",
+                             &["EventCode=4103", "EventCode=4688"]),
+                      source("WinEventLog:Sysmon", "wineventlog:sysmon",
+                             &["EventCode=1", "EventCode=10"]),
+                  ],
+                  "unblinds": both, "cumulative_unblinded": 4 },
+            ],
+            "unfixable": [
+                unfixable(a, "Containers", "no-analytic"),
+                unfixable(a, "macOS", "no-requirements"),
+                unfixable(b, "Containers", "no-analytic"),
+                unfixable(b, "macOS", "no-requirements"),
+            ],
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_sensor_recommends_only_the_remainder() {
+    let rig = Rig::with_sensors(
+        "gecko_test_recommend_partial",
+        r#"
+platforms: [Windows, Linux]
+sensors:
+  - name: windows-edr
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:Security]
+"#,
+    )
+    .await;
+    let one = json!([claim_ref(LOGIC_ID)]);
+    assert_eq!(
+        rig.recommend(),
+        json!({
+            "steps": [
+                { "platform": "Windows", "add": [source("NSM:Flow", "nsm:flow", &[])],
+                  "unblinds": one, "cumulative_unblinded": 1 },
+                { "platform": "Linux", "add": linux_sources(), "unblinds": one,
+                  "cumulative_unblinded": 2 },
+            ],
+            "unfixable": [],
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fully_covered_recommends_nothing() {
+    let rig = Rig::with_sensors("gecko_test_recommend_covered", WINDOWS_FULL).await;
+    assert_eq!(rig.recommend(), json!({ "steps": [], "unfixable": [] }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recommend_sources_errors_without_a_sensor_file() {
+    let rig = Rig::new("gecko_test_recommend_no_file", &[LOGIC_ID]).await;
+    let err = call(&rig.cb, "recommend_sources", json!({})).expect_err("no sensor file");
+    let blinded = call(&rig.cb, "blinded", json!({})).expect_err("no sensor file");
+    assert_eq!(err, blinded);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recommend_sources_errors_without_detection_strategies() {
+    let (_test_db, cb) = pre_current_bridge("gecko_test_recommend_pre_current").await;
+    let err = call(&cb, "recommend_sources", json!({})).expect_err("a pre-current graph");
+    let blinded = call(&cb, "blinded", json!({})).expect_err("a pre-current graph");
+    assert_eq!(err, blinded);
 }
