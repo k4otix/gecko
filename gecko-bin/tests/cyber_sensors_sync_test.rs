@@ -25,6 +25,8 @@ use tokio::sync::Mutex;
 #[path = "common/attack.rs"]
 mod attack;
 mod common;
+#[path = "common/stix_objects.rs"]
+mod stix_objects;
 use common::TestDb;
 
 /// The read-only graph handle the cyber bridge uses.

@@ -71,6 +71,7 @@ fn sdo_type_hint(type_str: &str) -> &'static str {
         "x-mitre-data-component" => "data-component",
         "x-mitre-detection-strategy" => "detection-strategy",
         "x-mitre-analytic" => "analytic",
+        "x-mitre-tactic" => "tactic",
         _ => "cyber-object",
     }
 }
@@ -122,11 +123,16 @@ pub struct StixRelations {
     pub analytics: Vec<String>,
     /// The concept id of every detection strategy in the bundle, sorted.
     pub strategies: Vec<String>,
+    /// The concept id of every attack-pattern in the bundle, sorted.
+    pub techniques: Vec<String>,
+    /// The concept id of every attack-pattern, intrusion set, malware and tool in
+    /// the bundle, sorted: the objects a `revoked-by` can retire.
+    pub revocable: Vec<String>,
 }
 
 /// The version of the STIX-to-graph mapping, folded into every concept's content
 /// hash so that a mapping change refreshes every concept on the next import.
-pub const STIX_MAPPING_VERSION: &str = "2";
+pub const STIX_MAPPING_VERSION: &str = "3";
 
 /// The content hash of a STIX object under mapping `version`: SHA-256 over the
 /// version, then the object's JSON. serde_json serializes object keys in sorted
@@ -220,6 +226,61 @@ fn collect_requirements(
     Ok(())
 }
 
+/// The kill chain each ATT&CK domain's techniques name in `kill_chain_phases`, by
+/// the domain a tactic lists in `x_mitre_domains`.
+const KILL_CHAINS: [(&str, &str); 3] = [
+    ("enterprise-attack", "mitre-attack"),
+    ("mobile-attack", "mitre-mobile-attack"),
+    ("ics-attack", "mitre-ics-attack"),
+];
+
+/// A tactic's index key: (kill-chain name, shortname).
+type TacticKey = (String, String);
+
+/// Indexes every tactic in `objects`, live or retired, by the kill chain of each
+/// of its domains and its shortname, to its (concept id, STIX id). A tactic
+/// without a shortname or a domain, with a domain outside [`KILL_CHAINS`], or
+/// sharing a key with another tactic is refused.
+fn tactic_index(objects: &[Value]) -> Result<BTreeMap<TacticKey, (String, String)>, String> {
+    let mut index: BTreeMap<TacticKey, (String, String)> = BTreeMap::new();
+    for obj in objects
+        .iter()
+        .filter(|o| get_str(o, "type") == Some("x-mitre-tactic"))
+    {
+        let stix_id =
+            get_str(obj, "id").ok_or("STIX x-mitre-tactic object missing required 'id'")?;
+        let shortname = get_str(obj, "x_mitre_shortname")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("tactic {stix_id} has no x_mitre_shortname"))?;
+        let domains = obj
+            .get("x_mitre_domains")
+            .and_then(Value::as_array)
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| format!("tactic {stix_id} has no x_mitre_domains"))?;
+        for domain in domains {
+            let chain = domain
+                .as_str()
+                .and_then(|d| KILL_CHAINS.iter().find(|(name, _)| *name == d))
+                .map(|(_, chain)| *chain)
+                .ok_or_else(|| {
+                    format!(
+                        "tactic {stix_id} has the domain {domain}, which names no ATT&CK kill chain"
+                    )
+                })?;
+            let key = (chain.to_string(), shortname.to_string());
+            if let Some((_, other)) = index.get(&key)
+                && other != stix_id
+            {
+                return Err(format!(
+                    "tactics {other} and {stix_id} both name the kill-chain phase {chain}:{shortname}"
+                ));
+            }
+            index.insert(key, (derive_id(stix_id), stix_id.to_string()));
+        }
+    }
+    Ok(index)
+}
+
 pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
     let parsed: Value = serde_json::from_str(bundle_json).map_err(|e| e.to_string())?;
 
@@ -245,6 +306,12 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
     let mut raw_requirements: BTreeMap<RequirementKey, BTreeSet<String>> = BTreeMap::new();
     let mut analytics = Vec::new();
     let mut strategies = Vec::new();
+    let mut techniques = Vec::new();
+    let mut revocable = Vec::new();
+    let tactics = tactic_index(objects)?;
+    // Technique-to-tactic relations, resolved from kill-chain phases through
+    // `tactics`; both ends are in-bundle, so they need no type resolution.
+    let mut tactic_rels = Vec::new();
 
     for obj in objects {
         let type_str = get_str(obj, "type")
@@ -292,17 +359,22 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
             }
         }
         // ATT&CK reuses an id across a live object and its deprecated or revoked
-        // predecessors; only the live object claims the unique attack-id.
+        // predecessors; only the live object claims the unique attack-id, and a
+        // retired one keeps it as the non-unique retired-attack-id.
         let retired = ["x_mitre_deprecated", "revoked"]
             .iter()
             .any(|k| obj.get(*k).and_then(Value::as_bool) == Some(true));
-        if !retired && let Some(ext_refs) = obj.get("external_references").and_then(Value::as_array)
-        {
+        let id_attr = if retired {
+            "retired-attack-id"
+        } else {
+            "attack-id"
+        };
+        if let Some(ext_refs) = obj.get("external_references").and_then(Value::as_array) {
             for r in ext_refs {
                 if get_str(r, "source_name") == Some("mitre-attack")
                     && let Some(ext_id) = get_str(r, "external_id")
                 {
-                    typed.push(str_attr("attack-id", ext_id));
+                    typed.push(str_attr(id_attr, ext_id));
                 }
             }
         }
@@ -315,10 +387,44 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
                 typed.push(str_attr("platform", p));
             }
         }
+        // A technique's phase on an ATT&CK kill chain names a tactic in the bundle;
+        // a bundle without tactics, or a phase on another kill chain, keeps the
+        // phase only as the attribute.
         if let Some(phases) = obj.get("kill_chain_phases").and_then(Value::as_array) {
-            for ph in phases.iter().filter_map(|p| get_str(p, "phase_name")) {
-                typed.push(str_attr("kill-chain-phase", ph));
+            for ph in phases {
+                let Some(phase) = get_str(ph, "phase_name") else {
+                    continue;
+                };
+                typed.push(str_attr("kill-chain-phase", phase));
+                if type_hint != "attack-pattern" || tactics.is_empty() {
+                    continue;
+                }
+                let Some(chain) = get_str(ph, "kill_chain_name")
+                    .filter(|c| KILL_CHAINS.iter().any(|(_, chain)| chain == c))
+                else {
+                    continue;
+                };
+                let (tactic, _) = tactics
+                    .get(&(chain.to_string(), phase.to_string()))
+                    .ok_or_else(|| {
+                        format!(
+                            "technique {id_str} has the kill-chain phase {chain}:{phase}, which \
+                             names no tactic in the bundle"
+                        )
+                    })?;
+                tactic_rels.push(TypedRelation {
+                    source: concept_id.clone(),
+                    target: tactic.clone(),
+                    source_type: type_hint.to_string(),
+                    target_type: "tactic".to_string(),
+                    rel_type: TECHNIQUE_TACTIC_REL.to_string(),
+                });
             }
+        }
+        if type_hint == "tactic" {
+            let shortname = get_str(obj, "x_mitre_shortname")
+                .ok_or_else(|| format!("tactic {id_str} has no x_mitre_shortname"))?;
+            typed.push(str_attr("tactic-shortname", shortname));
         }
 
         if type_hint == "data-component"
@@ -359,6 +465,12 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
             "detection-strategy" => strategies.push(concept_id.clone()),
             _ => {}
         }
+        if type_hint == "attack-pattern" {
+            techniques.push(concept_id.clone());
+        }
+        if REVOKED_BY.source_players.contains(&type_hint) {
+            revocable.push(concept_id.clone());
+        }
         id_types.insert(concept_id.clone(), type_hint);
 
         let mut tags = Vec::new();
@@ -395,6 +507,9 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
         });
     }
 
+    // The one target of each (relation, source) a source may name at most once,
+    // as the target's STIX id.
+    let mut single_targets: HashMap<(&str, String), &str> = HashMap::new();
     for sro in sros {
         let rel_type = get_str(sro, "relationship_type").unwrap_or("");
         let source_ref = get_str(sro, "source_ref").unwrap_or("");
@@ -405,9 +520,24 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
         let source_id = derive_id(source_ref);
         let target_id = derive_id(target_ref);
 
+        // An object has at most one parent and one replacement among the pairs
+        // that become typed relations.
+        if let Some(shape) = replaced_sro_shape(rel_type)
+            && let (Some(source_type), Some(target_type)) =
+                (id_types.get(&source_id), id_types.get(&target_id))
+            && shape.admits(source_type, target_type)
+            && let Some(first) =
+                single_targets.insert((shape.relation, source_id.clone()), target_ref)
+            && first != target_ref
+        {
+            return Err(format!(
+                "{source_ref} has two {rel_type} targets, {first} and {target_ref}"
+            ));
+        }
+
         // A typed relation if the schema models it (single source of truth:
-        // `rel_roles`); otherwise a generic concept-link so nothing is dropped.
-        if rel_roles(rel_type).is_some() {
+        // `sro_shape`); otherwise a generic concept-link so nothing is dropped.
+        if sro_shape(rel_type).is_some() {
             raw_rels.push((source_id, target_id, rel_type.to_string()));
         } else {
             links.push(gecko_extension_api::okf::OkfLink {
@@ -424,7 +554,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
     // relation is dropped to a concept-link so the reference is still recorded.
     // A relation whose resolved subtypes cannot play its roles (an ATT&CK shape
     // the cyber schema does not model) is also recorded as a concept-link.
-    let mut typed_rels = Vec::new();
+    let mut typed_rels = tactic_rels;
     for (source, target, rel_type) in raw_rels {
         match (id_types.get(source.as_str()), id_types.get(target.as_str())) {
             (Some(source_type), Some(target_type))
@@ -480,6 +610,8 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
             requirements,
             analytics: sorted(analytics),
             strategies: sorted(strategies),
+            techniques: sorted(techniques),
+            revocable: sorted(revocable),
         },
     ))
 }
@@ -661,13 +793,39 @@ fn rel_roles(rel_type: &str) -> Option<RelShape> {
         .map(|(_, shape)| *shape)
 }
 
+/// The relationship types a re-import replaces rather than appends to, whose
+/// relation label is the relationship type itself.
+const REPLACED_SRO_SHAPES: [RelShape; 2] = [SUBTECHNIQUE_OF, REVOKED_BY];
+
+/// Resolves a relationship type whose relation a re-import replaces to its shape.
+fn replaced_sro_shape(rel_type: &str) -> Option<RelShape> {
+    REPLACED_SRO_SHAPES
+        .into_iter()
+        .find(|s| s.relation == rel_type)
+}
+
+/// Resolves any relationship type the adapter links as a typed relation.
+fn sro_shape(rel_type: &str) -> Option<RelShape> {
+    rel_roles(rel_type).or_else(|| replaced_sro_shape(rel_type))
+}
+
 /// Resolves a [`TypedRelation::rel_type`], a relationship type or a synthesized
 /// strategy-to-analytic link, to its relation shape.
 fn shape_of(rel_type: &str) -> Option<RelShape> {
     if rel_type == STRATEGY_ANALYTIC_REL {
         Some(STRATEGY_ANALYTIC)
     } else {
-        rel_roles(rel_type)
+        sro_shape(rel_type)
+    }
+}
+
+/// Resolves a [`TypedRelation::rel_type`] of a structure relation, which a
+/// re-import replaces, to its shape.
+fn structure_shape(rel_type: &str) -> Option<RelShape> {
+    if rel_type == TECHNIQUE_TACTIC_REL {
+        Some(TECHNIQUE_TACTIC)
+    } else {
+        replaced_sro_shape(rel_type)
     }
 }
 
@@ -675,11 +833,15 @@ fn shape_of(rel_type: &str) -> Option<RelShape> {
 ///
 /// - **First**, every typed relation left without a player by a concept the sync
 ///   deleted is deleted ([`orphan_sweep`]).
-/// - **SROs** other than `detects` become one idempotent relation each, inserted
-///   under a `not { … }` guard. Relations with an unknown `rel_type` are skipped.
+/// - **SROs** other than `detects`, `subtechnique-of` and `revoked-by` become one
+///   idempotent relation each, inserted under a `not { … }` guard. Relations with
+///   an unknown `rel_type` are skipped.
 /// - **Strategy detects, strategy analytics and analytic requirements** are
 ///   replaced: their writes delete every such relation on a strategy or analytic
 ///   in the bundle, and then insert the current set.
+/// - **Sub-technique, revocation and technique-tactic relations** are replaced the
+///   same way, on every technique (and, for `revoked-by`, every revocable object)
+///   in the bundle.
 ///
 /// The concept IDs are untrusted STIX references and travel as parameterized rows,
 /// as do the log-source names, keys and channels; only fixed schema labels — the
@@ -775,9 +937,94 @@ fn id_rows<'a>(ids: impl IntoIterator<Item = &'a str>) -> Vec<Vec<GraphValue>> {
         .collect()
 }
 
+/// The replace-then-insert writes for `strategy-detects`, `strategy-analytic`,
+/// `analytic-requirement` and the structure relations, in the order they must run.
+fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
+    let mut writes = detection_replacement_writes(rels);
+    writes.extend(structure_replacement_writes(rels));
+    writes
+}
+
+/// The replace-then-insert writes for `subtechnique-of`, `technique-tactic` and
+/// `revoked-by`: delete each such relation whose source is in the bundle, then
+/// insert the current set, one write per (relation, source subtype, target
+/// subtype).
+fn structure_replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
+    // Keyed by labels, so the writes come out in a deterministic order; a pair
+    // named twice is written once.
+    type Key<'a> = (&'static str, &'a str, &'a str);
+    type Pairs<'a> = (RelShape, BTreeSet<(&'a str, &'a str)>);
+    let mut by_shape: BTreeMap<Key, Pairs> = BTreeMap::new();
+    for r in &rels.typed {
+        let Some(shape) = structure_shape(&r.rel_type) else {
+            continue;
+        };
+        by_shape
+            .entry((shape.relation, &r.source_type, &r.target_type))
+            .or_insert_with(|| (shape, BTreeSet::new()))
+            .1
+            .insert((&r.source, &r.target));
+    }
+
+    let mut writes = vec![
+        GraphWrite {
+            query: format!(
+                "given $id: string; \
+                 match $x isa attack-pattern, has concept-id $xid; $xid == $id; \
+                       {{ $r isa {SUBTECHNIQUE_OF_REL}, links (subtechnique: $x); }} or \
+                       {{ $r isa {TECHNIQUE_TACTIC_REL}, links (technique: $x); }}; \
+                 delete $r;"
+            ),
+            vars: vec!["id".to_string()],
+            rows: id_rows(rels.techniques.iter().map(String::as_str)),
+            expect_rows: None,
+        },
+        GraphWrite {
+            query: format!(
+                "given $id: string; \
+                 match $x isa cyber-object, has concept-id $xid; $xid == $id; \
+                       $r isa {REVOKED_BY_REL}, links (revoked: $x); \
+                 delete $r;"
+            ),
+            vars: vec!["id".to_string()],
+            rows: id_rows(rels.revocable.iter().map(String::as_str)),
+            expect_rows: None,
+        },
+    ];
+    writes.extend(by_shape.into_iter().map(
+        |((relation, source_type, target_type), (shape, pairs))| {
+            let RelShape {
+                source_role,
+                target_role,
+                ..
+            } = shape;
+            GraphWrite {
+                query: format!(
+                    "given $s: string, $t: string; \
+                         match $a isa {source_type}, has concept-id $aid; $aid == $s; \
+                               $b isa {target_type}, has concept-id $bid; $bid == $t; \
+                         insert $r isa {relation}, links ({source_role}: $a, {target_role}: $b);"
+                ),
+                vars: vec!["s".to_string(), "t".to_string()],
+                rows: pairs
+                    .into_iter()
+                    .map(|(s, t)| {
+                        vec![
+                            GraphValue::String(s.to_string()),
+                            GraphValue::String(t.to_string()),
+                        ]
+                    })
+                    .collect(),
+                expect_rows: Some(1),
+            }
+        },
+    ));
+    writes
+}
+
 /// The replace-then-insert writes for `strategy-detects`, `strategy-analytic` and
 /// `analytic-requirement`, in the order they must run.
-fn replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
+fn detection_replacement_writes(rels: &StixRelations) -> Vec<GraphWrite> {
     let links: Vec<&TypedRelation> = rels
         .typed
         .iter()
@@ -1318,5 +1565,360 @@ mod tests {
                 .any(|w| w.query.contains("insert $nr isa strategy-detects")),
             "strategy-detects is replaced, not inserted under a not guard"
         );
+    }
+
+    const EXECUTION: &str = "x-mitre-tactic--00000000-0000-4000-8000-000000000001";
+    const PERSISTENCE: &str = "x-mitre-tactic--00000000-0000-4000-8000-000000000002";
+    const PARENT: &str = "attack-pattern--00000000-0000-4000-8000-000000000002";
+    const OTHER_PARENT: &str = "attack-pattern--00000000-0000-4000-8000-000000000003";
+    const SUB: &str = "attack-pattern--00000000-0000-4000-8000-000000000004";
+    const MALWARE: &str = "malware--00000000-0000-4000-8000-000000000001";
+    const TOOL: &str = "tool--00000000-0000-4000-8000-000000000001";
+    const OTHER_TOOL: &str = "tool--00000000-0000-4000-8000-000000000002";
+    const INTRUSION_SET: &str = "intrusion-set--00000000-0000-4000-8000-000000000001";
+    const OLD_MITIGATION: &str = "course-of-action--00000000-0000-4000-8000-000000000001";
+    const NEW_MITIGATION: &str = "course-of-action--00000000-0000-4000-8000-000000000002";
+
+    /// An enterprise tactic.
+    fn tactic(stix_id: &str, shortname: &str) -> Value {
+        serde_json::json!({ "type": "x-mitre-tactic", "id": stix_id, "name": shortname,
+                            "x_mitre_shortname": shortname,
+                            "x_mitre_domains": ["enterprise-attack"] })
+    }
+
+    /// A technique with the given (kill-chain name, phase name) phases.
+    fn technique(stix_id: &str, phases: &[(&str, &str)]) -> Value {
+        let phases: Vec<Value> = phases
+            .iter()
+            .map(|(chain, phase)| {
+                serde_json::json!({ "kill_chain_name": chain, "phase_name": phase })
+            })
+            .collect();
+        serde_json::json!({ "type": "attack-pattern", "id": stix_id, "name": stix_id,
+                            "kill_chain_phases": phases })
+    }
+
+    fn sro(n: u32, rel_type: &str, source: &str, target: &str) -> Value {
+        serde_json::json!({ "type": "relationship",
+                            "id": format!("relationship--00000000-0000-4000-8000-{n:012}"),
+                            "relationship_type": rel_type,
+                            "source_ref": source, "target_ref": target })
+    }
+
+    fn bundle(objects: Vec<Value>) -> String {
+        serde_json::json!({ "type": "bundle", "objects": objects }).to_string()
+    }
+
+    fn typed_of<'a>(rels: &'a StixRelations, rel_type: &str) -> Vec<&'a TypedRelation> {
+        rels.typed
+            .iter()
+            .filter(|r| r.rel_type == rel_type)
+            .collect()
+    }
+
+    #[test]
+    fn a_tactic_is_typed_with_its_shortname() {
+        let (manifest, _) = to_okf(&bundle(vec![tactic(EXECUTION, "execution")])).expect("to_okf");
+        let t = concept(&manifest, EXECUTION);
+        assert_eq!(t.type_hint.as_deref(), Some("tactic"));
+        assert_eq!(
+            attr_values(t, "tactic-shortname"),
+            vec![TypedAttrValue::String("execution".into())]
+        );
+    }
+
+    #[test]
+    fn a_tactic_without_a_shortname_or_with_an_unmapped_domain_is_refused() {
+        let mut no_shortname = tactic(EXECUTION, "execution");
+        no_shortname
+            .as_object_mut()
+            .expect("an object")
+            .remove("x_mitre_shortname");
+        let err = to_okf(&bundle(vec![no_shortname])).unwrap_err();
+        assert!(
+            err.contains(EXECUTION) && err.contains("x_mitre_shortname"),
+            "got: {err}"
+        );
+
+        let mut pre_attack = tactic(EXECUTION, "execution");
+        pre_attack["x_mitre_domains"] = serde_json::json!(["pre-attack"]);
+        let err = to_okf(&bundle(vec![pre_attack])).unwrap_err();
+        assert!(
+            err.contains(EXECUTION) && err.contains("pre-attack"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn two_tactics_with_one_kill_chain_phase_are_refused() {
+        let err = to_okf(&bundle(vec![
+            tactic(EXECUTION, "execution"),
+            tactic(PERSISTENCE, "execution"),
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains(EXECUTION) && err.contains(PERSISTENCE),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_technique_links_to_the_tactic_its_phase_names() {
+        let (manifest, rels) = to_okf(&bundle(vec![
+            technique(PARENT, &[("mitre-attack", "execution")]),
+            tactic(EXECUTION, "execution"),
+            tactic(PERSISTENCE, "persistence"),
+        ]))
+        .expect("to_okf");
+        assert_eq!(
+            typed_of(&rels, TECHNIQUE_TACTIC_REL),
+            vec![&rel(
+                &derive_id(PARENT),
+                &derive_id(EXECUTION),
+                "attack-pattern",
+                "tactic",
+                TECHNIQUE_TACTIC_REL
+            )]
+        );
+        assert_eq!(
+            attr_values(concept(&manifest, PARENT), "kill-chain-phase"),
+            vec![TypedAttrValue::String("execution".into())]
+        );
+    }
+
+    #[test]
+    fn a_phase_naming_no_tactic_is_refused() {
+        let err = to_okf(&bundle(vec![
+            tactic(EXECUTION, "execution"),
+            technique(PARENT, &[("mitre-attack", "persistence")]),
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains(PARENT) && err.contains("persistence"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_mobile_phase_does_not_link_an_enterprise_tactic() {
+        let err = to_okf(&bundle(vec![
+            tactic(PERSISTENCE, "persistence"),
+            technique(PARENT, &[("mitre-mobile-attack", "persistence")]),
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains(PARENT) && err.contains("mitre-mobile-attack"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn foreign_kill_chains_and_tactic_free_bundles_are_kept_as_attributes() {
+        let (manifest, rels) = to_okf(&bundle(vec![
+            tactic(EXECUTION, "execution"),
+            technique(PARENT, &[("lockheed-martin-cyber-kill-chain", "delivery")]),
+        ]))
+        .expect("a foreign kill chain is not resolved");
+        assert!(typed_of(&rels, TECHNIQUE_TACTIC_REL).is_empty());
+        assert_eq!(
+            attr_values(concept(&manifest, PARENT), "kill-chain-phase"),
+            vec![TypedAttrValue::String("delivery".into())]
+        );
+
+        let (manifest, rels) = to_okf(&bundle(vec![technique(
+            PARENT,
+            &[("mitre-attack", "execution")],
+        )]))
+        .expect("a bundle without tactics resolves no phase");
+        assert!(typed_of(&rels, TECHNIQUE_TACTIC_REL).is_empty());
+        assert_eq!(
+            attr_values(concept(&manifest, PARENT), "kill-chain-phase"),
+            vec![TypedAttrValue::String("execution".into())]
+        );
+    }
+
+    #[test]
+    fn subtechnique_of_and_revoked_by_are_typed() {
+        let (manifest, rels) = to_okf(&bundle(vec![
+            technique(PARENT, &[]),
+            technique(SUB, &[]),
+            serde_json::json!({ "type": "malware", "id": MALWARE, "revoked": true }),
+            serde_json::json!({ "type": "tool", "id": TOOL }),
+            sro(1, "subtechnique-of", SUB, PARENT),
+            sro(2, "revoked-by", MALWARE, TOOL),
+        ]))
+        .expect("to_okf");
+        assert!(manifest.links.is_empty(), "{:?}", manifest.links);
+        assert_eq!(
+            typed_of(&rels, SUBTECHNIQUE_OF_REL),
+            vec![&rel(
+                &derive_id(SUB),
+                &derive_id(PARENT),
+                "attack-pattern",
+                "attack-pattern",
+                SUBTECHNIQUE_OF_REL
+            )]
+        );
+        assert_eq!(
+            typed_of(&rels, REVOKED_BY_REL),
+            vec![&rel(
+                &derive_id(MALWARE),
+                &derive_id(TOOL),
+                "malware",
+                "tool",
+                REVOKED_BY_REL
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unadmitted_revocation_pair_stays_a_concept_link() {
+        let (manifest, rels) = to_okf(&bundle(vec![
+            serde_json::json!({ "type": "course-of-action", "id": OLD_MITIGATION, "revoked": true }),
+            serde_json::json!({ "type": "course-of-action", "id": NEW_MITIGATION }),
+            sro(1, "revoked-by", OLD_MITIGATION, NEW_MITIGATION),
+        ]))
+        .expect("to_okf");
+        assert!(typed_of(&rels, REVOKED_BY_REL).is_empty());
+        assert_eq!(manifest.links.len(), 1);
+        assert_eq!(manifest.links[0].link_text, "revoked-by");
+    }
+
+    #[test]
+    fn a_second_parent_or_replacement_is_refused() {
+        let err = to_okf(&bundle(vec![
+            technique(PARENT, &[]),
+            technique(OTHER_PARENT, &[]),
+            technique(SUB, &[]),
+            sro(1, "subtechnique-of", SUB, PARENT),
+            sro(2, "subtechnique-of", SUB, OTHER_PARENT),
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains(SUB) && err.contains("subtechnique-of"),
+            "got: {err}"
+        );
+
+        let err = to_okf(&bundle(vec![
+            serde_json::json!({ "type": "malware", "id": MALWARE, "revoked": true }),
+            serde_json::json!({ "type": "tool", "id": TOOL }),
+            serde_json::json!({ "type": "tool", "id": OTHER_TOOL }),
+            sro(1, "revoked-by", MALWARE, TOOL),
+            sro(2, "revoked-by", MALWARE, OTHER_TOOL),
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains(MALWARE) && err.contains("revoked-by"),
+            "got: {err}"
+        );
+
+        to_okf(&bundle(vec![
+            technique(PARENT, &[]),
+            technique(SUB, &[]),
+            sro(1, "subtechnique-of", SUB, PARENT),
+            sro(2, "subtechnique-of", SUB, PARENT),
+        ]))
+        .expect("a repeated pair names one parent");
+    }
+
+    #[test]
+    fn a_retired_object_keeps_its_attack_id_as_retired() {
+        let with_id = |id: &str, attack_id: &str, revoked: bool| {
+            serde_json::json!({ "type": "attack-pattern", "id": id, "revoked": revoked,
+                "external_references": [{ "source_name": "mitre-attack", "external_id": attack_id }] })
+        };
+        let (manifest, _) = to_okf(&bundle(vec![
+            with_id(PARENT, "T1000", false),
+            with_id(SUB, "T1000.001", true),
+        ]))
+        .expect("to_okf");
+        let live = concept(&manifest, PARENT);
+        assert_eq!(
+            attr_values(live, "attack-id"),
+            vec![TypedAttrValue::String("T1000".into())]
+        );
+        assert!(attr_values(live, "retired-attack-id").is_empty());
+        let retired = concept(&manifest, SUB);
+        assert!(attr_values(retired, "attack-id").is_empty());
+        assert_eq!(
+            attr_values(retired, "retired-attack-id"),
+            vec![TypedAttrValue::String("T1000.001".into())]
+        );
+    }
+
+    #[test]
+    fn techniques_and_revocable_list_their_ids() {
+        let (_, rels) = to_okf(&bundle(vec![
+            technique(SUB, &[]),
+            technique(PARENT, &[]),
+            serde_json::json!({ "type": "malware", "id": MALWARE }),
+            serde_json::json!({ "type": "tool", "id": TOOL }),
+            serde_json::json!({ "type": "intrusion-set", "id": INTRUSION_SET }),
+            serde_json::json!({ "type": "course-of-action", "id": OLD_MITIGATION }),
+            tactic(EXECUTION, "execution"),
+        ]))
+        .expect("to_okf");
+        assert_eq!(
+            rels.techniques,
+            sorted(vec![derive_id(SUB), derive_id(PARENT)])
+        );
+        assert_eq!(
+            rels.revocable,
+            sorted(
+                [SUB, PARENT, MALWARE, TOOL, INTRUSION_SET]
+                    .map(derive_id)
+                    .to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn structure_relations_are_replaced_not_inserted_under_a_guard() {
+        let (_, rels) = to_okf(&bundle(vec![
+            tactic(EXECUTION, "execution"),
+            technique(PARENT, &[("mitre-attack", "execution")]),
+            technique(SUB, &[("mitre-attack", "execution")]),
+            serde_json::json!({ "type": "malware", "id": MALWARE, "revoked": true }),
+            serde_json::json!({ "type": "tool", "id": TOOL }),
+            sro(1, "subtechnique-of", SUB, PARENT),
+            sro(2, "subtechnique-of", SUB, PARENT),
+            sro(3, "revoked-by", MALWARE, TOOL),
+        ]))
+        .expect("to_okf");
+        let writes = cyber_post_sync(&rels);
+        let position = |needle: &str| {
+            writes
+                .iter()
+                .position(|w| w.query.contains(needle))
+                .unwrap_or_else(|| panic!("no op contains {needle:?}"))
+        };
+        let technique_delete = position("links (subtechnique: $x); } or");
+        let revoked_delete = position("$r isa revoked-by, links (revoked: $x);");
+        let subtechnique_insert = position("insert $r isa subtechnique-of");
+        let tactic_insert = position("insert $r isa technique-tactic");
+        let revoked_insert = position("insert $r isa revoked-by");
+        assert!(
+            technique_delete.max(revoked_delete)
+                < subtechnique_insert.min(tactic_insert).min(revoked_insert)
+        );
+        assert_eq!(writes[technique_delete].rows.len(), 2);
+        assert_eq!(writes[revoked_delete].rows.len(), 4);
+        assert_eq!(writes[subtechnique_insert].rows.len(), 1);
+        assert_eq!(writes[tactic_insert].rows.len(), 2);
+        assert_eq!(writes[revoked_insert].rows.len(), 1);
+        assert!(
+            writes[revoked_insert].query.contains("isa malware")
+                && writes[revoked_insert].query.contains("isa tool"),
+            "{}",
+            writes[revoked_insert].query
+        );
+        for relation in [SUBTECHNIQUE_OF_REL, REVOKED_BY_REL, TECHNIQUE_TACTIC_REL] {
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| w.query.contains(&format!("insert $nr isa {relation}"))),
+                "{relation} is inserted under a not guard"
+            );
+        }
     }
 }

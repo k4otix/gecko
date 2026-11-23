@@ -4,7 +4,7 @@ define
   attribute ioc-value value string;
   attribute ioc-type value string @values("ipv4", "ipv6", "domain", "url", "file-sha256", "file-sha1", "file-md5", "email-addr", "mutex", "registry-key");
   attribute attack-id value string;
-  # An ATT&CK id a revoked object held before it was retired, kept for lookup.
+  # The ATT&CK id of a retired (revoked or deprecated) object, kept for lookup.
   attribute retired-attack-id value string;
   # A tactic's STIX shortname, matched against a technique's kill-chain phase.
   attribute tactic-shortname value string;

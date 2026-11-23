@@ -13,6 +13,9 @@ use mem_gecko::MemGecko;
 #[path = "common/attack.rs"]
 mod attack;
 mod common;
+#[cfg(feature = "cyber")]
+#[path = "common/stix_objects.rs"]
+mod stix_objects;
 use common::TestDb;
 
 #[tokio::test]
@@ -282,7 +285,10 @@ fn pre_cyber_schema() -> String {
 /// shipped schema spells them.
 #[cfg(feature = "cyber")]
 const NEW_CYBER_RELATIONS: &str = r#"define
+  attribute retired-attack-id value string;
   attribute tactic-shortname value string;
+
+  cyber-object owns retired-attack-id @card(0..1);
 
   entity tactic sub cyber-object @doc("An ATT&CK tactic (STIX x-mitre-tactic): the adversary goal a technique serves, matched to techniques by its shortname."),
       owns tactic-shortname @card(1),
@@ -889,8 +895,9 @@ async fn tightened_schema_applies_to_a_populated_database() {
     db.apply_schema(&pre_cyber_schema())
         .await
         .expect("pre-tightening cyber");
-    // The ATT&CK post-sync sweep reads every typed relation, including those the
-    // pre-tightening release never declared, so they are defined as shipped.
+    // The ATT&CK post-sync sweep reads every typed relation, and the adapter
+    // writes retired-attack-id; the types the pre-tightening release never
+    // declared are defined as shipped.
     db.apply_schema(NEW_CYBER_RELATIONS)
         .await
         .expect("the relations declared with required roles");

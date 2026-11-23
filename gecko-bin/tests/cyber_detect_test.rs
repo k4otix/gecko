@@ -35,6 +35,8 @@ use tokio::sync::Mutex;
 #[path = "common/attack.rs"]
 mod attack;
 mod common;
+#[path = "common/stix_objects.rs"]
+mod stix_objects;
 use common::TestDb;
 
 const LOGIC_ID: &str = "playbooks/detect-t1059";

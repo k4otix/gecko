@@ -11,18 +11,13 @@
 //! - A deprecated Windows analytic ([`DEPRECATED_ANALYTIC_STIX_ID`]), which carries
 //!   no attack-id once synced.
 //!
-//! Included with `#[path = "common/attack.rs"] mod attack;` beside `mod common;`,
-//! so only the tests that seed from it compile it.
+//! Included with `#[path = "common/attack.rs"] mod attack;` beside `mod common;`
+//! and `mod stix_objects;`, so only the tests that seed from it compile it.
 
-use cyber_gecko::CyberGecko;
-use cyber_gecko::stix::{cyber_post_sync, to_okf};
-use gecko_engine::db::CORE_SCHEMA;
-use gecko_engine::extension::GeckoExtension;
-use gecko_engine::syncer::bundle::sync_bundle;
-use mem_gecko::MemGecko;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::common::TestDb;
+use super::stix_objects::{analytic, object, source, sync_stix_fixture};
 
 /// The technique's ATT&CK id.
 pub const TECHNIQUE_ATTACK_ID: &str = "T1059";
@@ -61,35 +56,6 @@ const COMMAND_EXECUTION_STIX_ID: &str =
     "x-mitre-data-component--c0000000-0000-4000-8000-000000000002";
 const NETWORK_CONNECTION_CREATION_STIX_ID: &str =
     "x-mitre-data-component--c0000000-0000-4000-8000-000000000003";
-
-/// A log-source reference to `component`.
-fn source(component: &str, name: &str, channel: Option<&str>) -> Value {
-    let mut r = json!({ "x_mitre_data_component_ref": component, "name": name });
-    if let Some(channel) = channel {
-        r["channel"] = json!(channel);
-    }
-    r
-}
-
-/// The ATT&CK object `stix_id` with an `external_id` of `attack_id`.
-fn object(ty: &str, stix_id: &str, name: &str, attack_id: &str) -> Value {
-    json!({
-        "type": ty,
-        "id": stix_id,
-        "name": name,
-        "external_references": [{ "source_name": "mitre-attack", "external_id": attack_id }],
-        "x_mitre_deprecated": false,
-    })
-}
-
-fn analytic(stix_id: &str, attack_id: &str, platform: &str, sources: Vec<Value>) -> Value {
-    let mut a = object("x-mitre-analytic", stix_id, attack_id, attack_id);
-    a["x_mitre_platforms"] = json!([platform]);
-    if !sources.is_empty() {
-        a["x_mitre_log_source_references"] = Value::Array(sources);
-    }
-    a
-}
 
 /// The fixture as a STIX bundle.
 pub fn fixture_json() -> String {
@@ -178,24 +144,5 @@ pub fn fixture_json() -> String {
 /// Applies the core, mem and cyber schemas to `db`, then syncs [`fixture_json`]
 /// with its post-sync writes.
 pub async fn sync_fixture(db: &TestDb) {
-    let mut router = db.router();
-    router.apply_schema(CORE_SCHEMA).await.expect("core schema");
-    for ext in [
-        Box::new(MemGecko::new()) as Box<dyn GeckoExtension>,
-        Box::new(CyberGecko::new()),
-    ] {
-        router
-            .apply_schema(ext.schema())
-            .await
-            .unwrap_or_else(|e| panic!("{} schema: {e}", ext.name()));
-    }
-    let (manifest, rels) = to_okf(&fixture_json()).expect("fixture converts");
-    sync_bundle(
-        &mut router,
-        &manifest,
-        &cyber_post_sync(&rels),
-        mem_gecko::BELIEF_TIER_ROOT,
-    )
-    .await
-    .expect("sync the ATT&CK fixture");
+    sync_stix_fixture(db, &fixture_json(), "the ATT&CK fixture").await;
 }
