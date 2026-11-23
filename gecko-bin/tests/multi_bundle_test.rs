@@ -673,6 +673,14 @@ mod cli {
         );
         assert!(output.contains(IDENTITY_ID), "{output}");
         assert!(output.contains("attack-enterprise"), "{output}");
+        assert!(
+            output.contains("into its own database with `--database"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("under the name that holds them"),
+            "{output}"
+        );
         assert_eq!(
             bundle_names(&db).await,
             BTreeSet::from(["attack-enterprise".to_string()])

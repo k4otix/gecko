@@ -104,9 +104,22 @@ fn belief_tier_write_message(changes: &[BeliefTierChange]) -> String {
 /// The most colliding IDs a [`DbError::ConceptIdCollision`] message lists.
 const COLLISION_IDS_SHOWN: usize = 20;
 
-/// Renders a concept-ID collision: the first [`COLLISION_IDS_SHOWN`] IDs with
-/// their holders, a count of the rest, and how to resolve it.
+/// Renders a concept-ID collision: the IDs with their holders
+/// ([`collision_list`]) and how to resolve it.
 fn collision_message(bundle: &str, ids: &[(String, Option<String>)]) -> String {
+    format!(
+        "bundle `{bundle}` ships {} concept ID(s) this database already holds outside it: {}. \
+         Concept IDs must be unique per database: sync this bundle under the name that holds \
+         them, or into a fresh database with `--database`.",
+        ids.len(),
+        collision_list(ids)
+    )
+}
+
+/// Lists the first [`COLLISION_IDS_SHOWN`] colliding IDs of a
+/// [`DbError::ConceptIdCollision`], each with the bundle holding it, then a count
+/// of the rest.
+pub fn collision_list(ids: &[(String, Option<String>)]) -> String {
     let shown: Vec<String> = ids
         .iter()
         .take(COLLISION_IDS_SHOWN)
@@ -119,12 +132,7 @@ fn collision_message(bundle: &str, ids: &[(String, Option<String>)]) -> String {
     if ids.len() > COLLISION_IDS_SHOWN {
         list.push_str(&format!(" and {} more", ids.len() - COLLISION_IDS_SHOWN));
     }
-    format!(
-        "bundle `{bundle}` ships {} concept ID(s) this database already holds outside it: {list}. \
-         Concept IDs must be unique per database: sync this bundle under the name that holds \
-         them, or into a fresh database with `--database`.",
-        ids.len()
-    )
+    list
 }
 
 /// TLS mode for TypeDB connections.

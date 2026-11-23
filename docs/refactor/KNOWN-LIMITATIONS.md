@@ -210,5 +210,12 @@ any other caller.
   belief edge, or contained by another bundle, is refused.
 - **`cyber-object`'s `@doc` does not mention `deprecated`.** Redefining it would modify
   the core `concept` type, which the schema registry refuses.
+- **One ATT&CK domain per database.** Enterprise, Mobile and ICS ATT&CK ship some of
+  the same STIX objects (the MITRE identity and marking, and shared groups, software,
+  campaigns and data components), so a second domain synced into a database that holds
+  the first is refused, and `sync-stix` says to import it into its own database with
+  `--database`. Under the first domain's `--bundle-name` the second would replace it
+  instead. The detection reports never cross domains, so nothing is lost for them; a
+  query or belief spanning domains needs two databases.
 - **Validated against Enterprise ATT&CK 20.1** (`stix_full_bundle_resync_is_stable`,
   opt-in); other releases are untested.
