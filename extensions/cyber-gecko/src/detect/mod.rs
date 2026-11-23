@@ -524,6 +524,7 @@ async fn analytic_readings(
             "given $aid: string; \
              match $a isa analytic, has concept-id $ac; $ac == $aid; \
                    $r isa analytic-requirement, links (analytic: $a, component: $c); {} \
+             select $ac; distinct; \
              fetch {{ \"analytic_concept_id\": $ac }};",
             live("c")
         ),
@@ -1307,6 +1308,8 @@ mod tests {
         let windows = &readings[&pair("t1", "Windows")];
         let err = blind_analytics("Windows", windows).expect_err("no component name");
         assert!(err.contains("has no name"), "{err}");
+        assert!(err.contains("analytic 'a/x'"), "{err}");
+        assert!(err.contains("log source '"), "{err}");
         assert!(blind_gap_sets("Windows", windows, &mut BTreeMap::new()).is_ok());
     }
 

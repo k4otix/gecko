@@ -740,6 +740,15 @@ async fn read_rows_returns_the_union_with_each_matched_key() {
 async fn read_rows_with_no_rows_issues_no_query() {
     // The database does not exist, so any query (even opening a transaction) would
     // fail; an empty batch still succeeds.
+    let docs = absent_store()
+        .read_rows(TAG_READ, &["t".to_string()], &[])
+        .await
+        .expect("empty rows return without a query");
+    assert!(docs.is_empty());
+}
+
+/// A store over a database that does not exist, so any query it ran would fail.
+fn absent_store() -> RouterGraphStore {
     let router = TypeDbRouter::new(DbConfig {
         address: "localhost:1729".to_string(),
         database: format!(
@@ -750,34 +759,39 @@ async fn read_rows_with_no_rows_issues_no_query() {
         password: "password".to_string(),
         tls: TlsMode::Disabled,
     });
-    let store = RouterGraphStore::new(Arc::new(Mutex::new(router)));
-    let docs = store
-        .read_rows(TAG_READ, &["t".to_string()], &[])
+    RouterGraphStore::new(Arc::new(Mutex::new(router)))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_without_fetch_is_refused() {
+    let fx = Fixture::new().await;
+    seed_tagged_targets(&fx).await;
+    let err = fx
+        .store()
+        .read("match $x isa probe-target;", &[], &[])
         .await
-        .expect("empty rows return without a query");
-    assert!(docs.is_empty());
+        .expect_err("a read that fetches nothing is refused");
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+    fx.drop_db().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn read_rows_refuses_a_row_of_the_wrong_length() {
-    let fx = Fixture::new().await;
+    // Validation runs before any query, so the absent database is never reached.
+    let store = absent_store();
     let rows = vec![
         vec![GraphValue::from("red")],
         vec![GraphValue::from("blue"), GraphValue::from("extra")],
     ];
-    let err = fx
-        .store()
+    let err = store
         .read_rows(TAG_READ, &["t".to_string()], &rows)
         .await
         .expect_err("a ragged row is refused");
     assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
 
-    let err = fx
-        .store()
+    let err = store
         .read_rows(TAG_READ, &[], &[Vec::new()])
         .await
         .expect_err("empty vars are refused");
     assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-
-    fx.drop_db().await;
 }

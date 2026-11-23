@@ -190,9 +190,7 @@ pub trait GraphReader: Send + Sync {
         vars: &[String],
         rows: &[Vec<GraphValue>],
     ) -> Result<Vec<serde_json::Value>, EpistemicError> {
-        if !validate_read_rows(vars, rows)? {
-            return Ok(Vec::new());
-        }
+        validate_read_rows(vars, rows)?;
         let mut out = Vec::new();
         for row in rows {
             out.extend(self.read(query, vars, row).await?);
@@ -201,14 +199,11 @@ pub trait GraphReader: Send + Sync {
     }
 }
 
-/// Checks the arguments of [`GraphReader::read_rows`], returning whether there is
-/// anything to run (`false` for empty `rows`).
+/// Refuses arguments [`GraphReader::read_rows`] cannot run: an empty `vars`, or a
+/// row whose length differs from `vars.len()`.
 ///
 /// Every implementation calls this first so they all refuse the same input.
-pub fn validate_read_rows(
-    vars: &[String],
-    rows: &[Vec<GraphValue>],
-) -> Result<bool, EpistemicError> {
+pub fn validate_read_rows(vars: &[String], rows: &[Vec<GraphValue>]) -> Result<(), EpistemicError> {
     if vars.is_empty() {
         return Err(EpistemicError::InvalidInput(
             "read_rows needs at least one given variable; use read for a query with none".into(),
@@ -221,7 +216,7 @@ pub fn validate_read_rows(
             vars.len()
         )));
     }
-    Ok(!rows.is_empty())
+    Ok(())
 }
 
 /// The neutral graph capability: parameterized reads + atomic batched writes.
@@ -336,5 +331,6 @@ mod tests {
         let reader = echo();
         let err = reader.read_rows("q", &[], &[Vec::new()]).await.unwrap_err();
         assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

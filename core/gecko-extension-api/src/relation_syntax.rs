@@ -3,7 +3,7 @@
 //! forms are `rel (role: $x)` and `$r isa rel, links (role: $x)`.
 
 /// The 1-based line of every `)` that is followed, after any whitespace or Rust
-/// string line continuation (`\` then a newline), by the word `isa`; a
+/// string line continuation (`\` then a line break), by the word `isa`; a
 /// source-consistency check the schema crates' tests run over their query text.
 #[doc(hidden)]
 pub fn deprecated_relation_lines(text: &str) -> Vec<usize> {
@@ -23,6 +23,7 @@ pub fn deprecated_relation_lines(text: &str) -> Vec<usize> {
             match bytes.get(j) {
                 Some(c) if c.is_ascii_whitespace() => j += 1,
                 Some(b'\\') if matches!(bytes.get(j + 1), Some(b'\n')) => j += 2,
+                Some(b'\\') if bytes[j + 1..].starts_with(b"\r\n") => j += 3,
                 _ => break,
             }
         }
@@ -65,6 +66,14 @@ mod tests {
     fn a_string_line_continuation_is_whitespace() {
         assert_eq!(
             deprecated_relation_lines(&q("\"(a: $x~ \\\n        isa rel;\"")),
+            [1]
+        );
+    }
+
+    #[test]
+    fn a_string_line_continuation_with_crlf_is_whitespace() {
+        assert_eq!(
+            deprecated_relation_lines(&q("\"(a: $x~ \\\r\n        isa rel;\"")),
             [1]
         );
     }

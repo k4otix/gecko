@@ -171,7 +171,8 @@ impl GraphReader for RouterGraphStore {
         vars: &[String],
         rows: &[Vec<GraphValue>],
     ) -> Result<Vec<serde_json::Value>, EpistemicError> {
-        if !validate_read_rows(vars, rows)? {
+        validate_read_rows(vars, rows)?;
+        if rows.is_empty() {
             return Ok(Vec::new());
         }
         let tx = self.handle().await?.begin_read().await.map_err(store_err)?;
@@ -185,18 +186,22 @@ impl GraphReader for RouterGraphStore {
     }
 }
 
-/// Drains a document-stream answer into JSON values; any other answer yields none.
-/// A stream error is returned, never treated as the end of the results.
+/// Drains a document-stream answer into JSON values. A read that ends in anything
+/// but `fetch` is refused, and a stream error is returned, never treated as the end
+/// of the results.
 async fn collect_documents(answer: QueryAnswer) -> Result<Vec<serde_json::Value>, EpistemicError> {
+    if !answer.is_document_stream() {
+        return Err(EpistemicError::InvalidInput(
+            "a graph read must end in `fetch { … };`; this query returns no documents".into(),
+        ));
+    }
     let mut out = Vec::new();
-    if answer.is_document_stream() {
-        let mut stream = answer.into_documents();
-        while let Some(item) = stream.next().await {
-            let doc = item.map_err(store_err)?;
-            let json: serde_json::Value =
-                serde_json::from_str(&doc.into_json().to_string()).map_err(store_err)?;
-            out.push(json);
-        }
+    let mut stream = answer.into_documents();
+    while let Some(item) = stream.next().await {
+        let doc = item.map_err(store_err)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&doc.into_json().to_string()).map_err(store_err)?;
+        out.push(json);
     }
     Ok(out)
 }

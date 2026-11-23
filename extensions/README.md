@@ -157,8 +157,10 @@ Notes and invariants:
   the documents of all of them. No order is promised across or within rows, so key
   each document by fetching an attribute the row matched. Rows should be distinct.
   `limit`, `sort` and `reduce` apply across all rows, so a per-row `limit 1` must
-  not be batched: drop it and collapse host-side. Empty `rows` issue no query, and
-  a row whose length differs from `vars` is refused.
+  not be batched: drop it and collapse host-side. Empty `rows` issue no query; an
+  empty `vars` (use `read` for a query with no `given`) or a row whose length
+  differs from `vars` is refused. A read of either kind must end in `fetch`; any
+  other query is refused.
 - **Belief edges.** A relation that attaches to a belief is declared in
   `belief_edges()` and written through the `BeliefEdgeWriter` the host binds to your
   extension (`assert_belief_with_edges`): the belief and its edges commit in one

@@ -512,6 +512,52 @@ async fn believed_at_hides_another_agents_private_belief() {
         !got.contains(&private),
         "another agent's private belief must not appear in believed_at: {got:?}"
     );
+    let own = w
+        .believed_at(
+            &ctx_at("agent-a", dt("2026-06-01T00:00:00Z")),
+            dt("2026-02-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert!(
+        own.contains(&private),
+        "the owner sees its private belief: {own:?}"
+    );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn believed_at_lists_newest_valid_from_first() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let older = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("the older belief", "agent-a", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let newer = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-03-01T00:00:00Z")),
+            belief_vis("the newer belief", "agent-a", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = w
+        .believed_at(
+            &ctx_at("agent-a", dt("2026-06-01T00:00:00Z")),
+            dt("2026-04-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(got, vec![newer, older]);
 
     fx.drop_db().await;
 }
