@@ -1193,6 +1193,54 @@ async fn fully_covered_recommends_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zero_requirement_analytic_beside_a_gapped_one_on_one_platform() {
+    // The Linux analytic also runs on macOS, beside the zero-requirement macOS
+    // analytic: both are blind there, and only the Linux one can be fixed. Windows
+    // is declared too, so two analytics with requirements are checked at once.
+    let rig = Rig::new("gecko_test_detect_two_analytics_one_platform", &[LOGIC_ID]).await;
+    let json = attack_bundle(|objects| {
+        object_mut(objects, attack::LINUX_ANALYTIC_STIX_ID)["x_mitre_platforms"] =
+            json!(["Linux", "macOS"]);
+    });
+    resync_attack(&rig.test_db, &json).await;
+    rig.sensors("platforms: [Windows, macOS]\nsensors: []\n")
+        .await;
+
+    assert_eq!(
+        rig.blinded(),
+        report(vec![entry(
+            LOGIC_ID,
+            json!([
+                blind("Windows", attack::WINDOWS_ANALYTIC, windows_missing()),
+                blind("macOS", attack::LINUX_ANALYTIC, linux_missing()),
+                macos_blind(),
+            ]),
+            &[],
+        )])
+    );
+    let one = json!([claim_ref(LOGIC_ID)]);
+    assert_eq!(
+        rig.recommend(),
+        json!({
+            "steps": [
+                { "platform": "Windows",
+                  "add": [
+                      source("NSM:Flow", "nsm:flow", &[]),
+                      source("WinEventLog:Security", "wineventlog:security",
+                             &["EventCode=4103", "EventCode=4688"]),
+                      source("WinEventLog:Sysmon", "wineventlog:sysmon",
+                             &["EventCode=1", "EventCode=10"]),
+                  ],
+                  "unblinds": one, "cumulative_unblinded": 1 },
+                { "platform": "macOS", "add": linux_sources(), "unblinds": one,
+                  "cumulative_unblinded": 2 },
+            ],
+            "unfixable": [],
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recommend_sources_errors_without_a_sensor_file() {
     let rig = Rig::new("gecko_test_recommend_no_file", &[LOGIC_ID]).await;
     let err = call(&rig.cb, "recommend_sources", json!({})).expect_err("no sensor file");
