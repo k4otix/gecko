@@ -321,8 +321,8 @@ pub(crate) fn observe_ops(ctx: &RunContext, ep: &EpisodeDraft, id: &MemId) -> Ve
          insert
            $ep isa episode, has concept-id == $eid, has title == $ttl,
                has event-time == $et, has ingest-time == $it;
-           (memory: $ep, origin: $run) isa source-link, has origin-kind == $kind;
-           (owned: $ep, owner: $ag) isa ownership;";
+           source-link (memory: $ep, origin: $run), has origin-kind == $kind;
+           ownership (owned: $ep, owner: $ag);";
     vec![ensure_run(ctx), ensure_agent(ctx), p.write(body)]
 }
 
@@ -362,8 +362,8 @@ pub(crate) fn insert_belief_ops(
            $b isa belief, has concept-id == $bid, has title == $ttl, has belief-state \"asserted\",
                has valid-from == $vf, has last-access == $la, has salience == $sal,
                has base-activation == $ba, has entrenchment == $ent{conf_frag};
-           (memory: $b, origin: $run) isa source-link, has origin-kind == $kind;
-           (owned: $b, owner: $ag) isa ownership, has visibility == $vis;"
+           source-link (memory: $b, origin: $run), has origin-kind == $kind;
+           ownership (owned: $b, owner: $ag), has visibility == $vis;"
     );
     vec![ensure_run(ctx), ensure_agent(ctx), p.write(&body)]
 }
@@ -425,7 +425,7 @@ pub(crate) fn derivation_op(
         ""
     };
     let body = format!(
-        "match\n           {match_lines}         insert (derived: $b{source_roles}) isa derivation, has derivation-method == $dm{conf_frag};"
+        "match\n           {match_lines}         insert derivation (derived: $b{source_roles}), has derivation-method == $dm{conf_frag};"
     );
     Some(p.write(&body).expecting(1))
 }
@@ -453,7 +453,7 @@ pub(crate) fn supersession_ops(
            $ag isa agent, has agent-id $aa; $aa == $aid;
            true == visible-to($o, $ag);
            $n isa belief, has concept-id $nc; $nc == $nid;
-         insert (superseded: $o, superseding: $n) isa supersession,
+         insert supersession (superseded: $o, superseding: $n),
              has supersession-reason == $reason, has created-at == $ca;",
         )
         .expecting(1);
@@ -499,9 +499,9 @@ pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -
     let body = format!(
         "match\n           {match_lines}         insert
            $an isa anomaly, has concept-id == $anid;
-           (hub: $an, {claim_roles}) isa contradiction;
-           (memory: $an, origin: $run) isa source-link, has origin-kind == $kind;
-           (owned: $an, owner: $ag) isa ownership;"
+           contradiction (hub: $an, {claim_roles});
+           source-link (memory: $an, origin: $run), has origin-kind == $kind;
+           ownership (owned: $an, owner: $ag);"
     );
     vec![
         ensure_run(ctx),
@@ -527,9 +527,8 @@ pub(crate) fn rests_on_op(resting: &MemId, assumptions: &[MemId]) -> GraphWrite 
     ) {
         roles.push_str(&format!(", assumption: {var}"));
     }
-    let body = format!(
-        "match\n           {match_lines}         insert (resting: $r{roles}) isa rests-on;"
-    );
+    let body =
+        format!("match\n           {match_lines}         insert rests-on (resting: $r{roles});");
     p.write(&body).expecting(1)
 }
 
@@ -543,7 +542,7 @@ pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     p.write(
         "match $b isa belief, has concept-id $bc; $bc == $bid;
          not { $pr isa prediction-resolution, links (predicted-belief: $b); not { $pr has outcome $o; }; };
-         insert (predicted-belief: $b) isa prediction-resolution, has predicted-probability == $pp;",
+         insert prediction-resolution (predicted-belief: $b), has predicted-probability == $pp;",
     )
     .expecting(1)
 }
@@ -632,15 +631,15 @@ pub(crate) fn retrieval_event_ops(
     for (idx, ((_, score), var)) in surfaced.iter().zip(item_vars.iter()).enumerate() {
         p.f(&format!("s{idx}"), *score as f64);
         surf_inserts.push_str(&format!(
-            "\n           (surfacer: $re, item: {var}) isa surfaced, has similarity-score == $s{idx}, has was-used false;"
+            "\n           surfaced (surfacer: $re, item: {var}), has similarity-score == $s{idx}, has was-used false;"
         ));
     }
     let body = format!(
         "match\n           {match_lines}         insert
            $re isa retrieval-event, has concept-id == $eid, has event-time == $now,
                has ingest-time == $now, has retrieval-method == $meth, has candidate-count == $cc;
-           (memory: $re, origin: $run) isa source-link, has origin-kind == $kind;
-           (owned: $re, owner: $ag) isa ownership;{surf_inserts}"
+           source-link (memory: $re, origin: $run), has origin-kind == $kind;
+           ownership (owned: $re, owner: $ag);{surf_inserts}"
     );
     vec![
         ensure_run(ctx),
@@ -659,7 +658,7 @@ pub(crate) fn informs_synthesis_op(ev: &MemId, belief: &MemId) -> GraphWrite {
         "match
            $re isa retrieval-event, has concept-id $rc; $rc == $eid;
            $b isa belief, has concept-id $bc; $bc == $bid;
-         insert (retrieval: $re, synthesized: $b) isa informs-synthesis;",
+         insert informs-synthesis (retrieval: $re, synthesized: $b);",
     )
     .expecting(1)
 }
@@ -742,7 +741,7 @@ pub(crate) fn dedup_episodes_ops(
            $run isa doc-run, has run-id $rr; $rr == $rid;
            $ag isa agent, has agent-id $aa; $aa == $aid;
          update $l has consolidation-state \"tombstoned\";
-         insert (affected: $l, run: $run, performer: $ag) isa consolidation-step,
+         insert consolidation-step (affected: $l, run: $run, performer: $ag),
            has consolidation-action == $act, has created-at == $now;";
     vec![
         ensure_run(ctx),
@@ -793,8 +792,8 @@ pub(crate) fn resolve_prediction_ops(
          insert
            $ep isa episode, has concept-id == $eid, has title == $ttl,
                has event-time == $now, has ingest-time == $now;
-           (memory: $ep, origin: $run) isa source-link, has origin-kind == $kind;
-           (owned: $ep, owner: $ag) isa ownership;",
+           source-link (memory: $ep, origin: $run), has origin-kind == $kind;
+           ownership (owned: $ep, owner: $ag);",
     );
 
     // 2. link the episode + outcome onto the open prediction-resolution.
@@ -910,7 +909,7 @@ pub(crate) fn open_membership_op(
                not { $s isa population-member, links (owning-population: $p, member: $c),
                          has computed-at $sca;
                      $sca > $at; };
-         insert (owning-population: $p, member: $c) isa population-member,
+         insert population-member (owning-population: $p, member: $c),
              has valid-from == $at, has computed-at == $at;",
         spec_hash,
         members,
@@ -1195,7 +1194,7 @@ pub(crate) fn belief_edge_op(
         has.push_str(&format!(", has {} == $a{i}", attr.attr));
     }
     let body = format!(
-        "match\n           {match_lines}         insert ({role_players}) isa {}{has};",
+        "match\n           {match_lines}         insert {} ({role_players}){has};",
         decl.relation
     );
     p.write(&body).expecting(1)

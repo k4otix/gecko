@@ -8,7 +8,7 @@ define
   fun is-superseded($b: memory-item) -> boolean @doc("True if the memory item has been superseded or retracted — either a supersession edge points at it, or its belief-state is 'superseded'/'retracted'."):
       match
           {
-              (superseded: $b, superseding: $newer) isa supersession;
+              supersession (superseded: $b, superseding: $newer);
           } or {
               $b has belief-state "superseded";
           } or {
@@ -28,9 +28,9 @@ define
   fun derivation-chain($b: memory-item) -> { memory-item } @doc("Recursive transitive closure of the sources $b was derived from, following derivation edges to their roots."):
       match
           {
-              (derived: $b, source: $m) isa derivation;
+              derivation (derived: $b, source: $m);
           } or {
-              (derived: $b, source: $mid) isa derivation;
+              derivation (derived: $b, source: $mid);
               let $m in derivation-chain($mid);
           };
       return { $m };
@@ -75,13 +75,13 @@ define
   fun blast-step($r: okf-concept) -> { memory-item } @doc("The memory items one edge from $r that retracting $r undermines directly: those resting on it, those derived from it, and the beliefs scoped to a population it is an open member of."):
       match
           {
-              (assumption: $r, resting: $m) isa rests-on;
+              rests-on (assumption: $r, resting: $m);
           } or {
-              (source: $r, derived: $m) isa derivation;
+              derivation (source: $r, derived: $m);
           } or {
               $pm isa population-member, links (owning-population: $pop, member: $r);
               not { $pm has valid-to $vt; };
-              (scoped-belief: $m, population: $pop) isa scoped;
+              scoped (scoped-belief: $m, population: $pop);
           };
       return { $m };
 
@@ -129,7 +129,7 @@ define
   fun retrieval-provenance-of($b: belief) -> { retrieval-event } @doc("The retrieval events that informed the synthesis of belief $b; walks informs-synthesis and never crosses into the logical derivation chain."):
       match
           $r isa retrieval-event;                      # narrow: `retrieval` role is played by execution-episode
-          (retrieval: $r, synthesized: $b) isa informs-synthesis;
+          informs-synthesis (retrieval: $r, synthesized: $b);
       return { $r };
 
   # ── Population & resolution functions (A2.9) ──────────────────────
@@ -159,14 +159,14 @@ define
       match
           $res isa resolution, has belief-state "asserted";
           true == provably-derived($res);
-          { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+          { resolves (resolution-belief: $res, record-a: $rec, record-b: $other); }
           or
-          { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          { resolves (resolution-belief: $res, record-a: $other, record-b: $rec); };
       return { $other };
 
   fun provably-derived($res: resolution) -> boolean @doc("True iff resolution belief $res is derived by a provable method: type-join, cardinality or functional-dependency."):
       match
-          (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+          derivation (derived: $res, source: $src), has derivation-method $dm;
           { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
       return check;
 
@@ -195,14 +195,14 @@ define
   fun blast-step-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("The memory items one edge from $r that retracting $r as of time $t undermines directly: like blast-step, but a population membership counts only while its window contains $t."):
       match
           {
-              (assumption: $r, resting: $m) isa rests-on;
+              rests-on (assumption: $r, resting: $m);
           } or {
-              (source: $r, derived: $m) isa derivation;
+              derivation (source: $r, derived: $m);
           } or {
               $pm isa population-member, links (owning-population: $pop, member: $r);
               $pm has valid-from $vf; $vf <= $t;
               not { $pm has valid-to $vt; $vt <= $t; };
-              (scoped-belief: $m, population: $pop) isa scoped;
+              scoped (scoped-belief: $m, population: $pop);
           };
       return { $m };
 
@@ -217,7 +217,7 @@ define
           $res isa resolution, has valid-from $vf; $vf <= $t;
           not { $res has valid-to $vt; $vt <= $t; };
           true == provably-derived($res);
-          { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+          { resolves (resolution-belief: $res, record-a: $rec, record-b: $other); }
           or
-          { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          { resolves (resolution-belief: $res, record-a: $other, record-b: $rec); };
       return { $other };

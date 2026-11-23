@@ -6,7 +6,7 @@
 fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: ATT&CK techniques with no asserted detection claim against them."):
     match
         $t isa attack-pattern;
-        not { (detected-technique: $t, detection-claim: $b) isa technique-detection;
+        not { technique-detection (detected-technique: $t, detection-claim: $b);
               $b has belief-state "asserted"; };
     return { $t };
 
@@ -64,7 +64,7 @@ fun has-live-requirement($a: analytic) -> boolean @doc("True iff analytic $a has
 
 fun claim-platforms() -> { concept, attack-pattern, string, string } @doc("One row per asserted detection claim and declared platform: the detecting logic, its technique, the platform, and whether the technique's live analytic there is blind, covered or absent (unassessed)."):
     match
-        (detecting-logic: $d, detected-technique: $t, detection-claim: $b) isa technique-detection;
+        technique-detection (detecting-logic: $d, detected-technique: $t, detection-claim: $b);
         $b has belief-state "asserted";
         $e isa monitored-environment, has platform $p;
         not { $e has revoked true; };

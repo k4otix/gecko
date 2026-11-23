@@ -7,6 +7,7 @@
 
 use futures_util::StreamExt;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
+use gecko_engine::db::schema_apply;
 use gecko_extension_api::{GeckoExtension, SchemaMigration};
 use ulid::Ulid;
 
@@ -70,6 +71,19 @@ async fn reapplying_the_schema_is_idempotent() {
             .apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
             .await
             .expect("mem schema");
+    }
+
+    // The exported functions read back as the shipped text, so a further apply
+    // plans no function define or redefine.
+    let exported = router.database_schema().await.expect("schema");
+    let stored = schema_apply::stored_functions(&exported).expect("stored functions");
+    for fragment in [CORE_SCHEMA, mem.schema()] {
+        let plan = schema_apply::plan_queries(fragment, &stored).expect("plan");
+        let functions: Vec<&String> = plan.iter().filter(|q| q.contains("fun ")).collect();
+        assert!(
+            functions.is_empty(),
+            "a re-apply would rewrite functions: {functions:?}"
+        );
     }
     common::drop_db_with_retry(&mut router, &name).await;
 }

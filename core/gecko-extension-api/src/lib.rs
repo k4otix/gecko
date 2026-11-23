@@ -36,6 +36,7 @@ pub mod ids;
 pub mod migration;
 pub mod okf;
 pub mod provenance;
+pub mod relation_syntax;
 pub mod semantic;
 
 pub use belief_edge::{

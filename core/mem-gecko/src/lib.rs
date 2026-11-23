@@ -105,6 +105,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shipped_queries_use_current_relation_syntax() {
+        use gecko_extension_api::relation_syntax::deprecated_relation_lines;
+        for (file, text) in [
+            ("schema/mem_types.tql", MEM_TYPES),
+            ("schema/mem_functions.tql", MEM_FUNCTIONS),
+            ("src/tql.rs", include_str!("tql.rs")),
+        ] {
+            let lines = deprecated_relation_lines(text);
+            assert!(
+                lines.is_empty(),
+                "{file} writes a role list before `isa` at lines {lines:?}; write `rel (roles)`"
+            );
+        }
+    }
+
+    #[test]
     fn migrations_lead_to_the_shipped_schema() {
         // Each cleanup deletes only rows missing a role the shipped schema requires,
         // each update clamps a ranged attribute, each `undefine @doc` clears text the
