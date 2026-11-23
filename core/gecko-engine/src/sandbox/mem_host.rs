@@ -464,7 +464,7 @@ mod tests {
 
     // ── Reader bridge (mem.recall) ──────────────────────────────────────────
 
-    use gecko_extension_api::{BeliefQuery, Chunk, EpistemicError, EpistemicReader};
+    use gecko_extension_api::{Chunk, EpistemicError, EpistemicReader};
 
     /// A recording mock reader: captures the last `(query, budget)` it was asked
     /// for and returns a fixed chunk list, so the tests can assert the payload →
@@ -493,8 +493,8 @@ mod tests {
         }
         async fn believed_at(
             &self,
+            _ctx: &RunContext,
             _at: DateTime,
-            _q: BeliefQuery,
         ) -> std::result::Result<Vec<MemId>, EpistemicError> {
             Ok(vec![])
         }

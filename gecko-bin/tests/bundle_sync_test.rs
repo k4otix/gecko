@@ -1015,8 +1015,8 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
         r#"match $a isa concept, has concept-id "notes/a";
                  $b isa concept, has concept-id "notes/b";
            insert $p isa population, has spec-hash "pop-gc";
-                  (owning-population: $p, member: $a) isa population-member;
-                  (owning-population: $p, member: $b) isa population-member;"#,
+                  population-member (owning-population: $p, member: $a);
+                  population-member (owning-population: $p, member: $b);"#,
     )
     .await
     .expect("insert the memberships");
@@ -1026,7 +1026,7 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
     tx.query(
         r#"match $a isa intrusion-set, has concept-id "notes/a";
            insert $m isa malware, has concept-id "elsewhere/m";
-                  (user: $a, used: $m) isa uses;"#,
+                  uses (user: $a, used: $m);"#,
     )
     .await
     .expect("insert the cross-bundle uses");
@@ -1118,7 +1118,7 @@ async fn assert_core_relation_refused(prefix: &str, insert: &str, roles: &[&str]
 async fn a_concept_link_missing_its_target_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_link_no_target",
-        "(source: $c) isa concept-link;",
+        "concept-link (source: $c);",
         &["okf-link:target"],
     )
     .await;
@@ -1128,7 +1128,7 @@ async fn a_concept_link_missing_its_target_is_refused_at_commit() {
 async fn a_concept_link_missing_its_source_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_link_no_source",
-        "(target: $d) isa concept-link;",
+        "concept-link (target: $d);",
         &["okf-link:source"],
     )
     .await;
@@ -1138,7 +1138,7 @@ async fn a_concept_link_missing_its_source_is_refused_at_commit() {
 async fn a_citation_missing_its_cited_resource_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_citation_no_resource",
-        "(citing-concept: $c) isa citation;",
+        "citation (citing-concept: $c);",
         &["citation:cited-resource", "okf-link:target"],
     )
     .await;
@@ -1148,7 +1148,7 @@ async fn a_citation_missing_its_cited_resource_is_refused_at_commit() {
 async fn a_citation_missing_its_citing_concept_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_citation_no_concept",
-        "(cited-resource: $e) isa citation;",
+        "citation (cited-resource: $e);",
         &["citation:citing-concept", "okf-link:source"],
     )
     .await;
@@ -1158,7 +1158,7 @@ async fn a_citation_missing_its_citing_concept_is_refused_at_commit() {
 async fn a_containment_missing_its_member_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_containment_no_member",
-        "(container: $b) isa containment;",
+        "containment (container: $b);",
         &["containment:member"],
     )
     .await;
@@ -1168,7 +1168,7 @@ async fn a_containment_missing_its_member_is_refused_at_commit() {
 async fn a_containment_missing_its_container_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_containment_no_container",
-        "(member: $c) isa containment;",
+        "containment (member: $c);",
         &["containment:container"],
     )
     .await;
@@ -1178,7 +1178,7 @@ async fn a_containment_missing_its_container_is_refused_at_commit() {
 async fn a_hierarchy_missing_its_child_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_hierarchy_no_child",
-        "(parent: $c) isa hierarchy;",
+        "hierarchy (parent: $c);",
         &["hierarchy:child"],
     )
     .await;
@@ -1188,7 +1188,7 @@ async fn a_hierarchy_missing_its_child_is_refused_at_commit() {
 async fn a_hierarchy_missing_its_parent_is_refused_at_commit() {
     assert_core_relation_refused(
         "gecko_test_hierarchy_no_parent",
-        "(child: $d) isa hierarchy;",
+        "hierarchy (child: $d);",
         &["hierarchy:parent"],
     )
     .await;

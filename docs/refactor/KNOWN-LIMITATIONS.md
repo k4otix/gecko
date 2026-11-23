@@ -111,8 +111,7 @@ As-of recall returns only beliefs visible to the caller (an actor with no agent 
 empty result). It filters the *current* (asserted) beliefs by `valid-from`, so a belief
 superseded since T is omitted, and its successor's `valid-from` is after T, so neither
 appears: as-of recall does not reconstruct history across a supersession. A supersede requires a currently asserted
-belief; superseding a retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`). The host trait method
-`EpistemicReader::believed_at` is still unscoped by agent.
+belief; superseding a retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`).
 
 ## Writes act only on what the caller can see
 

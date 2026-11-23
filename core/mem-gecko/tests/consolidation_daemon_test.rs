@@ -240,7 +240,7 @@ async fn seed_episode(
     }
     fx.raw_seed(&format!(
         r#"match {owner_match} insert $e isa {kind}, has concept-id "{id}", has title "{title}",
-             has event-time {event}, has ingest-time {ingest}; (owned: $e{owner_links}) isa ownership;"#
+             has event-time {event}, has ingest-time {ingest}; ownership (owned: $e{owner_links});"#
     ))
     .await;
 }

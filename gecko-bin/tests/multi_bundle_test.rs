@@ -834,8 +834,8 @@ async fn garbage_collecting_a_cross_bundle_link_target_commits() {
         r#"match $a isa concept, has concept-id "notes/a1";
                  $b1 isa concept, has concept-id "notes/b1";
                  $b2 isa concept, has concept-id "notes/b2";
-           insert (source: $b1, target: $a) isa concept-link;
-                  (parent: $b2, child: $a) isa hierarchy;"#,
+           insert concept-link (source: $b1, target: $a);
+                  hierarchy (parent: $b2, child: $a);"#,
     )
     .await;
 

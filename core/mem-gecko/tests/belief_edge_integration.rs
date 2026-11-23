@@ -22,8 +22,8 @@ use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_extension_api::{
     ActorId, AttrDecl, AttrValueType, BeliefDraft, BeliefEdge, BeliefEdgeDecl, DerivationMethod,
-    EpistemicError, EpistemicWriter, GeckoExtension, GraphStore, GraphValue, GraphWrite, MemId,
-    ProvenanceSource, RoleDecl, RowCountMismatch, RunContext, Visibility,
+    EpistemicError, EpistemicWriter, GeckoExtension, GraphReader, GraphStore, GraphValue,
+    GraphWrite, MemId, ProvenanceSource, RoleDecl, RowCountMismatch, RunContext, Visibility,
 };
 use mem_gecko::{BeliefEdgeRegistry, ExtensionFragment, MemWriter};
 use ulid::Ulid;
@@ -136,7 +136,7 @@ fn hierarchy_op(parent: &str, child: &str) -> GraphWrite {
          match
            $a isa concept, has concept-id $pa; $pa == $p;
            $b isa concept, has concept-id $cb; $cb == $c;
-         insert (parent: $a, child: $b) isa hierarchy;",
+         insert hierarchy (parent: $a, child: $b);",
         vec!["p".into(), "c".into()],
         vec![GraphValue::from(parent), GraphValue::from(child)],
     )
@@ -145,7 +145,7 @@ fn hierarchy_op(parent: &str, child: &str) -> GraphWrite {
 async fn hierarchy_count(fx: &Fixture) -> usize {
     fx.raw_fetch(
         r#"match
-             (parent: $a, child: $b) isa hierarchy;
+             hierarchy (parent: $a, child: $b);
              $a has concept-id $pa; $b has concept-id $cb;
            fetch { "p": $pa, "c": $cb };"#,
     )
@@ -173,7 +173,7 @@ async fn expect_rows_accepts_an_exact_insert_match() {
     let rows = fx
         .raw_fetch(
             r#"match
-                 (parent: $a, child: $b) isa hierarchy;
+                 hierarchy (parent: $a, child: $b);
                  $a has concept-id $pa; $b has concept-id $cb;
                fetch { "p": $pa, "c": $cb };"#,
         )
@@ -232,7 +232,7 @@ async fn expect_rows_rolls_back_a_double_match() {
          match
            $a isa concept, has concept-id $pa; $pa == $p;
            $c isa concept, has tag $ct; $ct == $t;
-         insert (parent: $a, child: $c) isa hierarchy;",
+         insert hierarchy (parent: $a, child: $c);",
         vec!["p".into(), "t".into()],
         vec![GraphValue::from("c/parent"), GraphValue::from("shared")],
     )
@@ -493,7 +493,7 @@ async fn belief_edge_decl_registry_writes_run_stamped() {
         .raw_fetch(&format!(
             r#"match
                  $b isa belief, has concept-id "{}";
-                 (memory: $b, origin: $run) isa source-link;
+                 source-link (memory: $b, origin: $run);
                  $run isa doc-run, has run-id $rid;
                fetch {{ "rid": $rid }};"#,
             id.0
@@ -681,4 +681,117 @@ async fn two_edges_of_one_relation_both_land() {
     assert_eq!(objects, ["t1", "t2"]);
 
     fx.drop_db().await;
+}
+
+const TAG_READ: &str = "given $t: string;
+     match $p isa probe-target, has probe-tag $tag, has probe-ref $r;
+     $tag == $t;
+     fetch { \"ref\": $r, \"tag\": $tag };";
+
+async fn seed_tagged_targets(fx: &Fixture) {
+    fx.raw_write(
+        r#"insert
+             $a isa probe-target, has concept-id "c/r1", has probe-ref "r1", has probe-tag "red";
+             $b isa probe-target, has concept-id "c/r2", has probe-ref "r2", has probe-tag "red";
+             $c isa probe-target, has concept-id "c/r3", has probe-ref "r3", has probe-tag "blue";
+             $d isa probe-target, has concept-id "c/r4", has probe-ref "r4", has probe-tag "green";"#,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_rows_returns_the_union_with_each_matched_key() {
+    let fx = Fixture::new().await;
+    seed_tagged_targets(&fx).await;
+
+    let rows = vec![
+        vec![GraphValue::from("red")],
+        vec![GraphValue::from("blue")],
+    ];
+    let docs = fx
+        .store()
+        .read_rows(TAG_READ, &["t".to_string()], &rows)
+        .await
+        .expect("a multi-row read succeeds");
+
+    let mut got: Vec<(String, String)> = docs
+        .iter()
+        .map(|d| {
+            (
+                d["tag"].as_str().unwrap().to_string(),
+                d["ref"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("blue".to_string(), "r3".to_string()),
+            ("red".to_string(), "r1".to_string()),
+            ("red".to_string(), "r2".to_string()),
+        ]
+    );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_rows_with_no_rows_issues_no_query() {
+    // The database does not exist, so any query (even opening a transaction) would
+    // fail; an empty batch still succeeds.
+    let docs = absent_store()
+        .read_rows(TAG_READ, &["t".to_string()], &[])
+        .await
+        .expect("empty rows return without a query");
+    assert!(docs.is_empty());
+}
+
+/// A store over a database that does not exist, so any query it ran would fail.
+fn absent_store() -> RouterGraphStore {
+    let router = TypeDbRouter::new(DbConfig {
+        address: "localhost:1729".to_string(),
+        database: format!(
+            "betest_absent_{}",
+            Ulid::generate().to_string().to_lowercase()
+        ),
+        username: "admin".to_string(),
+        password: "password".to_string(),
+        tls: TlsMode::Disabled,
+    });
+    RouterGraphStore::new(Arc::new(Mutex::new(router)))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_without_fetch_is_refused() {
+    let fx = Fixture::new().await;
+    seed_tagged_targets(&fx).await;
+    let err = fx
+        .store()
+        .read("match $x isa probe-target;", &[], &[])
+        .await
+        .expect_err("a read that fetches nothing is refused");
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+    fx.drop_db().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_rows_refuses_a_row_of_the_wrong_length() {
+    // Validation runs before any query, so the absent database is never reached.
+    let store = absent_store();
+    let rows = vec![
+        vec![GraphValue::from("red")],
+        vec![GraphValue::from("blue"), GraphValue::from("extra")],
+    ];
+    let err = store
+        .read_rows(TAG_READ, &["t".to_string()], &rows)
+        .await
+        .expect_err("a ragged row is refused");
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+
+    let err = store
+        .read_rows(TAG_READ, &[], &[Vec::new()])
+        .await
+        .expect_err("empty vars are refused");
+    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
 }

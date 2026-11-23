@@ -130,11 +130,11 @@ async fn belief_evidence_restson_supersession_roundtrip() {
               has valid-from 2026-01-01T00:00:00;
           $e1 isa episode, has concept-id "mem/ep/e1",
               has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
-          (evidenced: $b1, evidence-item: $e1) isa evidence;
+          evidence (evidenced: $b1, evidence-item: $e1);
           $a1 isa belief, has concept-id "mem/bel/a1", has belief-state "asserted";
-          (resting: $b1, assumption: $a1) isa rests-on;
+          rests-on (resting: $b1, assumption: $a1);
           $b2 isa belief, has concept-id "mem/bel/b2", has belief-state "asserted";
-          (superseded: $b1, superseding: $b2) isa supersession,
+          supersession (superseded: $b1, superseding: $b2),
               has created-at 2026-01-02T00:00:00, has supersession-reason "newer evidence";
         "#,
     )
@@ -146,7 +146,7 @@ async fn belief_evidence_restson_supersession_roundtrip() {
         &mut router,
         r#"match
              $b isa belief, has concept-id "mem/bel/b1";
-             (evidenced: $b, evidence-item: $e) isa evidence;
+             evidence (evidenced: $b, evidence-item: $e);
              $e has concept-id $eid;
            fetch { "e": $eid };"#,
     )
@@ -159,7 +159,7 @@ async fn belief_evidence_restson_supersession_roundtrip() {
         &mut router,
         r#"match
              $b isa belief, has concept-id "mem/bel/b1";
-             (resting: $b, assumption: $a) isa rests-on;
+             rests-on (resting: $b, assumption: $a);
              $a has concept-id $aid;
            fetch { "a": $aid };"#,
     )
@@ -215,11 +215,11 @@ async fn population_materialized_and_strict_membership() {
           $c2 isa concept, has concept-id "asset/c2", has tag "internet-facing";
           $c3 isa concept, has concept-id "asset/c3", has tag "internet-facing";
           # materialized view is STALE: only c1, c2 are cached (c3 tagged later)
-          (owning-population: $p, member: $c1) isa population-member, has computed-at 2026-01-01T00:00:00;
-          (owning-population: $p, member: $c2) isa population-member, has computed-at 2026-01-01T00:00:00;
+          population-member (owning-population: $p, member: $c1), has computed-at 2026-01-01T00:00:00;
+          population-member (owning-population: $p, member: $c2), has computed-at 2026-01-01T00:00:00;
           # a belief scopes to the POPULATION, not to each member (invariant 5)
           $b isa belief, has concept-id "mem/bel/pop", has belief-state "asserted";
-          (scoped-belief: $b, population: $p) isa scoped;
+          scoped (scoped-belief: $b, population: $p);
         "#,
     )
     .await
@@ -241,7 +241,7 @@ async fn population_materialized_and_strict_membership() {
         &mut router,
         r#"match
              $b isa belief, has concept-id "mem/bel/pop";
-             (scoped-belief: $b, population: $p) isa scoped;
+             scoped (scoped-belief: $b, population: $p);
              $p has spec-hash $h;
            fetch { "h": $h };"#,
     )
@@ -291,8 +291,8 @@ async fn provable_resolution_canonicalizes_without_merge() {
           $res isa resolution, has concept-id "mem/bel/res", has belief-state "asserted";
           $ep isa episode, has concept-id "mem/ep/rs",
               has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
-          (derived: $res, source: $ep) isa derivation, has derivation-method "type-join";
-          (resolution-belief: $res, record-a: $ra, record-b: $rb) isa resolves;
+          derivation (derived: $res, source: $ep), has derivation-method "type-join";
+          resolves (resolution-belief: $res, record-a: $ra, record-b: $rb);
         "#,
     )
     .await
@@ -368,7 +368,7 @@ async fn same_spec_hash_shares_one_population() {
         insert
           $p isa population, has spec-hash "cohort-x";
           $b1 isa belief, has concept-id "mem/bel/x1", has belief-state "asserted";
-          (scoped-belief: $b1, population: $p) isa scoped;
+          scoped (scoped-belief: $b1, population: $p);
         "#,
     )
     .await
@@ -381,7 +381,7 @@ async fn same_spec_hash_shares_one_population() {
         match $p isa population, has spec-hash "cohort-x";
         insert
           $b2 isa belief, has concept-id "mem/bel/x2", has belief-state "asserted";
-          (scoped-belief: $b2, population: $p) isa scoped;
+          scoped (scoped-belief: $b2, population: $p);
         "#,
     )
     .await
@@ -401,7 +401,7 @@ async fn same_spec_hash_shares_one_population() {
         &mut router,
         r#"match
              $p isa population, has spec-hash "cohort-x";
-             (scoped-belief: $b, population: $p) isa scoped;
+             scoped (scoped-belief: $b, population: $p);
            fetch { "b": $b.concept-id };"#,
     )
     .await;
@@ -509,7 +509,7 @@ async fn pivot_is_instantiable() {
           $ag isa agent, has agent-id "analyst-1";
           $from isa belief, has concept-id "mem/bel/from", has belief-state "asserted";
           $to isa belief, has concept-id "mem/bel/to", has belief-state "asserted";
-          (pivoting-agent: $ag, from-state: $from, to-state: $to) isa pivot,
+          pivot (pivoting-agent: $ag, from-state: $from, to-state: $to),
               has pivot-method "hypothesis-refutation", has calibration-score 0.8;
         "#,
     )
@@ -519,7 +519,7 @@ async fn pivot_is_instantiable() {
     let pivots = fetch(
         &mut router,
         r#"match
-             (pivoting-agent: $ag, from-state: $f, to-state: $t) isa pivot;
+             pivot (pivoting-agent: $ag, from-state: $f, to-state: $t);
              $ag has agent-id $aid;
            fetch { "agent": $aid };"#,
     )
@@ -547,9 +547,9 @@ async fn a_memory_item_with_two_ownerships_is_refused_at_commit() {
           $b isa belief, has concept-id "mem/bel/two-owners", has belief-state "asserted",
               has valid-from 2026-01-01T00:00:00, has salience 0.5,
               has base-activation 1.0, has last-access 2026-01-01T00:00:00;
-          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
-          (owned: $b, owner: $ag) isa ownership, has visibility "private";
-          (owned: $b, owner: $ag) isa ownership, has visibility "team";
+          source-link (memory: $b, origin: $run), has origin-kind "test";
+          ownership (owned: $b, owner: $ag), has visibility "private";
+          ownership (owned: $b, owner: $ag), has visibility "team";
         "#,
     )
     .await;
@@ -574,7 +574,7 @@ async fn a_memory_item_with_no_source_link_is_refused_at_commit() {
           $b isa belief, has concept-id "mem/bel/unsourced", has belief-state "asserted",
               has valid-from 2026-01-01T00:00:00, has salience 0.5,
               has base-activation 1.0, has last-access 2026-01-01T00:00:00;
-          (owned: $b, owner: $ag) isa ownership, has visibility "private";
+          ownership (owned: $b, owner: $ag), has visibility "private";
         "#,
     )
     .await;
@@ -915,10 +915,10 @@ async fn a_database_holding_a_one_player_row_upgrades() {
               has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
           $p isa population, has spec-hash "pop-up";
           $c isa concept, has concept-id "c/up";
-          (derived: $b, source: $ep) isa derivation, has derivation-method "type-join";
-          (source: $ep) isa derivation, has derivation-method "type-join";
-          (owning-population: $p, member: $c) isa population-member;
-          (owning-population: $p) isa population-member;
+          derivation (derived: $b, source: $ep), has derivation-method "type-join";
+          derivation (source: $ep), has derivation-method "type-join";
+          population-member (owning-population: $p, member: $c);
+          population-member (owning-population: $p);
         "#,
     )
     .await
@@ -985,8 +985,8 @@ fn belief_insert(id: &str, omit: Option<&str>, extra: &str) -> String {
           $ag isa agent, has agent-id "agent-{id}";
           $run isa doc-run, has run-id "run-{id}";
           $b isa belief, has concept-id "mem/bel/{id}", has belief-state "asserted"{fields}{extra};
-          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
-          (owned: $b, owner: $ag) isa ownership, has visibility "private";"#
+          source-link (memory: $b, origin: $run), has origin-kind "test";
+          ownership (owned: $b, owner: $ag), has visibility "private";"#
     )
 }
 
@@ -1087,7 +1087,7 @@ async fn a_similarity_score_outside_minus_1_to_1_is_refused() {
         format!(
             r#"match $b isa belief, has concept-id "mem/bel/s";
                      $re isa retrieval-event, has concept-id "mem/re/s";
-               insert (surfacer: $re, item: $b) isa surfaced, has similarity-score {score:?};"#
+               insert surfaced (surfacer: $re, item: $b), has similarity-score {score:?};"#
         )
     };
     for score in [-1.0, 1.0] {
@@ -1138,7 +1138,7 @@ async fn a_derivation_confidence_of_1_5_is_refused() {
             format!(
                 r#"match $d isa belief, has concept-id "mem/bel/derived";
                          $s isa belief, has concept-id "mem/bel/source";
-                   insert (derived: $d, source: $s) isa derivation,
+                   insert derivation (derived: $d, source: $s),
                        has derivation-method "human-assertion", has confidence {value};"#
             )
         },
@@ -1159,7 +1159,7 @@ async fn a_predicted_probability_of_1_5_is_refused() {
             format!(
                 r#"match $b isa belief, has concept-id "mem/bel/predicted";
                          $e isa episode, has concept-id "mem/ep/resolving";
-                   insert (predicted-belief: $b, resolving-episode: $e) isa prediction-resolution,
+                   insert prediction-resolution (predicted-belief: $b, resolving-episode: $e),
                        has predicted-probability {value};"#
             )
         },

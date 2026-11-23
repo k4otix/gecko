@@ -36,17 +36,20 @@ pub mod ids;
 pub mod migration;
 pub mod okf;
 pub mod provenance;
+pub mod relation_syntax;
 pub mod semantic;
 
 pub use belief_edge::{
     AttrDecl, AttrValueType, BeliefEdge, BeliefEdgeDecl, BeliefEdgeWriter, RoleDecl,
 };
 pub use epistemic::{
-    BeliefDraft, BeliefQuery, Chunk, ContextBudget, DerivationMethod, EpisodeDraft,
-    EpistemicReader, EpistemicWriter, Outcome, RecallQuery,
+    BeliefDraft, Chunk, ContextBudget, DerivationMethod, EpisodeDraft, EpistemicReader,
+    EpistemicWriter, Outcome, RecallQuery,
 };
 pub use error::EpistemicError;
-pub use graph::{GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
+pub use graph::{
+    GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch, validate_read_rows,
+};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
 pub use semantic::{BeliefState, Embedder, Entrenchment, FilterMeta, SemanticIndex, Visibility};

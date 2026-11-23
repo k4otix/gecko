@@ -16,3 +16,4 @@ ulid = { version = "3", features = ["serde"] }
 
 [dev-dependencies]
 proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use gecko_extension_api::{
     EpistemicError, GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch,
+    validate_read_rows,
 };
 use tokio::sync::{Mutex, OnceCell};
 use typedb_driver::answer::QueryAnswer;
@@ -161,17 +162,46 @@ impl GraphReader for RouterGraphStore {
             given.push_row(entries).map_err(store_err)?;
             tx.query_with_rows(query, given).await.map_err(store_err)?
         };
-
-        let mut out = Vec::new();
-        if answer.is_document_stream() {
-            let mut stream = answer.into_documents();
-            while let Some(item) = stream.next().await {
-                let doc = item.map_err(store_err)?;
-                let json: serde_json::Value =
-                    serde_json::from_str(&doc.into_json().to_string()).map_err(store_err)?;
-                out.push(json);
-            }
-        }
-        Ok(out)
+        collect_documents(answer).await
     }
+
+    async fn read_rows(
+        &self,
+        query: &str,
+        vars: &[String],
+        rows: &[Vec<GraphValue>],
+    ) -> Result<Vec<serde_json::Value>, EpistemicError> {
+        validate_read_rows(vars, rows)?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tx = self.handle().await?.begin_read().await.map_err(store_err)?;
+        let mut given = GivenRows::new(vars.to_vec(), rows.len());
+        for row in rows {
+            let entries: Vec<GivenRowEntry> = row.iter().map(entry).collect();
+            given.push_row(entries).map_err(store_err)?;
+        }
+        let answer = tx.query_with_rows(query, given).await.map_err(store_err)?;
+        collect_documents(answer).await
+    }
+}
+
+/// Drains a document-stream answer into JSON values. A read that ends in anything
+/// but `fetch` is refused, and a stream error is returned, never treated as the end
+/// of the results.
+async fn collect_documents(answer: QueryAnswer) -> Result<Vec<serde_json::Value>, EpistemicError> {
+    if !answer.is_document_stream() {
+        return Err(EpistemicError::InvalidInput(
+            "a graph read must end in `fetch { … };`; this query returns no documents".into(),
+        ));
+    }
+    let mut out = Vec::new();
+    let mut stream = answer.into_documents();
+    while let Some(item) = stream.next().await {
+        let doc = item.map_err(store_err)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&doc.into_json().to_string()).map_err(store_err)?;
+        out.push(json);
+    }
+    Ok(out)
 }

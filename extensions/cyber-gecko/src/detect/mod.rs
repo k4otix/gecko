@@ -270,6 +270,25 @@ async fn read(
         .map_err(|e| e.to_string())
 }
 
+/// Runs `query` once over every row of `rows`, binding the string parameters
+/// `names` to each row's values.
+async fn read_rows(
+    graph: &Arc<dyn GraphReader>,
+    query: &str,
+    names: &[&str],
+    rows: &[Vec<&str>],
+) -> Result<Vec<Value>, String> {
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    let rows: Vec<Vec<GraphValue>> = rows
+        .iter()
+        .map(|row| row.iter().map(|v| GraphValue::from(*v)).collect())
+        .collect();
+    graph
+        .read_rows(query, &names, &rows)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// One claim the report covers: its detecting logic and its technique.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ClaimKey {
@@ -285,6 +304,41 @@ struct ClaimStatuses {
     platforms: BTreeMap<String, BTreeSet<String>>,
 }
 
+/// A (technique concept id, platform) pair `claim-platforms()` called blind.
+type Pair = (String, String);
+
+/// Every (technique, platform) pair some claim is blind on and not covered on.
+fn blind_pairs(claims: &BTreeMap<ClaimKey, ClaimStatuses>) -> BTreeSet<Pair> {
+    claims
+        .iter()
+        .flat_map(|(key, statuses)| {
+            statuses
+                .platforms
+                .iter()
+                .filter(|(_, status)| status.contains("blind") && !status.contains("covered"))
+                .map(|(platform, _)| (key.technique_concept_id.clone(), platform.clone()))
+        })
+        .collect()
+}
+
+/// The readings gathered for the blind `platform`, empty when none were read,
+/// which the builders report as a changed graph. A pair that was never gathered
+/// is an internal error: every pair a caller asks for is seeded.
+fn readings_for<'a>(
+    readings: &'a BTreeMap<Pair, Vec<Reading>>,
+    technique_concept_id: &str,
+    platform: &str,
+) -> Result<&'a [Reading], String> {
+    readings
+        .get(&(technique_concept_id.to_string(), platform.to_string()))
+        .map(Vec::as_slice)
+        .ok_or_else(|| {
+            format!(
+                "internal: readings were not gathered for technique '{technique_concept_id}', platform '{platform}'"
+            )
+        })
+}
+
 /// For each asserted detection claim with a declared platform it is blind on or
 /// cannot assess: the blind platforms with what each lacks, and the unassessed
 /// platforms. Errors on a graph it cannot judge: one with no sensor file, or with
@@ -292,6 +346,7 @@ struct ClaimStatuses {
 async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     require_judgeable(graph).await?;
     let claims = claim_statuses(graph).await?;
+    let readings = analytic_readings(graph, &blind_pairs(&claims)).await?;
 
     let mut detections = Vec::new();
     for (key, statuses) in &claims {
@@ -304,8 +359,10 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
                 continue;
             }
             if status.contains("blind") {
-                blind_platforms
-                    .extend(blind_analytics(graph, &key.technique_concept_id, platform).await?);
+                blind_platforms.extend(blind_analytics(
+                    platform,
+                    readings_for(&readings, &key.technique_concept_id, platform)?,
+                )?);
             } else {
                 unassessed.push(platform.clone());
             }
@@ -399,40 +456,44 @@ async fn claim_statuses(
     Ok(claims)
 }
 
-/// The `blind_platforms` entries for `platform` of the technique
-/// `technique_concept_id`: one per live analytic there that cannot run, sorted by
-/// analytic.
-async fn blind_analytics(
-    graph: &Arc<dyn GraphReader>,
-    technique_concept_id: &str,
-    platform: &str,
-) -> Result<Vec<Value>, String> {
-    let mut readings = Vec::new();
-    for (attack_id, concept_id) in live_analytics(graph, technique_concept_id, platform).await? {
-        let has_requirements = has_live_requirement(graph, &concept_id).await?;
-        let missing = if has_requirements {
-            missing_log_sources(graph, &concept_id, platform).await?
-        } else {
-            Vec::new()
-        };
-        readings.push(AnalyticReading {
-            analytic: attack_id,
-            has_requirements,
-            missing,
-        });
-    }
-    blind_platform_entries(platform, readings)
+/// One `analytic-gaps` row of an analytic on a platform: an uncovered requirement.
+#[derive(Debug, Clone)]
+struct GapRow {
+    /// The log source's spelling.
+    name: String,
+    /// The log source's matching key.
+    key: String,
+    /// The log source's channels.
+    channels: Vec<String>,
+    /// The trimmed title of the data component it serves, if it has one.
+    component: Option<String>,
 }
 
-/// The live analytics of the technique `technique_concept_id` on `platform`, as
-/// (attack-id or null, concept id), sorted by attack-id, or by concept id for one
-/// with no attack-id.
-async fn live_analytics(
+/// One live analytic of a technique on a platform `claim-platforms()` called blind.
+#[derive(Debug, Clone)]
+struct Reading {
+    /// The analytic's attack-id, or null when it has none.
+    analytic: Value,
+    /// The analytic's concept id.
+    concept_id: String,
+    /// Whether the analytic has a requirement on a live data component.
+    has_requirements: bool,
+    /// Its `analytic-gaps` on the platform, read only when it has requirements.
+    gaps: Vec<GapRow>,
+}
+
+/// The live analytics of every pair in `pairs`, each with its requirements and its
+/// gaps on the pair's platform, in three reads. Every requested pair is in the map,
+/// with no readings when its analytics were not found.
+async fn analytic_readings(
     graph: &Arc<dyn GraphReader>,
-    technique_concept_id: &str,
-    platform: &str,
-) -> Result<Vec<(Value, String)>, String> {
-    let analytics = read(
+    pairs: &BTreeSet<Pair>,
+) -> Result<BTreeMap<Pair, Vec<Reading>>, String> {
+    let pair_rows: Vec<Vec<&str>> = pairs
+        .iter()
+        .map(|(technique, platform)| vec![technique.as_str(), platform.as_str()])
+        .collect();
+    let analytics = read_rows(
         graph,
         &format!(
             "given $tid: string, $plat: string; \
@@ -440,45 +501,184 @@ async fn live_analytics(
                    strategy-detects (strategy: $st, technique: $t); {} \
                    strategy-analytic (strategy: $st, analytic: $a); {} \
                    $a has platform $ap; $ap == $plat; $a has concept-id $ac; \
-             fetch {{ \"analytic_concept_id\": $ac, \"analytic\": $a.attack-id }};",
+             fetch {{ \"technique\": $tc, \"platform\": $ap, \
+                     \"analytic_concept_id\": $ac, \"analytic\": $a.attack-id }};",
             live("st"),
             live("a")
         ),
         &["tid", "plat"],
-        &[technique_concept_id, platform],
+        &pair_rows,
     )
     .await?;
+    let mut readings = readings_from_analytics(pairs, &analytics)?;
 
-    let mut by_analytic: BTreeMap<String, (Value, String)> = BTreeMap::new();
-    for row in &analytics {
-        let concept_id = row_str(row, "analytic_concept_id")?;
-        let attack_id = row.get("analytic").cloned().unwrap_or(Value::Null);
-        let sort_key = attack_id.as_str().unwrap_or(&concept_id).to_string();
-        by_analytic.insert(sort_key, (attack_id, concept_id));
-    }
-    Ok(by_analytic.into_values().collect())
-}
-
-/// Whether the analytic `analytic_concept_id` has a requirement on a live data
-/// component.
-async fn has_live_requirement(
-    graph: &Arc<dyn GraphReader>,
-    analytic_concept_id: &str,
-) -> Result<bool, String> {
-    let requirements = read(
+    let analytic_ids: BTreeSet<String> = readings
+        .values()
+        .flatten()
+        .map(|r| r.concept_id.clone())
+        .collect();
+    let id_rows: Vec<Vec<&str>> = analytic_ids.iter().map(|id| vec![id.as_str()]).collect();
+    let requirements = read_rows(
         graph,
         &format!(
             "given $aid: string; \
              match $a isa analytic, has concept-id $ac; $ac == $aid; \
                    $r isa analytic-requirement, links (analytic: $a, component: $c); {} \
-             limit 1; fetch {{ \"key\": $r.log-source-key }};",
+             select $ac; distinct; \
+             fetch {{ \"analytic_concept_id\": $ac }};",
             live("c")
         ),
         &["aid"],
-        &[analytic_concept_id],
+        &id_rows,
     )
     .await?;
-    Ok(!requirements.is_empty())
+    mark_requirements(&mut readings, &requirements)?;
+
+    let gapped: BTreeSet<(String, String)> = readings
+        .iter()
+        .flat_map(|((_, platform), rs)| {
+            rs.iter()
+                .filter(|r| r.has_requirements)
+                .map(|r| (r.concept_id.clone(), platform.clone()))
+        })
+        .collect();
+    let gapped_rows: Vec<Vec<&str>> = gapped
+        .iter()
+        .map(|(id, platform)| vec![id.as_str(), platform.as_str()])
+        .collect();
+    let gaps = read_rows(
+        graph,
+        "given $aid: string, $plat: string; \
+         match $a isa analytic, has concept-id $ac; $ac == $aid; \
+               $a has platform $ap; $ap == $plat; \
+               let $r in analytic-gaps($a, $plat); \
+               $r links (component: $c); \
+         fetch { \"analytic_concept_id\": $ac, \"platform\": $ap, \
+                 \"name\": $r.log-source-name, \"key\": $r.log-source-key, \
+                 \"channels\": [ $r.log-source-channel ], \"component\": $c.title };",
+        &["aid", "plat"],
+        &gapped_rows,
+    )
+    .await?;
+    attach_gaps(&mut readings, &gaps)?;
+    Ok(readings)
+}
+
+/// The analytic `rows` of the batched read keyed by their (technique, platform),
+/// seeded with every pair in `pairs`. Each pair's analytics are sorted by attack-id,
+/// or by concept id for one with no attack-id; of two with one attack-id, the
+/// smaller concept id is kept.
+fn readings_from_analytics(
+    pairs: &BTreeSet<Pair>,
+    rows: &[Value],
+) -> Result<BTreeMap<Pair, Vec<Reading>>, String> {
+    let mut by_pair: BTreeMap<Pair, BTreeMap<String, (Value, String)>> = pairs
+        .iter()
+        .map(|pair| (pair.clone(), BTreeMap::new()))
+        .collect();
+    for row in rows {
+        let pair = (row_str(row, "technique")?, row_str(row, "platform")?);
+        let analytics = by_pair
+            .get_mut(&pair)
+            .ok_or_else(|| format!("an analytic row matched no requested pair: {row}"))?;
+        let concept_id = row_str(row, "analytic_concept_id")?;
+        let attack_id = row.get("analytic").cloned().unwrap_or(Value::Null);
+        let sort_key = attack_id.as_str().unwrap_or(&concept_id).to_string();
+        match analytics.get(&sort_key) {
+            Some((_, kept)) if *kept <= concept_id => {}
+            _ => {
+                analytics.insert(sort_key, (attack_id, concept_id));
+            }
+        }
+    }
+    Ok(by_pair
+        .into_iter()
+        .map(|(pair, analytics)| {
+            let readings = analytics
+                .into_values()
+                .map(|(analytic, concept_id)| Reading {
+                    analytic,
+                    concept_id,
+                    has_requirements: false,
+                    gaps: Vec::new(),
+                })
+                .collect();
+            (pair, readings)
+        })
+        .collect())
+}
+
+/// Marks each reading whose analytic appears in the requirement `rows`.
+fn mark_requirements(
+    readings: &mut BTreeMap<Pair, Vec<Reading>>,
+    rows: &[Value],
+) -> Result<(), String> {
+    let with_requirements: BTreeSet<String> = rows
+        .iter()
+        .map(|row| row_str(row, "analytic_concept_id"))
+        .collect::<Result<_, _>>()?;
+    for reading in readings.values_mut().flatten() {
+        reading.has_requirements = with_requirements.contains(&reading.concept_id);
+    }
+    Ok(())
+}
+
+/// Gives each reading with requirements the gap `rows` of its analytic on its
+/// pair's platform.
+fn attach_gaps(readings: &mut BTreeMap<Pair, Vec<Reading>>, rows: &[Value]) -> Result<(), String> {
+    let mut by_analytic: BTreeMap<(String, String), Vec<GapRow>> = BTreeMap::new();
+    for row in rows {
+        let channels = row
+            .get("channels")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("a gap row has no channel list: {row}"))?
+            .iter()
+            .map(|c| {
+                c.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("a gap row has a non-string channel: {row}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        by_analytic
+            .entry((
+                row_str(row, "analytic_concept_id")?,
+                row_str(row, "platform")?,
+            ))
+            .or_default()
+            .push(GapRow {
+                name: row_str(row, "name")?,
+                key: row_str(row, "key")?,
+                channels,
+                component: row
+                    .get("component")
+                    .and_then(Value::as_str)
+                    .map(|c| c.trim().to_string()),
+            });
+    }
+    for ((_, platform), rs) in readings.iter_mut() {
+        for reading in rs.iter_mut().filter(|r| r.has_requirements) {
+            if let Some(gaps) = by_analytic.get(&(reading.concept_id.clone(), platform.clone())) {
+                reading.gaps = gaps.clone();
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The `blind_platforms` entries for `platform` from its analytics' `readings`:
+/// one per live analytic there that cannot run, sorted by analytic.
+fn blind_analytics(platform: &str, readings: &[Reading]) -> Result<Vec<Value>, String> {
+    let analytics = readings
+        .iter()
+        .map(|r| {
+            Ok(AnalyticReading {
+                analytic: r.analytic.clone(),
+                has_requirements: r.has_requirements,
+                missing: missing_log_sources(r)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    blind_platform_entries(platform, analytics)
 }
 
 /// The error for a platform `claim-platforms()` called blind whose analytics no
@@ -535,10 +735,10 @@ fn blind_platform_entries(
 async fn recommend_sources(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     require_judgeable(graph).await?;
     let claims = claim_statuses(graph).await?;
+    let readings = analytic_readings(graph, &blind_pairs(&claims)).await?;
 
     // (platform, log-source key) → (smallest spelling, every channel).
     let mut sources: BTreeMap<(String, String), (String, BTreeSet<String>)> = BTreeMap::new();
-    let mut gap_sets: BTreeMap<(String, String), Vec<BTreeSet<String>>> = BTreeMap::new();
     let mut claim_refs = Vec::new();
     let mut pairs = Vec::new();
     let mut unfixable = Vec::new();
@@ -563,17 +763,11 @@ async fn recommend_sources(graph: &Arc<dyn GraphReader>) -> Result<Value, String
                 unfixable.push(unfixable_entry(platform, "no-analytic"));
                 continue;
             }
-            let cache_key = (key.technique_concept_id.clone(), platform.clone());
-            let analytics = match gap_sets.get(&cache_key) {
-                Some(sets) => sets.clone(),
-                None => {
-                    let sets =
-                        blind_gap_sets(graph, &key.technique_concept_id, platform, &mut sources)
-                            .await?;
-                    gap_sets.insert(cache_key, sets.clone());
-                    sets
-                }
-            };
+            let analytics = blind_gap_sets(
+                platform,
+                readings_for(&readings, &key.technique_concept_id, platform)?,
+                &mut sources,
+            )?;
             if analytics.is_empty() {
                 unfixable.push(unfixable_entry(platform, "no-requirements"));
             } else {
@@ -611,66 +805,34 @@ async fn recommend_sources(graph: &Arc<dyn GraphReader>) -> Result<Value, String
     Ok(json!({ "steps": steps, "unfixable": unfixable }))
 }
 
-/// The missing log-source keys of each live analytic of the technique
-/// `technique_concept_id` on `platform` that has a requirement, recording each key's
-/// spelling and channels in `sources`. Errors when `claim-platforms()` called the
-/// platform blind but the analytics no longer read as blind.
-async fn blind_gap_sets(
-    graph: &Arc<dyn GraphReader>,
-    technique_concept_id: &str,
+/// The missing log-source keys on `platform` of each analytic in `readings` that has
+/// a requirement, recording each key's spelling and channels in `sources`. Errors
+/// when `claim-platforms()` called the platform blind but the analytics no longer
+/// read as blind.
+fn blind_gap_sets(
     platform: &str,
+    readings: &[Reading],
     sources: &mut BTreeMap<(String, String), (String, BTreeSet<String>)>,
 ) -> Result<Vec<BTreeSet<String>>, String> {
-    let mut readings = Vec::new();
-    for (_, concept_id) in live_analytics(graph, technique_concept_id, platform).await? {
-        if !has_live_requirement(graph, &concept_id).await? {
-            readings.push(GapReading {
-                has_requirements: false,
-                keys: BTreeSet::new(),
-            });
-            continue;
-        }
-        let gaps = read(
-            graph,
-            "given $aid: string, $plat: string; \
-             match $a isa analytic, has concept-id $ac; $ac == $aid; \
-                   let $r in analytic-gaps($a, $plat); \
-             fetch { \"name\": $r.log-source-name, \"key\": $r.log-source-key, \
-                     \"channels\": [ $r.log-source-channel ] };",
-            &["aid", "plat"],
-            &[&concept_id, platform],
-        )
-        .await?;
+    let mut gap_readings = Vec::new();
+    for reading in readings {
         let mut keys = BTreeSet::new();
-        for row in &gaps {
-            let key = row_str(row, "key")?;
-            let name = row_str(row, "name")?;
-            let channels = row
-                .get("channels")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("a gap row has no channel list: {row}"))?
-                .iter()
-                .map(|c| {
-                    c.as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| format!("a gap row has a non-string channel: {row}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+        for gap in &reading.gaps {
             let (display, all_channels) = sources
-                .entry((platform.to_string(), key.clone()))
-                .or_insert_with(|| (name.clone(), BTreeSet::new()));
-            if name < *display {
-                *display = name;
+                .entry((platform.to_string(), gap.key.clone()))
+                .or_insert_with(|| (gap.name.clone(), BTreeSet::new()));
+            if gap.name < *display {
+                *display = gap.name.clone();
             }
-            all_channels.extend(channels);
-            keys.insert(key);
+            all_channels.extend(gap.channels.iter().cloned());
+            keys.insert(gap.key.clone());
         }
-        readings.push(GapReading {
-            has_requirements: true,
+        gap_readings.push(GapReading {
+            has_requirements: reading.has_requirements,
             keys,
         });
     }
-    gap_sets(platform, readings)
+    gap_sets(platform, gap_readings)
 }
 
 /// What the reads after `claim-platforms()` found for one live analytic on a
@@ -704,45 +866,28 @@ fn gap_sets(platform: &str, readings: Vec<GapReading>) -> Result<Vec<BTreeSet<St
     Ok(sets)
 }
 
-/// The `analytic-gaps` of the analytic `analytic_concept_id` on `platform`, grouped
-/// by log-source key: each key's smallest trimmed spelling and the sorted names of the data
-/// components it would serve, sorted by spelling.
-async fn missing_log_sources(
-    graph: &Arc<dyn GraphReader>,
-    analytic_concept_id: &str,
-    platform: &str,
-) -> Result<Vec<Value>, String> {
-    let gaps = read(
-        graph,
-        "given $aid: string, $plat: string; \
-         match $a isa analytic, has concept-id $ac; $ac == $aid; \
-               let $r in analytic-gaps($a, $plat); \
-               $r links (component: $c); \
-         fetch { \"name\": $r.log-source-name, \"key\": $r.log-source-key, \
-                 \"component\": $c.title, \"component_id\": $c.concept-id };",
-        &["aid", "plat"],
-        &[analytic_concept_id, platform],
-    )
-    .await?;
-
-    let mut groups: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
-    for row in &gaps {
-        let name = row_str(row, "name")?;
-        let component = row
-            .get("component")
-            .and_then(Value::as_str)
-            .map(|c| c.trim().to_string())
-            .ok_or_else(|| format!("a gap's data component has no name: {row}"))?;
+/// The gaps of the analytic `reading`, grouped by log-source key: each key's
+/// smallest trimmed spelling and the sorted names of the data components it would
+/// serve, sorted by spelling.
+fn missing_log_sources(reading: &Reading) -> Result<Vec<Value>, String> {
+    let mut groups: BTreeMap<&str, (&str, BTreeSet<&str>)> = BTreeMap::new();
+    for gap in &reading.gaps {
+        let component = gap.component.as_deref().ok_or_else(|| {
+            format!(
+                "a gap's data component has no name: analytic '{}', log source '{}'",
+                reading.concept_id, gap.name
+            )
+        })?;
         let (display, components) = groups
-            .entry(row_str(row, "key")?)
-            .or_insert_with(|| (name.clone(), BTreeSet::new()));
-        if name < *display {
-            *display = name;
+            .entry(&gap.key)
+            .or_insert_with(|| (&gap.name, BTreeSet::new()));
+        if gap.name.as_str() < *display {
+            *display = &gap.name;
         }
         components.insert(component);
     }
 
-    let mut missing: Vec<(String, String, BTreeSet<String>)> = groups
+    let mut missing: Vec<(&str, &str, BTreeSet<&str>)> = groups
         .into_iter()
         .map(|(key, (display, components))| (display, key, components))
         .collect();
@@ -948,6 +1093,23 @@ mod tests {
     }
 
     #[test]
+    fn readings_for_an_ungathered_pair_is_an_internal_error() {
+        let readings = BTreeMap::new();
+        let err = readings_for(&readings, "techniques/t1", "Windows").unwrap_err();
+        assert_eq!(
+            err,
+            "internal: readings were not gathered for technique 'techniques/t1', platform 'Windows'"
+        );
+        let mut seeded = BTreeMap::new();
+        seeded.insert(("techniques/t1".to_string(), "Windows".to_string()), vec![]);
+        assert!(
+            readings_for(&seeded, "techniques/t1", "Windows")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn gap_sets_with_no_analytic_is_graph_changed() {
         assert_eq!(gap_sets("Windows", vec![]), Err(graph_changed("Windows")));
     }
@@ -1014,6 +1176,141 @@ mod tests {
         let err = blind_platform_entries("Windows", vec![reading(true, vec![])])
             .expect_err("must not drop the platform");
         assert!(err.contains("retry") && err.contains("Windows"), "{err}");
+    }
+
+    fn pair(technique: &str, platform: &str) -> Pair {
+        (technique.to_string(), platform.to_string())
+    }
+
+    fn analytic_row(technique: &str, platform: &str, attack_id: &str, concept_id: &str) -> Value {
+        json!({ "technique": technique, "platform": platform,
+                "analytic": attack_id, "analytic_concept_id": concept_id })
+    }
+
+    fn gap_row(concept_id: &str, platform: &str, key: &str, component: &str) -> Value {
+        json!({ "analytic_concept_id": concept_id, "platform": platform, "name": key,
+                "key": key, "channels": ["c"], "component": component })
+    }
+
+    #[test]
+    fn a_requested_pair_with_no_analytic_row_is_graph_changed() {
+        let pairs: BTreeSet<Pair> = [pair("t1", "Windows")].into();
+        let readings = readings_from_analytics(&pairs, &[]).expect("readings");
+        let windows = &readings[&pair("t1", "Windows")];
+        assert!(windows.is_empty());
+        assert_eq!(
+            blind_analytics("Windows", windows),
+            Err(graph_changed("Windows"))
+        );
+        assert_eq!(
+            blind_gap_sets("Windows", windows, &mut BTreeMap::new()),
+            Err(graph_changed("Windows"))
+        );
+    }
+
+    #[test]
+    fn analytic_rows_key_by_pair_and_a_duplicate_attack_id_keeps_the_smallest_concept_id() {
+        let pairs: BTreeSet<Pair> = [pair("t1", "Windows"), pair("t2", "Linux")].into();
+        let rows = [
+            analytic_row("t1", "Windows", "AN2", "a/z"),
+            analytic_row("t1", "Windows", "AN1", "a/y"),
+            analytic_row("t1", "Windows", "AN1", "a/x"),
+            analytic_row("t1", "Windows", "AN1", "a/y"),
+            analytic_row("t2", "Linux", "AN3", "a/w"),
+        ];
+        let readings = readings_from_analytics(&pairs, &rows).expect("readings");
+        let ids = |p: &Pair| -> Vec<(Value, String)> {
+            readings[p]
+                .iter()
+                .map(|r| (r.analytic.clone(), r.concept_id.clone()))
+                .collect()
+        };
+        assert_eq!(
+            ids(&pair("t1", "Windows")),
+            [(json!("AN1"), "a/x".into()), (json!("AN2"), "a/z".into())]
+        );
+        assert_eq!(ids(&pair("t2", "Linux")), [(json!("AN3"), "a/w".into())]);
+    }
+
+    #[test]
+    fn an_analytic_row_for_an_unrequested_pair_is_an_error() {
+        let pairs: BTreeSet<Pair> = [pair("t1", "Windows")].into();
+        let rows = [analytic_row("t1", "Linux", "AN1", "a/x")];
+        assert!(readings_from_analytics(&pairs, &rows).is_err());
+    }
+
+    #[test]
+    fn gaps_attach_by_analytic_and_platform_only_to_analytics_with_requirements() {
+        let pairs: BTreeSet<Pair> = [pair("t1", "Windows"), pair("t1", "Linux")].into();
+        let rows = [
+            analytic_row("t1", "Windows", "AN1", "a/x"),
+            analytic_row("t1", "Windows", "AN2", "a/y"),
+            analytic_row("t1", "Linux", "AN1", "a/x"),
+        ];
+        let mut readings = readings_from_analytics(&pairs, &rows).expect("readings");
+        mark_requirements(&mut readings, &[json!({ "analytic_concept_id": "a/x" })])
+            .expect("requirements");
+        attach_gaps(
+            &mut readings,
+            &[
+                gap_row("a/x", "Windows", "k1", "Process Creation"),
+                gap_row("a/x", "Linux", "k2", "Command Execution"),
+                gap_row("a/x", "Windows", "k3", "Process Creation"),
+            ],
+        )
+        .expect("gaps");
+
+        let keys = |p: &Pair| -> Vec<(bool, Vec<String>)> {
+            readings[p]
+                .iter()
+                .map(|r| {
+                    let keys = r.gaps.iter().map(|g| g.key.clone()).collect();
+                    (r.has_requirements, keys)
+                })
+                .collect()
+        };
+        assert_eq!(
+            keys(&pair("t1", "Windows")),
+            [(true, vec!["k1".into(), "k3".into()]), (false, vec![])]
+        );
+        assert_eq!(keys(&pair("t1", "Linux")), [(true, vec!["k2".into()])]);
+
+        let mut sources = BTreeMap::new();
+        let windows = &readings[&pair("t1", "Windows")];
+        assert_eq!(
+            blind_gap_sets("Windows", windows, &mut sources),
+            Ok(vec![["k1", "k3"].iter().map(|k| k.to_string()).collect()])
+        );
+        assert_eq!(
+            blind_analytics("Windows", windows),
+            Ok(vec![
+                json!({ "platform": "Windows", "analytic": "AN1", "no_log_sources": false,
+                        "missing": [
+                            { "log_source": "k1", "data_components": ["Process Creation"] },
+                            { "log_source": "k3", "data_components": ["Process Creation"] },
+                        ] }),
+                json!({ "platform": "Windows", "analytic": "AN2", "no_log_sources": true,
+                        "missing": [] }),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_gap_with_no_component_name_fails_blinded_only() {
+        let pairs: BTreeSet<Pair> = [pair("t1", "Windows")].into();
+        let rows = [analytic_row("t1", "Windows", "AN1", "a/x")];
+        let mut readings = readings_from_analytics(&pairs, &rows).expect("readings");
+        mark_requirements(&mut readings, &[json!({ "analytic_concept_id": "a/x" })])
+            .expect("requirements");
+        let mut row = gap_row("a/x", "Windows", "k1", "unused");
+        row.as_object_mut().expect("object").remove("component");
+        attach_gaps(&mut readings, &[row]).expect("gaps");
+        let windows = &readings[&pair("t1", "Windows")];
+        let err = blind_analytics("Windows", windows).expect_err("no component name");
+        assert!(err.contains("has no name"), "{err}");
+        assert!(err.contains("analytic 'a/x'"), "{err}");
+        assert!(err.contains("log source '"), "{err}");
+        assert!(blind_gap_sets("Windows", windows, &mut BTreeMap::new()).is_ok());
     }
 
     #[test]

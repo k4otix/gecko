@@ -11,19 +11,19 @@ define
           {
               $res isa resolution, has valid-from $vf; $vf <= $t;
               not { $res has valid-to $vt; $vt <= $t; };
-              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              derivation (derived: $res, source: $src), has derivation-method $dm;
               { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
-              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              { resolves (resolution-belief: $res, record-a: $rec, record-b: $other); }
               or
-              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+              { resolves (resolution-belief: $res, record-a: $other, record-b: $rec); };
           } or {
               $res2 isa resolution, has valid-from $vf2; $vf2 <= $t;
               not { $res2 has valid-to $vt2; $vt2 <= $t; };
-              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              derivation (derived: $res2, source: $src2), has derivation-method $dm2;
               { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
-              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              { resolves (resolution-belief: $res2, record-a: $rec, record-b: $mid); }
               or
-              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              { resolves (resolution-belief: $res2, record-a: $mid, record-b: $rec); };
               let $other in canonical-entity-at($mid, $t);
           };
       return { $other };

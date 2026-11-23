@@ -268,8 +268,8 @@ async fn recall_then_derive_records_correlation() {
             r#"match
                  $b isa belief, has concept-id "{synth_id}";
                  $re isa retrieval-event;
-                 (retrieval: $re, synthesized: $b) isa informs-synthesis;
-                 (surfacer: $re, item: $ev) isa surfaced, has was-used $u;
+                 informs-synthesis (retrieval: $re, synthesized: $b);
+                 surfaced (surfacer: $re, item: $ev), has was-used $u;
                  $ev has concept-id "{}";
                fetch {{ "u": $u }};"#,
             evidence.0

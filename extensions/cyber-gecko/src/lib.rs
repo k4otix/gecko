@@ -140,3 +140,27 @@ impl GeckoExtension for CyberGecko {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shipped_queries_use_current_relation_syntax() {
+        use gecko_extension_api::relation_syntax::deprecated_relation_lines;
+        for (file, text) in [
+            ("schema/cyber_schema.tql", CYBER_SCHEMA),
+            ("schema/cyber_functions.tql", CYBER_FUNCTIONS),
+            ("src/detect/mod.rs", include_str!("detect/mod.rs")),
+            ("src/stix/mod.rs", include_str!("stix/mod.rs")),
+            ("src/sensors.rs", include_str!("sensors.rs")),
+            ("src/migrations.rs", include_str!("migrations.rs")),
+        ] {
+            let lines = deprecated_relation_lines(text);
+            assert!(
+                lines.is_empty(),
+                "{file} writes a role list before `isa` at lines {lines:?}; write `rel (roles)`"
+            );
+        }
+    }
+}
