@@ -418,6 +418,7 @@ async fn required_attributes_of_the_live_cyber_schema() {
     for (entity, attrs) in [
         ("observable", &["concept-id", "ioc-value", "ioc-type"][..]),
         ("attack-pattern", &["concept-id"][..]),
+        ("tactic", &["concept-id", "tactic-shortname"][..]),
     ] {
         let got = required
             .get(entity)
@@ -1442,6 +1443,9 @@ const REQUIRED_ROLES: &[(&str, &[&str])] = &[
     ("strategy-detects", &["strategy", "technique"]),
     ("strategy-analytic", &["strategy", "analytic"]),
     ("analytic-requirement", &["analytic", "component"]),
+    ("subtechnique-of", &["subtechnique", "parent"]),
+    ("revoked-by", &["revoked", "replacement"]),
+    ("technique-tactic", &["technique", "tactic"]),
     (
         "technique-detection",
         &["detecting-logic", "detected-technique", "detection-claim"],
@@ -1551,6 +1555,15 @@ async fn write_query(db: &mut TypeDbRouter, query: &str) {
 /// The belief edges cyber declares, which have no upgrade cleanup.
 const BELIEF_EDGES: [&str; 2] = ["technique-detection", "alert-disposition"];
 
+/// The relations declared with their roles required from the start, which have no
+/// pre-tightening form and so no upgrade cleanup.
+const REQUIRED_FROM_THE_START: [&str; 3] = ["subtechnique-of", "revoked-by", "technique-tactic"];
+
+/// Whether `relation` has no upgrade cleanup.
+fn has_no_cleanup(relation: &str) -> bool {
+    BELIEF_EDGES.contains(&relation) || REQUIRED_FROM_THE_START.contains(&relation)
+}
+
 /// Applies the frozen pre-tightening core, mem and cyber schemas.
 async fn apply_pre_tightening_schemas(db: &mut TypeDbRouter) {
     db.apply_schema(PRE_CORE)
@@ -1647,8 +1660,8 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
         .collect();
     assert_eq!(
         cleanups.len(),
-        REQUIRED_ROLES.len() - BELIEF_EDGES.len(),
-        "one cleanup per cyber relation that is not a belief edge"
+        REQUIRED_ROLES.len() - BELIEF_EDGES.len() - REQUIRED_FROM_THE_START.len(),
+        "one cleanup per cyber relation that is neither a belief edge nor required from the start"
     );
     let before = db.database_schema().await.expect("schema");
     for m in &cleanups {
@@ -1674,7 +1687,7 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
                 "{relation}:{role} is not required: {block}"
             );
         }
-        if BELIEF_EDGES.contains(relation) {
+        if has_no_cleanup(relation) {
             continue;
         }
         let full = roles

@@ -278,6 +278,41 @@ fn pre_cyber_schema() -> String {
     format!("{PRE_CYBER}\n{PRE_CYBER_FUNCTIONS}")
 }
 
+/// The cyber types and relations added after the pre-tightening release, as the
+/// shipped schema spells them.
+#[cfg(feature = "cyber")]
+const NEW_CYBER_RELATIONS: &str = r#"define
+  attribute tactic-shortname value string;
+
+  entity tactic sub cyber-object @doc("An ATT&CK tactic (STIX x-mitre-tactic): the adversary goal a technique serves, matched to techniques by its shortname."),
+      owns tactic-shortname @card(1),
+      plays technique-tactic:tactic;
+
+  relation subtechnique-of @doc("An ATT&CK 'subtechnique-of' relationship: a sub-technique refines a parent technique, and a sub-technique has one parent."),
+      relates subtechnique @card(1) @doc("The sub-technique that refines the parent."),
+      relates parent @card(1) @doc("The technique the sub-technique refines.");
+
+  relation revoked-by @doc("An ATT&CK 'revoked-by' relationship: a revoked object points to the object that replaced it, and a revoked object has one replacement."),
+      relates revoked @card(1) @doc("The revoked object."),
+      relates replacement @card(1) @doc("The object that replaced the revoked one.");
+
+  relation technique-tactic @doc("Ties a technique to a tactic whose shortname is one of its kill-chain phases."),
+      relates technique @card(1) @doc("The technique that serves the tactic."),
+      relates tactic @card(1) @doc("The tactic the technique serves.");
+
+  attack-pattern plays technique-tactic:technique,
+      plays subtechnique-of:subtechnique @card(0..1),
+      plays subtechnique-of:parent,
+      plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+  intrusion-set plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+  malware plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+  tool plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+"#;
+
 /// The mem types and functions as one `define`, composed as mem-gecko composes them.
 fn pre_mem_schema() -> String {
     let functions = PRE_MEM_FUNCTIONS
@@ -796,12 +831,25 @@ fn attack_with_malware() -> String {
 }
 
 /// A database schema export as its type definitions and its functions, sorted. An
-/// upgrade appends a newly defined function after the existing ones, where a fresh
-/// database lists it in definition order; function order carries no meaning.
+/// upgrade appends a newly defined type, capability or function after the existing
+/// ones, where a fresh database lists it in definition order; that order carries no
+/// meaning. Each type's capabilities stay with it, sorted, and the types are sorted.
 #[cfg(feature = "cyber")]
-fn schema_parts(schema: &str) -> (String, Vec<String>) {
+fn schema_parts(schema: &str) -> (Vec<String>, Vec<String>) {
     let mut chunks = schema.split("\nfun ");
-    let types = chunks.next().unwrap_or_default().to_string();
+    let types_text = chunks.next().unwrap_or_default();
+    let mut types: Vec<String> = types_text
+        .trim_start_matches("define")
+        .split(";\n")
+        .map(|decl| {
+            let decl = decl.trim().trim_end_matches(';');
+            let mut lines: Vec<&str> = decl.split(",\n").map(str::trim).collect();
+            let head = lines.remove(0);
+            lines.sort_unstable();
+            format!("{head} | {}", lines.join(" | "))
+        })
+        .collect();
+    types.sort();
     let mut functions: Vec<String> = chunks.map(|f| format!("fun {}", f.trim_end())).collect();
     functions.sort();
     (types, functions)
@@ -841,6 +889,11 @@ async fn tightened_schema_applies_to_a_populated_database() {
     db.apply_schema(&pre_cyber_schema())
         .await
         .expect("pre-tightening cyber");
+    // The ATT&CK post-sync sweep reads every typed relation, including those the
+    // pre-tightening release never declared, so they are defined as shipped.
+    db.apply_schema(NEW_CYBER_RELATIONS)
+        .await
+        .expect("the relations declared with required roles");
 
     // An OKF bundle with a concept link, a citation and a hierarchy.
     let okf = tempfile::TempDir::new().expect("temp dir");

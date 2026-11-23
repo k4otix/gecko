@@ -153,6 +153,15 @@ fn sorted(mut ids: Vec<String>) -> Vec<String> {
 /// [`TypedRelation::rel_type`].
 const STRATEGY_ANALYTIC_REL: &str = "strategy-analytic";
 
+/// The relation label of a sub-technique's link to its parent technique.
+pub(crate) const SUBTECHNIQUE_OF_REL: &str = "subtechnique-of";
+
+/// The relation label of a revoked object's link to its replacement.
+pub(crate) const REVOKED_BY_REL: &str = "revoked-by";
+
+/// The relation label of a technique's link to a tactic.
+pub(crate) const TECHNIQUE_TACTIC_REL: &str = "technique-tactic";
+
 /// The relation a strategy's `detects` SRO becomes, which a re-import replaces.
 const STRATEGY_DETECTS_REL: &str = "strategy-detects";
 
@@ -593,6 +602,33 @@ const ANALYTIC_REQUIREMENT: RelShape = RelShape {
     target_players: &["data-component"],
 };
 
+/// A sub-technique's link to its parent technique.
+const SUBTECHNIQUE_OF: RelShape = RelShape {
+    relation: SUBTECHNIQUE_OF_REL,
+    source_role: "subtechnique",
+    target_role: "parent",
+    source_players: &["attack-pattern"],
+    target_players: &["attack-pattern"],
+};
+
+/// A revoked object's link to the object that replaced it.
+const REVOKED_BY: RelShape = RelShape {
+    relation: REVOKED_BY_REL,
+    source_role: "revoked",
+    target_role: "replacement",
+    source_players: &["attack-pattern", "intrusion-set", "malware", "tool"],
+    target_players: &["attack-pattern", "intrusion-set", "malware", "tool"],
+};
+
+/// A technique's link to a tactic named by one of its kill-chain phases.
+const TECHNIQUE_TACTIC: RelShape = RelShape {
+    relation: TECHNIQUE_TACTIC_REL,
+    source_role: "technique",
+    target_role: "tactic",
+    source_players: &["attack-pattern"],
+    target_players: &["tactic"],
+};
+
 /// Every `(relation, role, players)` the adapter links, for checking the player
 /// lists against the schema's `plays` declarations.
 pub fn typed_relation_players() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
@@ -608,10 +644,13 @@ pub fn typed_relation_players() -> Vec<(&'static str, &'static str, &'static [&'
 
 /// The shape of every relation the adapter links, one per relation.
 fn typed_shapes() -> impl Iterator<Item = &'static RelShape> {
-    REL_SHAPES
-        .iter()
-        .map(|(_, s)| s)
-        .chain([&STRATEGY_ANALYTIC, &ANALYTIC_REQUIREMENT])
+    REL_SHAPES.iter().map(|(_, s)| s).chain([
+        &STRATEGY_ANALYTIC,
+        &ANALYTIC_REQUIREMENT,
+        &SUBTECHNIQUE_OF,
+        &REVOKED_BY,
+        &TECHNIQUE_TACTIC,
+    ])
 }
 
 /// Resolves a STIX/ATT&CK relationship type to its relation shape.
