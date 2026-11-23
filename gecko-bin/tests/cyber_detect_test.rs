@@ -37,6 +37,8 @@ mod attack;
 mod common;
 #[path = "common/stix_objects.rs"]
 mod stix_objects;
+#[path = "common/structure.rs"]
+mod structure;
 use common::TestDb;
 
 const LOGIC_ID: &str = "playbooks/detect-t1059";
@@ -1517,5 +1519,97 @@ async fn coverage_matches_the_rule_for_random_sensor_files() {
         seen.len(),
         4,
         "the cases never produced every outcome: only {seen:?}"
+    );
+}
+
+/// The `attack_id`s `coverage_gaps` lists.
+fn gap_ids(gaps: &Value) -> BTreeSet<String> {
+    gaps["undetected_techniques"]
+        .as_array()
+        .expect("undetected_techniques array")
+        .iter()
+        .map(|row| row["attack_id"].as_str().expect("attack_id").to_string())
+        .collect()
+}
+
+/// The `coverage_gaps` row for `attack_id`.
+fn gap_row<'a>(gaps: &'a Value, attack_id: &str) -> &'a Value {
+    gaps["undetected_techniques"]
+        .as_array()
+        .expect("undetected_techniques array")
+        .iter()
+        .find(|row| row["attack_id"] == attack_id)
+        .unwrap_or_else(|| panic!("{attack_id} is not listed in {gaps}"))
+}
+
+/// Seeds the structure fixture and the playbook bundle, and returns the detect
+/// bridge over them.
+async fn structure_bridge(test_db: &TestDb) -> ExtensionCallback {
+    structure::sync_fixture(test_db).await;
+    sync_playbooks(test_db, &[LOGIC_ID]).await;
+    let (graph, edges) = detect_handles(test_db);
+    cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base())
+}
+
+fn claim_technique(cb: &ExtensionCallback, attack_id: &str) {
+    call(
+        cb,
+        "claim",
+        json!({ "logic_id": LOGIC_ID, "technique_id": attack_id, "method": "external-tool", "confidence": 0.9 }),
+    )
+    .unwrap_or_else(|e| panic!("claim {attack_id}: {e}"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_gaps_skips_retired_techniques() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_retired");
+    let cb = structure_bridge(&test_db).await;
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        gap_ids(&gaps),
+        BTreeSet::from([
+            structure::PARENT_ATTACK_ID.to_string(),
+            structure::SUB1_ATTACK_ID.to_string(),
+            structure::SUB2_ATTACK_ID.to_string(),
+        ]),
+        "revoked, deprecated and retired sub-techniques are not gaps: {gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_gaps_counts_a_parents_claimed_sub_techniques() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_counts");
+    let cb = structure_bridge(&test_db).await;
+    claim_technique(&cb, structure::SUB1_ATTACK_ID);
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        gap_row(&gaps, structure::PARENT_ATTACK_ID)["sub_techniques"],
+        json!({ "claimed": 1, "total": 2 }),
+        "the retired sub-technique is not counted: {gaps}"
+    );
+    assert!(
+        gap_row(&gaps, structure::SUB2_ATTACK_ID)
+            .get("sub_techniques")
+            .is_none(),
+        "a sub-technique has no sub-technique counts: {gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claimed_parent_does_not_cover_its_sub_techniques() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_parent");
+    let cb = structure_bridge(&test_db).await;
+    claim_technique(&cb, structure::PARENT_ATTACK_ID);
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        gap_ids(&gaps),
+        BTreeSet::from([
+            structure::SUB1_ATTACK_ID.to_string(),
+            structure::SUB2_ATTACK_ID.to_string(),
+        ]),
+        "{gaps}"
     );
 }

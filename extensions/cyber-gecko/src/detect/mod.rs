@@ -223,10 +223,11 @@ async fn disposition(
     Ok(json!({ "belief_id": belief_id.0, "logic_id": logic_id, "verdict": verdict }))
 }
 
-/// Techniques with no asserted detection claim (the `undetected-techniques()`
-/// TypeDB function).
+/// Live techniques with no asserted detection claim (the
+/// `undetected-techniques()` TypeDB function). A technique with live
+/// sub-techniques also carries how many of them have an asserted claim.
 async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
-    let rows = graph
+    let mut rows = graph
         .read(
             "match let $t in undetected-techniques(); \
              fetch { \"concept_id\": $t.concept-id, \"attack_id\": $t.attack-id };",
@@ -235,6 +236,39 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         )
         .await
         .map_err(|e| e.to_string())?;
+
+    // A live sub-technique is claimed exactly when it is not in the gap list,
+    // which applies the same liveness.
+    let unclaimed: BTreeSet<String> = rows
+        .iter()
+        .map(|row| row_str(row, "concept_id"))
+        .collect::<Result<_, _>>()?;
+    let sub_rows = read(
+        graph,
+        &format!(
+            "match subtechnique-of (subtechnique: $s, parent: $p); {} \
+             fetch {{ \"parent\": $p.concept-id, \"sub\": $s.concept-id }};",
+            live("s")
+        ),
+        &[],
+        &[],
+    )
+    .await?;
+    // parent concept id -> (claimed, total)
+    let mut counts: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for row in &sub_rows {
+        let entry = counts.entry(row_str(row, "parent")?).or_default();
+        entry.1 += 1;
+        if !unclaimed.contains(&row_str(row, "sub")?) {
+            entry.0 += 1;
+        }
+    }
+    for row in &mut rows {
+        let concept_id = row_str(row, "concept_id")?;
+        if let Some((claimed, total)) = counts.get(&concept_id) {
+            row["sub_techniques"] = json!({ "claimed": claimed, "total": total });
+        }
+    }
     Ok(json!({ "undetected_techniques": rows }))
 }
 

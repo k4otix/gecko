@@ -2,10 +2,13 @@
 # after cyber_schema.tql under the same `define`, so it may reference every type
 # declared there (and the core mem `belief`/`belief-state`).
 
-# techniques with NO asserted detection claim — the coverage gap list
+# live techniques with NO asserted detection claim — the coverage gap list
 fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: ATT&CK techniques with no asserted detection claim against them."):
     match
         $t isa attack-pattern;
+        not { $t has revoked true; };
+        not { $t has deprecated true; };
+        not { $t has retired-at $tra; };
         not { technique-detection (detected-technique: $t, detection-claim: $b);
               $b has belief-state "asserted"; };
     return { $t };
