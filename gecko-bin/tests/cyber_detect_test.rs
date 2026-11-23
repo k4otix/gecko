@@ -1679,6 +1679,68 @@ async fn claiming_a_deprecated_technique_says_it_has_no_replacement() {
     );
 }
 
+/// Seeds the structure fixture with `edit` applied to its object list, and the
+/// playbook bundle, and returns the detect bridge over them.
+async fn edited_structure_bridge(
+    test_db: &TestDb,
+    edit: impl FnOnce(&mut Vec<Value>),
+) -> ExtensionCallback {
+    let mut bundle: Value = serde_json::from_str(&structure::fixture_json()).expect("fixture json");
+    edit(bundle["objects"].as_array_mut().expect("objects"));
+    stix_objects::sync_stix_fixture(test_db, &bundle.to_string(), "the edited structure fixture")
+        .await;
+    sync_playbooks(test_db, &[LOGIC_ID]).await;
+    let (graph, edges) = detect_handles(test_db);
+    cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_logic_on_a_live_technique_is_not_called_revoked() {
+    let test_db = TestDb::new("gecko_test_detect_claim_missing_logic");
+    // R2 keeps its revocation by S1 but carries the live parent's attack-id, so
+    // a retired attack-pattern holds P's id as its retired-attack-id.
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        object_mut(objects, structure::REVOKED_SECOND_STIX_ID)["external_references"] =
+            json!([{ "source_name": "mitre-attack", "external_id": structure::PARENT_ATTACK_ID }]);
+    })
+    .await;
+    let err = call(
+        &cb,
+        "claim",
+        json!({ "logic_id": "playbooks/no-such-logic", "technique_id": structure::PARENT_ATTACK_ID, "method": "external-tool", "confidence": 0.9 }),
+    )
+    .expect_err("a claim by a missing logic is refused");
+    assert_eq!(
+        err,
+        "no detection logic 'playbooks/no-such-logic' in the graph"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claiming_a_technique_revoked_by_a_non_technique_has_no_replacement() {
+    let test_db = TestDb::new("gecko_test_detect_claim_non_technique");
+    // R2 is revoked by the live tool rather than S1.
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        let link = objects
+            .iter_mut()
+            .find(|o| {
+                o["relationship_type"] == "revoked-by"
+                    && o["source_ref"] == structure::REVOKED_SECOND_STIX_ID
+            })
+            .expect("R2's revoked-by");
+        link["target_ref"] = json!(structure::TOOL_STIX_ID);
+    })
+    .await;
+    let err = refused_claim(&test_db, &cb, structure::REVOKED_SECOND_ATTACK_ID).await;
+    assert_eq!(
+        err,
+        format!(
+            "technique '{}' is deprecated (or revoked) with no replacement",
+            structure::REVOKED_SECOND_ATTACK_ID
+        )
+    );
+}
+
 /// The concept id the importer gives the attack-pattern `stix_id`.
 fn technique_concept_id(stix_id: &str) -> String {
     let uuid = stix_id

@@ -14,7 +14,10 @@
 //!   live end of its `revoked-by` chain when it has one.
 //! - `disposition` records an analyst verdict as a belief with an
 //!   `alert-disposition` edge carrying the verdict, so `precision` can count it.
-//! - `coverage_gaps` runs the persisted `undetected-techniques()` TypeDB function.
+//! - `coverage_gaps` runs the persisted `undetected-techniques()` TypeDB function,
+//!   which skips retired, revoked and deprecated techniques. A listed technique
+//!   with live sub-techniques carries `sub_techniques`: how many are claimed, of
+//!   how many.
 //! - `blinded` checks each asserted claim against ATT&CK's detection model and the
 //!   synced sensor files. A claim's technique has detection strategies, each carried
 //!   out by one analytic per platform, and an analytic reads log sources for the data
@@ -394,7 +397,7 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     let replacements = if retired.is_empty() {
         BTreeMap::new()
     } else {
-        live_replacements(graph, &retired).await?
+        live_replacements(graph, &retired, "cyber-object").await?
     };
 
     let mut detections = Vec::new();
@@ -1116,24 +1119,39 @@ async fn ensure_concept(graph: &Arc<dyn GraphReader>, concept_id: &str) -> Resul
     Ok(())
 }
 
+/// Errors with "no detection logic '<id>'", "no detection logic … or technique …",
+/// "… is deprecated (or revoked) with no replacement" or "… is revoked; ATT&CK
+/// replaces it with …" unless the logic and a live technique with that attack-id
+/// both exist.
 async fn ensure_logic_and_technique(
     graph: &Arc<dyn GraphReader>,
     logic_id: &str,
     technique_id: &str,
 ) -> Result<(), String> {
-    let rows = graph
-        .read(
-            "given $l: string, $tech: string; \
-             match $lc isa concept, has concept-id $lcid; $lcid == $l; \
-                   $t isa attack-pattern, has attack-id $taid; $taid == $tech; \
-             fetch { \"id\": $lcid };",
-            &["l".into(), "tech".into()],
-            &[GraphValue::from(logic_id), GraphValue::from(technique_id)],
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    if !rows.is_empty() {
-        return Ok(());
+    let logic_exists = !read(
+        graph,
+        "given $l: string; \
+         match $lc isa concept, has concept-id $lcid; $lcid == $l; \
+         fetch { \"id\": $lcid };",
+        &["l"],
+        &[logic_id],
+    )
+    .await?
+    .is_empty();
+    let technique_exists = !read(
+        graph,
+        "given $tech: string; \
+         match $t isa attack-pattern, has attack-id $taid; $taid == $tech; \
+         fetch { \"id\": $taid };",
+        &["tech"],
+        &[technique_id],
+    )
+    .await?
+    .is_empty();
+    match (logic_exists, technique_exists) {
+        (true, true) => return Ok(()),
+        (false, true) => return Err(format!("no detection logic '{logic_id}' in the graph")),
+        _ => {}
     }
 
     // Several retired objects may share one retired-attack-id, so every match is read.
@@ -1154,20 +1172,26 @@ async fn ensure_logic_and_technique(
             "no detection logic '{logic_id}' or technique '{technique_id}' in the graph"
         ));
     }
-    let replacements: BTreeSet<String> = live_replacements(graph, &retired)
+    let replacements: BTreeSet<String> = live_replacements(graph, &retired, "attack-pattern")
         .await?
         .into_values()
         .collect();
+    Err(retired_technique_error(technique_id, &replacements))
+}
+
+/// The refusal of a claim on the retired technique `technique_id`, naming each of
+/// its live `replacements` (attack-ids) or saying it has none.
+fn retired_technique_error(technique_id: &str, replacements: &BTreeSet<String>) -> String {
     if replacements.is_empty() {
-        return Err(format!(
+        return format!(
             "technique '{technique_id}' is deprecated (or revoked) with no replacement"
-        ));
+        );
     }
     let names: Vec<String> = replacements.iter().map(|r| format!("'{r}'")).collect();
-    Err(format!(
+    format!(
         "technique '{technique_id}' is revoked; ATT&CK replaces it with {}; claim that technique instead",
         names.join(" or ")
-    ))
+    )
 }
 
 /// The end of the `revoked-by` chain from `start` in `edges` (revoked concept id →
@@ -1187,10 +1211,12 @@ fn replacement_of(edges: &BTreeMap<String, String>, start: &str) -> Option<Strin
 
 /// The attack-id of the live replacement of each concept in `starts` that has one,
 /// keyed by the start's concept id. A replacement is the end of the start's
-/// `revoked-by` chain when that end is live and carries an attack-id.
+/// `revoked-by` chain when that end is a live `kind` (a fixed schema label) and
+/// carries an attack-id.
 async fn live_replacements(
     graph: &Arc<dyn GraphReader>,
     starts: &BTreeSet<String>,
+    kind: &str,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut edges = BTreeMap::new();
     for row in read(
@@ -1216,7 +1242,7 @@ async fn live_replacements(
         graph,
         &format!(
             "given $cid: string; \
-             match $x isa cyber-object, has concept-id $c, has attack-id $a; $c == $cid; {} \
+             match $x isa {kind}, has concept-id $c, has attack-id $a; $c == $cid; {} \
              fetch {{ \"concept_id\": $c, \"attack_id\": $a }};",
             live("x")
         ),
@@ -1247,6 +1273,19 @@ mod tests {
             has_requirements,
             keys: keys.iter().map(|k| k.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn retired_technique_error_names_every_replacement() {
+        let two: BTreeSet<String> = ["T2".to_string(), "T3".to_string()].into();
+        assert_eq!(
+            retired_technique_error("T1", &two),
+            "technique 'T1' is revoked; ATT&CK replaces it with 'T2' or 'T3'; claim that technique instead"
+        );
+        assert_eq!(
+            retired_technique_error("T1", &BTreeSet::new()),
+            "technique 'T1' is deprecated (or revoked) with no replacement"
+        );
     }
 
     #[test]

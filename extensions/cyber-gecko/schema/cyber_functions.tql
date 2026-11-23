@@ -3,7 +3,7 @@
 # declared there (and the core mem `belief`/`belief-state`).
 
 # live techniques with NO asserted detection claim — the coverage gap list
-fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: ATT&CK techniques with no asserted detection claim against them."):
+fun undetected-techniques() -> { attack-pattern } @doc("The coverage-gap list: live ATT&CK techniques with no asserted detection claim against them."):
     match
         $t isa attack-pattern;
         not { $t has revoked true; };

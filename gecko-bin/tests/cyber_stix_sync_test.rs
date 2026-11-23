@@ -1212,6 +1212,49 @@ async fn a_reimport_replaces_a_changed_parent_and_a_lifted_revocation() {
 }
 
 #[tokio::test]
+async fn a_reimport_lifting_a_technique_revocation_restores_its_attack_id() {
+    use structure::*;
+    let test_db = TestDb::new("gecko_test_stix_structure_unrevoke");
+    structure::sync_fixture(&test_db).await;
+    let mut db = test_db.router();
+
+    let lifted = edited_structure(|objects| {
+        let before = objects.len();
+        objects.retain(|o| {
+            !(o["relationship_type"] == "revoked-by" && o["source_ref"] == REVOKED_SECOND_STIX_ID)
+        });
+        assert_eq!(objects.len(), before - 1);
+        object_mut(objects, REVOKED_SECOND_STIX_ID)["revoked"] = false.into();
+    });
+    sync_stix(&mut db, &lifted).await;
+
+    let tx = db.begin_read().await.expect("begin read");
+    let r2 = concept_id(REVOKED_SECOND_STIX_ID);
+    assert_eq!(
+        count(
+            &tx,
+            &format!(
+                r#"match $t isa attack-pattern, has concept-id "{r2}", has attack-id "{REVOKED_SECOND_ATTACK_ID}";"#
+            )
+        )
+        .await,
+        1,
+        "the un-revoked technique carries its attack-id again"
+    );
+    assert_eq!(
+        count(
+            &tx,
+            &format!(
+                r#"match $t isa attack-pattern, has concept-id "{r2}", has retired-attack-id $r;"#
+            )
+        )
+        .await,
+        0,
+        "the un-revoked technique keeps no retired-attack-id"
+    );
+}
+
+#[tokio::test]
 async fn upgrading_from_mapping_2_leaves_no_untyped_subtechnique_or_revocation_links() {
     let test_db = TestDb::new("gecko_test_stix_structure_upgrade");
     let mut db = test_db.router();

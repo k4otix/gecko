@@ -264,6 +264,59 @@ async fn old_cyber_detection_types_migrate_away() {
     assert!(after.contains("fun claim-platforms"));
 }
 
+/// The shipped `@doc` of `undetected-techniques()`, and the one it replaced.
+#[cfg(feature = "cyber")]
+const LIVE_GAPS_DOC: &str =
+    "The coverage-gap list: live ATT&CK techniques with no asserted detection claim against them.";
+#[cfg(feature = "cyber")]
+const OLD_GAPS_DOC: &str =
+    "The coverage-gap list: ATT&CK techniques with no asserted detection claim against them.";
+
+#[cfg(feature = "cyber")]
+#[tokio::test]
+async fn a_changed_function_doc_reaches_an_existing_database() {
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA};
+
+    let shipped = CyberGecko::new();
+    let previous = shipped.schema().replace(LIVE_GAPS_DOC, OLD_GAPS_DOC);
+    assert_ne!(
+        previous,
+        shipped.schema(),
+        "the shipped schema carries the live gaps @doc"
+    );
+
+    let test_db = TestDb::new("gecko_test_function_doc_redefine");
+    let mut db = test_db.router();
+    db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+        .await
+        .expect("core schema");
+    let mem = MemGecko::new();
+    db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+        .await
+        .expect("mem schema");
+    db.apply_schema(&previous)
+        .await
+        .expect("the previous cyber schema applies");
+    assert!(
+        db.database_schema()
+            .await
+            .expect("schema")
+            .contains(OLD_GAPS_DOC)
+    );
+
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(shipped.schema(), shipped.schema_migrations())
+            .await
+            .expect("the shipped cyber schema redefines the function");
+    }
+    let after = db.database_schema().await.expect("schema");
+    assert!(
+        after.contains(LIVE_GAPS_DOC),
+        "the new @doc is not installed"
+    );
+    assert!(!after.contains(OLD_GAPS_DOC), "the old @doc survived");
+}
+
 /// The schemas as released before the schema tightening.
 const PRE_CORE: &str = include_str!("fixtures/schemas_pre_tightening/core_schema.tql");
 const PRE_MEM_TYPES: &str = include_str!("fixtures/schemas_pre_tightening/mem_types.tql");
