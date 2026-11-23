@@ -179,8 +179,11 @@ any other caller.
   one analytic per platform per strategy, so this does not occur on v20.1, but a future
   bundle with several could hide a blind analytic behind a covered one.
 - **`recommend_sources` is greedy, not optimal.** Each step takes the analytic gap set
-  with the most (claim, platform) pairs unblinded per new log source; a different order
-  can sometimes unblind the same claims with fewer sources. Every log source costs the
+  with the most (claim, platform) pairs unblinded per new log source. Where each
+  technique has one analytic per platform, as on ATT&CK v20.1, the full list's total is
+  the fewest sources that fix every pair, and only the order is heuristic: the best k
+  sources for a budget of k may differ. Where a platform has several analytics, the total
+  can also exceed the fewest. Every log source costs the
   same, and the list names log sources only, never a fallback data component. Its
   `no-analytic` reason also covers a claim on a retired, revoked or deprecated technique,
   which `blinded` reports as unassessed on every platform.
