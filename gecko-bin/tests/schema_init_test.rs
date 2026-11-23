@@ -795,6 +795,18 @@ fn attack_with_malware() -> String {
     bundle.to_string()
 }
 
+/// A database schema export as its type definitions and its functions, sorted. An
+/// upgrade appends a newly defined function after the existing ones, where a fresh
+/// database lists it in definition order; function order carries no meaning.
+#[cfg(feature = "cyber")]
+fn schema_parts(schema: &str) -> (String, Vec<String>) {
+    let mut chunks = schema.split("\nfun ");
+    let types = chunks.next().unwrap_or_default().to_string();
+    let mut functions: Vec<String> = chunks.map(|f| format!("fun {}", f.trim_end())).collect();
+    functions.sort();
+    (types, functions)
+}
+
 /// A database on the pre-tightening schemas, populated by every current writer path
 /// plus the one-player rows an earlier release's GC could leave, takes the shipped schemas.
 #[cfg(feature = "cyber")]
@@ -1172,7 +1184,11 @@ async fn tightened_schema_applies_to_a_populated_database() {
     let fresh_db = TestDb::new("gecko_test_tightened_fresh");
     attack::sync_fixture(&fresh_db).await;
     let fresh = fresh_db.router().database_schema().await.expect("schema");
-    assert_eq!(after, fresh, "the upgraded schema differs from a fresh one");
+    assert_eq!(
+        schema_parts(&after),
+        schema_parts(&fresh),
+        "the upgraded schema differs from a fresh one"
+    );
 
     // mem's required roles: the one-player membership is gone, and another is refused.
     assert_eq!(

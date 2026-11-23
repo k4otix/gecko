@@ -37,6 +37,31 @@ fun analytic-gaps($a: analytic, $p: string) -> { analytic-requirement } @doc("Th
         $covered == false;
     return { $r };
 
+fun live-analytic($t: attack-pattern, $p: string) -> { analytic } @doc("The live analytics on platform $p of a live detection strategy for the live technique $t."):
+    match
+        not { $t has revoked true; };
+        not { $t has deprecated true; };
+        not { $t has retired-at $tra; };
+        strategy-detects (strategy: $st, technique: $t);
+        not { $st has revoked true; };
+        not { $st has deprecated true; };
+        not { $st has retired-at $sra; };
+        strategy-analytic (strategy: $st, analytic: $a);
+        not { $a has revoked true; };
+        not { $a has deprecated true; };
+        not { $a has retired-at $ara; };
+        $a has platform $ap;
+        $ap == $p;
+    return { $a };
+
+fun has-live-requirement($a: analytic) -> boolean @doc("True iff analytic $a has a requirement on a live data component."):
+    match
+        $r isa analytic-requirement, links (analytic: $a, component: $c);
+        not { $c has revoked true; };
+        not { $c has deprecated true; };
+        not { $c has retired-at $cra; };
+    return check;
+
 fun claim-platforms() -> { concept, attack-pattern, string, string } @doc("One row per asserted detection claim and declared platform: the detecting logic, its technique, the platform, and whether the technique's live analytic there is blind, covered or absent (unassessed)."):
     match
         (detecting-logic: $d, detected-technique: $t, detection-claim: $b) isa technique-detection;
@@ -45,67 +70,19 @@ fun claim-platforms() -> { concept, attack-pattern, string, string } @doc("One r
         not { $e has revoked true; };
         not { $e has deprecated true; };
         not { $e has retired-at $era; };
+        let $pv = $p;
         {
-            not { $t has revoked true; };
-            not { $t has deprecated true; };
-            not { $t has retired-at $tra1; };
-            strategy-detects (strategy: $st1, technique: $t);
-            not { $st1 has revoked true; };
-            not { $st1 has deprecated true; };
-            not { $st1 has retired-at $sra1; };
-            strategy-analytic (strategy: $st1, analytic: $a1);
-            not { $a1 has revoked true; };
-            not { $a1 has deprecated true; };
-            not { $a1 has retired-at $ara1; };
-            $a1 has platform $p;
-            {
-                not {
-                    $r1 isa analytic-requirement, links (analytic: $a1, component: $c1);
-                    not { $c1 has revoked true; };
-                    not { $c1 has deprecated true; };
-                    not { $c1 has retired-at $cra1; };
-                };
-            } or {
-                let $pv1 = $p;
-                let $g1 in analytic-gaps($a1, $pv1);
-            };
+            let $a1 in live-analytic($t, $pv);
+            { not { true == has-live-requirement($a1); }; }
+            or { let $g1 in analytic-gaps($a1, $pv); };
             let $s = "blind";
         } or {
-            not { $t has revoked true; };
-            not { $t has deprecated true; };
-            not { $t has retired-at $tra2; };
-            strategy-detects (strategy: $st2, technique: $t);
-            not { $st2 has revoked true; };
-            not { $st2 has deprecated true; };
-            not { $st2 has retired-at $sra2; };
-            strategy-analytic (strategy: $st2, analytic: $a2);
-            not { $a2 has revoked true; };
-            not { $a2 has deprecated true; };
-            not { $a2 has retired-at $ara2; };
-            $a2 has platform $p;
-            $r2 isa analytic-requirement, links (analytic: $a2, component: $c2);
-            not { $c2 has revoked true; };
-            not { $c2 has deprecated true; };
-            not { $c2 has retired-at $cra2; };
-            let $pv2 = $p;
-            not { let $g2 in analytic-gaps($a2, $pv2); };
+            let $a2 in live-analytic($t, $pv);
+            true == has-live-requirement($a2);
+            not { let $g2 in analytic-gaps($a2, $pv); };
             let $s = "covered";
         } or {
-            not {
-                not { $t has revoked true; };
-                not { $t has deprecated true; };
-                not { $t has retired-at $tra3; };
-                strategy-detects (strategy: $st3, technique: $t);
-                not { $st3 has revoked true; };
-                not { $st3 has deprecated true; };
-                not { $st3 has retired-at $sra3; };
-                strategy-analytic (strategy: $st3, analytic: $a3);
-                not { $a3 has revoked true; };
-                not { $a3 has deprecated true; };
-                not { $a3 has retired-at $ara3; };
-                $a3 has platform $p;
-            };
+            not { let $a3 in live-analytic($t, $pv); };
             let $s = "unassessed";
         };
-        let $pv = $p;
     return { $d, $t, $pv, $s };

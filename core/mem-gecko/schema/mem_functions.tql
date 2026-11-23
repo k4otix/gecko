@@ -68,6 +68,12 @@ define
   #   answers for a past membership window.
   fun blast-radius($r: okf-concept) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions, derivation sources, and open population-member cohort edges (a retracted current member sweeps the beliefs scoped to its population)."):
       match
+          { let $m in blast-step($r); }
+          or { let $mid in blast-step($r); let $m in blast-radius($mid); };
+      return { $m };
+
+  fun blast-step($r: okf-concept) -> { memory-item } @doc("The memory items one edge from $r that retracting $r undermines directly: those resting on it, those derived from it, and the beliefs scoped to a population it is an open member of."):
+      match
           {
               (assumption: $r, resting: $m) isa rests-on;
           } or {
@@ -76,13 +82,6 @@ define
               $pm isa population-member, links (owning-population: $pop, member: $r);
               not { $pm has valid-to $vt; };
               (scoped-belief: $m, population: $pop) isa scoped;
-          } or {
-              { (assumption: $r, resting: $mid) isa rests-on; }
-              or { (source: $r, derived: $mid) isa derivation; }
-              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
-                   not { $pm2 has valid-to $vt2; };
-                   (scoped-belief: $mid, population: $pop2) isa scoped; };
-              let $m in blast-radius($mid);
           };
       return { $m };
 
@@ -152,23 +151,24 @@ define
   #   NOT on the belief itself — join through derivation to read the method.
   fun canonical-entity($rec: concept) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec, following only provable (type-join/cardinality/functional-dependency) resolution beliefs."):
       match
-          {
-              $res isa resolution, has belief-state "asserted";
-              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
-              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
-              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
-              or
-              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
-          } or {
-              $res2 isa resolution, has belief-state "asserted";
-              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
-              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
-              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
-              or
-              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
-              let $other in canonical-entity($mid);
-          };
+          { let $other in canonical-step($rec); }
+          or { let $mid in canonical-step($rec); let $other in canonical-entity($mid); };
       return { $other };
+
+  fun canonical-step($rec: concept) -> { concept } @doc("The source records an asserted, provable resolution belief resolves $rec directly to, in either record role."):
+      match
+          $res isa resolution, has belief-state "asserted";
+          true == provably-derived($res);
+          { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+          or
+          { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+      return { $other };
+
+  fun provably-derived($res: resolution) -> boolean @doc("True iff resolution belief $res is derived by a provable method: type-join, cardinality or functional-dependency."):
+      match
+          (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+          { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+      return check;
 
   # ── As-of-t population & identity variants (read off validity windows) ──────
   #   The present-state population-members/canonical-entity above stay as the fast
@@ -188,6 +188,12 @@ define
   #   contains $t, so a member that had left the cohort by $t no longer sweeps it.
   fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r as of time $t — like blast-radius, but the population-member cohort edge is followed only while the membership window contains $t."):
       match
+          { let $m in blast-step-at($r, $t); }
+          or { let $mid in blast-step-at($r, $t); let $m in blast-radius-at($mid, $t); };
+      return { $m };
+
+  fun blast-step-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("The memory items one edge from $r that retracting $r as of time $t undermines directly: like blast-step, but a population membership counts only while its window contains $t."):
+      match
           {
               (assumption: $r, resting: $m) isa rests-on;
           } or {
@@ -197,35 +203,21 @@ define
               $pm has valid-from $vf; $vf <= $t;
               not { $pm has valid-to $vt; $vt <= $t; };
               (scoped-belief: $m, population: $pop) isa scoped;
-          } or {
-              { (assumption: $r, resting: $mid) isa rests-on; }
-              or { (source: $r, derived: $mid) isa derivation; }
-              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
-                   $pm2 has valid-from $vf2; $vf2 <= $t;
-                   not { $pm2 has valid-to $vt2; $vt2 <= $t; };
-                   (scoped-belief: $mid, population: $pop2) isa scoped; };
-              let $m in blast-radius-at($mid, $t);
           };
       return { $m };
 
   fun canonical-entity-at($rec: concept, $t: datetime) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec as of time $t, following provable resolution beliefs whose validity window contains $t."):
       match
-          {
-              $res isa resolution, has valid-from $vf; $vf <= $t;
-              not { $res has valid-to $vt; $vt <= $t; };
-              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
-              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
-              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
-              or
-              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
-          } or {
-              $res2 isa resolution, has valid-from $vf2; $vf2 <= $t;
-              not { $res2 has valid-to $vt2; $vt2 <= $t; };
-              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
-              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
-              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
-              or
-              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
-              let $other in canonical-entity-at($mid, $t);
-          };
+          { let $other in canonical-step-at($rec, $t); }
+          or { let $mid in canonical-step-at($rec, $t); let $other in canonical-entity-at($mid, $t); };
+      return { $other };
+
+  fun canonical-step-at($rec: concept, $t: datetime) -> { concept } @doc("The source records a provable resolution belief whose validity window contains $t resolves $rec directly to, in either record role."):
+      match
+          $res isa resolution, has valid-from $vf; $vf <= $t;
+          not { $res has valid-to $vt; $vt <= $t; };
+          true == provably-derived($res);
+          { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+          or
+          { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
       return { $other };
