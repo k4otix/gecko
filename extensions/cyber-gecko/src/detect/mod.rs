@@ -27,12 +27,18 @@
 //!   analytic lacks (`analytic-gaps`, grouped by log source), and the sensors'
 //!   fallback components that match no live data component. A graph with no sensor
 //!   file or no detection strategies is an error, never an empty report.
+//! - `recommend_sources` turns the blind claims into an ordered list of ATT&CK log
+//!   sources to add. Each step adds one analytic's remaining missing log sources on
+//!   one platform, chosen greedily for the most (claim, platform) pairs unblinded per
+//!   new source. Claims no log source can fix are listed with a reason:
+//!   `no-requirements` when every live analytic there names no live log source, and
+//!   `no-analytic` when the platform is unassessed. It errors on the same graphs as
+//!   `blinded`.
 //! - `precision` counts dispositions in a time window and computes true-positive
 //!   precision host-side.
 //!
 //! [`GeckoExtension::call_import`]: gecko_extension_api::GeckoExtension::call_import
 
-#[cfg(test)]
 mod recommend;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,11 +51,12 @@ use gecko_extension_api::{
 use serde_json::{Value, json};
 
 const CYBER_EXT: &str = "cyber-gecko";
-const DETECT_FNS: [&str; 5] = [
+const DETECT_FNS: [&str; 6] = [
     "claim",
     "disposition",
     "coverage_gaps",
     "blinded",
+    "recommend_sources",
     "precision",
 ];
 
@@ -99,6 +106,7 @@ async fn dispatch(
         "disposition" => disposition(graph, edges, ctx, &args).await,
         "coverage_gaps" => coverage_gaps(graph).await,
         "blinded" => blinded(graph).await,
+        "recommend_sources" => recommend_sources(graph).await,
         "precision" => precision(graph, ctx, &args).await,
         other => Err(format!("unknown detect function {other:?}")),
     }
@@ -282,64 +290,8 @@ struct ClaimStatuses {
 /// platforms. Errors on a graph it cannot judge: one with no sensor file, or with
 /// no current ATT&CK detection data.
 async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
-    let env = read(
-        graph,
-        &format!(
-            "match $e isa monitored-environment; {} limit 1; fetch {{ \"id\": $e.concept-id }};",
-            live("e")
-        ),
-        &[],
-        &[],
-    )
-    .await?;
-    if env.is_empty() {
-        return Err(
-            "no sensor file synced: sync one with `gecko sync-sensors` before checking blindness"
-                .into(),
-        );
-    }
-    let strategies = read(
-        graph,
-        "match strategy-detects (strategy: $s, technique: $t); limit 1; \
-         fetch { \"id\": $s.concept-id };",
-        &[],
-        &[],
-    )
-    .await?;
-    if strategies.is_empty() {
-        return Err(
-            "no current ATT&CK detection data: the graph holds no detection strategies \
-             (ATT&CK v18 or later); sync or re-sync the ATT&CK bundle into this database, \
-             which an upgraded database needs before its first check"
-                .into(),
-        );
-    }
-
-    let rows = read(
-        graph,
-        "match let $d, $t, $p, $s in claim-platforms(); \
-         fetch { \"concept_id\": $d.concept-id, \"technique_concept_id\": $t.concept-id, \
-                 \"technique\": $t.attack-id, \"platform\": $p, \"status\": $s };",
-        &[],
-        &[],
-    )
-    .await?;
-    let mut claims: BTreeMap<ClaimKey, ClaimStatuses> = BTreeMap::new();
-    for row in &rows {
-        let key = ClaimKey {
-            concept_id: row_str(row, "concept_id")?,
-            technique_concept_id: row_str(row, "technique_concept_id")?,
-        };
-        let entry = claims.entry(key).or_default();
-        if let Some(t) = row.get("technique").and_then(Value::as_str) {
-            entry.technique = Some(t.to_string());
-        }
-        entry
-            .platforms
-            .entry(row_str(row, "platform")?)
-            .or_default()
-            .insert(row_str(row, "status")?);
-    }
+    require_judgeable(graph).await?;
+    let claims = claim_statuses(graph).await?;
 
     let mut detections = Vec::new();
     for (key, statuses) in &claims {
@@ -376,6 +328,77 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     }))
 }
 
+/// Errs on a graph the blindness checks cannot judge: one with no live sensor-file
+/// environment, or with no current ATT&CK detection strategies.
+async fn require_judgeable(graph: &Arc<dyn GraphReader>) -> Result<(), String> {
+    let env = read(
+        graph,
+        &format!(
+            "match $e isa monitored-environment; {} limit 1; fetch {{ \"id\": $e.concept-id }};",
+            live("e")
+        ),
+        &[],
+        &[],
+    )
+    .await?;
+    if env.is_empty() {
+        return Err(
+            "no sensor file synced: sync one with `gecko sync-sensors` before checking blindness"
+                .into(),
+        );
+    }
+    let strategies = read(
+        graph,
+        "match strategy-detects (strategy: $s, technique: $t); limit 1; \
+         fetch { \"id\": $s.concept-id };",
+        &[],
+        &[],
+    )
+    .await?;
+    if strategies.is_empty() {
+        return Err(
+            "no current ATT&CK detection data: the graph holds no detection strategies \
+             (ATT&CK v18 or later); sync or re-sync the ATT&CK bundle into this database, \
+             which an upgraded database needs before its first check"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Every asserted claim's `claim-platforms()` statuses, grouped by claim and by
+/// declared platform.
+async fn claim_statuses(
+    graph: &Arc<dyn GraphReader>,
+) -> Result<BTreeMap<ClaimKey, ClaimStatuses>, String> {
+    let rows = read(
+        graph,
+        "match let $d, $t, $p, $s in claim-platforms(); \
+         fetch { \"concept_id\": $d.concept-id, \"technique_concept_id\": $t.concept-id, \
+                 \"technique\": $t.attack-id, \"platform\": $p, \"status\": $s };",
+        &[],
+        &[],
+    )
+    .await?;
+    let mut claims: BTreeMap<ClaimKey, ClaimStatuses> = BTreeMap::new();
+    for row in &rows {
+        let key = ClaimKey {
+            concept_id: row_str(row, "concept_id")?,
+            technique_concept_id: row_str(row, "technique_concept_id")?,
+        };
+        let entry = claims.entry(key).or_default();
+        if let Some(t) = row.get("technique").and_then(Value::as_str) {
+            entry.technique = Some(t.to_string());
+        }
+        entry
+            .platforms
+            .entry(row_str(row, "platform")?)
+            .or_default()
+            .insert(row_str(row, "status")?);
+    }
+    Ok(claims)
+}
+
 /// The `blind_platforms` entries for `platform` of the technique
 /// `technique_concept_id`: one per live analytic there that cannot run, sorted by
 /// analytic.
@@ -384,6 +407,31 @@ async fn blind_analytics(
     technique_concept_id: &str,
     platform: &str,
 ) -> Result<Vec<Value>, String> {
+    let mut readings = Vec::new();
+    for (attack_id, concept_id) in live_analytics(graph, technique_concept_id, platform).await? {
+        let has_requirements = has_live_requirement(graph, &concept_id).await?;
+        let missing = if has_requirements {
+            missing_log_sources(graph, &concept_id, platform).await?
+        } else {
+            Vec::new()
+        };
+        readings.push(AnalyticReading {
+            analytic: attack_id,
+            has_requirements,
+            missing,
+        });
+    }
+    blind_platform_entries(platform, readings)
+}
+
+/// The live analytics of the technique `technique_concept_id` on `platform`, as
+/// (attack-id or null, concept id), sorted by attack-id, or by concept id for one
+/// with no attack-id.
+async fn live_analytics(
+    graph: &Arc<dyn GraphReader>,
+    technique_concept_id: &str,
+    platform: &str,
+) -> Result<Vec<(Value, String)>, String> {
     let analytics = read(
         graph,
         &format!(
@@ -408,34 +456,38 @@ async fn blind_analytics(
         let sort_key = attack_id.as_str().unwrap_or(&concept_id).to_string();
         by_analytic.insert(sort_key, (attack_id, concept_id));
     }
+    Ok(by_analytic.into_values().collect())
+}
 
-    let mut readings = Vec::new();
-    for (attack_id, concept_id) in by_analytic.into_values() {
-        let requirements = read(
-            graph,
-            &format!(
-                "given $aid: string; \
-                 match $a isa analytic, has concept-id $ac; $ac == $aid; \
-                       $r isa analytic-requirement, links (analytic: $a, component: $c); {} \
-                 limit 1; fetch {{ \"key\": $r.log-source-key }};",
-                live("c")
-            ),
-            &["aid"],
-            &[&concept_id],
-        )
-        .await?;
-        let missing = if requirements.is_empty() {
-            Vec::new()
-        } else {
-            missing_log_sources(graph, &concept_id, platform).await?
-        };
-        readings.push(AnalyticReading {
-            analytic: attack_id,
-            has_requirements: !requirements.is_empty(),
-            missing,
-        });
-    }
-    blind_platform_entries(platform, readings)
+/// Whether the analytic `analytic_concept_id` has a requirement on a live data
+/// component.
+async fn has_live_requirement(
+    graph: &Arc<dyn GraphReader>,
+    analytic_concept_id: &str,
+) -> Result<bool, String> {
+    let requirements = read(
+        graph,
+        &format!(
+            "given $aid: string; \
+             match $a isa analytic, has concept-id $ac; $ac == $aid; \
+                   $r isa analytic-requirement, links (analytic: $a, component: $c); {} \
+             limit 1; fetch {{ \"key\": $r.log-source-key }};",
+            live("c")
+        ),
+        &["aid"],
+        &[analytic_concept_id],
+    )
+    .await?;
+    Ok(!requirements.is_empty())
+}
+
+/// The error for a platform `claim-platforms()` called blind whose analytics no
+/// longer read as blind: a sync landed between the reads.
+fn graph_changed(platform: &str) -> String {
+    format!(
+        "the graph changed during the check: platform '{platform}' was blind but its \
+         analytics no longer read as blind; retry"
+    )
 }
 
 /// What the reads after `claim-platforms()` found for one live analytic on a
@@ -458,12 +510,7 @@ fn blind_platform_entries(
     platform: &str,
     readings: Vec<AnalyticReading>,
 ) -> Result<Vec<Value>, String> {
-    let changed = || {
-        format!(
-            "the graph changed during the check: platform '{platform}' was blind but its \
-             analytics no longer read as blind; retry"
-        )
-    };
+    let changed = || graph_changed(platform);
     if readings.is_empty() {
         return Err(changed());
     }
@@ -480,6 +527,150 @@ fn blind_platform_entries(
         }));
     }
     Ok(out)
+}
+
+/// The greedy list of log sources to add, per declared platform, that lets the most
+/// asserted claims' analytics run, and the blind or unassessed claims no log source
+/// can fix. Errors on a graph `blinded` cannot judge.
+async fn recommend_sources(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
+    require_judgeable(graph).await?;
+    let claims = claim_statuses(graph).await?;
+
+    // (platform, log-source key) → (smallest trimmed spelling, every channel).
+    let mut sources: BTreeMap<(String, String), (String, BTreeSet<String>)> = BTreeMap::new();
+    let mut gap_sets: BTreeMap<(String, String), Vec<BTreeSet<String>>> = BTreeMap::new();
+    let mut claim_refs = Vec::new();
+    let mut pairs = Vec::new();
+    let mut unfixable = Vec::new();
+    for (key, statuses) in &claims {
+        let claim_ref = json!({
+            "concept_id": key.concept_id,
+            "technique": statuses.technique,
+            "technique_concept_id": key.technique_concept_id,
+        });
+        let unfixable_entry = |platform: &str, reason: &str| {
+            let mut entry = claim_ref.clone();
+            entry["platform"] = json!(platform);
+            entry["reason"] = json!(reason);
+            entry
+        };
+        let claim = claim_refs.len();
+        for (platform, status) in &statuses.platforms {
+            if status.contains("covered") {
+                continue;
+            }
+            if !status.contains("blind") {
+                unfixable.push(unfixable_entry(platform, "no-analytic"));
+                continue;
+            }
+            let cache_key = (key.technique_concept_id.clone(), platform.clone());
+            let analytics = match gap_sets.get(&cache_key) {
+                Some(sets) => sets.clone(),
+                None => {
+                    let sets =
+                        blind_gap_sets(graph, &key.technique_concept_id, platform, &mut sources)
+                            .await?;
+                    gap_sets.insert(cache_key, sets.clone());
+                    sets
+                }
+            };
+            if analytics.is_empty() {
+                unfixable.push(unfixable_entry(platform, "no-requirements"));
+            } else {
+                pairs.push(recommend::BlindPair {
+                    claim,
+                    platform: platform.clone(),
+                    analytics,
+                });
+            }
+        }
+        claim_refs.push(claim_ref);
+    }
+
+    let mut steps = Vec::new();
+    for step in recommend::plan(&pairs)? {
+        let mut add = Vec::new();
+        for k in &step.add {
+            let (name, channels) = sources
+                .get(&(step.platform.clone(), k.clone()))
+                .ok_or_else(|| format!("log source '{k}' on '{}' was never read", step.platform))?;
+            add.push(json!({ "log_source": name, "key": k, "channels": channels }));
+        }
+        let unblinds: Vec<&Value> = step
+            .unblinds
+            .iter()
+            .map(|&i| &claim_refs[pairs[i].claim])
+            .collect();
+        steps.push(json!({
+            "platform": step.platform,
+            "add": add,
+            "unblinds": unblinds,
+            "cumulative_unblinded": step.cumulative_unblinded,
+        }));
+    }
+    Ok(json!({ "steps": steps, "unfixable": unfixable }))
+}
+
+/// The missing log-source keys of each live analytic of the technique
+/// `technique_concept_id` on `platform` that has a requirement, recording each key's
+/// spelling and channels in `sources`. Errors when `claim-platforms()` called the
+/// platform blind but the analytics no longer read as blind.
+async fn blind_gap_sets(
+    graph: &Arc<dyn GraphReader>,
+    technique_concept_id: &str,
+    platform: &str,
+    sources: &mut BTreeMap<(String, String), (String, BTreeSet<String>)>,
+) -> Result<Vec<BTreeSet<String>>, String> {
+    let analytics = live_analytics(graph, technique_concept_id, platform).await?;
+    if analytics.is_empty() {
+        return Err(graph_changed(platform));
+    }
+    let mut sets = Vec::new();
+    for (_, concept_id) in analytics {
+        if !has_live_requirement(graph, &concept_id).await? {
+            continue;
+        }
+        let gaps = read(
+            graph,
+            "given $aid: string, $plat: string; \
+             match $a isa analytic, has concept-id $ac; $ac == $aid; \
+                   let $r in analytic-gaps($a, $plat); \
+             fetch { \"name\": $r.log-source-name, \"key\": $r.log-source-key, \
+                     \"channels\": [ $r.log-source-channel ] };",
+            &["aid", "plat"],
+            &[&concept_id, platform],
+        )
+        .await?;
+        if gaps.is_empty() {
+            return Err(graph_changed(platform));
+        }
+        let mut keys = BTreeSet::new();
+        for row in &gaps {
+            let key = row_str(row, "key")?;
+            let name = row_str(row, "name")?.trim().to_string();
+            let channels = row
+                .get("channels")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("a gap row has no channel list: {row}"))?
+                .iter()
+                .map(|c| {
+                    c.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("a gap row has a non-string channel: {row}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (display, all_channels) = sources
+                .entry((platform.to_string(), key.clone()))
+                .or_insert_with(|| (name.clone(), BTreeSet::new()));
+            if name < *display {
+                *display = name;
+            }
+            all_channels.extend(channels);
+            keys.insert(key);
+        }
+        sets.push(keys);
+    }
+    Ok(sets)
 }
 
 /// The `analytic-gaps` of the analytic `analytic_concept_id` on `platform`, grouped

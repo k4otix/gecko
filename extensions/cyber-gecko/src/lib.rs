@@ -116,6 +116,10 @@ impl GeckoExtension for CyberGecko {
                 description: "Report the declared platforms each detection claim is blind on or cannot assess".to_string(),
             },
             HostImportDef {
+                name: "recommend_sources".to_string(),
+                description: "Recommend the log sources to add, in greedy order, to unblind the most detection claims".to_string(),
+            },
+            HostImportDef {
                 name: "precision".to_string(),
                 description: "Calculate detection precision over a window".to_string(),
             },
