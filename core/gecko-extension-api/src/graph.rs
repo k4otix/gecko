@@ -170,6 +170,58 @@ pub trait GraphReader: Send + Sync {
         vars: &[String],
         row: &[GraphValue],
     ) -> Result<Vec<serde_json::Value>, EpistemicError>;
+
+    /// Runs one read query over several `given` rows, returning the documents from
+    /// every row.
+    ///
+    /// No order is promised across or within rows, so a caller identifies a
+    /// document's row by fetching an attribute the row matched. Rows should be
+    /// distinct. `limit`, `sort` and `reduce` apply across all rows, so a batched
+    /// query must not use them per row.
+    ///
+    /// An empty `vars` or a row whose length differs from `vars.len()` is
+    /// [`EpistemicError::InvalidInput`] (use [`read`](Self::read) for a query with no
+    /// `given`); empty `rows` returns no documents without running a query. The
+    /// default implementation calls `read` once per row; a store overrides it to
+    /// send one query.
+    async fn read_rows(
+        &self,
+        query: &str,
+        vars: &[String],
+        rows: &[Vec<GraphValue>],
+    ) -> Result<Vec<serde_json::Value>, EpistemicError> {
+        if !validate_read_rows(vars, rows)? {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for row in rows {
+            out.extend(self.read(query, vars, row).await?);
+        }
+        Ok(out)
+    }
+}
+
+/// Checks the arguments of [`GraphReader::read_rows`], returning whether there is
+/// anything to run (`false` for empty `rows`).
+///
+/// Every implementation calls this first so they all refuse the same input.
+pub fn validate_read_rows(
+    vars: &[String],
+    rows: &[Vec<GraphValue>],
+) -> Result<bool, EpistemicError> {
+    if vars.is_empty() {
+        return Err(EpistemicError::InvalidInput(
+            "read_rows needs at least one given variable; use read for a query with none".into(),
+        ));
+    }
+    if let Some(index) = rows.iter().position(|row| row.len() != vars.len()) {
+        return Err(EpistemicError::InvalidInput(format!(
+            "read_rows row {index} has {} value(s) for {} variable(s)",
+            rows[index].len(),
+            vars.len()
+        )));
+    }
+    Ok(!rows.is_empty())
 }
 
 /// The neutral graph capability: parameterized reads + atomic batched writes.
@@ -218,5 +270,71 @@ mod tests {
         ] {
             assert_eq!(RowCountMismatch::from_error(&err), None, "{err:?}");
         }
+    }
+
+    /// A reader that answers each single-row `read` with one document echoing the
+    /// row, and counts its calls.
+    struct EchoReader {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl GraphReader for EchoReader {
+        async fn read(
+            &self,
+            _query: &str,
+            _vars: &[String],
+            row: &[GraphValue],
+        ) -> Result<Vec<serde_json::Value>, EpistemicError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![serde_json::json!({ "row": row })])
+        }
+    }
+
+    fn echo() -> EchoReader {
+        EchoReader {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn vars() -> Vec<String> {
+        vec!["a".to_string()]
+    }
+
+    #[tokio::test]
+    async fn default_read_rows_reads_each_row_and_concatenates() {
+        let reader = echo();
+        let rows = vec![vec![GraphValue::from("x")], vec![GraphValue::from("y")]];
+        let docs = reader.read_rows("q", &vars(), &rows).await.unwrap();
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0]["row"][0]["String"], "x");
+        assert_eq!(docs[1]["row"][0]["String"], "y");
+    }
+
+    #[tokio::test]
+    async fn default_read_rows_with_no_rows_reads_nothing() {
+        let reader = echo();
+        let docs = reader.read_rows("q", &vars(), &[]).await.unwrap();
+        assert!(docs.is_empty());
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn read_rows_refuses_a_row_of_the_wrong_length() {
+        let reader = echo();
+        let rows = vec![
+            vec![GraphValue::from("x")],
+            vec![GraphValue::from("y"), GraphValue::from("z")],
+        ];
+        let err = reader.read_rows("q", &vars(), &rows).await.unwrap_err();
+        assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
+        assert_eq!(reader.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn read_rows_refuses_empty_vars() {
+        let reader = echo();
+        let err = reader.read_rows("q", &[], &[Vec::new()]).await.unwrap_err();
+        assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
     }
 }

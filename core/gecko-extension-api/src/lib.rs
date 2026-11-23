@@ -46,7 +46,9 @@ pub use epistemic::{
     EpistemicWriter, Outcome, RecallQuery,
 };
 pub use error::EpistemicError;
-pub use graph::{GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch};
+pub use graph::{
+    GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch, validate_read_rows,
+};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
 pub use semantic::{BeliefState, Embedder, Entrenchment, FilterMeta, SemanticIndex, Visibility};
