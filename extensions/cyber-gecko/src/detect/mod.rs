@@ -32,6 +32,9 @@
 //!
 //! [`GeckoExtension::call_import`]: gecko_extension_api::GeckoExtension::call_import
 
+#[cfg(test)]
+mod recommend;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
