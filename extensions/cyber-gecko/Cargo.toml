@@ -15,4 +15,4 @@ sha2 = "0.11"
 tokio.workspace = true
 
 [dev-dependencies]
-proptest = { version = "1", default-features = false, features = ["std"] }
+proptest.workspace = true

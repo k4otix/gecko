@@ -1691,6 +1691,7 @@ dependencies = [
  "gecko-semantic-index",
  "libc",
  "mem-gecko",
+ "proptest",
  "serde",
  "serde_json",
  "tar",
@@ -1736,6 +1737,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
