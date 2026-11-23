@@ -153,6 +153,12 @@ Notes and invariants:
   interpolate values into query text. Only fixed schema labels (types, roles,
   attributes) may be interpolated, and even those, if extension-supplied, should be
   validated as TypeQL identifiers first.
+  `read_rows(query, vars, rows)` runs one query over many `given` rows and returns
+  the documents of all of them. No order is promised across or within rows, so key
+  each document by fetching an attribute the row matched. Rows should be distinct.
+  `limit`, `sort` and `reduce` apply across all rows, so a per-row `limit 1` must
+  not be batched: drop it and collapse host-side. Empty `rows` issue no query, and
+  a row whose length differs from `vars` is refused.
 - **Belief edges.** A relation that attaches to a belief is declared in
   `belief_edges()` and written through the `BeliefEdgeWriter` the host binds to your
   extension (`assert_belief_with_edges`): the belief and its edges commit in one

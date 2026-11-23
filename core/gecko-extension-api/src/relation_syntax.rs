@@ -2,9 +2,9 @@
 //! followed by `isa` and the relation type, in query or schema text. The current
 //! forms are `rel (role: $x)` and `$r isa rel, links (role: $x)`.
 
-/// The 1-based line of every `)` that is followed, after any whitespace, by the
-/// word `isa`.
-// A source-consistency check the schema crates' tests run over their query text.
+/// The 1-based line of every `)` that is followed, after any whitespace or Rust
+/// string line continuation (`\` then a newline), by the word `isa`; a
+/// source-consistency check the schema crates' tests run over their query text.
 #[doc(hidden)]
 pub fn deprecated_relation_lines(text: &str) -> Vec<usize> {
     let bytes = text.as_bytes();
@@ -19,8 +19,12 @@ pub fn deprecated_relation_lines(text: &str) -> Vec<usize> {
             continue;
         }
         let mut j = i + 1;
-        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-            j += 1;
+        loop {
+            match bytes.get(j) {
+                Some(c) if c.is_ascii_whitespace() => j += 1,
+                Some(b'\\') if matches!(bytes.get(j + 1), Some(b'\n')) => j += 2,
+                _ => break,
+            }
         }
         let word_ends = |k: usize| {
             bytes
@@ -55,6 +59,19 @@ mod tests {
             deprecated_relation_lines(&q("match\n  (a: $x, b: $y~\n    isa rel;")),
             [2]
         );
+    }
+
+    #[test]
+    fn a_string_line_continuation_is_whitespace() {
+        assert_eq!(
+            deprecated_relation_lines(&q("\"(a: $x~ \\\n        isa rel;\"")),
+            [1]
+        );
+    }
+
+    #[test]
+    fn a_backslash_not_before_a_newline_ends_the_gap() {
+        assert!(deprecated_relation_lines(&q("(a: $x~ \\ isa rel;")).is_empty());
     }
 
     #[test]

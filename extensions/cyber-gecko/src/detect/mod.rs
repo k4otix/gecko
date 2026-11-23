@@ -321,16 +321,22 @@ fn blind_pairs(claims: &BTreeMap<ClaimKey, ClaimStatuses>) -> BTreeSet<Pair> {
         .collect()
 }
 
-/// The readings of the blind `platform`, empty when none were read, which the
-/// builders report as a changed graph.
+/// The readings gathered for the blind `platform`, empty when none were read,
+/// which the builders report as a changed graph. A pair that was never gathered
+/// is an internal error: every pair a caller asks for is seeded.
 fn readings_for<'a>(
     readings: &'a BTreeMap<Pair, Vec<Reading>>,
     technique_concept_id: &str,
     platform: &str,
-) -> &'a [Reading] {
+) -> Result<&'a [Reading], String> {
     readings
         .get(&(technique_concept_id.to_string(), platform.to_string()))
-        .map_or(&[], Vec::as_slice)
+        .map(Vec::as_slice)
+        .ok_or_else(|| {
+            format!(
+                "internal: readings were not gathered for technique '{technique_concept_id}', platform '{platform}'"
+            )
+        })
 }
 
 /// For each asserted detection claim with a declared platform it is blind on or
@@ -355,7 +361,7 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
             if status.contains("blind") {
                 blind_platforms.extend(blind_analytics(
                     platform,
-                    readings_for(&readings, &key.technique_concept_id, platform),
+                    readings_for(&readings, &key.technique_concept_id, platform)?,
                 )?);
             } else {
                 unassessed.push(platform.clone());
@@ -758,7 +764,7 @@ async fn recommend_sources(graph: &Arc<dyn GraphReader>) -> Result<Value, String
             }
             let analytics = blind_gap_sets(
                 platform,
-                readings_for(&readings, &key.technique_concept_id, platform),
+                readings_for(&readings, &key.technique_concept_id, platform)?,
                 &mut sources,
             )?;
             if analytics.is_empty() {
@@ -1083,6 +1089,23 @@ mod tests {
             has_requirements,
             keys: keys.iter().map(|k| k.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn readings_for_an_ungathered_pair_is_an_internal_error() {
+        let readings = BTreeMap::new();
+        let err = readings_for(&readings, "techniques/t1", "Windows").unwrap_err();
+        assert_eq!(
+            err,
+            "internal: readings were not gathered for technique 'techniques/t1', platform 'Windows'"
+        );
+        let mut seeded = BTreeMap::new();
+        seeded.insert(("techniques/t1".to_string(), "Windows".to_string()), vec![]);
+        assert!(
+            readings_for(&seeded, "techniques/t1", "Windows")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
