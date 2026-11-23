@@ -35,6 +35,10 @@ use tokio::sync::Mutex;
 #[path = "common/attack.rs"]
 mod attack;
 mod common;
+#[path = "common/stix_objects.rs"]
+mod stix_objects;
+#[path = "common/structure.rs"]
+mod structure;
 use common::TestDb;
 
 const LOGIC_ID: &str = "playbooks/detect-t1059";
@@ -897,8 +901,13 @@ async fn claim_on_deprecated_technique_is_unassessed() {
         object_mut(objects, attack::TECHNIQUE_STIX_ID)["x_mitre_deprecated"] = json!(true);
     });
     resync_attack(&rig.test_db, &json).await;
-    // A deprecated object does not claim its unique attack-id.
-    assert_eq!(rig.blinded(), dead_technique_report(Value::Null));
+    // A deprecated object does not claim its unique attack-id; it keeps it as its
+    // retired attack-id, and has no replacement.
+    let mut expected = dead_technique_report(Value::Null);
+    let row = &mut expected["blinded_detections"][0];
+    row["retired_technique"] = json!(attack::TECHNIQUE_ATTACK_ID);
+    row["replaced_by"] = Value::Null;
+    assert_eq!(rig.blinded(), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1516,4 +1525,288 @@ async fn coverage_matches_the_rule_for_random_sensor_files() {
         4,
         "the cases never produced every outcome: only {seen:?}"
     );
+}
+
+/// The `attack_id`s `coverage_gaps` lists.
+fn gap_ids(gaps: &Value) -> BTreeSet<String> {
+    gaps["undetected_techniques"]
+        .as_array()
+        .expect("undetected_techniques array")
+        .iter()
+        .map(|row| row["attack_id"].as_str().expect("attack_id").to_string())
+        .collect()
+}
+
+/// The `coverage_gaps` row for `attack_id`.
+fn gap_row<'a>(gaps: &'a Value, attack_id: &str) -> &'a Value {
+    gaps["undetected_techniques"]
+        .as_array()
+        .expect("undetected_techniques array")
+        .iter()
+        .find(|row| row["attack_id"] == attack_id)
+        .unwrap_or_else(|| panic!("{attack_id} is not listed in {gaps}"))
+}
+
+/// Seeds the structure fixture and the playbook bundle, and returns the detect
+/// bridge over them.
+async fn structure_bridge(test_db: &TestDb) -> ExtensionCallback {
+    structure::sync_fixture(test_db).await;
+    sync_playbooks(test_db, &[LOGIC_ID]).await;
+    let (graph, edges) = detect_handles(test_db);
+    cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base())
+}
+
+fn claim_technique(cb: &ExtensionCallback, attack_id: &str) {
+    call(
+        cb,
+        "claim",
+        json!({ "logic_id": LOGIC_ID, "technique_id": attack_id, "method": "external-tool", "confidence": 0.9 }),
+    )
+    .unwrap_or_else(|e| panic!("claim {attack_id}: {e}"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_gaps_skips_retired_techniques() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_retired");
+    let cb = structure_bridge(&test_db).await;
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        gap_ids(&gaps),
+        BTreeSet::from([
+            structure::PARENT_ATTACK_ID.to_string(),
+            structure::SUB1_ATTACK_ID.to_string(),
+            structure::SUB2_ATTACK_ID.to_string(),
+        ]),
+        "revoked, deprecated and retired sub-techniques are not gaps: {gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_gaps_counts_a_parents_claimed_sub_techniques() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_counts");
+    let cb = structure_bridge(&test_db).await;
+    claim_technique(&cb, structure::SUB1_ATTACK_ID);
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        gap_row(&gaps, structure::PARENT_ATTACK_ID)["sub_techniques"],
+        json!({ "claimed": 1, "total": 2 }),
+        "the retired sub-technique is not counted: {gaps}"
+    );
+    assert!(
+        gap_row(&gaps, structure::SUB2_ATTACK_ID)
+            .get("sub_techniques")
+            .is_none(),
+        "a sub-technique has no sub-technique counts: {gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claimed_parent_does_not_cover_its_sub_techniques() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_parent");
+    let cb = structure_bridge(&test_db).await;
+    claim_technique(&cb, structure::PARENT_ATTACK_ID);
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        gap_ids(&gaps),
+        BTreeSet::from([
+            structure::SUB1_ATTACK_ID.to_string(),
+            structure::SUB2_ATTACK_ID.to_string(),
+        ]),
+        "{gaps}"
+    );
+}
+
+/// The error of claiming `attack_id`, after checking it committed no belief.
+async fn refused_claim(test_db: &TestDb, cb: &ExtensionCallback, attack_id: &str) -> String {
+    let (graph, _) = detect_handles(test_db);
+    let before = belief_count(&graph).await;
+    let err = call(
+        cb,
+        "claim",
+        json!({ "logic_id": LOGIC_ID, "technique_id": attack_id, "method": "external-tool", "confidence": 0.9 }),
+    )
+    .expect_err("a claim on a retired technique is refused");
+    assert_eq!(
+        belief_count(&graph).await,
+        before,
+        "a refused claim commits no belief"
+    );
+    err
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claiming_a_revoked_technique_names_its_replacement() {
+    let test_db = TestDb::new("gecko_test_detect_claim_revoked");
+    let cb = structure_bridge(&test_db).await;
+    let err = refused_claim(&test_db, &cb, structure::REVOKED_SECOND_ATTACK_ID).await;
+    assert_eq!(
+        err,
+        format!(
+            "technique '{}' is revoked; ATT&CK replaces it with '{}'; claim that technique instead",
+            structure::REVOKED_SECOND_ATTACK_ID,
+            structure::SUB1_ATTACK_ID
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claiming_through_a_revocation_chain_names_the_live_end() {
+    let test_db = TestDb::new("gecko_test_detect_claim_chain");
+    let cb = structure_bridge(&test_db).await;
+    let err = refused_claim(&test_db, &cb, structure::REVOKED_FIRST_ATTACK_ID).await;
+    assert!(
+        err.contains(structure::REVOKED_FIRST_ATTACK_ID)
+            && err.contains("revoked")
+            && err.contains(&format!("replaces it with '{}'", structure::SUB1_ATTACK_ID)),
+        "{err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claiming_a_deprecated_technique_says_it_has_no_replacement() {
+    let test_db = TestDb::new("gecko_test_detect_claim_deprecated");
+    let cb = structure_bridge(&test_db).await;
+    let err = refused_claim(&test_db, &cb, structure::DEPRECATED_ATTACK_ID).await;
+    assert_eq!(
+        err,
+        format!(
+            "technique '{}' is deprecated (or revoked) with no replacement",
+            structure::DEPRECATED_ATTACK_ID
+        )
+    );
+}
+
+/// Seeds the structure fixture with `edit` applied to its object list, and the
+/// playbook bundle, and returns the detect bridge over them.
+async fn edited_structure_bridge(
+    test_db: &TestDb,
+    edit: impl FnOnce(&mut Vec<Value>),
+) -> ExtensionCallback {
+    let mut bundle: Value = serde_json::from_str(&structure::fixture_json()).expect("fixture json");
+    edit(bundle["objects"].as_array_mut().expect("objects"));
+    stix_objects::sync_stix_fixture(test_db, &bundle.to_string(), "the edited structure fixture")
+        .await;
+    sync_playbooks(test_db, &[LOGIC_ID]).await;
+    let (graph, edges) = detect_handles(test_db);
+    cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_logic_on_a_live_technique_is_not_called_revoked() {
+    let test_db = TestDb::new("gecko_test_detect_claim_missing_logic");
+    // R2 keeps its revocation by S1 but carries the live parent's attack-id, so
+    // a retired attack-pattern holds P's id as its retired-attack-id.
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        object_mut(objects, structure::REVOKED_SECOND_STIX_ID)["external_references"] =
+            json!([{ "source_name": "mitre-attack", "external_id": structure::PARENT_ATTACK_ID }]);
+    })
+    .await;
+    let err = call(
+        &cb,
+        "claim",
+        json!({ "logic_id": "playbooks/no-such-logic", "technique_id": structure::PARENT_ATTACK_ID, "method": "external-tool", "confidence": 0.9 }),
+    )
+    .expect_err("a claim by a missing logic is refused");
+    assert_eq!(
+        err,
+        "no detection logic 'playbooks/no-such-logic' in the graph"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claiming_a_technique_revoked_by_a_non_technique_has_no_replacement() {
+    let test_db = TestDb::new("gecko_test_detect_claim_non_technique");
+    // R2 is revoked by the live tool rather than S1.
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        let link = objects
+            .iter_mut()
+            .find(|o| {
+                o["relationship_type"] == "revoked-by"
+                    && o["source_ref"] == structure::REVOKED_SECOND_STIX_ID
+            })
+            .expect("R2's revoked-by");
+        link["target_ref"] = json!(structure::TOOL_STIX_ID);
+    })
+    .await;
+    let err = refused_claim(&test_db, &cb, structure::REVOKED_SECOND_ATTACK_ID).await;
+    assert_eq!(
+        err,
+        format!(
+            "technique '{}' is deprecated (or revoked) with no replacement",
+            structure::REVOKED_SECOND_ATTACK_ID
+        )
+    );
+}
+
+/// The concept id the importer gives the attack-pattern `stix_id`.
+fn technique_concept_id(stix_id: &str) -> String {
+    let uuid = stix_id
+        .strip_prefix("attack-pattern--")
+        .expect("an attack-pattern STIX id");
+    format!("stix/attack-pattern/{uuid}")
+}
+
+/// Claims SUB2 over the structure fixture with a Windows sensor file, re-syncs
+/// the fixture with `edit` applied to SUB2, and returns the `blinded` report.
+async fn blinded_after_retiring_sub2(name: &str, edit: impl FnOnce(&mut Vec<Value>)) -> Value {
+    let test_db = TestDb::new(name);
+    let cb = structure_bridge(&test_db).await;
+    claim_technique(&cb, structure::SUB2_ATTACK_ID);
+    sync_sensor_file(
+        &test_db,
+        "platforms: [Windows]\nsensors: []\n",
+        sensors::DEFAULT_BUNDLE_NAME,
+    )
+    .await;
+    let mut bundle: Value = serde_json::from_str(&structure::fixture_json()).expect("fixture json");
+    edit(bundle["objects"].as_array_mut().expect("objects"));
+    resync_attack(&test_db, &bundle.to_string()).await;
+    call(&cb, "blinded", json!({})).expect("blinded")
+}
+
+/// The `blinded` report of the one claim on the retired SUB2.
+fn retired_sub2_report(replaced_by: Value) -> Value {
+    json!({
+        "blinded_detections": [{
+            "concept_id": LOGIC_ID,
+            "technique": null,
+            "technique_concept_id": technique_concept_id(structure::SUB2_STIX_ID),
+            "blind_platforms": [],
+            "unassessed_platforms": ["Windows"],
+            "retired_technique": structure::SUB2_ATTACK_ID,
+            "replaced_by": replaced_by,
+        }],
+        "stale_sensor_components": [],
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blinded_names_the_replacement_of_a_revoked_claimed_technique() {
+    let report = blinded_after_retiring_sub2("gecko_test_blinded_revoked_claim", |objects| {
+        object_mut(objects, structure::SUB2_STIX_ID)["revoked"] = json!(true);
+        objects.push(json!({
+            "type": "relationship",
+            "id": "relationship--5e000000-0000-4000-8000-000000000100",
+            "relationship_type": "revoked-by",
+            "source_ref": structure::SUB2_STIX_ID,
+            "target_ref": structure::SUB1_STIX_ID,
+        }));
+    })
+    .await;
+    assert_eq!(
+        report,
+        retired_sub2_report(json!(structure::SUB1_ATTACK_ID))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blinded_on_a_deprecated_claimed_technique_has_no_replacement() {
+    let report = blinded_after_retiring_sub2("gecko_test_blinded_deprecated_claim", |objects| {
+        object_mut(objects, structure::SUB2_STIX_ID)["x_mitre_deprecated"] = json!(true);
+    })
+    .await;
+    assert_eq!(report, retired_sub2_report(Value::Null));
 }

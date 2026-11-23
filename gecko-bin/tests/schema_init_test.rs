@@ -13,6 +13,9 @@ use mem_gecko::MemGecko;
 #[path = "common/attack.rs"]
 mod attack;
 mod common;
+#[cfg(feature = "cyber")]
+#[path = "common/stix_objects.rs"]
+mod stix_objects;
 use common::TestDb;
 
 #[tokio::test]
@@ -261,6 +264,59 @@ async fn old_cyber_detection_types_migrate_away() {
     assert!(after.contains("fun claim-platforms"));
 }
 
+/// The shipped `@doc` of `undetected-techniques()`, and the one it replaced.
+#[cfg(feature = "cyber")]
+const LIVE_GAPS_DOC: &str =
+    "The coverage-gap list: live ATT&CK techniques with no asserted detection claim against them.";
+#[cfg(feature = "cyber")]
+const OLD_GAPS_DOC: &str =
+    "The coverage-gap list: ATT&CK techniques with no asserted detection claim against them.";
+
+#[cfg(feature = "cyber")]
+#[tokio::test]
+async fn a_changed_function_doc_reaches_an_existing_database() {
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA};
+
+    let shipped = CyberGecko::new();
+    let previous = shipped.schema().replace(LIVE_GAPS_DOC, OLD_GAPS_DOC);
+    assert_ne!(
+        previous,
+        shipped.schema(),
+        "the shipped schema carries the live gaps @doc"
+    );
+
+    let test_db = TestDb::new("gecko_test_function_doc_redefine");
+    let mut db = test_db.router();
+    db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+        .await
+        .expect("core schema");
+    let mem = MemGecko::new();
+    db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+        .await
+        .expect("mem schema");
+    db.apply_schema(&previous)
+        .await
+        .expect("the previous cyber schema applies");
+    assert!(
+        db.database_schema()
+            .await
+            .expect("schema")
+            .contains(OLD_GAPS_DOC)
+    );
+
+    for _ in 0..2 {
+        db.apply_schema_with_migrations(shipped.schema(), shipped.schema_migrations())
+            .await
+            .expect("the shipped cyber schema redefines the function");
+    }
+    let after = db.database_schema().await.expect("schema");
+    assert!(
+        after.contains(LIVE_GAPS_DOC),
+        "the new @doc is not installed"
+    );
+    assert!(!after.contains(OLD_GAPS_DOC), "the old @doc survived");
+}
+
 /// The schemas as released before the schema tightening.
 const PRE_CORE: &str = include_str!("fixtures/schemas_pre_tightening/core_schema.tql");
 const PRE_MEM_TYPES: &str = include_str!("fixtures/schemas_pre_tightening/mem_types.tql");
@@ -277,6 +333,44 @@ const PRE_CYBER_FUNCTIONS: &str =
 fn pre_cyber_schema() -> String {
     format!("{PRE_CYBER}\n{PRE_CYBER_FUNCTIONS}")
 }
+
+/// The cyber types and relations added after the pre-tightening release, as the
+/// shipped schema spells them.
+#[cfg(feature = "cyber")]
+const NEW_CYBER_RELATIONS: &str = r#"define
+  attribute retired-attack-id value string;
+  attribute tactic-shortname value string;
+
+  cyber-object owns retired-attack-id @card(0..1);
+
+  entity tactic sub cyber-object @doc("An ATT&CK tactic (STIX x-mitre-tactic): the adversary goal a technique serves, matched to techniques by its shortname."),
+      owns tactic-shortname @card(1),
+      plays technique-tactic:tactic;
+
+  relation subtechnique-of @doc("An ATT&CK 'subtechnique-of' relationship: a sub-technique refines a parent technique, and a sub-technique has one parent."),
+      relates subtechnique @card(1) @doc("The sub-technique that refines the parent."),
+      relates parent @card(1) @doc("The technique the sub-technique refines.");
+
+  relation revoked-by @doc("An ATT&CK 'revoked-by' relationship: a revoked object points to the object that replaced it, and a revoked object has one replacement."),
+      relates revoked @card(1) @doc("The revoked object."),
+      relates replacement @card(1) @doc("The object that replaced the revoked one.");
+
+  relation technique-tactic @doc("Ties a technique to a tactic whose shortname is one of its kill-chain phases."),
+      relates technique @card(1) @doc("The technique that serves the tactic."),
+      relates tactic @card(1) @doc("The tactic the technique serves.");
+
+  attack-pattern plays technique-tactic:technique,
+      plays subtechnique-of:subtechnique @card(0..1),
+      plays subtechnique-of:parent,
+      plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+  intrusion-set plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+  malware plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+  tool plays revoked-by:revoked @card(0..1),
+      plays revoked-by:replacement;
+"#;
 
 /// The mem types and functions as one `define`, composed as mem-gecko composes them.
 fn pre_mem_schema() -> String {
@@ -796,12 +890,25 @@ fn attack_with_malware() -> String {
 }
 
 /// A database schema export as its type definitions and its functions, sorted. An
-/// upgrade appends a newly defined function after the existing ones, where a fresh
-/// database lists it in definition order; function order carries no meaning.
+/// upgrade appends a newly defined type, capability or function after the existing
+/// ones, where a fresh database lists it in definition order; that order carries no
+/// meaning. Each type's capabilities stay with it, sorted, and the types are sorted.
 #[cfg(feature = "cyber")]
-fn schema_parts(schema: &str) -> (String, Vec<String>) {
+fn schema_parts(schema: &str) -> (Vec<String>, Vec<String>) {
     let mut chunks = schema.split("\nfun ");
-    let types = chunks.next().unwrap_or_default().to_string();
+    let types_text = chunks.next().unwrap_or_default();
+    let mut types: Vec<String> = types_text
+        .trim_start_matches("define")
+        .split(";\n")
+        .map(|decl| {
+            let decl = decl.trim().trim_end_matches(';');
+            let mut lines: Vec<&str> = decl.split(",\n").map(str::trim).collect();
+            let head = lines.remove(0);
+            lines.sort_unstable();
+            format!("{head} | {}", lines.join(" | "))
+        })
+        .collect();
+    types.sort();
     let mut functions: Vec<String> = chunks.map(|f| format!("fun {}", f.trim_end())).collect();
     functions.sort();
     (types, functions)
@@ -841,6 +948,12 @@ async fn tightened_schema_applies_to_a_populated_database() {
     db.apply_schema(&pre_cyber_schema())
         .await
         .expect("pre-tightening cyber");
+    // The ATT&CK post-sync sweep reads every typed relation, and the adapter
+    // writes retired-attack-id; the types the pre-tightening release never
+    // declared are defined as shipped.
+    db.apply_schema(NEW_CYBER_RELATIONS)
+        .await
+        .expect("the relations declared with required roles");
 
     // An OKF bundle with a concept link, a citation and a hierarchy.
     let okf = tempfile::TempDir::new().expect("temp dir");

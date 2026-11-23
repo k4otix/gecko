@@ -9,7 +9,7 @@
 #![cfg(feature = "cyber")]
 
 use cyber_gecko::CyberGecko;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,6 +33,10 @@ mod belief;
 mod common;
 #[path = "common/provenance.rs"]
 mod provenance;
+#[path = "common/stix_objects.rs"]
+mod stix_objects;
+#[path = "common/structure.rs"]
+mod structure;
 use belief::claim_with_belief;
 use common::TestDb;
 
@@ -418,6 +422,7 @@ async fn required_attributes_of_the_live_cyber_schema() {
     for (entity, attrs) in [
         ("observable", &["concept-id", "ioc-value", "ioc-type"][..]),
         ("attack-pattern", &["concept-id"][..]),
+        ("tactic", &["concept-id", "tactic-shortname"][..]),
     ] {
         let got = required
             .get(entity)
@@ -1041,6 +1046,268 @@ async fn a_database_synced_by_the_previous_adapter_is_retyped() {
     assert_eq!(requirements(&mut db).await, fixture_requirements());
 }
 
+/// The (first-role, second-role) concept-id pairs of every `relation`.
+async fn relation_pairs(
+    db: &mut TypeDbRouter,
+    relation: &str,
+    [a, b]: [&str; 2],
+) -> BTreeSet<(String, String)> {
+    let tx = db.begin_read().await.expect("begin read");
+    select_rows(
+        &tx,
+        &format!(
+            "match $r isa {relation}, links ({a}: $x, {b}: $y); \
+                   $x has concept-id $xi; $y has concept-id $yi; \
+             select $xi, $yi;"
+        ),
+    )
+    .await
+    .iter()
+    .map(|row| (string_column(row, "xi"), string_column(row, "yi")))
+    .collect()
+}
+
+/// The structure relations with their roles, in (source, target) order.
+const STRUCTURE_RELATIONS: [(&str, [&str; 2]); 3] = [
+    ("subtechnique-of", ["subtechnique", "parent"]),
+    ("revoked-by", ["revoked", "replacement"]),
+    ("technique-tactic", ["technique", "tactic"]),
+];
+
+/// The concept-id pairs `relation` links in the structure fixture.
+fn structure_pairs(relation: &str) -> BTreeSet<(String, String)> {
+    use structure::*;
+    let pairs: &[(&str, &str)] = match relation {
+        "subtechnique-of" => &[
+            (SUB1_STIX_ID, PARENT_STIX_ID),
+            (SUB2_STIX_ID, PARENT_STIX_ID),
+            (RETIRED_SUB_STIX_ID, PARENT_STIX_ID),
+        ],
+        "revoked-by" => &[
+            (REVOKED_FIRST_STIX_ID, REVOKED_SECOND_STIX_ID),
+            (REVOKED_SECOND_STIX_ID, SUB1_STIX_ID),
+            (MALWARE_STIX_ID, TOOL_STIX_ID),
+        ],
+        "technique-tactic" => &[
+            (PARENT_STIX_ID, EXECUTION_STIX_ID),
+            (PARENT_STIX_ID, PERSISTENCE_STIX_ID),
+            (SUB1_STIX_ID, EXECUTION_STIX_ID),
+            (SUB2_STIX_ID, PERSISTENCE_STIX_ID),
+        ],
+        other => panic!("{other} is not a structure relation"),
+    };
+    pairs
+        .iter()
+        .map(|(a, b)| (concept_id(a), concept_id(b)))
+        .collect()
+}
+
+/// Asserts that every structure relation links exactly the fixture's pairs.
+async fn assert_structure_relations(db: &mut TypeDbRouter) {
+    for (relation, roles) in STRUCTURE_RELATIONS {
+        assert_eq!(
+            relation_pairs(db, relation, roles).await,
+            structure_pairs(relation),
+            "{relation}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stix_sync_writes_subtechnique_revocation_and_tactic_relations() {
+    let test_db = TestDb::new("gecko_test_stix_structure");
+    structure::sync_fixture(&test_db).await;
+    let mut db = test_db.router();
+    assert_structure_relations(&mut db).await;
+
+    {
+        let tx = db.begin_read().await.expect("begin read");
+        assert_eq!(
+            count(&tx, "match $t isa tactic, has tactic-shortname $s;").await,
+            2
+        );
+        assert_eq!(
+            count(
+                &tx,
+                &format!(
+                    r#"match $t isa attack-pattern, has retired-attack-id "{}";
+                       not {{ $t has attack-id $i; }};"#,
+                    structure::REVOKED_FIRST_ATTACK_ID
+                )
+            )
+            .await,
+            1,
+            "a revoked technique keeps its ATT&CK id only as retired-attack-id"
+        );
+    }
+
+    sync_stix(&mut db, &structure::fixture_json()).await;
+    assert_structure_relations(&mut db).await;
+}
+
+/// The structure fixture with `edit` applied to its parsed objects.
+fn edited_structure(edit: impl FnOnce(&mut Vec<serde_json::Value>)) -> String {
+    let mut bundle: serde_json::Value =
+        serde_json::from_str(&structure::fixture_json()).expect("fixture is JSON");
+    edit(bundle["objects"].as_array_mut().expect("objects array"));
+    bundle.to_string()
+}
+
+#[tokio::test]
+async fn a_reimport_replaces_a_changed_parent_and_a_lifted_revocation() {
+    use structure::*;
+    let test_db = TestDb::new("gecko_test_stix_structure_replace");
+    structure::sync_fixture(&test_db).await;
+    let mut db = test_db.router();
+
+    let changed = edited_structure(|objects| {
+        let parent_link = objects
+            .iter_mut()
+            .find(|o| {
+                o["relationship_type"] == "subtechnique-of" && o["source_ref"] == SUB2_STIX_ID
+            })
+            .expect("S2's subtechnique-of");
+        parent_link["target_ref"] = SUB1_STIX_ID.into();
+        let before = objects.len();
+        objects.retain(|o| {
+            !(o["relationship_type"] == "revoked-by" && o["source_ref"] == MALWARE_STIX_ID)
+        });
+        assert_eq!(objects.len(), before - 1);
+        object_mut(objects, MALWARE_STIX_ID)["revoked"] = false.into();
+        let phases = object_mut(objects, PARENT_STIX_ID)["kill_chain_phases"]
+            .as_array_mut()
+            .expect("P's phases");
+        phases.retain(|p| p["phase_name"] != "persistence");
+        assert_eq!(phases.len(), 1);
+    });
+    sync_stix(&mut db, &changed).await;
+
+    let (s1, s2, p, m) = (
+        concept_id(SUB1_STIX_ID),
+        concept_id(SUB2_STIX_ID),
+        concept_id(PARENT_STIX_ID),
+        concept_id(MALWARE_STIX_ID),
+    );
+    let parents: Vec<String> =
+        relation_pairs(&mut db, "subtechnique-of", ["subtechnique", "parent"])
+            .await
+            .into_iter()
+            .filter(|(sub, _)| *sub == s2)
+            .map(|(_, parent)| parent)
+            .collect();
+    assert_eq!(parents, vec![s1], "S2 has exactly one parent, S1");
+    assert!(
+        !relation_pairs(&mut db, "revoked-by", ["revoked", "replacement"])
+            .await
+            .iter()
+            .any(|(revoked, _)| *revoked == m),
+        "the malware's lifted revocation outlived the re-import"
+    );
+    let parent_tactics = relation_pairs(&mut db, "technique-tactic", ["technique", "tactic"])
+        .await
+        .into_iter()
+        .filter(|(technique, _)| *technique == p)
+        .count();
+    assert_eq!(parent_tactics, 1, "P lost the phase it no longer names");
+}
+
+#[tokio::test]
+async fn a_reimport_lifting_a_technique_revocation_restores_its_attack_id() {
+    use structure::*;
+    let test_db = TestDb::new("gecko_test_stix_structure_unrevoke");
+    structure::sync_fixture(&test_db).await;
+    let mut db = test_db.router();
+
+    let lifted = edited_structure(|objects| {
+        let before = objects.len();
+        objects.retain(|o| {
+            !(o["relationship_type"] == "revoked-by" && o["source_ref"] == REVOKED_SECOND_STIX_ID)
+        });
+        assert_eq!(objects.len(), before - 1);
+        object_mut(objects, REVOKED_SECOND_STIX_ID)["revoked"] = false.into();
+    });
+    sync_stix(&mut db, &lifted).await;
+
+    let tx = db.begin_read().await.expect("begin read");
+    let r2 = concept_id(REVOKED_SECOND_STIX_ID);
+    assert_eq!(
+        count(
+            &tx,
+            &format!(
+                r#"match $t isa attack-pattern, has concept-id "{r2}", has attack-id "{REVOKED_SECOND_ATTACK_ID}";"#
+            )
+        )
+        .await,
+        1,
+        "the un-revoked technique carries its attack-id again"
+    );
+    assert_eq!(
+        count(
+            &tx,
+            &format!(
+                r#"match $t isa attack-pattern, has concept-id "{r2}", has retired-attack-id $r;"#
+            )
+        )
+        .await,
+        0,
+        "the un-revoked technique keeps no retired-attack-id"
+    );
+}
+
+#[tokio::test]
+async fn upgrading_from_mapping_2_leaves_no_untyped_subtechnique_or_revocation_links() {
+    let test_db = TestDb::new("gecko_test_stix_structure_upgrade");
+    let mut db = test_db.router();
+    apply_cyber_schema(&mut db).await;
+
+    // Mapping 2 stored tactics as bare cyber-objects without a shortname, and kept
+    // the subtechnique-of and revoked-by SROs as concept-links.
+    let fixture = structure::fixture_json();
+    let (mut previous, rels) = to_okf(&fixture).expect("to_okf");
+    for c in &mut previous.concepts {
+        if c.type_hint.as_deref() == Some("tactic") {
+            c.type_hint = Some("cyber-object".to_string());
+            c.typed_attributes.retain(|a| a.name != "tactic-shortname");
+        }
+        c.file_hash = format!("mapping-2-{}", c.concept_id);
+    }
+    for r in rels
+        .typed
+        .iter()
+        .filter(|r| matches!(r.rel_type.as_str(), "subtechnique-of" | "revoked-by"))
+    {
+        previous.links.push(gecko_extension_api::okf::OkfLink {
+            source_id: r.source.clone(),
+            target_id: r.target.clone(),
+            link_text: r.rel_type.clone(),
+        });
+    }
+    sync_bundle(&mut db, &previous, &[], mem_gecko::BELIEF_TIER_ROOT)
+        .await
+        .expect("seed with mapping 2's shape");
+    let untyped = r#"match $l isa concept-link, has link-text $t;
+                     { $t == "subtechnique-of"; } or { $t == "revoked-by"; };"#;
+    {
+        let tx = db.begin_read().await.expect("begin read");
+        assert_eq!(count(&tx, untyped).await, 6);
+        assert_eq!(count(&tx, "match $c isa tactic;").await, 0);
+    }
+
+    sync_stix(&mut db, &fixture).await;
+
+    {
+        let tx = db.begin_read().await.expect("begin read");
+        assert_eq!(
+            count(&tx, untyped).await,
+            0,
+            "an untyped structure link survived"
+        );
+        assert_eq!(count(&tx, "match $c isa tactic;").await, 2);
+        assert_eq!(count(&tx, "match $c isa! cyber-object;").await, 0);
+    }
+    assert_structure_relations(&mut db).await;
+}
+
 #[tokio::test]
 async fn a_reimport_where_an_analytic_loses_every_log_source_leaves_no_requirement() {
     let test_db = TestDb::new("gecko_test_stix_analytic_unreferenced");
@@ -1097,6 +1364,10 @@ async fn graph_counts(db: &mut TypeDbRouter) -> BTreeMap<String, usize> {
     counts.insert(
         "concept".to_string(),
         count(&tx, "match $c isa concept;").await,
+    );
+    counts.insert(
+        "tactic".to_string(),
+        count(&tx, "match $t isa tactic;").await,
     );
     for (relation, _, _) in typed_relation_players() {
         if !counts.contains_key(relation) {
@@ -1442,6 +1713,9 @@ const REQUIRED_ROLES: &[(&str, &[&str])] = &[
     ("strategy-detects", &["strategy", "technique"]),
     ("strategy-analytic", &["strategy", "analytic"]),
     ("analytic-requirement", &["analytic", "component"]),
+    ("subtechnique-of", &["subtechnique", "parent"]),
+    ("revoked-by", &["revoked", "replacement"]),
+    ("technique-tactic", &["technique", "tactic"]),
     (
         "technique-detection",
         &["detecting-logic", "detected-technique", "detection-claim"],
@@ -1551,6 +1825,15 @@ async fn write_query(db: &mut TypeDbRouter, query: &str) {
 /// The belief edges cyber declares, which have no upgrade cleanup.
 const BELIEF_EDGES: [&str; 2] = ["technique-detection", "alert-disposition"];
 
+/// The relations declared with their roles required from the start, which have no
+/// pre-tightening form and so no upgrade cleanup.
+const REQUIRED_FROM_THE_START: [&str; 3] = ["subtechnique-of", "revoked-by", "technique-tactic"];
+
+/// Whether `relation` has no upgrade cleanup.
+fn has_no_cleanup(relation: &str) -> bool {
+    BELIEF_EDGES.contains(&relation) || REQUIRED_FROM_THE_START.contains(&relation)
+}
+
 /// Applies the frozen pre-tightening core, mem and cyber schemas.
 async fn apply_pre_tightening_schemas(db: &mut TypeDbRouter) {
     db.apply_schema(PRE_CORE)
@@ -1647,8 +1930,8 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
         .collect();
     assert_eq!(
         cleanups.len(),
-        REQUIRED_ROLES.len() - BELIEF_EDGES.len(),
-        "one cleanup per cyber relation that is not a belief edge"
+        REQUIRED_ROLES.len() - BELIEF_EDGES.len() - REQUIRED_FROM_THE_START.len(),
+        "one cleanup per cyber relation that is neither a belief edge nor required from the start"
     );
     let before = db.database_schema().await.expect("schema");
     for m in &cleanups {
@@ -1674,7 +1957,7 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
                 "{relation}:{role} is not required: {block}"
             );
         }
-        if BELIEF_EDGES.contains(relation) {
+        if has_no_cleanup(relation) {
             continue;
         }
         let full = roles
