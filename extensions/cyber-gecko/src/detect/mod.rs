@@ -10,7 +10,8 @@
 //! atomically with its edges; the bridge holds no raw graph write path.
 //!
 //! - `claim` asserts a detection belief with a `technique-detection` edge to its
-//!   logic and technique.
+//!   logic and technique. A claim on a retired technique is refused, naming the
+//!   live end of its `revoked-by` chain when it has one.
 //! - `disposition` records an analyst verdict as a belief with an
 //!   `alert-disposition` edge carrying the verdict, so `precision` can count it.
 //! - `coverage_gaps` runs the persisted `undetected-techniques()` TypeDB function.
@@ -25,7 +26,9 @@
 //!   analytic there or the technique itself is retired, revoked or deprecated. The
 //!   report lists each claim with a blind or unassessed platform, what each blind
 //!   analytic lacks (`analytic-gaps`, grouped by log source), and the sensors'
-//!   fallback components that match no live data component. A graph with no sensor
+//!   fallback components that match no live data component. A claim on a retired
+//!   technique also carries its `retired_technique` id and `replaced_by`, the
+//!   attack-id of its live replacement or null. A graph with no sensor
 //!   file or no detection strategies is an error, never an empty report.
 //! - `recommend_sources` turns the blind claims into an ordered list of ATT&CK log
 //!   sources to add. Each step adds one analytic's remaining missing log sources on
@@ -331,10 +334,12 @@ struct ClaimKey {
 }
 
 /// What `claim-platforms()` says of one claim: the technique's attack-id, if it
-/// still has one, and every status per declared platform.
+/// still has one, its retired attack-id, if it is retired, and every status per
+/// declared platform.
 #[derive(Debug, Default)]
 struct ClaimStatuses {
     technique: Option<String>,
+    retired: Option<String>,
     platforms: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -381,6 +386,16 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     require_judgeable(graph).await?;
     let claims = claim_statuses(graph).await?;
     let readings = analytic_readings(graph, &blind_pairs(&claims)).await?;
+    let retired: BTreeSet<String> = claims
+        .iter()
+        .filter(|(_, statuses)| statuses.retired.is_some())
+        .map(|(key, _)| key.technique_concept_id.clone())
+        .collect();
+    let replacements = if retired.is_empty() {
+        BTreeMap::new()
+    } else {
+        live_replacements(graph, &retired).await?
+    };
 
     let mut detections = Vec::new();
     for (key, statuses) in &claims {
@@ -404,13 +419,19 @@ async fn blinded(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         if blind_platforms.is_empty() && unassessed.is_empty() {
             continue;
         }
-        detections.push(json!({
+        let mut row = json!({
             "concept_id": key.concept_id,
             "technique": statuses.technique,
             "technique_concept_id": key.technique_concept_id,
             "blind_platforms": blind_platforms,
             "unassessed_platforms": unassessed,
-        }));
+        });
+        // Only a retired technique's row names its retired id and replacement.
+        if let Some(retired) = &statuses.retired {
+            row["retired_technique"] = json!(retired);
+            row["replaced_by"] = json!(replacements.get(&key.technique_concept_id));
+        }
+        detections.push(row);
     }
 
     Ok(json!({
@@ -466,7 +487,8 @@ async fn claim_statuses(
         graph,
         "match let $d, $t, $p, $s in claim-platforms(); \
          fetch { \"concept_id\": $d.concept-id, \"technique_concept_id\": $t.concept-id, \
-                 \"technique\": $t.attack-id, \"platform\": $p, \"status\": $s };",
+                 \"technique\": $t.attack-id, \"retired\": $t.retired-attack-id, \
+                 \"platform\": $p, \"status\": $s };",
         &[],
         &[],
     )
@@ -480,6 +502,9 @@ async fn claim_statuses(
         let entry = claims.entry(key).or_default();
         if let Some(t) = row.get("technique").and_then(Value::as_str) {
             entry.technique = Some(t.to_string());
+        }
+        if let Some(r) = row.get("retired").and_then(Value::as_str) {
+            entry.retired = Some(r.to_string());
         }
         entry
             .platforms
@@ -1107,12 +1132,110 @@ async fn ensure_logic_and_technique(
         )
         .await
         .map_err(|e| e.to_string())?;
-    if rows.is_empty() {
+    if !rows.is_empty() {
+        return Ok(());
+    }
+
+    // Several retired objects may share one retired-attack-id, so every match is read.
+    let retired: BTreeSet<String> = read(
+        graph,
+        "given $tech: string; \
+         match $t isa attack-pattern, has retired-attack-id $r; $r == $tech; \
+         fetch { \"concept_id\": $t.concept-id };",
+        &["tech"],
+        &[technique_id],
+    )
+    .await?
+    .iter()
+    .map(|row| row_str(row, "concept_id"))
+    .collect::<Result<_, _>>()?;
+    if retired.is_empty() {
         return Err(format!(
             "no detection logic '{logic_id}' or technique '{technique_id}' in the graph"
         ));
     }
-    Ok(())
+    let replacements: BTreeSet<String> = live_replacements(graph, &retired)
+        .await?
+        .into_values()
+        .collect();
+    if replacements.is_empty() {
+        return Err(format!(
+            "technique '{technique_id}' is deprecated (or revoked) with no replacement"
+        ));
+    }
+    let names: Vec<String> = replacements.iter().map(|r| format!("'{r}'")).collect();
+    Err(format!(
+        "technique '{technique_id}' is revoked; ATT&CK replaces it with {}; claim that technique instead",
+        names.join(" or ")
+    ))
+}
+
+/// The end of the `revoked-by` chain from `start` in `edges` (revoked concept id →
+/// replacement concept id): the first id with no outgoing edge, which is `start`
+/// itself when it has none, or `None` when the chain cycles.
+fn replacement_of(edges: &BTreeMap<String, String>, start: &str) -> Option<String> {
+    let mut visited = BTreeSet::new();
+    let mut current = start;
+    while let Some(next) = edges.get(current) {
+        if !visited.insert(current) {
+            return None;
+        }
+        current = next;
+    }
+    Some(current.to_string())
+}
+
+/// The attack-id of the live replacement of each concept in `starts` that has one,
+/// keyed by the start's concept id. A replacement is the end of the start's
+/// `revoked-by` chain when that end is live and carries an attack-id.
+async fn live_replacements(
+    graph: &Arc<dyn GraphReader>,
+    starts: &BTreeSet<String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut edges = BTreeMap::new();
+    for row in read(
+        graph,
+        "match revoked-by (revoked: $o, replacement: $n); \
+         fetch { \"revoked\": $o.concept-id, \"replacement\": $n.concept-id };",
+        &[],
+        &[],
+    )
+    .await?
+    {
+        edges.insert(row_str(&row, "revoked")?, row_str(&row, "replacement")?);
+    }
+
+    let ends: BTreeMap<&String, String> = starts
+        .iter()
+        .filter_map(|start| replacement_of(&edges, start).map(|end| (start, end)))
+        .collect();
+    let end_ids: BTreeSet<&str> = ends.values().map(String::as_str).collect();
+    let end_rows: Vec<Vec<&str>> = end_ids.iter().map(|id| vec![*id]).collect();
+    let mut live_ends = BTreeMap::new();
+    for row in read_rows(
+        graph,
+        &format!(
+            "given $cid: string; \
+             match $x isa cyber-object, has concept-id $c, has attack-id $a; $c == $cid; {} \
+             fetch {{ \"concept_id\": $c, \"attack_id\": $a }};",
+            live("x")
+        ),
+        &["cid"],
+        &end_rows,
+    )
+    .await?
+    {
+        live_ends.insert(row_str(&row, "concept_id")?, row_str(&row, "attack_id")?);
+    }
+
+    Ok(ends
+        .into_iter()
+        .filter_map(|(start, end)| {
+            live_ends
+                .get(&end)
+                .map(|attack_id| (start.clone(), attack_id.clone()))
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -1345,6 +1468,34 @@ mod tests {
         assert!(err.contains("analytic 'a/x'"), "{err}");
         assert!(err.contains("log source '"), "{err}");
         assert!(blind_gap_sets("Windows", windows, &mut BTreeMap::new()).is_ok());
+    }
+
+    fn edges(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(from, to)| (from.to_string(), to.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn replacement_of_follows_a_chain_to_its_end() {
+        let chain = edges(&[("a", "b"), ("b", "c")]);
+        assert_eq!(replacement_of(&chain, "a"), Some("c".to_string()));
+        assert_eq!(replacement_of(&chain, "b"), Some("c".to_string()));
+    }
+
+    #[test]
+    fn replacement_of_a_cycle_is_none() {
+        assert_eq!(replacement_of(&edges(&[("a", "b"), ("b", "a")]), "a"), None);
+        assert_eq!(replacement_of(&edges(&[("a", "a")]), "a"), None);
+    }
+
+    #[test]
+    fn replacement_of_an_id_with_no_edge_is_itself() {
+        assert_eq!(
+            replacement_of(&edges(&[("x", "y")]), "a"),
+            Some("a".to_string())
+        );
     }
 
     #[test]
