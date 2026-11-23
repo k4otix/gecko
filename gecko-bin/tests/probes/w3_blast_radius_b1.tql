@@ -2,17 +2,17 @@ redefine
   fun blast-radius($r: okf-concept) -> { memory-item }:
       match
           {
-              (assumption: $r, resting: $m) isa rests-on;
+              rests-on (assumption: $r, resting: $m);
           } or {
-              (source: $r, derived: $m) isa derivation;
+              derivation (source: $r, derived: $m);
           } or {
-              (owning-population: $pop, member: $r) isa population-member;
-              (scoped-belief: $m, population: $pop) isa scoped;
+              population-member (owning-population: $pop, member: $r);
+              scoped (scoped-belief: $m, population: $pop);
           } or {
-              { (assumption: $r, resting: $mid) isa rests-on; }
-              or { (source: $r, derived: $mid) isa derivation; }
-              or { (owning-population: $pop2, member: $r) isa population-member;
-                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              { rests-on (assumption: $r, resting: $mid); }
+              or { derivation (source: $r, derived: $mid); }
+              or { population-member (owning-population: $pop2, member: $r);
+                   scoped (scoped-belief: $mid, population: $pop2); };
               let $m in blast-radius($mid);
           };
       return { $m };

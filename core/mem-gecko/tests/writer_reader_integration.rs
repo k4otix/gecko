@@ -263,7 +263,7 @@ async fn provenance_stamp_roundtrips_run_id_and_source() {
         .raw_fetch(&format!(
             r#"match
                  $ep isa episode, has concept-id "{}";
-                 (memory: $ep, origin: $run) isa source-link, has origin-kind $k;
+                 source-link (memory: $ep, origin: $run), has origin-kind $k;
                  $run isa doc-run, has run-id $rid;
                fetch {{ "rid": $rid, "kind": $k }};"#,
             ep_id.0
@@ -310,7 +310,7 @@ async fn provenance_stamp_roundtrips_run_id_and_source() {
         .raw_fetch(&format!(
             r#"match
                  $b isa belief, has concept-id "{}";
-                 (memory: $b, origin: $run) isa source-link, has origin-kind $k;
+                 source-link (memory: $b, origin: $run), has origin-kind $k;
                  $run isa doc-run, has run-id $rid;
                fetch {{ "rid": $rid, "kind": $k }};"#,
             bel_id.0
@@ -361,7 +361,7 @@ async fn derivation_chain_never_touches_the_retrieval_ledger() {
              $re isa retrieval-event, has concept-id "mem/ep/re1",
                  has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
                  has retrieval-method "semantic", has candidate-count 3;
-             (retrieval: $re, synthesized: $b) isa informs-synthesis;"#,
+             informs-synthesis (retrieval: $re, synthesized: $b);"#,
         bel.0
     ))
     .await;
@@ -2040,15 +2040,15 @@ async fn population_members_and_canonical_entity() {
                  has spec-text 'match $c isa concept, has tag "internet-facing";';
              $c1 isa concept, has concept-id "asset/c1";
              $c2 isa concept, has concept-id "asset/c2";
-             (owning-population: $p, member: $c1) isa population-member, has computed-at 2026-01-01T00:00:00;
-             (owning-population: $p, member: $c2) isa population-member, has computed-at 2026-01-01T00:00:00;
+             population-member (owning-population: $p, member: $c1), has computed-at 2026-01-01T00:00:00;
+             population-member (owning-population: $p, member: $c2), has computed-at 2026-01-01T00:00:00;
              $ra isa concept, has concept-id "src-a/evil.com";
              $rb isa concept, has concept-id "src-b/evil.com";
              $res isa resolution, has concept-id "mem/bel/res", has belief-state "asserted";
              $ep isa episode, has concept-id "mem/ep/rs",
                  has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
-             (derived: $res, source: $ep) isa derivation, has derivation-method "type-join";
-             (resolution-belief: $res, record-a: $ra, record-b: $rb) isa resolves;"#,
+             derivation (derived: $res, source: $ep), has derivation-method "type-join";
+             resolves (resolution-belief: $res, record-a: $ra, record-b: $rb);"#,
     )
     .await;
 
@@ -2260,7 +2260,7 @@ async fn seed_episode(
     fx.raw_seed(&format!(
         r#"match {owner_match} insert $e isa {kind}, has concept-id "{id}"{title},
              has event-time {event}, has ingest-time {ingest};
-             (owned: $e{owner_links}) isa ownership;"#
+             ownership (owned: $e{owner_links});"#
     ))
     .await;
 }
@@ -2303,7 +2303,7 @@ async fn dedup_episodes_refuses_and_commits_nothing() {
             r#"insert $run isa doc-run, has run-id "unowned-run";
                  $e isa episode, has concept-id "e-un-l", has title "t",
                      has event-time {t1}, has ingest-time {t1};
-                 (memory: $e, origin: $run) isa source-link, has origin-kind "test";"#
+                 source-link (memory: $e, origin: $run), has origin-kind "test";"#
         ))
         .await;
     let err = unowned.expect_err("an unowned episode commits");
@@ -2537,7 +2537,7 @@ async fn retrieval_events_safe_to_tombstone_only_after_supersession() {
              $re isa retrieval-event, has concept-id "mem/ep/re-ret",
                  has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
                  has retrieval-method "semantic", has candidate-count 1;
-             (retrieval: $re, synthesized: $b) isa informs-synthesis;"#,
+             informs-synthesis (retrieval: $re, synthesized: $b);"#,
         b.0
     ))
     .await;
@@ -2758,8 +2758,8 @@ async fn a_derive_that_used_two_retrievals_links_both() {
             r#"match
                  $b isa belief, has concept-id "{}";
                  $re isa retrieval-event, has concept-id $rid;
-                 (retrieval: $re, synthesized: $b) isa informs-synthesis;
-                 (surfacer: $re, item: $ev) isa surfaced, has was-used $u;
+                 informs-synthesis (retrieval: $re, synthesized: $b);
+                 surfaced (surfacer: $re, item: $ev), has was-used $u;
                  $ev has concept-id "{}";
                fetch {{ "re": $rid, "u": $u }};"#,
             synth.0, evidence.0

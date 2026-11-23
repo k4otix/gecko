@@ -1606,35 +1606,35 @@ async fn a_database_holding_a_one_player_uses_upgrades() {
                 $ds isa detection-strategy, has concept-id \"up/ds\"; \
                 $an isa analytic, has concept-id \"up/an\"; \
                 $dc isa data-component, has concept-id \"up/dc\"; \
-                (indicator-source: $in, indicated: $mw) isa indicates; \
-                (indicator-source: $in) isa indicates; \
-                (indicated: $mw) isa indicates; \
-                (user: $is, used: $ap) isa uses; \
-                (user: $is) isa uses; \
-                (used: $ap) isa uses; \
-                (attributee: $is, actor: $ta) isa attributed-to; \
-                (attributee: $is) isa attributed-to; \
-                (actor: $ta) isa attributed-to; \
-                (threat-source: $is, target: $ha) isa targets; \
-                (threat-source: $is) isa targets; \
-                (target: $ha) isa targets; \
-                (mitigation: $co, mitigated: $ap) isa mitigates; \
-                (mitigation: $co) isa mitigates; \
-                (mitigated: $ap) isa mitigates; \
-                (pattern-indicator: $in, observable-value: $ob) isa observed-as; \
-                (pattern-indicator: $in) isa observed-as; \
-                (observable-value: $ob) isa observed-as; \
-                (strategy: $ds, technique: $ap) isa strategy-detects; \
-                (strategy: $ds) isa strategy-detects; \
-                (technique: $ap) isa strategy-detects; \
-                (strategy: $ds, analytic: $an) isa strategy-analytic; \
-                (strategy: $ds) isa strategy-analytic; \
-                (analytic: $an) isa strategy-analytic; \
-                (analytic: $an, component: $dc) isa analytic-requirement, \
+                indicates (indicator-source: $in, indicated: $mw); \
+                indicates (indicator-source: $in); \
+                indicates (indicated: $mw); \
+                uses (user: $is, used: $ap); \
+                uses (user: $is); \
+                uses (used: $ap); \
+                attributed-to (attributee: $is, actor: $ta); \
+                attributed-to (attributee: $is); \
+                attributed-to (actor: $ta); \
+                targets (threat-source: $is, target: $ha); \
+                targets (threat-source: $is); \
+                targets (target: $ha); \
+                mitigates (mitigation: $co, mitigated: $ap); \
+                mitigates (mitigation: $co); \
+                mitigates (mitigated: $ap); \
+                observed-as (pattern-indicator: $in, observable-value: $ob); \
+                observed-as (pattern-indicator: $in); \
+                observed-as (observable-value: $ob); \
+                strategy-detects (strategy: $ds, technique: $ap); \
+                strategy-detects (strategy: $ds); \
+                strategy-detects (technique: $ap); \
+                strategy-analytic (strategy: $ds, analytic: $an); \
+                strategy-analytic (strategy: $ds); \
+                strategy-analytic (analytic: $an); \
+                analytic-requirement (analytic: $an, component: $dc), \
                     has log-source-name \"n\", has log-source-key \"n\"; \
-                (analytic: $an) isa analytic-requirement, \
+                analytic-requirement (analytic: $an), \
                     has log-source-name \"n\", has log-source-key \"n\"; \
-                (component: $dc) isa analytic-requirement, \
+                analytic-requirement (component: $dc), \
                     has log-source-name \"n\", has log-source-key \"n\";",
     )
     .await;
@@ -1706,8 +1706,8 @@ async fn a_database_holding_a_one_player_technique_detection_fails_schema_init_n
         &mut db,
         "insert $ap isa attack-pattern, has concept-id \"up/ap\"; \
                 $pb isa concept, has concept-id \"up/pb\"; \
-                (used: $ap) isa uses; \
-                (detecting-logic: $pb, detected-technique: $ap) isa technique-detection;",
+                uses (used: $ap); \
+                technique-detection (detecting-logic: $pb, detected-technique: $ap);",
     )
     .await;
 

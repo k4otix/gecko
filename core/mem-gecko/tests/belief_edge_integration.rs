@@ -136,7 +136,7 @@ fn hierarchy_op(parent: &str, child: &str) -> GraphWrite {
          match
            $a isa concept, has concept-id $pa; $pa == $p;
            $b isa concept, has concept-id $cb; $cb == $c;
-         insert (parent: $a, child: $b) isa hierarchy;",
+         insert hierarchy (parent: $a, child: $b);",
         vec!["p".into(), "c".into()],
         vec![GraphValue::from(parent), GraphValue::from(child)],
     )
@@ -145,7 +145,7 @@ fn hierarchy_op(parent: &str, child: &str) -> GraphWrite {
 async fn hierarchy_count(fx: &Fixture) -> usize {
     fx.raw_fetch(
         r#"match
-             (parent: $a, child: $b) isa hierarchy;
+             hierarchy (parent: $a, child: $b);
              $a has concept-id $pa; $b has concept-id $cb;
            fetch { "p": $pa, "c": $cb };"#,
     )
@@ -173,7 +173,7 @@ async fn expect_rows_accepts_an_exact_insert_match() {
     let rows = fx
         .raw_fetch(
             r#"match
-                 (parent: $a, child: $b) isa hierarchy;
+                 hierarchy (parent: $a, child: $b);
                  $a has concept-id $pa; $b has concept-id $cb;
                fetch { "p": $pa, "c": $cb };"#,
         )
@@ -232,7 +232,7 @@ async fn expect_rows_rolls_back_a_double_match() {
          match
            $a isa concept, has concept-id $pa; $pa == $p;
            $c isa concept, has tag $ct; $ct == $t;
-         insert (parent: $a, child: $c) isa hierarchy;",
+         insert hierarchy (parent: $a, child: $c);",
         vec!["p".into(), "t".into()],
         vec![GraphValue::from("c/parent"), GraphValue::from("shared")],
     )
@@ -493,7 +493,7 @@ async fn belief_edge_decl_registry_writes_run_stamped() {
         .raw_fetch(&format!(
             r#"match
                  $b isa belief, has concept-id "{}";
-                 (memory: $b, origin: $run) isa source-link;
+                 source-link (memory: $b, origin: $run);
                  $run isa doc-run, has run-id $rid;
                fetch {{ "rid": $rid }};"#,
             id.0

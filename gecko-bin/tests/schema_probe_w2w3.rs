@@ -315,7 +315,7 @@ async fn p_base_t5_population_members_ignores_time() {
 const PREC_DISPOSITION_FN: &str = r#"define
   fun disposition-of($inst: belief) -> { divergence-exception } @doc("The disposition (divergence-exception) belief anchoring a precedence in which $inst is the prevailing belief."):
       match
-          (exception-belief: $e, prevailing: $inst) isa divergence-precedence;
+          divergence-precedence (exception-belief: $e, prevailing: $inst);
       return { $e };
 "#;
 
@@ -324,7 +324,7 @@ const PREC_DISPOSITION_FN: &str = r#"define
 const PREC_LIVE_DISPOSITION_FN: &str = r#"define
   fun live-disposition-of($inst: belief) -> { divergence-exception } @doc("The disposition belief anchoring $inst's precedence, only while that exception belief is not superseded."):
       match
-          (exception-belief: $e, prevailing: $inst) isa divergence-precedence;
+          divergence-precedence (exception-belief: $e, prevailing: $inst);
           not { true == is-superseded($e); };
       return { $e };
 "#;
@@ -358,7 +358,7 @@ async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_defines(
     let anchored = read_concept_ids(
         &db,
         r#"match
-             (exception-belief: $e, prevailing: $bi, overridden: $bp) isa divergence-precedence;
+             divergence-precedence (exception-belief: $e, prevailing: $bi, overridden: $bp);
              $e has concept-id $cid;
            select $cid;"#,
     )
@@ -374,7 +374,7 @@ async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_defines(
     let scoped_member = read_concept_ids(
         &db,
         r#"match
-             (exception-belief: $e, exception-scope: $c) isa divergence-precedence;
+             divergence-precedence (exception-belief: $e, exception-scope: $c);
              $c has concept-id $cid;
            select $cid;"#,
     )
@@ -466,7 +466,7 @@ async fn member_scoped_exception_leaves_population_belief_asserted_for_others() 
         &db,
         r#"match
              $e isa belief, has concept-id "prec2/E";
-             (exception-belief: $e, exception-scope: $c) isa divergence-precedence;
+             divergence-precedence (exception-belief: $e, exception-scope: $c);
              $c has concept-id $cid;
            select $cid;"#,
     )
@@ -692,8 +692,8 @@ const DIVERGENCE_WINNER_FN: &str = r#"define
   fun divergence-winner($a: belief, $b: belief) -> { belief } @doc("Attempted pure-TQL 4-key divergence ranker; probe scaffolding, expected inexpressible because the winner is bound only inside or-branches."):
       match
           not { $a is $b; };
-          (derived: $a, source: $sa) isa derivation, has derivation-method $ma;
-          (derived: $b, source: $sb) isa derivation, has derivation-method $mb;
+          derivation (derived: $a, source: $sa), has derivation-method $ma;
+          derivation (derived: $b, source: $sb), has derivation-method $mb;
           $a has confidence $ca; $b has confidence $cb;
           {
               $ma == "human-assertion"; $mb == "llm-synthesis";
@@ -927,7 +927,7 @@ async fn read_disp_keys(db: &TestDb, concept_id: &str) -> DispKeys {
              $b has confidence $conf;
              $b has entrenchment $ent;
              $b has valid-from $vf;
-             (derived: $b, source: $src) isa derivation, has derivation-method $dm;
+             derivation (derived: $b, source: $src), has derivation-method $dm;
            select $dm, $conf, $ent, $vf;"#
     );
     let answer = tx.query(&query).await.expect("keys query");
@@ -1312,7 +1312,7 @@ async fn p_br_6_windowed_blast_propagation_seam() {
              $p isa population, has spec-hash "br6/pop/P";
              let $m in population-members-at($p, 2026-02-01T00:00:00);
              $m has concept-id "br6/c1";
-             (scoped-belief: $b, population: $p) isa scoped;
+             scoped (scoped-belief: $b, population: $p);
              $b has concept-id $cid;
            select $cid;"#,
     )
@@ -1330,7 +1330,7 @@ async fn p_br_6_windowed_blast_propagation_seam() {
              $p isa population, has spec-hash "br6/pop/P";
              let $m in population-members-at($p, 2026-05-01T00:00:00);
              $m has concept-id "br6/c1";
-             (scoped-belief: $b, population: $p) isa scoped;
+             scoped (scoped-belief: $b, population: $p);
              $b has concept-id $cid;
            select $cid;"#,
     )
@@ -1731,7 +1731,7 @@ async fn believed_at_and_members_at_agree_as_of_t() {
 const REDEF_CHANGED_BLAST: &str = r#"define
   fun blast-radius($r: okf-concept) -> { memory-item } @doc("Changed body (derivation branch only) — P-REDEF migration probe."):
       match
-          (source: $r, derived: $m) isa derivation;
+          derivation (source: $r, derived: $m);
       return { $m };
 "#;
 

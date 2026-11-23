@@ -516,8 +516,8 @@ async fn retrieval_provenance_links_synthesized_belief() {
             r#"match
                  $b isa belief, has concept-id "{}";
                  $re isa retrieval-event;
-                 (retrieval: $re, synthesized: $b) isa informs-synthesis;
-                 (surfacer: $re, item: $ev) isa surfaced, has was-used $u;
+                 informs-synthesis (retrieval: $re, synthesized: $b);
+                 surfaced (surfacer: $re, item: $ev), has was-used $u;
                  $ev has concept-id "{}";
                fetch {{ "u": $u }};"#,
             synth.0, evidence.0

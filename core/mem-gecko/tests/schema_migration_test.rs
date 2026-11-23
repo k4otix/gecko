@@ -25,7 +25,7 @@ const PREVIOUS_MEM_SCHEMA: &str = include_str!("fixtures/mem_schema_95ebac1.tql"
 const NEW_BODY: &str =
     "          $pm isa population-member, links (owning-population: $pop, member: $m);
           not { $pm has valid-to $vt; };";
-const OLD_BODY: &str = "          (owning-population: $pop, member: $m) isa population-member;";
+const OLD_BODY: &str = "          population-member (owning-population: $pop, member: $m);";
 
 fn router() -> (TypeDbRouter, String) {
     let name = format!("migtest_{}", Ulid::generate().to_string().to_lowercase());
@@ -147,9 +147,9 @@ async fn changed_function_body_reaches_an_initialized_database() {
                  $p isa population, has spec-hash "pop/m";
                  $a isa concept, has concept-id "m/a";
                  $b isa concept, has concept-id "m/b";
-                 (owning-population: $p, member: $a) isa population-member,
+                 population-member (owning-population: $p, member: $a),
                      has valid-from 2026-01-01T00:00:00, has valid-to 2026-02-01T00:00:00;
-                 (owning-population: $p, member: $b) isa population-member,
+                 population-member (owning-population: $p, member: $b),
                      has valid-from 2026-01-01T00:00:00;"#,
         )
         .await
@@ -324,11 +324,11 @@ async fn count(router: &mut TypeDbRouter, tql: &str) -> usize {
 const SEED_NODES: &str = r#"insert
     $a isa probe-node, has probe-mark "a";
     $b isa probe-node, has probe-mark "b";
-    (probe-from: $a, probe-to: $b) isa probe-link;
-    (left: $a, right: $b) isa probe-pair;"#;
+    probe-link (probe-from: $a, probe-to: $b);
+    probe-pair (left: $a, right: $b);"#;
 
 const SEED_ONE_PLAYER_LINK: &str = r#"match $a isa probe-node, has probe-mark "a";
-    insert (probe-from: $a) isa probe-link;"#;
+    insert probe-link (probe-from: $a);"#;
 
 #[tokio::test]
 async fn tightening_forms_probe() {
@@ -403,7 +403,7 @@ async fn tightening_forms_probe() {
     write(
         &mut router,
         r#"match $a isa probe-node, has probe-mark "a"; $b isa probe-node, has probe-mark "b";
-           insert (left: $a, right: $b) isa probe-pair;"#,
+           insert probe-pair (left: $a, right: $b);"#,
     )
     .await
     .expect("probe-pair's mark stays optional");
@@ -431,7 +431,7 @@ async fn tightening_forms_probe() {
         .expect("a one-player link commits before tightening");
     write(
         &mut router,
-        r#"match $b isa probe-node, has probe-mark "b"; insert (probe-to: $b) isa probe-link;"#,
+        r#"match $b isa probe-node, has probe-mark "b"; insert probe-link (probe-to: $b);"#,
     )
     .await
     .expect("a link missing its other role commits before tightening");
@@ -562,10 +562,10 @@ async fn the_valid_from_migration_applies_once_to_an_existing_database() {
               has base-activation 1.0, has last-access 2026-01-01T00:00:00;
           $p isa population, has spec-hash "pop-vf";
           $c isa concept, has concept-id "c/vf";
-          (owning-population: $p, member: $c) isa population-member;
+          population-member (owning-population: $p, member: $c);
           $re isa retrieval-event, has concept-id "mem/re/vf",
               has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
-          (surfacer: $re, item: $b) isa surfaced, has similarity-score 1.0000001192092896;"#,
+          surfaced (surfacer: $re, item: $b), has similarity-score 1.0000001192092896;"#,
     )
     .await
     .expect("seed the pre-change database");
@@ -615,8 +615,8 @@ async fn the_valid_from_migration_applies_once_to_an_existing_database() {
           $run isa doc-run, has run-id "run-vf";
           $b isa belief, has concept-id "mem/bel/no-vf", has belief-state "asserted",
               has salience 0.5, has base-activation 1.0, has last-access 2026-01-01T00:00:00;
-          (memory: $b, origin: $run) isa source-link, has origin-kind "test";
-          (owned: $b, owner: $ag) isa ownership, has visibility "private";"#,
+          source-link (memory: $b, origin: $run), has origin-kind "test";
+          ownership (owned: $b, owner: $ag), has visibility "private";"#,
     )
     .await
     .expect_err("a belief without valid-from commits after the upgrade");

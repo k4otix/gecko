@@ -219,7 +219,7 @@ async fn fingerprint_counts_instances_attributes_and_links() {
         "given $a: string, $b: string, $state: string; \
          insert $ba isa belief, has concept-id == $a, has belief-state == $state; \
                 $bb isa belief, has concept-id == $b, has belief-state == $state; \
-                (resting: $ba, assumption: $bb) isa rests-on;",
+                rests-on (resting: $ba, assumption: $bb);",
         given,
     )
     .await

@@ -45,7 +45,7 @@ pub fn seed_provenance() -> Vec<GraphWrite> {
              match $ag isa agent, has agent-id $a; $a == $aid; \
                    $m isa memory-item; \
                    not { $o isa ownership, links (owned: $m); }; \
-             insert (owned: $m, owner: $ag) isa ownership, has visibility == $vis;",
+             insert ownership (owned: $m, owner: $ag), has visibility == $vis;",
             vec!["aid".into(), "vis".into()],
             vec![GraphValue::from(SEED_AGENT), GraphValue::from("private")],
         ),
@@ -54,7 +54,7 @@ pub fn seed_provenance() -> Vec<GraphWrite> {
              match $run isa doc-run, has run-id $r; $r == $rid; \
                    $m isa memory-item; \
                    not { $l isa source-link, links (memory: $m); }; \
-             insert (memory: $m, origin: $run) isa source-link, has origin-kind == $kind;",
+             insert source-link (memory: $m, origin: $run), has origin-kind == $kind;",
             vec!["rid".into(), "kind".into()],
             vec![GraphValue::from(SEED_RUN), GraphValue::from("test-seed")],
         ),

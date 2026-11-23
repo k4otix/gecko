@@ -138,20 +138,20 @@ fn insert(p: &str, g: &Graph) -> String {
         );
     }
     for (a, r) in &g.rests_on {
-        q += &format!("(assumption: $b{a}, resting: $b{r}) isa rests-on;\n");
+        q += &format!("rests-on (assumption: $b{a}, resting: $b{r});\n");
     }
     for (s, d, m) in &g.derivations {
         q += &format!(
-            "(source: $b{s}, derived: $b{d}) isa derivation, has derivation-method \"{}\";\n",
+            "derivation (source: $b{s}, derived: $b{d}), has derivation-method \"{}\";\n",
             METHODS[*m]
         );
     }
     for (b, pop) in &g.scoped {
-        q += &format!("(scoped-belief: $b{b}, population: $p{pop}) isa scoped;\n");
+        q += &format!("scoped (scoped-belief: $b{b}, population: $p{pop});\n");
     }
     for m in &g.memberships {
         q += &format!(
-            "(owning-population: $p{}, member: $k{}) isa population-member",
+            "population-member (owning-population: $p{}, member: $k{})",
             m.population, m.concept
         );
         if let Some(f) = m.from {
@@ -174,12 +174,12 @@ fn insert(p: &str, g: &Graph) -> String {
         q += ";\n";
         for m in &r.methods {
             q += &format!(
-                "(source: $b0, derived: $r{i}) isa derivation, has derivation-method \"{}\";\n",
+                "derivation (source: $b0, derived: $r{i}), has derivation-method \"{}\";\n",
                 METHODS[*m]
             );
         }
         q += &format!(
-            "(resolution-belief: $r{i}, record-a: $k{}, record-b: $k{}) isa resolves;\n",
+            "resolves (resolution-belief: $r{i}, record-a: $k{}, record-b: $k{});\n",
             r.records.0, r.records.1
         );
     }

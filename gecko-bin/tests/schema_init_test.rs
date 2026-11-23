@@ -209,9 +209,9 @@ async fn old_cyber_detection_types_migrate_away() {
          $c isa data-component, has concept-id 'dc-1'; \
          $t isa attack-pattern, has concept-id 'tp-1'; \
          $p isa population, has spec-hash 'pop-1'; \
-         (evidence-component: $c, evidence-source: $s) isa evidence-of; \
-         (technique: $t, required: $c) isa requires-evidence; \
-         (covered-source: $s, covered-component: $c, coverage-scope: $p) isa sensor-coverage;",
+         evidence-of (evidence-component: $c, evidence-source: $s); \
+         requires-evidence (technique: $t, required: $c); \
+         sensor-coverage (covered-source: $s, covered-component: $c, coverage-scope: $p);",
     )
     .await
     .expect("seed instances");
@@ -451,10 +451,10 @@ async fn tightening_forms_apply_to_the_pre_tightening_core_and_mem() {
         "insert $b isa bundle, has bundle-name 'probe-b'; \
          $c isa concept, has concept-id 'probe/c'; \
          $p isa population, has spec-hash 'probe-pop'; \
-         (container: $b, member: $c) isa containment; \
-         (container: $b) isa containment; \
-         (owning-population: $p, member: $c) isa population-member; \
-         (owning-population: $p) isa population-member;",
+         containment (container: $b, member: $c); \
+         containment (container: $b); \
+         population-member (owning-population: $p, member: $c); \
+         population-member (owning-population: $p);",
     )
     .await;
 
@@ -616,8 +616,8 @@ async fn tightening_forms_apply_to_the_pre_tightening_cyber() {
         &mut db,
         "insert $g isa intrusion-set, has concept-id 'probe-g'; \
          $t isa attack-pattern, has concept-id 'probe-t'; \
-         (user: $g, used: $t) isa uses; \
-         (used: $t) isa uses;",
+         uses (user: $g, used: $t); \
+         uses (used: $t);",
     )
     .await;
     let before = db.database_schema().await.expect("schema");
@@ -663,18 +663,18 @@ async fn a_database_holding_a_one_player_core_relation_upgrades() {
          $c isa concept, has concept-id 'up/c'; \
          $d isa concept, has concept-id 'up/d'; \
          $e isa external-resource, has target-url 'https://example.com/up'; \
-         (container: $b, member: $c) isa containment; \
-         (container: $b) isa containment; \
-         (member: $d) isa containment; \
-         (parent: $c, child: $d) isa hierarchy; \
-         (parent: $c) isa hierarchy; \
-         (child: $d) isa hierarchy; \
-         (source: $c, target: $d) isa concept-link; \
-         (source: $c) isa concept-link; \
-         (target: $d) isa concept-link; \
-         (citing-concept: $c, cited-resource: $e) isa citation; \
-         (citing-concept: $c) isa citation; \
-         (cited-resource: $e) isa citation;",
+         containment (container: $b, member: $c); \
+         containment (container: $b); \
+         containment (member: $d); \
+         hierarchy (parent: $c, child: $d); \
+         hierarchy (parent: $c); \
+         hierarchy (child: $d); \
+         concept-link (source: $c, target: $d); \
+         concept-link (source: $c); \
+         concept-link (target: $d); \
+         citation (citing-concept: $c, cited-resource: $e); \
+         citation (citing-concept: $c); \
+         citation (cited-resource: $e);",
     )
     .await;
 
@@ -1112,7 +1112,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
         GraphWrite::single(
             "given $id: string; \
              match $c isa concept, has concept-id $cid; $cid == $id; \
-             insert (source: $c) isa concept-link;",
+             insert concept-link (source: $c);",
             vec!["id".into()],
             vec![GraphValue::from(LOGIC)],
         )
@@ -1120,7 +1120,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
         GraphWrite::single(
             "given $h: string; \
              match $p isa population, has spec-hash $s; $s == $h; \
-             insert (owning-population: $p) isa population-member;",
+             insert population-member (owning-population: $p);",
             vec!["h".into()],
             vec![GraphValue::from("upgrade-pop")],
         )
@@ -1239,7 +1239,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
         &[GraphWrite::single(
             "given $id: string; \
              match $t isa attack-pattern, has attack-id $a; $a == $id; \
-             insert (used: $t) isa uses;",
+             insert uses (used: $t);",
             vec!["id".into()],
             vec![GraphValue::from(attack::TECHNIQUE_ATTACK_ID)],
         )],

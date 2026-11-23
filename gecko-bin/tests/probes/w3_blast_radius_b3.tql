@@ -2,18 +2,18 @@ redefine
   fun blast-radius($r: memory-item) -> { memory-item }:
       match
           {
-              (assumption: $r, resting: $m) isa rests-on;
+              rests-on (assumption: $r, resting: $m);
           } or {
-              (source: $r, derived: $m) isa derivation;
+              derivation (source: $r, derived: $m);
           } or {
-              (resolution-belief: $r, record-a: $c) isa resolves;
-              (owning-population: $pop, member: $c) isa population-member;
-              (scoped-belief: $m, population: $pop) isa scoped;
+              resolves (resolution-belief: $r, record-a: $c);
+              population-member (owning-population: $pop, member: $c);
+              scoped (scoped-belief: $m, population: $pop);
           } or {
               {
-                  (assumption: $r, resting: $mid) isa rests-on;
+                  rests-on (assumption: $r, resting: $mid);
               } or {
-                  (source: $r, derived: $mid) isa derivation;
+                  derivation (source: $r, derived: $mid);
               };
               let $m in blast-radius($mid);
           };

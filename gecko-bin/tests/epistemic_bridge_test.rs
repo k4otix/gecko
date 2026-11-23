@@ -70,7 +70,7 @@ impl Fixture {
         let tx = router.begin_read().await.expect("read tx");
         let query = format!(
             r#"match $ep isa episode, has concept-id "{concept_id}";
-                     (memory: $ep, origin: $run) isa source-link;
+                     source-link (memory: $ep, origin: $run);
                      $run isa doc-run, has run-id $rid;
                fetch {{ "run": $rid }};"#
         );
