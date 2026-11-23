@@ -164,6 +164,7 @@ deprecated).
 }
 ```
 
-`channels` lists every channel ATT&CK names for that log source on that platform. The
-list recommends log sources only, never a fallback data component, and errors on the
-same graphs as `blinded`.
+`channels` lists every channel ATT&CK names for that log source on that platform,
+across all blind claims, since each source is recommended once, in the first step that
+needs it. The list recommends log sources only, never a fallback data component, and
+errors on the same graphs as `blinded`.

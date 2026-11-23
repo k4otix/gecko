@@ -536,7 +536,7 @@ async fn recommend_sources(graph: &Arc<dyn GraphReader>) -> Result<Value, String
     require_judgeable(graph).await?;
     let claims = claim_statuses(graph).await?;
 
-    // (platform, log-source key) → (smallest trimmed spelling, every channel).
+    // (platform, log-source key) → (smallest spelling, every channel).
     let mut sources: BTreeMap<(String, String), (String, BTreeSet<String>)> = BTreeMap::new();
     let mut gap_sets: BTreeMap<(String, String), Vec<BTreeSet<String>>> = BTreeMap::new();
     let mut claim_refs = Vec::new();
@@ -644,7 +644,7 @@ async fn blind_gap_sets(
         let mut keys = BTreeSet::new();
         for row in &gaps {
             let key = row_str(row, "key")?;
-            let name = row_str(row, "name")?.trim().to_string();
+            let name = row_str(row, "name")?;
             let channels = row
                 .get("channels")
                 .and_then(Value::as_array)
