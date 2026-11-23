@@ -8,9 +8,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use gecko_extension_api::{
-    ActorId, BeliefQuery, BeliefState, Chunk, ConceptId, ContextBudget, DateTime, Embedder,
-    EpistemicError, EpistemicReader, FilterMeta, MemId, RecallQuery, RowCountMismatch, RunContext,
-    SemanticIndex, Visibility,
+    ActorId, BeliefState, Chunk, ConceptId, ContextBudget, DateTime, Embedder, EpistemicError,
+    EpistemicReader, FilterMeta, MemId, RecallQuery, RowCountMismatch, RunContext, SemanticIndex,
+    Visibility,
 };
 use serde_json::Value;
 
@@ -296,9 +296,9 @@ impl EpistemicReader for MemWriter {
         Ok(dedup_mapped(&docs, MemId))
     }
 
-    async fn believed_at(&self, at: DateTime, _q: BeliefQuery) -> Result<Vec<MemId>> {
+    async fn believed_at(&self, ctx: &RunContext, at: DateTime) -> Result<Vec<MemId>> {
         // Temporal path; the index is NEVER consulted (invariant 8).
-        let (q, v, r) = tql::believed_at_read(at);
+        let (q, v, r) = tql::believed_at_chunks_read(at, &ctx.actor);
         let docs = self.graph.read(&q, &v, &r).await?;
         Ok(dedup_mapped(&docs, MemId))
     }

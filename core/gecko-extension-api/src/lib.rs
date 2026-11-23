@@ -42,8 +42,8 @@ pub use belief_edge::{
     AttrDecl, AttrValueType, BeliefEdge, BeliefEdgeDecl, BeliefEdgeWriter, RoleDecl,
 };
 pub use epistemic::{
-    BeliefDraft, BeliefQuery, Chunk, ContextBudget, DerivationMethod, EpisodeDraft,
-    EpistemicReader, EpistemicWriter, Outcome, RecallQuery,
+    BeliefDraft, Chunk, ContextBudget, DerivationMethod, EpisodeDraft, EpistemicReader,
+    EpistemicWriter, Outcome, RecallQuery,
 };
 pub use error::EpistemicError;
 pub use graph::{GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch};

@@ -18,9 +18,9 @@ use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::db::{RouterGraphStore, run_graph_writes};
 use gecko_extension_api::GeckoExtension;
 use gecko_extension_api::{
-    ActorId, BeliefDraft, BeliefQuery, ConceptId, ContextBudget, DateTime, DerivationMethod,
-    Embedder, Entrenchment, EpisodeDraft, EpistemicError, EpistemicReader, EpistemicWriter,
-    FilterMeta, MemId, ProvenanceSource, RecallQuery, RunContext, SemanticIndex, Visibility,
+    ActorId, BeliefDraft, ConceptId, ContextBudget, DateTime, DerivationMethod, Embedder,
+    Entrenchment, EpisodeDraft, EpistemicError, EpistemicReader, EpistemicWriter, FilterMeta,
+    MemId, ProvenanceSource, RecallQuery, RunContext, SemanticIndex, Visibility,
 };
 use mem_gecko::{IndexOutcome, MemWriter};
 use ulid::Ulid;
@@ -464,11 +464,9 @@ async fn believed_at_returns_the_as_of_set() {
         .await
         .unwrap();
 
-    let q = BeliefQuery {
-        text: String::new(),
-    };
+    let ctx = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
     let feb = w
-        .believed_at(dt("2026-02-01T00:00:00Z"), q.clone())
+        .believed_at(&ctx, dt("2026-02-01T00:00:00Z"))
         .await
         .unwrap();
     assert!(
@@ -476,11 +474,96 @@ async fn believed_at_returns_the_as_of_set() {
         "as-of Feb: only the early belief"
     );
 
-    let apr = w.believed_at(dt("2026-04-01T00:00:00Z"), q).await.unwrap();
+    let apr = w
+        .believed_at(&ctx, dt("2026-04-01T00:00:00Z"))
+        .await
+        .unwrap();
     assert!(
         apr.contains(&b1) && apr.contains(&b2),
         "as-of Apr: both beliefs"
     );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn believed_at_hides_another_agents_private_belief() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("a's private belief", "agent-a", 0.8, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = w
+        .believed_at(
+            &ctx_at("agent-b", dt("2026-06-01T00:00:00Z")),
+            dt("2026-02-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !got.contains(&private),
+        "another agent's private belief must not appear in believed_at: {got:?}"
+    );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn believed_at_returns_a_team_belief_to_another_agent() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    observe_as(&w, "agent-b", dt("2026-01-01T00:00:00Z")).await;
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+            belief_vis("a's team belief", "agent-a", 0.8, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    let got = w
+        .believed_at(
+            &ctx_at("agent-b", dt("2026-06-01T00:00:00Z")),
+            dt("2026-02-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(got, vec![team], "a team belief is visible to another agent");
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn believed_at_for_an_actor_with_no_history_is_empty() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    w.assert_belief(
+        &ctx_at("agent-a", dt("2026-01-01T00:00:00Z")),
+        belief_vis("a's shared belief", "agent-a", 0.8, Visibility::Shared),
+        &[],
+        DerivationMethod::HumanAssertion,
+    )
+    .await
+    .unwrap();
+
+    let got = w
+        .believed_at(
+            &ctx_at("agent-never-wrote", dt("2026-06-01T00:00:00Z")),
+            dt("2026-02-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert!(got.is_empty(), "{got:?}");
 
     fx.drop_db().await;
 }

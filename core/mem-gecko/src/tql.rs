@@ -1099,17 +1099,6 @@ pub(crate) fn derivation_chain_read(b: &MemId) -> Read {
     )
 }
 
-/// `believed-at($t)`: each belief's id.
-pub(crate) fn believed_at_read(at: DateTime) -> Read {
-    let mut p = Params::new();
-    p.dt("t", at);
-    p.read(
-        "match let $b in believed-at($t);
-               $b has concept-id $bid;
-         fetch { \"id\": $bid };",
-    )
-}
-
 /// `believed-at($t)` restricted to beliefs `visible-to` `actor`: each belief's id and
 /// title for as-of recall, newest `valid-from` first, ties broken by concept id.
 /// Supersession is not applied as of `at`. An actor with no `agent` node matches

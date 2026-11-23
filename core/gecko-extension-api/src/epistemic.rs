@@ -196,13 +196,6 @@ pub struct Chunk {
     pub score: f32,
 }
 
-/// A query for beliefs as-of a point in time (temporal path; never the index).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BeliefQuery {
-    /// The natural-language query text.
-    pub text: String,
-}
-
 /// The exclusive, host-mediated belief-write path.
 ///
 /// Every method is stamped by the host-minted [`RunContext`]; sandbox code cannot
@@ -268,9 +261,9 @@ pub trait EpistemicReader: Send + Sync {
     /// Walks the derivation chain backing belief `b`.
     async fn derivation_chain(&self, b: MemId) -> Result<Vec<MemId>>;
 
-    /// Beliefs believed as-of `at` — routes through TypeDB's temporal path, never
-    /// the index (invariant 8).
-    async fn believed_at(&self, at: DateTime, q: BeliefQuery) -> Result<Vec<MemId>>;
+    /// The beliefs visible to `ctx.actor` as-of `at`, newest `valid-from` first —
+    /// routes through TypeDB's temporal path, never the index (invariant 8).
+    async fn believed_at(&self, ctx: &RunContext, at: DateTime) -> Result<Vec<MemId>>;
 
     /// The memory items undermined by retracting memory item `retracted`, following
     /// `rests-on`, derivation, and open population-member edges. Retracting a

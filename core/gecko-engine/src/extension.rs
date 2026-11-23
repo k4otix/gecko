@@ -13,8 +13,8 @@ pub use gecko_extension_api::GeckoExtension;
 // Re-exported here for engine-internal plumbing — sandbox host-fn injection and
 // domain extensions — alongside the `GeckoExtension` re-export.
 pub use gecko_extension_api::{
-    ActorId, AnomalyId, BeliefDraft, BeliefQuery, BeliefState, Chunk, ConceptId, ContextBudget,
-    DateTime, DerivationMethod, Embedder, EpisodeDraft, EpistemicError, EpistemicReader,
-    EpistemicWriter, FilterMeta, MemId, Outcome, ProvenanceSource, RecallQuery, RunContext, RunId,
-    SemanticIndex, Visibility,
+    ActorId, AnomalyId, BeliefDraft, BeliefState, Chunk, ConceptId, ContextBudget, DateTime,
+    DerivationMethod, Embedder, EpisodeDraft, EpistemicError, EpistemicReader, EpistemicWriter,
+    FilterMeta, MemId, Outcome, ProvenanceSource, RecallQuery, RunContext, RunId, SemanticIndex,
+    Visibility,
 };
