@@ -1204,7 +1204,7 @@ async fn stix_full_bundle_resync_is_stable() {
         let func = func.to_string();
         move || cb("cyber-gecko", &func, args)
     };
-    for technique in ["T1059", "T1003", "T1078"] {
+    for technique in FULL_BUNDLE_CLAIMS {
         let claim = call(
             "claim",
             serde_json::json!({ "logic_id": logic_id, "technique_id": technique,
@@ -1239,6 +1239,151 @@ async fn stix_full_bundle_resync_is_stable() {
     );
     assert!(entries > 0, "blinded reported nothing on the full graph");
     assert_eq!(first_blinded, second_blinded, "blinded is not stable");
+
+    // `recommend_sources` on the same graph, timed twice and checked against `blinded`.
+    let start = Instant::now();
+    let first_recommend =
+        tokio::task::spawn_blocking(call("recommend_sources", serde_json::json!({})))
+            .await
+            .expect("recommend_sources task")
+            .expect("recommend_sources");
+    let first_recommend_time = start.elapsed();
+    let start = Instant::now();
+    let second_recommend =
+        tokio::task::spawn_blocking(call("recommend_sources", serde_json::json!({})))
+            .await
+            .expect("recommend_sources task")
+            .expect("recommend_sources");
+    let second_recommend_time = start.elapsed();
+    assert_eq!(
+        first_recommend, second_recommend,
+        "recommend_sources is not stable"
+    );
+    eprintln!(
+        "recommend_sources: first {first_recommend_time:?}, second {second_recommend_time:?}"
+    );
+    check_recommendation(&first_blinded, &first_recommend);
+}
+
+/// The techniques the full-bundle check claims: commonly detected ATT&CK
+/// techniques across execution, persistence, credential access, discovery, lateral
+/// movement and impact.
+const FULL_BUNDLE_CLAIMS: [&str; 25] = [
+    "T1003", "T1018", "T1021", "T1027", "T1036", "T1053", "T1055", "T1057", "T1059", "T1069",
+    "T1070", "T1071", "T1078", "T1082", "T1083", "T1087", "T1105", "T1112", "T1218", "T1486",
+    "T1490", "T1543", "T1547", "T1566", "T1569",
+];
+
+/// Checks `recommend_sources` against `blinded` on one graph, and prints the steps.
+/// Every blind (claim, platform) is fixed by exactly one step or reported as
+/// `no-requirements`; every unassessed one is `no-analytic`; no step re-adds a
+/// source; and the running count matches.
+fn check_recommendation(blinded: &serde_json::Value, recommend: &serde_json::Value) {
+    use std::collections::BTreeSet;
+    let claim = |v: &serde_json::Value| {
+        (
+            v["concept_id"].as_str().expect("concept_id").to_string(),
+            v["technique_concept_id"]
+                .as_str()
+                .expect("technique_concept_id")
+                .to_string(),
+        )
+    };
+
+    let mut blind = BTreeSet::new();
+    let mut unassessed = BTreeSet::new();
+    for d in blinded["blinded_detections"]
+        .as_array()
+        .expect("detections")
+    {
+        for b in d["blind_platforms"].as_array().expect("blind_platforms") {
+            let platform = b["platform"].as_str().expect("platform").to_string();
+            blind.insert((claim(d), platform));
+        }
+        for p in d["unassessed_platforms"].as_array().expect("unassessed") {
+            unassessed.insert((claim(d), p.as_str().expect("platform").to_string()));
+        }
+    }
+
+    let mut fixed = BTreeSet::new();
+    let mut added = BTreeSet::new();
+    let mut cumulative = 0;
+    for (n, step) in recommend["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .enumerate()
+    {
+        let platform = step["platform"].as_str().expect("platform").to_string();
+        let add = step["add"].as_array().expect("add");
+        let unblinds = step["unblinds"].as_array().expect("unblinds");
+        assert!(!add.is_empty() && !unblinds.is_empty(), "step {n} is empty");
+        let mut names = Vec::new();
+        for a in add {
+            let key = a["key"].as_str().expect("key").to_string();
+            assert!(
+                added.insert((platform.clone(), key)),
+                "step {n} re-adds a source"
+            );
+            names.push(a["log_source"].as_str().expect("log_source").to_string());
+        }
+        for u in unblinds {
+            assert!(
+                fixed.insert((claim(u), platform.clone())),
+                "step {n} lists a pair twice"
+            );
+        }
+        cumulative += unblinds.len();
+        assert_eq!(
+            step["cumulative_unblinded"], cumulative,
+            "step {n}'s running count"
+        );
+        eprintln!(
+            "step {:>2}: {platform:<8} +{} unblinds {:>2} (total {cumulative:>3})  {}",
+            n + 1,
+            add.len(),
+            unblinds.len(),
+            names.join(", ")
+        );
+    }
+
+    let mut no_requirements = BTreeSet::new();
+    let mut no_analytic = BTreeSet::new();
+    for u in recommend["unfixable"].as_array().expect("unfixable") {
+        let pair = (
+            claim(u),
+            u["platform"].as_str().expect("platform").to_string(),
+        );
+        match u["reason"].as_str().expect("reason") {
+            "no-requirements" => assert!(no_requirements.insert(pair)),
+            "no-analytic" => assert!(no_analytic.insert(pair)),
+            other => panic!("unknown unfixable reason {other:?}"),
+        }
+    }
+    eprintln!(
+        "recommend_sources: {} steps, {} sources, {} pairs unblinded, {} no-requirements, \
+         {} no-analytic",
+        recommend["steps"].as_array().map_or(0, Vec::len),
+        added.len(),
+        fixed.len(),
+        no_requirements.len(),
+        no_analytic.len()
+    );
+
+    assert!(
+        !fixed.is_empty(),
+        "recommend_sources fixed nothing on the full graph"
+    );
+    assert!(fixed.is_disjoint(&no_requirements));
+    let fixable: BTreeSet<_> = fixed.union(&no_requirements).cloned().collect();
+    assert_eq!(
+        fixable, blind,
+        "every blind pair is fixed or has no requirements"
+    );
+    assert_eq!(
+        no_analytic, unassessed,
+        "every unassessed pair is no-analytic"
+    );
 }
 
 /// End-to-end check that repeated SROs land as one typed relation. TypeDB 3.15
