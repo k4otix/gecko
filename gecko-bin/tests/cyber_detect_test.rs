@@ -9,6 +9,7 @@
 // requires.
 #![cfg(feature = "cyber")]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::Arc;
 
@@ -1205,4 +1206,266 @@ async fn recommend_sources_errors_without_detection_strategies() {
     let err = call(&cb, "recommend_sources", json!({})).expect_err("a pre-current graph");
     let blinded = call(&cb, "blinded", json!({})).expect_err("a pre-current graph");
     assert_eq!(err, blinded);
+}
+
+// ── coverage property ───────────────────────────────────────────────────────
+
+/// One generated sensor: its platforms, log sources as written, and fallback
+/// components.
+#[derive(Debug, Clone)]
+struct GenSensor {
+    platforms: Vec<&'static str>,
+    log_sources: Vec<String>,
+    components: Vec<&'static str>,
+}
+
+const GEN_PLATFORMS: [&str; 4] = ["Windows", "Linux", "macOS", "Containers"];
+const GEN_LOG_SOURCES: [&str; 6] = [
+    "WinEventLog:Sysmon",
+    "WinEventLog:Security",
+    "NSM:Flow",
+    "auditd:SYSCALL",
+    "linux:syslog",
+    "macos:unifiedlog",
+];
+const GEN_COMPONENTS: [&str; 3] = [
+    attack::PROCESS_CREATION,
+    attack::COMMAND_EXECUTION,
+    attack::NETWORK_CONNECTION_CREATION,
+];
+
+/// The fixture's live requirements on each platform with an analytic that names
+/// log sources: (data component, log-source key).
+fn fixture_requirements(platform: &str) -> Vec<(&'static str, &'static str)> {
+    match platform {
+        "Windows" => vec![
+            (attack::PROCESS_CREATION, "wineventlog:sysmon"),
+            (attack::PROCESS_CREATION, "wineventlog:security"),
+            (attack::COMMAND_EXECUTION, "wineventlog:security"),
+            (attack::NETWORK_CONNECTION_CREATION, "nsm:flow"),
+        ],
+        "Linux" => vec![
+            (attack::PROCESS_CREATION, "auditd:syscall"),
+            (attack::COMMAND_EXECUTION, "linux:syslog"),
+            (attack::NETWORK_CONNECTION_CREATION, "nsm:flow"),
+        ],
+        _ => vec![],
+    }
+}
+
+fn gen_sensor() -> impl proptest::strategy::Strategy<Value = GenSensor> {
+    use proptest::prelude::*;
+    let spelling =
+        (0..GEN_LOG_SOURCES.len(), 0..3usize, any::<bool>()).prop_map(|(i, case, padded)| {
+            let name = match case {
+                0 => GEN_LOG_SOURCES[i].to_string(),
+                1 => GEN_LOG_SOURCES[i].to_lowercase(),
+                _ => GEN_LOG_SOURCES[i].to_uppercase(),
+            };
+            if padded { format!(" {name} ") } else { name }
+        });
+    (
+        proptest::sample::subsequence(GEN_PLATFORMS.to_vec(), 1..=4),
+        proptest::collection::vec(spelling, 0..=3),
+        proptest::sample::subsequence(GEN_COMPONENTS.to_vec(), 0..=2),
+    )
+        .prop_filter("a sensor collects something", |(_, l, c)| {
+            !l.is_empty() || !c.is_empty()
+        })
+        .prop_map(|(platforms, log_sources, components)| GenSensor {
+            platforms,
+            log_sources,
+            components,
+        })
+}
+
+/// The sensor file for `declared` and `sensors`, with every name quoted so its
+/// spaces survive YAML.
+fn gen_yaml(declared: &[&str], sensors: &[GenSensor]) -> String {
+    let quoted = |items: &[String]| {
+        items
+            .iter()
+            .map(|s| format!("{s:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let owned = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut yaml = format!("platforms: [{}]\nsensors:\n", quoted(&owned(declared)));
+    if sensors.is_empty() {
+        yaml = format!("platforms: [{}]\nsensors: []\n", quoted(&owned(declared)));
+    }
+    for (i, s) in sensors.iter().enumerate() {
+        yaml.push_str(&format!(
+            "  - name: s{i}\n    platforms: [{}]\n",
+            quoted(&owned(&s.platforms))
+        ));
+        if !s.log_sources.is_empty() {
+            yaml.push_str(&format!("    log_sources: [{}]\n", quoted(&s.log_sources)));
+        }
+        if !s.components.is_empty() {
+            yaml.push_str(&format!(
+                "    components: [{}]\n",
+                quoted(&owned(&s.components))
+            ));
+        }
+    }
+    yaml
+}
+
+/// What the coverage rule says of one declared platform: unassessed, blind with
+/// each missing key's components (empty for the zero-requirement macOS analytic),
+/// or covered.
+#[derive(Debug, PartialEq)]
+enum Expected {
+    Unassessed,
+    Blind(BTreeMap<String, BTreeSet<String>>),
+    Covered,
+}
+
+/// The coverage rule, independently of TypeDB: a requirement is covered by a sensor
+/// on the platform that collects its log-source key (trimmed, case-insensitive) or
+/// covers its data component; an analytic runs when it has a requirement and all are
+/// covered.
+fn expected(platform: &str, sensors: &[GenSensor]) -> Expected {
+    if platform == "Containers" {
+        return Expected::Unassessed;
+    }
+    let mut missing: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (component, key) in fixture_requirements(platform) {
+        let covered = sensors.iter().any(|s| {
+            s.platforms.contains(&platform)
+                && (s.log_sources.iter().any(|l| l.trim().to_lowercase() == key)
+                    || s.components.contains(&component))
+        });
+        if !covered {
+            missing
+                .entry(key.to_string())
+                .or_default()
+                .insert(component.to_string());
+        }
+    }
+    if platform == "macOS" || !missing.is_empty() {
+        Expected::Blind(missing)
+    } else {
+        Expected::Covered
+    }
+}
+
+/// What `blinded` reported for each declared platform of the one claim.
+fn observed(report: &Value, declared: &[&str]) -> BTreeMap<String, Expected> {
+    let mut out: BTreeMap<String, Expected> = declared
+        .iter()
+        .map(|p| (p.to_string(), Expected::Covered))
+        .collect();
+    for d in report["blinded_detections"].as_array().expect("detections") {
+        for p in d["unassessed_platforms"].as_array().expect("unassessed") {
+            out.insert(p.as_str().expect("platform").into(), Expected::Unassessed);
+        }
+        for b in d["blind_platforms"].as_array().expect("blind_platforms") {
+            let mut missing = BTreeMap::new();
+            for m in b["missing"].as_array().expect("missing") {
+                let key = m["log_source"].as_str().expect("log_source").to_lowercase();
+                let components = m["data_components"]
+                    .as_array()
+                    .expect("data_components")
+                    .iter()
+                    .map(|c| c.as_str().expect("component").to_string())
+                    .collect();
+                missing.insert(key, components);
+            }
+            out.insert(
+                b["platform"].as_str().expect("platform").into(),
+                Expected::Blind(missing),
+            );
+        }
+    }
+    out
+}
+
+/// Random sensor files over the fixture: `blinded` matches the coverage rule on
+/// every declared platform, and `recommend_sources` adds exactly the missing keys
+/// of each blind platform with requirements and reports the rest as unfixable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_matches_the_rule_for_random_sensor_files() {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    let cases = (
+        proptest::sample::subsequence(GEN_PLATFORMS.to_vec(), 1..=4),
+        proptest::collection::vec(gen_sensor(), 0..=3),
+    );
+    let mut runner = TestRunner::deterministic();
+    let rig = Rig::new("gecko_test_coverage_property", &[LOGIC_ID]).await;
+    let mut seen = BTreeSet::new();
+    for case in 0..48 {
+        let (declared, sensors) = cases.new_tree(&mut runner).expect("a case").current();
+        let yaml = gen_yaml(&declared, &sensors);
+        rig.sensors(&yaml).await;
+
+        let want: BTreeMap<String, Expected> = declared
+            .iter()
+            .map(|p| (p.to_string(), expected(p, &sensors)))
+            .collect();
+        for e in want.values() {
+            seen.insert(match e {
+                Expected::Covered => "covered",
+                Expected::Unassessed => "unassessed",
+                Expected::Blind(m) if m.is_empty() => "zero-requirement blind",
+                Expected::Blind(_) => "blind",
+            });
+        }
+        assert_eq!(
+            observed(&rig.blinded(), &declared),
+            want,
+            "case {case}, sensor file:\n{yaml}"
+        );
+
+        let recommend = rig.recommend();
+        let mut added: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for step in recommend["steps"].as_array().expect("steps") {
+            let platform = step["platform"].as_str().expect("platform").to_string();
+            for a in step["add"].as_array().expect("add") {
+                added
+                    .entry(platform.clone())
+                    .or_default()
+                    .insert(a["key"].as_str().expect("key").to_string());
+            }
+        }
+        let mut unfixable = BTreeMap::new();
+        for u in recommend["unfixable"].as_array().expect("unfixable") {
+            unfixable.insert(
+                u["platform"].as_str().expect("platform").to_string(),
+                u["reason"].as_str().expect("reason").to_string(),
+            );
+        }
+        let mut want_added = BTreeMap::new();
+        let mut want_unfixable = BTreeMap::new();
+        for (platform, e) in &want {
+            match e {
+                Expected::Unassessed => {
+                    want_unfixable.insert(platform.clone(), "no-analytic".to_string());
+                }
+                Expected::Blind(missing) if missing.is_empty() => {
+                    want_unfixable.insert(platform.clone(), "no-requirements".to_string());
+                }
+                Expected::Blind(missing) => {
+                    want_added.insert(
+                        platform.clone(),
+                        missing.keys().cloned().collect::<BTreeSet<_>>(),
+                    );
+                }
+                Expected::Covered => {}
+            }
+        }
+        assert_eq!(added, want_added, "case {case}, sensor file:\n{yaml}");
+        assert_eq!(
+            unfixable, want_unfixable,
+            "case {case}, sensor file:\n{yaml}"
+        );
+    }
+    assert_eq!(
+        seen.len(),
+        4,
+        "the cases never produced every outcome: only {seen:?}"
+    );
 }

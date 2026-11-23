@@ -47,6 +47,7 @@ chrono = { workspace = true }
 futures-util = "0.3.32"
 typedb-driver.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+proptest.workspace = true
 
 # TypeDB orchestration (`orchestrator` module, plan P3): download + extract the
 # pinned server dist and manage it as a child process. Kept light — a blocking
@@ -62,3 +63,4 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3.27.0"
 uuid = { workspace = true, features = ["v4"] }
+proptest.workspace = true
