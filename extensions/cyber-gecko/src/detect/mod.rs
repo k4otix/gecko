@@ -621,13 +621,13 @@ async fn blind_gap_sets(
     platform: &str,
     sources: &mut BTreeMap<(String, String), (String, BTreeSet<String>)>,
 ) -> Result<Vec<BTreeSet<String>>, String> {
-    let analytics = live_analytics(graph, technique_concept_id, platform).await?;
-    if analytics.is_empty() {
-        return Err(graph_changed(platform));
-    }
-    let mut sets = Vec::new();
-    for (_, concept_id) in analytics {
+    let mut readings = Vec::new();
+    for (_, concept_id) in live_analytics(graph, technique_concept_id, platform).await? {
         if !has_live_requirement(graph, &concept_id).await? {
+            readings.push(GapReading {
+                has_requirements: false,
+                keys: BTreeSet::new(),
+            });
             continue;
         }
         let gaps = read(
@@ -641,9 +641,6 @@ async fn blind_gap_sets(
             &[&concept_id, platform],
         )
         .await?;
-        if gaps.is_empty() {
-            return Err(graph_changed(platform));
-        }
         let mut keys = BTreeSet::new();
         for row in &gaps {
             let key = row_str(row, "key")?;
@@ -668,7 +665,41 @@ async fn blind_gap_sets(
             all_channels.extend(channels);
             keys.insert(key);
         }
-        sets.push(keys);
+        readings.push(GapReading {
+            has_requirements: true,
+            keys,
+        });
+    }
+    gap_sets(platform, readings)
+}
+
+/// What the reads after `claim-platforms()` found for one live analytic on a
+/// platform it called blind, for `recommend_sources`.
+#[derive(Debug, Clone)]
+struct GapReading {
+    /// Whether the analytic has a requirement on a live data component.
+    has_requirements: bool,
+    /// Its missing log-source keys on the platform.
+    keys: BTreeSet<String>,
+}
+
+/// The planner's gap sets for `platform` from its analytics' `readings`: one per
+/// analytic that has a requirement, and none for one that names no live log source.
+/// Finding no analytic, or one with a requirement and no gap, means a sync landed
+/// between the reads, and is an error.
+fn gap_sets(platform: &str, readings: Vec<GapReading>) -> Result<Vec<BTreeSet<String>>, String> {
+    if readings.is_empty() {
+        return Err(graph_changed(platform));
+    }
+    let mut sets = Vec::new();
+    for r in readings {
+        if !r.has_requirements {
+            continue;
+        }
+        if r.keys.is_empty() {
+            return Err(graph_changed(platform));
+        }
+        sets.push(r.keys);
     }
     Ok(sets)
 }
@@ -908,6 +939,43 @@ async fn ensure_logic_and_technique(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gap(has_requirements: bool, keys: &[&str]) -> GapReading {
+        GapReading {
+            has_requirements,
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn gap_sets_with_no_analytic_is_graph_changed() {
+        assert_eq!(gap_sets("Windows", vec![]), Err(graph_changed("Windows")));
+    }
+
+    #[test]
+    fn gap_sets_with_a_covered_analytic_is_graph_changed() {
+        assert_eq!(
+            gap_sets("Windows", vec![gap(true, &["a"]), gap(true, &[])]),
+            Err(graph_changed("Windows"))
+        );
+    }
+
+    #[test]
+    fn gap_sets_skip_a_zero_requirement_analytic_beside_a_gapped_one() {
+        let expected: BTreeSet<String> = ["a", "b"].iter().map(|k| k.to_string()).collect();
+        assert_eq!(
+            gap_sets("Windows", vec![gap(false, &[]), gap(true, &["a", "b"])]),
+            Ok(vec![expected])
+        );
+    }
+
+    #[test]
+    fn gap_sets_of_only_zero_requirement_analytics_are_empty() {
+        assert_eq!(
+            gap_sets("macOS", vec![gap(false, &[]), gap(false, &[])]),
+            Ok(vec![])
+        );
+    }
 
     fn reading(has_requirements: bool, missing: Vec<Value>) -> AnalyticReading {
         AnalyticReading {

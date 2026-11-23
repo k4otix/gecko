@@ -39,70 +39,104 @@ pub(crate) fn plan(pairs: &[BlindPair]) -> Result<Vec<Step>, String> {
         }
     }
 
-    let mut added: BTreeSet<(String, String)> = BTreeSet::new();
+    // Each (platform, key) gets an id in sorted order, so comparing id lists orders
+    // candidates exactly as comparing (platform, sorted keys) does, and an id names its
+    // platform.
+    let sources: BTreeSet<(&str, &str)> = pairs
+        .iter()
+        .flat_map(|p| {
+            p.analytics
+                .iter()
+                .flatten()
+                .map(move |k| (p.platform.as_str(), k.as_str()))
+        })
+        .collect();
+    let names: Vec<(&str, &str)> = sources.into_iter().collect();
+    let id = |platform: &str, key: &str| {
+        names
+            .binary_search(&(platform, key))
+            .expect("every key was interned")
+    };
+    let gaps: Vec<Vec<Vec<usize>>> = pairs
+        .iter()
+        .map(|p| {
+            p.analytics
+                .iter()
+                .map(|a| a.iter().map(|k| id(&p.platform, k)).collect())
+                .collect()
+        })
+        .collect();
+
+    let mut added = vec![false; names.len()];
     let mut fixed = vec![false; pairs.len()];
+    // Per-candidate scratch marks, compared against a round-and-candidate stamp.
+    let mut in_candidate = vec![0usize; names.len()];
+    let mut counted = vec![0usize; pairs.len()];
+    let mut stamp = 0usize;
     let mut steps = Vec::new();
     let mut cumulative = 0;
 
     while fixed.iter().any(|f| !f) {
-        let candidates: BTreeSet<(String, Vec<String>)> = pairs
-            .iter()
-            .zip(&fixed)
-            .filter(|(_, f)| !**f)
-            .flat_map(|(p, _)| {
-                let added = &added;
-                p.analytics.iter().map(move |a| {
-                    let remaining = a
-                        .iter()
-                        .filter(|k| !added.contains(&(p.platform.clone(), (*k).clone())))
-                        .cloned()
-                        .collect();
-                    (p.platform.clone(), remaining)
-                })
-            })
-            .collect();
+        // Each unfixed pair's analytics' remaining ids, indexed by their smallest id:
+        // a candidate can only contain a remaining set whose smallest id it holds.
+        let mut by_first: Vec<Vec<(usize, Vec<usize>)>> = vec![Vec::new(); names.len()];
+        let mut candidates: BTreeSet<Vec<usize>> = BTreeSet::new();
+        for (i, analytics) in gaps.iter().enumerate() {
+            if fixed[i] {
+                continue;
+            }
+            for a in analytics {
+                let remaining: Vec<usize> = a.iter().copied().filter(|&k| !added[k]).collect();
+                by_first[remaining[0]].push((i, remaining.clone()));
+                candidates.insert(remaining);
+            }
+        }
 
-        let mut best: Option<(String, Vec<String>, Vec<usize>)> = None;
-        for (platform, remaining) in candidates {
-            let fixes: Vec<usize> = (0..pairs.len())
-                .filter(|&i| !fixed[i] && pairs[i].platform == platform)
-                .filter(|&i| {
-                    pairs[i].analytics.iter().any(|a| {
-                        a.iter().all(|k| {
-                            remaining.contains(k) || added.contains(&(platform.clone(), k.clone()))
-                        })
-                    })
-                })
-                .collect();
+        let mut best: Option<(Vec<usize>, Vec<usize>)> = None;
+        for candidate in candidates {
+            stamp += 1;
+            for &k in &candidate {
+                in_candidate[k] = stamp;
+            }
+            let mut fixes = Vec::new();
+            for &k in &candidate {
+                for (i, remaining) in &by_first[k] {
+                    if counted[*i] != stamp && remaining.iter().all(|&r| in_candidate[r] == stamp) {
+                        counted[*i] = stamp;
+                        fixes.push(*i);
+                    }
+                }
+            }
             let better = match &best {
                 None => true,
-                Some((bp, br, bf)) => {
-                    // fixes / remaining against bf / br, by cross-multiplication; then more
-                    // pairs fixed; then the smaller (platform, keys).
-                    let ratio = (fixes.len() * br.len()).cmp(&(bf.len() * remaining.len()));
+                Some((bc, bf)) => {
+                    // fixes / candidate against bf / bc, by cross-multiplication; then
+                    // more pairs fixed; then the smaller (platform, keys).
+                    let ratio = (fixes.len() * bc.len()).cmp(&(bf.len() * candidate.len()));
                     ratio
                         .then(fixes.len().cmp(&bf.len()))
-                        .then_with(|| (bp, br).cmp(&(&platform, &remaining)))
+                        .then_with(|| bc.cmp(&candidate))
                         == Ordering::Greater
                 }
             };
             if better {
-                best = Some((platform, remaining, fixes));
+                best = Some((candidate, fixes));
             }
         }
 
-        let (platform, add, unblinds) =
+        let (add, mut unblinds) =
             best.ok_or_else(|| "no candidate remains for an unfixed pair".to_string())?;
-        for k in &add {
-            added.insert((platform.clone(), k.clone()));
+        for &k in &add {
+            added[k] = true;
         }
         for &i in &unblinds {
             fixed[i] = true;
         }
+        unblinds.sort_unstable();
         cumulative += unblinds.len();
         steps.push(Step {
-            platform,
-            add,
+            platform: names[add[0]].0.to_string(),
+            add: add.iter().map(|&k| names[k].1.to_string()).collect(),
             unblinds,
             cumulative_unblinded: cumulative,
         });
@@ -259,6 +293,32 @@ mod tests {
             plan(&[pair(0, "macOS", &[&["a"]])]),
             Ok(vec![step("macOS", &["a"], &[0], 1)])
         );
+    }
+
+    /// About ATT&CK's scale: 500 claims on distinct techniques, each blind on three
+    /// platforms with a 3-5 source gap drawn from 400 keys per platform.
+    #[test]
+    fn plans_a_large_inventory_quickly() {
+        let platforms = ["Linux", "Windows", "macOS"];
+        let mut pairs = Vec::new();
+        for claim in 0..500usize {
+            for (p, platform) in platforms.iter().enumerate() {
+                let n = 3 + (claim + p) % 3;
+                let keys = (0..n)
+                    .map(|j| format!("k{}", (claim * 7 + j * 13 + p) % 400))
+                    .collect();
+                pairs.push(BlindPair {
+                    claim,
+                    platform: platform.to_string(),
+                    analytics: vec![keys],
+                });
+            }
+        }
+        let start = std::time::Instant::now();
+        let steps = plan(&pairs).unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(steps.last().unwrap().cumulative_unblinded, pairs.len());
+        assert!(elapsed.as_secs_f64() < 1.0, "planning took {elapsed:?}");
     }
 
     // ── properties ─────────────────────────────────────────────────────────────
