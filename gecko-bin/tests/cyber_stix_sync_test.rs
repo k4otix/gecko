@@ -1322,6 +1322,10 @@ async fn graph_counts(db: &mut TypeDbRouter) -> BTreeMap<String, usize> {
         "concept".to_string(),
         count(&tx, "match $c isa concept;").await,
     );
+    counts.insert(
+        "tactic".to_string(),
+        count(&tx, "match $t isa tactic;").await,
+    );
     for (relation, _, _) in typed_relation_players() {
         if !counts.contains_key(relation) {
             counts.insert(
