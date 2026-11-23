@@ -1,0 +1,84 @@
+define
+  fun blast-radius-ref($r: okf-concept) -> { memory-item } @doc("The pre-refactor body, kept as a test oracle."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              not { $pm has valid-to $vt; };
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   not { $pm2 has valid-to $vt2; };
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              let $m in blast-radius-ref($mid);
+          };
+      return { $m };
+
+  fun canonical-entity-ref($rec: concept) -> { concept } @doc("The pre-refactor body, kept as a test oracle."):
+      match
+          {
+              $res isa resolution, has belief-state "asserted";
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has belief-state "asserted";
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity-ref($mid);
+          };
+      return { $other };
+
+  fun blast-radius-at-ref($r: okf-concept, $t: datetime) -> { memory-item } @doc("The pre-refactor body, kept as a test oracle."):
+      match
+          {
+              (assumption: $r, resting: $m) isa rests-on;
+          } or {
+              (source: $r, derived: $m) isa derivation;
+          } or {
+              $pm isa population-member, links (owning-population: $pop, member: $r);
+              $pm has valid-from $vf; $vf <= $t;
+              not { $pm has valid-to $vt; $vt <= $t; };
+              (scoped-belief: $m, population: $pop) isa scoped;
+          } or {
+              { (assumption: $r, resting: $mid) isa rests-on; }
+              or { (source: $r, derived: $mid) isa derivation; }
+              or { $pm2 isa population-member, links (owning-population: $pop2, member: $r);
+                   $pm2 has valid-from $vf2; $vf2 <= $t;
+                   not { $pm2 has valid-to $vt2; $vt2 <= $t; };
+                   (scoped-belief: $mid, population: $pop2) isa scoped; };
+              let $m in blast-radius-at-ref($mid, $t);
+          };
+      return { $m };
+
+  fun canonical-entity-at-ref($rec: concept, $t: datetime) -> { concept } @doc("The pre-refactor body, kept as a test oracle."):
+      match
+          {
+              $res isa resolution, has valid-from $vf; $vf <= $t;
+              not { $res has valid-to $vt; $vt <= $t; };
+              (derived: $res, source: $src) isa derivation, has derivation-method $dm;
+              { $dm == "type-join"; } or { $dm == "cardinality"; } or { $dm == "functional-dependency"; };
+              { (resolution-belief: $res, record-a: $rec, record-b: $other) isa resolves; }
+              or
+              { (resolution-belief: $res, record-a: $other, record-b: $rec) isa resolves; };
+          } or {
+              $res2 isa resolution, has valid-from $vf2; $vf2 <= $t;
+              not { $res2 has valid-to $vt2; $vt2 <= $t; };
+              (derived: $res2, source: $src2) isa derivation, has derivation-method $dm2;
+              { $dm2 == "type-join"; } or { $dm2 == "cardinality"; } or { $dm2 == "functional-dependency"; };
+              { (resolution-belief: $res2, record-a: $rec, record-b: $mid) isa resolves; }
+              or
+              { (resolution-belief: $res2, record-a: $mid, record-b: $rec) isa resolves; };
+              let $other in canonical-entity-at-ref($mid, $t);
+          };
+      return { $other };

@@ -2662,6 +2662,7 @@ dependencies = [
  "gecko-engine",
  "gecko-extension-api",
  "gecko-semantic-index",
+ "proptest",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
