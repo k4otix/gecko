@@ -50,6 +50,9 @@ uuid = { version = "1", features = ["v4"] }
 # Dates
 chrono = { version = "0.4", features = ["serde"] }
 
+# Property tests (dev-dependency only)
+proptest = { version = "1", default-features = false, features = ["std"] }
+
 # Error handling
 thiserror = "2"
 anyhow = "1"

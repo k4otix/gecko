@@ -13,3 +13,6 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 ulid = { version = "3", features = ["serde"] }
+
+[dev-dependencies]
+proptest.workspace = true

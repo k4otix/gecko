@@ -51,8 +51,9 @@ fn check_one(
     statements: &[String],
 ) -> Result<(), String> {
     let tql = m.tql;
-    if tql.starts_with("match ") {
-        if tql.contains(" update ") {
+    let words = normalize(tql);
+    if words.starts_with("match ") {
+        if words.contains(" update ") {
             return check_update(tql, statements);
         }
         return check_cleanup(tql, later, statements);
@@ -140,6 +141,8 @@ fn check_cleanup(
     statements: &[String],
 ) -> Result<(), String> {
     const FORM: &str = "a cleanup is exactly one `match $r isa T; … delete $r;` statement";
+    let normalized = normalize(tql);
+    let tql = normalized.as_str();
     let type_name = tql
         .strip_prefix("match $r isa ")
         .and_then(|rest| rest.split_once(';'))
@@ -630,5 +633,135 @@ mod tests {
     fn an_unknown_form_is_rejected() {
         let err = check("insert $x isa thing;").unwrap_err();
         assert!(err.contains("a migration is"), "{err}");
+    }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Every cleanup `SCHEMA` admits, written out independently of
+        /// `canonical_cleanup`: `link` and its supertype `base`, each with one or both
+        /// of their required roles in either order.
+        fn admitted_cleanups() -> Vec<String> {
+            let mut out = Vec::new();
+            for ty in ["link", "base"] {
+                for role in ["source", "target"] {
+                    out.push(format!(
+                        "match $r isa {ty}; not {{ $r links ({role}: $x); }}; delete $r;"
+                    ));
+                }
+                for (a, b) in [("source", "target"), ("target", "source")] {
+                    out.push(format!(
+                        "match $r isa {ty}; {{ not {{ $r links ({a}: $p0); }}; }} or \
+                         {{ not {{ $r links ({b}: $p1); }}; }}; delete $r;"
+                    ));
+                }
+            }
+            out
+        }
+
+        /// Fragments a hand edit could leave in a cleanup: an empty or extra branch,
+        /// a further constraint, an optional role, a second statement, stray syntax.
+        const FRAGMENTS: [&str; 14] = [
+            " or { }",
+            " { };",
+            " $r has score $s;",
+            " not { $r links (note: $y); };",
+            " { not { $r links (note: $p2); }; } or",
+            " delete $r;",
+            " match $t isa thing;",
+            ";",
+            "{",
+            "}",
+            " or",
+            " (source: $x)",
+            " $x",
+            " not",
+        ];
+
+        #[derive(Debug, Clone)]
+        enum Edit {
+            Insert(usize, usize),
+            Delete(usize, usize),
+            Duplicate(usize, usize),
+        }
+
+        fn edit() -> impl Strategy<Value = Edit> {
+            prop_oneof![
+                (any::<usize>(), 0..FRAGMENTS.len()).prop_map(|(at, f)| Edit::Insert(at, f)),
+                (any::<usize>(), 1usize..12).prop_map(|(at, n)| Edit::Delete(at, n)),
+                (any::<usize>(), 1usize..20).prop_map(|(at, n)| Edit::Duplicate(at, n)),
+            ]
+        }
+
+        /// `text` with `e` applied; the texts are ASCII, so every index is a char
+        /// boundary.
+        fn apply(text: &str, e: &Edit) -> String {
+            let len = text.len();
+            match *e {
+                Edit::Insert(at, f) => {
+                    let at = at % (len + 1);
+                    format!("{}{}{}", &text[..at], FRAGMENTS[f], &text[at..])
+                }
+                Edit::Delete(at, n) => {
+                    let at = at % len;
+                    let end = (at + n).min(len);
+                    format!("{}{}", &text[..at], &text[end..])
+                }
+                Edit::Duplicate(at, n) => {
+                    let at = at % len;
+                    let end = (at + n).min(len);
+                    format!("{}{}", &text[..end], &text[at..])
+                }
+            }
+        }
+
+        fn accepted(tql: String) -> bool {
+            let tql: &'static str = Box::leak(tql.into_boxed_str());
+            check_migrations(&[entry(tql)], SCHEMA).is_ok()
+        }
+
+        proptest! {
+            /// A cleanup the checker accepts deletes exactly the rows missing a
+            /// required role: whatever was edited into or out of an admitted text, an
+            /// accepted result is one of the admitted texts.
+            #[test]
+            fn an_accepted_cleanup_is_an_admitted_one(
+                start in 0usize..8,
+                edits in proptest::collection::vec(edit(), 1..=3),
+            ) {
+                let admitted: Vec<String> =
+                    admitted_cleanups().iter().map(|t| normalize(t)).collect();
+                let mut text = admitted_cleanups()[start].clone();
+                for e in &edits {
+                    text = apply(&text, e);
+                }
+                if accepted(text.clone()) {
+                    prop_assert!(
+                        admitted.contains(&normalize(&text)),
+                        "accepted a cleanup that is not admitted: {text}"
+                    );
+                }
+            }
+
+            /// Whitespace is not meaning: an admitted cleanup with its spaces turned
+            /// into runs of spaces, tabs and newlines is still accepted.
+            #[test]
+            fn an_admitted_cleanup_survives_any_whitespace(
+                start in 0usize..8,
+                gaps in proptest::collection::vec(
+                    proptest::sample::select(vec![" ", "  ", "\n", "\t", "\n    "]), 64),
+            ) {
+                let text = admitted_cleanups()[start].clone();
+                let mut spaced = String::new();
+                for (i, word) in text.split(' ').enumerate() {
+                    if i > 0 {
+                        spaced.push_str(gaps[i % gaps.len()]);
+                    }
+                    spaced.push_str(word);
+                }
+                prop_assert!(accepted(spaced.clone()), "rejected {spaced:?}");
+            }
+        }
     }
 }
