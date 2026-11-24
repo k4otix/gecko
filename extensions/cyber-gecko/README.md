@@ -22,6 +22,14 @@ analytic's log-source requirements on data components. A re-import under the sam
 strategy, analytic and requirement links, so a link a later release drops does not
 linger.
 
+Import each ATT&CK domain into its own database. Enterprise, Mobile and ICS ship some
+of the same STIX objects, so a second domain in the same database is refused:
+
+```bash
+gecko sync-stix enterprise-attack.json --database attack
+gecko sync-stix mobile-attack.json --database attack-mobile
+```
+
 ## The sensor file
 
 A YAML file naming the platforms you run and the sensors that watch them:

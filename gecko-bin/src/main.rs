@@ -125,7 +125,8 @@ enum Commands {
         /// share a database when each has its own name and they pass the same
         /// `--database`; without `--database`, the database is named after the bundle.
         /// A re-import under the same name replaces the previous one; a record a
-        /// belief edge references is retired rather than deleted.
+        /// belief edge references is retired rather than deleted. Imports that ship
+        /// the same STIX objects, such as two ATT&CK domains, need separate databases.
         #[arg(long)]
         bundle_name: Option<String>,
     },
@@ -276,6 +277,28 @@ fn apply_stix_naming(
     Ok(())
 }
 
+/// Replaces a concept-ID collision from a STIX import with STIX guidance: imports
+/// that ship the same STIX objects, such as two ATT&CK domains, each need their own
+/// database. Any other error passes through unchanged.
+#[cfg(feature = "cyber")]
+fn stix_collision_guidance(err: anyhow::Error) -> anyhow::Error {
+    use gecko_engine::db::router::{DbError, collision_list};
+    let Some(DbError::ConceptIdCollision { bundle, ids }) =
+        err.chain().find_map(|e| e.downcast_ref::<DbError>())
+    else {
+        return err;
+    };
+    anyhow::anyhow!(
+        "STIX bundle `{bundle}` ships {} object(s) this database already holds in another \
+         import: {}. STIX imports that ship the same objects, such as two ATT&CK domains \
+         (Enterprise, Mobile, ICS), cannot share a database: import this bundle into its own \
+         database with `--database <name>`. Importing it under the bundle name that holds them \
+         would replace that import, not add to it. Nothing was committed.",
+        ids.len(),
+        collision_list(ids)
+    )
+}
+
 /// Maps the `--tls` flag (and optional `--ca-cert`) to a [`TlsMode`]. Shared by
 /// `make_config`, `gecko doctor`'s typedb check, and the orchestrator's readiness
 /// probe so all three connect with the same TLS posture.
@@ -400,7 +423,9 @@ async fn run(cli: Cli) -> Result<()> {
                 rels.typed.len(),
                 rels.requirements.len()
             );
-            let result = sync_manifest(config, &extensions, &manifest, &writes).await?;
+            let result = sync_manifest(config, &extensions, &manifest, &writes)
+                .await
+                .map_err(stix_collision_guidance)?;
             print_sync_result(&result);
 
             Ok(())
@@ -1315,6 +1340,18 @@ mod tests {
                 Some(mem_gecko::RegistryError::ModifiesBase { .. })
             ),
             "expected a registry refusal, got {err:#}"
+        );
+    }
+
+    #[cfg(feature = "cyber")]
+    #[test]
+    fn stix_collision_guidance_passes_other_errors_through() {
+        let err = anyhow::Error::new(gecko_engine::db::router::DbError::Query("boom".into()))
+            .context("Failed to sync bundle");
+        let out = stix_collision_guidance(err);
+        assert_eq!(
+            format!("{out:#}"),
+            "Failed to sync bundle: TypeDB query error: boom"
         );
     }
 
