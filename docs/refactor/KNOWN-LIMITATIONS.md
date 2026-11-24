@@ -98,6 +98,18 @@ proven through the real sandbox against live TypeDB.
   transaction, in that order: the refusing fragment commits nothing, and earlier
   fragments' cleanups stay committed. The state is consistent, and re-running after the
   fix completes the upgrade. Today's writers produce no such row.
+- **A database that predates the populations cut takes the shipped schema and keeps
+  inert leftovers.** One initialized before the tightening, or by the previous release,
+  applies the shipped schema and keeps the population types, attributes and functions
+  (`population-members`, `population-members-at`, `blast-radius-at`) it declared
+  (`tightened_schema_applies_to_a_populated_database`,
+  `previous_release_upgrades_to_the_shipped_schema`). One initialized after the step
+  functions landed applies too: its `blast-radius` answers over `rests-on` and
+  derivation, and its `blast-step-at` and `blast-radius-at` stay stored and unused
+  (`narrowing_a_callee_under_a_stored_caller_applies` pins TypeDB's behavior when a
+  callee narrows under a stored caller). `gecko drop <db>`, `schema-init` and a re-sync
+  recreate a database without the leftovers. See
+  `docs/superpowers/specs/2026-11-24-populations-cut-design.md`.
 - **Garbage collection deletes every relation a concept plays.** A sync that deletes a
   concept first deletes each relation the concept plays in, of any extension, so a
   relation linking it to a concept another bundle owns is deleted with it rather than
