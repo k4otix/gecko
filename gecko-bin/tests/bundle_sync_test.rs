@@ -1010,16 +1010,25 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
     sync_bundle(&mut db, &full, &[], BELIEF_TIER_ROOT)
         .await
         .expect("sync both concepts");
+    // An extension relation between the two concepts that no memory item plays, so
+    // it stays off the belief-tier surface.
+    db.apply_schema(
+        r#"define
+             relation test-ext-link @doc("A test-only extension relation between two concepts."),
+                 relates left @card(1) @doc("The concept on the link's left."),
+                 relates right @card(1) @doc("The concept on the link's right.");
+             concept plays test-ext-link:left, plays test-ext-link:right;"#,
+    )
+    .await
+    .expect("define the test link");
     let tx = db.begin_write().await.expect("write tx");
     tx.query(
         r#"match $a isa concept, has concept-id "notes/a";
                  $b isa concept, has concept-id "notes/b";
-           insert $p isa population, has spec-hash "pop-gc";
-                  population-member (owning-population: $p, member: $a);
-                  population-member (owning-population: $p, member: $b);"#,
+           insert test-ext-link (left: $a, right: $b);"#,
     )
     .await
-    .expect("insert the memberships");
+    .expect("insert the link");
     // A STIX `uses` whose user is the plain bundle's concept and whose used
     // malware no bundle contains.
     #[cfg(feature = "cyber")]
@@ -1031,6 +1040,7 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
     .await
     .expect("insert the cross-bundle uses");
     tx.commit().await.expect("commit the extension relations");
+    assert_eq!(count(&mut db, "match $l isa test-ext-link;").await, 1);
 
     let mut dropped = full.clone();
     dropped.concepts.retain(|c| c.concept_id != "notes/a");
@@ -1039,19 +1049,18 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
         .expect("garbage-collecting a concept that plays extension relations commits");
     assert_eq!(r.concepts_deleted, 1);
     assert_eq!(
-        count(&mut db, "match $m isa population-member;").await,
-        1,
-        "only the kept concept's membership is left"
+        count(&mut db, "match $l isa test-ext-link;").await,
+        0,
+        "no link to the collected concept remains"
     );
     assert_eq!(
         count(
             &mut db,
-            r#"match $c isa concept, has concept-id "notes/b";
-                     $m isa population-member, links (member: $c);"#
+            r#"match $c isa concept, has concept-id "notes/b";"#
         )
         .await,
         1,
-        "the kept concept's membership survives"
+        "the link's other concept is kept"
     );
     #[cfg(feature = "cyber")]
     {

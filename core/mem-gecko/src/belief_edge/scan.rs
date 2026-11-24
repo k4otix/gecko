@@ -253,7 +253,7 @@ mod tests {
     fn scanner_finds_relation_heads_in_mem() {
         let mem = MemGecko::new();
         let stmts = statements(mem.schema());
-        for label in ["supersession", "scoped"] {
+        for label in ["supersession", "resolves"] {
             let heads: Vec<_> = stmts
                 .iter()
                 .filter(|s| s.introduces("relation") == Some(label))

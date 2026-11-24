@@ -29,7 +29,6 @@ define
   attribute corroboration-count value integer;
   attribute supersession-reason value string;
   attribute created-at value datetime;
-  attribute computed-at value datetime;
   attribute condition value string;
   attribute execution-status value string @values("pending", "active", "suspended", "completed", "failed");
   attribute deadline value datetime;
@@ -42,11 +41,6 @@ define
   attribute predicted-probability value double;
   attribute outcome value string;
   attribute consolidation-action value string;   # OPEN set of consolidation step kinds — NOT @values
-
-  # ── A2.9 population attrs ──────────────────────────────────────────
-  attribute spec-dialect value string;         # (dialect, text) modelled as 2 attrs; structs unimpl in 3.x
-  attribute spec-text value string;            # a stored TypeDB match clause — the DEFINING predicate (SoR)
-  attribute spec-hash value string;
 
   # ── A2.10 retrieval-provenance attrs ──────────────────────────────
   attribute retrieval-method value string @values("semantic", "typed", "hybrid");
@@ -101,7 +95,6 @@ define
       owns valid-to @card(0..1),
       owns retrieval-provenance @card(0..1),   # write-once summary flag (A2.10)
       plays contradiction:claim,
-      plays scoped:scoped-belief,
       plays prediction-resolution:predicted-belief,
       plays informs-synthesis:synthesized;
 
@@ -251,29 +244,10 @@ define
       owns tool-name @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.9 Populations & cross-source resolution
+  # Cross-source resolution
   # ══════════════════════════════════════════════════════════════════
-  entity population @doc("A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash."),
-      owns spec-dialect @card(0..1),
-      owns spec-text @card(0..1),
-      owns spec-hash @key,                 # dedup cohorts: two beliefs same cohort -> same node
-      plays scoped:population,
-      plays population-member:owning-population;
-
-  relation scoped @doc("Scopes a belief to the population it is about."),                         # belief -> population
-      relates scoped-belief @card(1) @doc("The belief scoped to the population."),
-      relates population @card(1) @doc("The population the belief concerns.");
-
-  # MATERIALIZED membership: derived cache of the spec's evaluation
-  relation population-member @doc("Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker."),
-      relates owning-population @card(1) @doc("The population the membership belongs to."),
-      relates member @card(1) @doc("A concept the population's spec currently matches."),
-      owns valid-from @card(0..1),         # bitemporal window: when this membership began holding
-      owns valid-to @card(0..1),           # bitemporal window: when it stopped holding (absent = still holds)
-      owns computed-at @card(0..1);        # staleness marker
-
-  # cross-source identity (invariant 9): canonical entity IS a population;
-  # resolution is a reified identity BELIEF (provenance, method, state, supersession)
+  # cross-source identity (invariant 9): the canonical entity is the resolution closure of a
+  # record; resolution is a reified identity BELIEF (provenance, method, state, supersession)
   entity resolution sub belief @doc("A reified identity belief asserting that two source records denote the same entity, carrying the full belief provenance, state, and supersession."),
       plays resolves:resolution-belief;
 
@@ -324,15 +298,14 @@ define
   # Additive role wiring onto core authored/reference tier (records)
   #   concept & external-resource are the source-record / origin players
   # ══════════════════════════════════════════════════════════════════
-  # concept is the authored/reference record tier: it is the population member and the
-  # cross-source resolution record. (population-member:member / resolves:record-* are scoped
-  # to `concept` — not external-resource — so typed functions can return a single `{ concept }`
-  # type; external-resource is not a `okf-concept` subtype and would break return-type inference.)
+  # concept is the authored/reference record tier: it is the cross-source resolution record.
+  # (resolves:record-* are played by `concept` — not external-resource — so typed functions can
+  # return a single `{ concept }` type; external-resource is not a `okf-concept` subtype and
+  # would break return-type inference.)
   # `concept` and `external-resource` are DEFINED in core_schema.tql; mem only ADDS plays roles
   # (additive `<type> plays <role>;` form — never a root re-declaration of `entity concept`).
   concept plays source-link:origin,
       plays contextualizes:context-target,
-      plays population-member:member,
       plays resolves:record-a,
       plays resolves:record-b;
 

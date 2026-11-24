@@ -183,8 +183,17 @@ async fn old_cyber_detection_types_migrate_away() {
     mem_gecko::BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &exts)
         .expect("the registry accepts the cyber migrations");
 
+    // The frozen cyber schema has `population` play a role, so the database starts
+    // on the pre-tightening core and mem, which declare it, and takes the shipped
+    // core and mem with their migrations before the frozen cyber schema.
     let test_db = TestDb::new("gecko_test_cyber_migration");
     let mut db = test_db.router();
+    db.apply_schema(PRE_CORE)
+        .await
+        .expect("pre-tightening core");
+    db.apply_schema(&pre_mem_schema())
+        .await
+        .expect("pre-tightening mem");
     db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
         .await
         .expect("core schema");
@@ -894,7 +903,29 @@ fn attack_with_malware() -> String {
 /// names a function whose text is the pre-tightening fixture's own; any other entry
 /// is a `schema_parts` part verbatim.
 #[cfg(feature = "cyber")]
-const CUT_LEFTOVERS: &[&str] = &["fun blast-radius-at"];
+const CUT_LEFTOVERS: &[&str] = &[
+    "fun blast-radius-at",
+    "fun population-members",
+    "fun population-members-at",
+    "attribute computed-at | value datetime",
+    "attribute spec-dialect | value string",
+    "attribute spec-hash | value string",
+    "attribute spec-text | value string",
+    "entity belief | plays scoped:scoped-belief",
+    "entity concept | plays population-member:member",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-dialect @card(0..1)",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-text @card(0..1)",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-hash @key",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | plays scoped:population",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | plays population-member:owning-population",
+    "relation scoped @doc(\"Scopes a belief to the population it is about.\") | relates scoped-belief @doc(\"The belief scoped to the population.\")",
+    "relation scoped @doc(\"Scopes a belief to the population it is about.\") | relates population @doc(\"The population the belief concerns.\")",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | relates owning-population @doc(\"The population the membership belongs to.\")",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | relates member @doc(\"A concept the population's spec currently matches.\")",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns valid-from @card(0..1)",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns valid-to @card(0..1)",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns computed-at @card(0..1)",
+];
 
 /// [`CUT_LEFTOVERS`] as `schema_parts` parts, each function read from the
 /// pre-tightening fixture.
@@ -1161,30 +1192,6 @@ async fn tightened_schema_applies_to_a_populated_database() {
         .resolve_prediction(&ctx, asserted.clone(), Outcome::Confirmed)
         .await
         .expect("resolve_prediction");
-    assert!(
-        writer
-            .define_population("upgrade-pop", "typeql-3", "match $c isa concept;")
-            .await
-            .expect("define_population")
-    );
-    writer
-        .materialize_population(
-            "upgrade-pop",
-            &[ConceptId::new("notes/a"), ConceptId::new("notes/b")],
-            chrono::Utc::now(),
-        )
-        .await
-        .expect("materialize_population");
-    assert!(
-        writer
-            .close_population_membership(
-                "upgrade-pop",
-                &ConceptId::new("notes/b"),
-                chrono::Utc::now()
-            )
-            .await
-            .expect("close_population_membership")
-    );
     let pair = [
         writer.observe(&ctx, episode()).await.expect("observe"),
         writer.observe(&ctx, episode()).await.expect("observe"),
@@ -1247,27 +1254,16 @@ async fn tightened_schema_applies_to_a_populated_database() {
         .await
         .expect("disposition");
 
-    // One-player rows a database synced by an earlier release can hold, which
-    // today's GC deletes with their concept: a concept link and a population
-    // membership.
-    let seed = [
-        GraphWrite::single(
-            "given $id: string; \
-             match $c isa concept, has concept-id $cid; $cid == $id; \
-             insert concept-link (source: $c);",
-            vec!["id".into()],
-            vec![GraphValue::from(LOGIC)],
-        )
-        .expecting(1),
-        GraphWrite::single(
-            "given $h: string; \
-             match $p isa population, has spec-hash $s; $s == $h; \
-             insert population-member (owning-population: $p);",
-            vec!["h".into()],
-            vec![GraphValue::from("upgrade-pop")],
-        )
-        .expecting(1),
-    ];
+    // A one-player concept link a database synced by an earlier release can hold,
+    // which today's GC deletes with its concept.
+    let seed = [GraphWrite::single(
+        "given $id: string; \
+         match $c isa concept, has concept-id $cid; $cid == $id; \
+         insert concept-link (source: $c);",
+        vec!["id".into()],
+        vec![GraphValue::from(LOGIC)],
+    )
+    .expecting(1)];
     {
         let tx = db.begin_write().await.expect("write tx");
         gecko_engine::db::run_graph_writes(&tx, &seed)
@@ -1297,7 +1293,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
     }
     assert_eq!(
         added,
-        BTreeMap::from([("core", 4), ("mem", 22), ("cyber", 9)]),
+        BTreeMap::from([("core", 4), ("mem", 20), ("cyber", 9)]),
         "the triggers checked"
     );
 
@@ -1339,22 +1335,6 @@ async fn tightened_schema_applies_to_a_populated_database() {
         cut_leftover_parts(),
         "the upgraded schema keeps exactly the named leftovers beyond a fresh one"
     );
-
-    // mem's required roles: the one-player membership is gone, and another is refused.
-    assert_eq!(
-        count_rows(
-            &mut db,
-            "match $r isa population-member; not { $r links (member: $m); };"
-        )
-        .await,
-        0
-    );
-    assert_eq!(
-        count_rows(&mut db, "match $r isa population-member;").await,
-        2
-    );
-    let err = refusal(&mut db, &[seed[1].clone()]).await;
-    assert!(err.contains("population-member"), "{err}");
 
     // core's required roles: the one-player link is gone, the synced link stays.
     assert_eq!(

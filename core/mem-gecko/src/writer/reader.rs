@@ -83,14 +83,6 @@ impl MemWriter {
             .collect())
     }
 
-    /// `population-members($pop)` — reads the materialized `population-member`
-    /// view for the population identified by `spec_hash` (its `@key`).
-    pub async fn population_members(&self, spec_hash: &str) -> Result<Vec<ConceptId>> {
-        let (q, v, r) = tql::population_members_read(spec_hash);
-        let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_mapped(&docs, ConceptId))
-    }
-
     /// `canonical-entity($rec)` — the transitive closure over **provable**
     /// resolutions (probabilistic ones are never collapsed).
     pub async fn canonical_entity(&self, rec: &ConceptId) -> Result<Vec<ConceptId>> {

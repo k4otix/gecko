@@ -1,42 +1,31 @@
-//! Schema-probing rig for the W2/W3 conflict work — a recreation of Deliverable-3
-//! (`docs/refactor/CONFLICT-REPORT.md`, Appendix).
+//! Schema acceptance rig for the W2/W3 conflict work, a recreation of
+//! Deliverable-3 (`docs/refactor/CONFLICT-REPORT.md`, Appendix).
 //!
 //! It composes the production schema — core, then mem (always-on substrate), then
 //! cyber — as three separate schema transactions (faithful to `apply_all_schemas`)
-//! against a throwaway TypeDB, then hand-authors raw TypeQL (bypassing the stubbed
-//! Rust writers — the D3 method) to reproduce ratified conflict findings and to
-//! probe the W2 divergence-exception candidate shapes on top.
+//! against a throwaway TypeDB, then hand-authors raw TypeQL (bypassing the Rust
+//! writers — the D3 method) to check the W2 divergence-exception shape
+//! (`probes/w2_precedence.tql`), the as-of-t identity functions, the function
+//! migration posture and the belief-edge surface.
 //!
-//! - **T5** — `population-members` ignores time: it takes no `$t`, so a belief
-//!   `believed-at(t0)` is reconstructed against *today's* cohort.
-//! - **W2** — the belief-anchored `divergence-exception`/`divergence-precedence`
-//!   candidate (`probes/w2_precedence.tql`) and the entrenchment-predicate
-//!   candidate (`probes/w2_disposition.tql`), probed as Mode-A deltas on top of
-//!   the composed schema. A probe that *fails as expected* (P-DISP-2) is a verdict,
-//!   not a bug — it certifies the persisted-vs-host split.
+//! The graduated tests (no `#[ignore]`) assert the shipped mem schema directly:
+//! `divergence-exception`/`divergence-precedence` and the as-of-t functions are in
+//! it. They run under `just test-it` and CI's TypeDB job, as `cyber_detect_test`
+//! does, and apply no candidate delta: a re-applied type delta is a no-op
+//! (idempotent `define`), and a re-applied function delta would be `redefine`d by
+//! `apply_schema` (see `shipped_function_mutation_requires_redefine_not_define`),
+//! replacing the shipped body.
 //!
-//! **Post-fold: these are graduated acceptance tests, not probes.** The W2/W3
-//! schema fold landed on `conflict_resolution`, so `apply_composed_schema` now reads
-//! the SHIPPED (folded) mem schema — divergence-exception/-precedence, the
-//! population-member window, and the as-of-t functions are all in the base. The graduated tests (no `#[ignore]`) assert the shipped behavior
-//! directly against the composed schema and run under `just test-it` / CI's TypeDB job,
-//! exactly as `cyber_detect_test` does. They no longer apply the winning candidates as
-//! Mode-A deltas — those constructs live in the base now; a re-applied type delta would
-//! be a no-op (idempotent `define`) and a re-applied FUNCTION delta would be
-//! `redefine`d by `apply_schema` (see `shipped_function_mutation_requires_redefine_not_define`),
-//! replacing the shipped body, so the vestigial deltas were removed.
-//!
-//! Probes that remain `#[ignore]` test constructs that were NOT shipped — the C2
-//! `out-entrenches` predicate (`p_disp_1`) — kept as manual evidence for the
-//! owed/rejected work (SPEC-W2-W3 §5). Run them with:
+//! The probe that stays `#[ignore]` tests a construct that is not shipped — the C2
+//! `out-entrenches` predicate (`probes/w2_disposition.tql`, `p_disp_1`) — kept as
+//! manual evidence for the owed and rejected work (SPEC-W2-W3 §5). A probe that
+//! fails as expected (P-DISP-2) is a verdict, not a bug: it certifies the
+//! persisted-vs-host split. Run the ignored probe with:
 //!
 //! ```text
 //! cargo test --test schema_probe_w2w3 --no-default-features --features cyber \
 //!     -- --ignored --test-threads=1
 //! ```
-//!
-//! The T5 baseline is a regression floor: the present-state `population-members`
-//! ignores time by design (the as-of fix is `p_pm_3`).
 //!
 //! Gated on `cyber` (the rig composes the cyber schema) and needs the multi-thread
 //! runtime the TypeDB driver expects.
@@ -139,93 +128,6 @@ async fn read_concept_ids(db: &TestDb, query: &str) -> Vec<String> {
     read_col(db, query, "cid").await
 }
 
-/// Counts the rows a `select` returns without inspecting the column values — used when
-/// the selected column is a datetime (which `read_col`'s `try_get_string` cannot
-/// stringify), e.g. reading back `valid-from`/`valid-to`/`computed-at`.
-async fn count_rows(db: &TestDb, query: &str) -> usize {
-    let mut router = db.router();
-    let tx = router.begin_read().await.expect("read tx");
-    let answer = tx.query(query).await.expect("read query");
-    assert!(answer.is_row_stream(), "select returns a row stream");
-    let mut rows = answer.into_rows();
-    let mut n = 0usize;
-    while let Some(item) = rows.next().await {
-        item.expect("row stream item");
-        n += 1;
-    }
-    n
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// T5 baseline — recreate the ratified D3 conflict finding.
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// **Regression floor (was the T5 baseline)** — the present-state `population-members`
-/// ignores time by design; the as-of variant is the fix.
-///
-/// Ground state: belief B `scoped` to population P and valid from t0; the cohort grew
-/// *after* t0 — member C1 was `computed-at` t0, member C2 was `computed-at` today.
-/// `believed-at(t0)` is temporal and returns B (valid at t0); the present-state
-/// `population-members` takes no `$t` and returns today's full cohort `{C1, C2}` — the
-/// documented fast-path behavior. The as-of fix, `population-members-at(P, t0)`, is
-/// `p_pm_3`/`p_t5_fix`. `believed-at(t0)` = `{B}` while `population-members(P)` =
-/// `{C1, C2}`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_base_t5_population_members_ignores_time() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // B scoped to P, valid from t0. Cohort: C1 computed at t0, C2 computed today.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "t5/pop/P";
-             $b isa belief, has concept-id "t5/bel/B", has belief-state "asserted",
-                 has valid-from 2026-01-01T00:00:00;
-             $c1 isa concept, has concept-id "t5/c1";
-             $c2 isa concept, has concept-id "t5/c2";
-             scoped (scoped-belief: $b, population: $p);
-             $pm1 isa population-member,
-                 links (owning-population: $p, member: $c1),
-                 has computed-at 2026-01-01T00:00:00;
-             $pm2 isa population-member,
-                 links (owning-population: $p, member: $c2),
-                 has computed-at 2026-07-11T00:00:00;"#,
-    )
-    .await;
-
-    // believed-at(t0) is temporal: it sees only the belief valid at t0.
-    let believed = read_concept_ids(
-        &db,
-        r#"match
-             let $bel in believed-at(2026-01-01T00:00:00);
-             $bel has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        believed,
-        vec!["t5/bel/B".to_string()],
-        "believed-at(t0) must return B only; got {believed:?}"
-    );
-
-    // population-members(P) takes no $t — it returns today's full cohort, both members.
-    let members = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "t5/pop/P";
-             let $m in population-members($p);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        members,
-        vec!["t5/c1".to_string(), "t5/c2".to_string()],
-        "population-members(P) must return today's full cohort {{C1, C2}}; got {members:?}"
-    );
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // W2 — precedence (candidate C1, `probes/w2_precedence.tql`)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -261,7 +163,7 @@ async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_defines(
     apply_composed_schema(&db).await;
 
     // A full precedence instance: exception belief E dispositions instance BI over
-    // population belief BP, scoped to member C1.
+    // the general belief BP, scoped to member C1.
     insert(
         &db,
         r#"insert
@@ -306,13 +208,13 @@ async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_defines(
     );
 }
 
-/// **P-PREC-2** — full T4 population-vs-instance ground state; the population
-/// belief stays `"asserted"` for other members, and the disposition is readable
-/// back via a fn taking `($inst: belief)`.
+/// **P-PREC-2** — the T4 general-vs-instance ground state: the general belief the
+/// exception overrides stays `"asserted"` for other members, and the disposition is
+/// readable back via a fn taking `($inst: belief)`.
 ///
 /// The exception is member-scoped (it carries the scope, not a supersession), so
-/// overriding the population belief for C1 leaves it asserted for C2. This is the
-/// R3 clause: member-scoping is on the exception, never on `supersession`.
+/// overriding the general belief for C1 leaves it asserted for C2. This is the R3
+/// clause: member-scoping is on the exception, never on `supersession`.
 ///
 /// **Graduation scope (owed half).** This gate asserts only the *schema* half of
 /// the §5 row — the member-scoped exception shape defines, inserts, and reads back.
@@ -321,35 +223,31 @@ async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_defines(
 /// plus the anchor-less-write refusal (ledger #13); both are unbuilt, so a green
 /// here is not evidence any writer mints this shape.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn member_scoped_exception_leaves_population_belief_asserted_for_others() {
+async fn member_scoped_exception_leaves_the_overridden_belief_asserted_for_others() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
     apply_delta(&db, PREC_DISPOSITION_FN)
         .await
         .expect("disposition-of read-back fn defines");
 
-    // T4 ground state: population P with members C1, C2. Population belief BP scoped
-    // to P; instance belief BI diverges for C1; exception belief E dispositions BI
-    // over BP, scoped to C1. BP stays asserted (it still governs C2).
+    // T4 ground state: members C1, C2 and the general belief BP; instance belief BI
+    // diverges for C1; exception belief E dispositions BI over BP, scoped to C1. BP
+    // stays asserted (it still governs C2).
     insert(
         &db,
         r#"insert
-             $p isa population, has spec-hash "prec2/pop/P";
              $c1 isa concept, has concept-id "prec2/c1";
              $c2 isa concept, has concept-id "prec2/c2";
              $bp isa belief, has concept-id "prec2/BP", has belief-state "asserted";
              $bi isa belief, has concept-id "prec2/BI", has belief-state "asserted";
              $e isa divergence-exception, has concept-id "prec2/E",
                  has belief-state "asserted", has entrenchment "tool-derived";
-             scoped (scoped-belief: $bp, population: $p);
-             population-member (owning-population: $p, member: $c1);
-             population-member (owning-population: $p, member: $c2);
              divergence-precedence
                  (exception-belief: $e, prevailing: $bi, overridden: $bp, exception-scope: $c1);"#,
     )
     .await;
 
-    // The population belief is untouched — still "asserted" for the other members.
+    // The general belief is untouched — still "asserted" for the other members.
     let bp_state = read_col(
         &db,
         r#"match
@@ -361,7 +259,7 @@ async fn member_scoped_exception_leaves_population_belief_asserted_for_others() 
     assert_eq!(
         bp_state,
         vec!["asserted".to_string()],
-        "population belief BP must stay asserted despite the member-scoped exception; got {bp_state:?}"
+        "the general belief BP must stay asserted despite the member-scoped exception; got {bp_state:?}"
     );
 
     // The disposition is readable back through the ($inst: belief) function.
@@ -402,15 +300,15 @@ async fn member_scoped_exception_leaves_population_belief_asserted_for_others() 
 /// problem 3).
 ///
 /// `divergence-exception sub belief` inherits `plays contradiction:claim`, so a
-/// `contradiction` hub can group the population belief, the instance belief and the
-/// exception belief as co-claims — something a `canonical-entity` *view* (a
-/// population, not a belief) can never do. `contradicts(E, BP)` is then true.
+/// `contradiction` hub can group the general belief, the instance belief and the
+/// exception belief as co-claims — something a `canonical-entity` *view* (a closure
+/// of records, not a belief) can never do. `contradicts(E, BP)` is then true.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_holds() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
-    // A contradiction hub over the population belief, the instance belief, and the
+    // A contradiction hub over the general belief, the instance belief, and the
     // reified exception belief. The insert only commits if E can play claim.
     insert(
         &db,
@@ -445,16 +343,16 @@ async fn divergence_exception_is_a_belief_and_plays_contradiction_claim_holds() 
 /// **P-PREC-4** — the exception is attributed and retractable (the §8.2 clause).
 ///
 /// Superseding the exception belief flips a live-disposition read (gated on
-/// `is-superseded`) to empty, and the pre-exception state — the population belief
+/// `is-superseded`) to empty, and the pre-exception state — the general belief
 /// still `"asserted"` — is answerable again. Retracting the disposition is just a
 /// supersession of its anchoring belief, no bare-edge deletion.
 ///
 /// **Graduation scope (owed half).** This gate asserts only the *read* half of the
 /// §5 row — supersession of the anchoring belief flips the live-disposition read to
 /// empty, with no bare-edge delete. The owed behavioral half is a writer that
-/// performs the retraction-with-lineage (the populations writer closing/superseding
-/// on divergence, ledger #9; the co-mint writer, ledger #8); it is unbuilt, so a
-/// green here does not verify any writer retracts with correct provenance.
+/// performs the retraction-with-lineage (the co-mint writer, ledger #8); it is
+/// unbuilt, so a green here does not verify any writer retracts with correct
+/// provenance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retracting_a_precedence_supersedes_the_exception_belief_with_lineage() {
     let db = TestDb::new("probe_w2w3");
@@ -532,7 +430,7 @@ async fn retracting_a_precedence_supersedes_the_exception_belief_with_lineage() 
         "after retraction the live disposition must be empty; got {live_after:?}"
     );
 
-    // The pre-exception state is answerable again: the population belief still stands.
+    // The pre-exception state is answerable again: the general belief still stands.
     let bp_state = read_col(
         &db,
         r#"match
@@ -544,7 +442,7 @@ async fn retracting_a_precedence_supersedes_the_exception_belief_with_lineage() 
     assert_eq!(
         bp_state,
         vec!["asserted".to_string()],
-        "the overridden population belief must remain asserted after retraction; got {bp_state:?}"
+        "the overridden general belief must remain asserted after retraction; got {bp_state:?}"
     );
 }
 
@@ -932,161 +830,8 @@ async fn host_side_ranking_reproduces_dispositions() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// W3 — population window (C4a) + as-of-t functions (C4b)
+// W3 — as-of-t identity functions (C4b)
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// **P-PM-1 (C4a)** — the bitemporal window `owns valid-from, owns valid-to` is
-/// additive onto the existing `population-member` relation and coexists with
-/// `computed-at`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn population_member_carries_bitemporal_window_and_computed_at() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // One membership row carries valid-from, valid-to AND computed-at together.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "pm1/pop/P";
-             $c1 isa concept, has concept-id "pm1/c1";
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-01-01T00:00:00,
-                 has valid-to 2026-04-01T00:00:00,
-                 has computed-at 2026-01-01T00:00:00;"#,
-    )
-    .await;
-
-    // All three temporal attrs read back off the same relation instance.
-    let vf = count_rows(
-        &db,
-        r#"match
-             $pm isa population-member, links (member: $c1);
-             $c1 has concept-id "pm1/c1";
-             $pm has valid-from $x;
-           select $x;"#,
-    )
-    .await;
-    let vt = count_rows(
-        &db,
-        r#"match
-             $pm isa population-member, links (member: $c1);
-             $c1 has concept-id "pm1/c1";
-             $pm has valid-to $x;
-           select $x;"#,
-    )
-    .await;
-    let ca = count_rows(
-        &db,
-        r#"match
-             $pm isa population-member, links (member: $c1);
-             $c1 has concept-id "pm1/c1";
-             $pm has computed-at $x;
-           select $x;"#,
-    )
-    .await;
-    assert_eq!(vf, 1, "valid-from reads back; got {vf}");
-    assert_eq!(vt, 1, "valid-to reads back; got {vt}");
-    assert_eq!(
-        ca, 1,
-        "computed-at still coexists on the same row; got {ca}"
-    );
-}
-
-/// **P-PM-2 (C4a)** — two `population-member` instances for the SAME (pop, member)
-/// with different windows (a left-and-rejoined member) coexist as distinct rows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn left_and_rejoined_member_is_two_windowed_epoch_rows() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // C1 was a member during [t0,t1), left, then rejoined at t2 — two epoch rows.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "pm2/pop/P";
-             $c1 isa concept, has concept-id "pm2/c1";
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-06-01T00:00:00;"#,
-    )
-    .await;
-
-    // Both epoch windows are present on distinct instances linking the same (P, C1);
-    // valid-from is @card(0..1), so two rows imply two distinct membership instances.
-    let epochs = count_rows(
-        &db,
-        r#"match
-             $pm isa population-member, links (owning-population: $p, member: $c1);
-             $c1 has concept-id "pm2/c1";
-             $pm has valid-from $x;
-           select $x;"#,
-    )
-    .await;
-    assert_eq!(
-        epochs, 2,
-        "two distinct windowed membership epochs for (P, C1) must coexist; got {epochs}"
-    );
-}
-
-/// **P-PM-3 (C4b)** — `population-members-at` (relation-var `has` + negation over
-/// relation attrs inside a persisted fn) defines and answers, consuming `$t` (FRP1).
-///
-/// Fixture: C1 open-ended from t₀, C2 closed at t₁. The function must return {C1, C2}
-/// for a t in [t₀, t₁) and {C1} for a t ≥ t₁ — different answers for different `$t`
-/// proving the parameter is genuinely consumed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn population_members_at_returns_windowed_membership() {
-    let db = TestDb::new("probe_w2w3");
-    // The population-member window and the as-of-t functions (C4a + C4b) are FOLDED into
-    // the shipped mem schema (Mode B); `apply_composed_schema` provides them, so this
-    // probe exercises the SHIPPED `population-members-at` directly — re-applying the
-    // folded delta would be refused ([FUN5] already-exists; see P-REDEF).
-    apply_composed_schema(&db).await;
-
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "pm3/pop/P";
-             $c1 isa concept, has concept-id "pm3/c1";
-             $c2 isa concept, has concept-id "pm3/c2";
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-01-01T00:00:00;
-             population-member (owning-population: $p, member: $c2),
-                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;"#,
-    )
-    .await;
-
-    let at_feb = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "pm3/pop/P";
-             let $m in population-members-at($p, 2026-02-01T00:00:00);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        at_feb,
-        vec!["pm3/c1".to_string(), "pm3/c2".to_string()],
-        "at t in [t0,t1) both members are live; got {at_feb:?}"
-    );
-
-    let at_may = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "pm3/pop/P";
-             let $m in population-members-at($p, 2026-05-01T00:00:00);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        at_may,
-        vec!["pm3/c1".to_string()],
-        "at t >= t1 only C1 remains (C2's window closed); got {at_may:?}"
-    );
-}
 
 /// **P-CE-1 (C4b)** — the recursive `canonical-entity-at` with per-branch window
 /// predicates returns the epoch-correct closure on a two-epoch fixture.
@@ -1098,9 +843,9 @@ async fn population_members_at_returns_windowed_membership() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_entity_at_recursive_asof_closure() {
     let db = TestDb::new("probe_w2w3");
-    // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
-    // as-of-t functions, so this probe reads the SHIPPED `canonical-entity-at` — the
-    // folded delta cannot be re-applied ([FUN5] already-exists; see P-REDEF).
+    // C4b is FOLDED (Mode B): `apply_composed_schema` provides the as-of-t functions,
+    // so this probe reads the SHIPPED `canonical-entity-at` — the folded delta cannot
+    // be re-applied ([FUN5] already-exists; see P-REDEF).
     apply_composed_schema(&db).await;
 
     // Two epochs of provable identity: RES1(C1,C2) from t0; RES2(C2,C3) from t2.
@@ -1163,94 +908,12 @@ async fn canonical_entity_at_recursive_asof_closure() {
     );
 }
 
-/// **P-T5-FIX** — the W3 acceptance shape: on the T5 fixture, `believed-at(t)` and
-/// `population-members-at(P, t)` are both as-of-t and AGREE (the belief believed at t₀
-/// is reconstructed against the t₀ cohort, not today's).
-///
-/// The T5 baseline showed the bug: `believed-at(t0)` = {B} while the time-blind
-/// `population-members(P)` = {C1, C2} (today's cohort). With the window, at t₀ only C1
-/// was a member (C2 joined later), so `population-members-at(P, t0)` = {C1} — the
-/// as-of-t0 belief view and membership view are mutually consistent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn believed_at_and_members_at_agree_as_of_t() {
-    let db = TestDb::new("probe_w2w3");
-    // C4a + C4b are FOLDED (Mode B): `apply_composed_schema` provides the window and the
-    // as-of-t functions, so the acceptance shape is proven against the SHIPPED schema
-    // with no delta — the folded delta cannot be re-applied ([FUN5]; see P-REDEF).
-    apply_composed_schema(&db).await;
-
-    // B scoped to P, valid from t0. C1 a member from t0; C2 joined at today.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "t5fix/pop/P";
-             $b isa belief, has concept-id "t5fix/B", has belief-state "asserted",
-                 has valid-from 2026-01-01T00:00:00;
-             $c1 isa concept, has concept-id "t5fix/c1";
-             $c2 isa concept, has concept-id "t5fix/c2";
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-01-01T00:00:00, has computed-at 2026-01-01T00:00:00;
-             population-member (owning-population: $p, member: $c2),
-                 has valid-from 2026-07-11T00:00:00, has computed-at 2026-07-11T00:00:00;"#,
-    )
-    .await;
-
-    // believed-at(t0) is temporal: it sees the belief valid at t0.
-    let believed = read_concept_ids(
-        &db,
-        r#"match
-             let $bel in believed-at(2026-01-01T00:00:00);
-             $bel has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        believed,
-        vec!["t5fix/B".to_string()],
-        "believed-at(t0) must return B only; got {believed:?}"
-    );
-
-    // population-members-at(P, t0) is NOW time-aware: only C1 was a member at t0.
-    let members_t0 = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "t5fix/pop/P";
-             let $m in population-members-at($p, 2026-01-01T00:00:00);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        members_t0,
-        vec!["t5fix/c1".to_string()],
-        "population-members-at(P, t0) must return the t0 cohort {{C1}}, agreeing with believed-at(t0); got {members_t0:?}"
-    );
-
-    // Sanity: as of today the cohort has grown to {C1, C2} — the fix is time-varying,
-    // not a constant, so the t0 agreement above is a genuine as-of-t result.
-    let members_now = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "t5fix/pop/P";
-             let $m in population-members-at($p, 2026-07-11T00:00:00);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        members_now,
-        vec!["t5fix/c1".to_string(), "t5fix/c2".to_string()],
-        "population-members-at(P, today) must return the full cohort {{C1, C2}}; got {members_now:?}"
-    );
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // Mode B — the folded shipped shape: composition (P-COMP) + migration posture (P-REDEF)
 //
 // After the Mode-B fold, `apply_composed_schema` reads the mem schema files that now
 // ALREADY carry the winning candidates (divergence-exception + divergence-precedence,
-// the population-member window, and the as-of-t functions).
+// and the as-of-t functions).
 // These two probes validate the SHIPPED shape directly — no Mode-A delta on top.
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1365,10 +1028,9 @@ async fn raw_define_error(db: &TestDb, schema: &str) -> String {
 ///
 /// `apply_composed_schema` applies core, then the folded mem substrate (strip-`define`
 /// assembly intact), then cyber, each `.expect`-ing a clean apply — a define collision
-/// would panic there. On the composed schema, with no delta, the two acceptance
-/// shapes hold from the shipped functions/types alone:
-///   (a) `believed-at(t)` and `population-members-at(P, t)` agree as-of-t (T5 fix);
-///   (b) a `divergence-exception` inserts and can be a `contradiction:claim` (W2, C1).
+/// would panic there. On the composed schema, with no delta, the W2 acceptance shape
+/// holds from the shipped types alone: a `divergence-exception` inserts and can be a
+/// `contradiction:claim` (C1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_candidate_stack_composes_define_clean_with_cyber() {
     let db = TestDb::new("probe_w2w3");
@@ -1376,69 +1038,8 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     // a folded-in define collision (or a broken strip-define assembly) panics here.
     apply_composed_schema(&db).await;
 
-    // (a) T5 fix from the SHIPPED window + as-of-t fn: believed-at(t0) and
-    //     population-members-at(Pb, t0) agree. Belief Bb scoped to Pb valid-from t0
-    //     (the only belief valid by t0, so believed-at(t0) = {Bb}); member Cb1
-    //     from t0, Cb2 from today.
-    insert(
-        &db,
-        r#"insert
-             $pb isa population, has spec-hash "comp/pop/B";
-             $bb isa belief, has concept-id "comp/b/B", has belief-state "asserted",
-                 has valid-from 2026-01-01T00:00:00;
-             $cb1 isa concept, has concept-id "comp/b/c1";
-             $cb2 isa concept, has concept-id "comp/b/c2";
-             scoped (scoped-belief: $bb, population: $pb);
-             population-member (owning-population: $pb, member: $cb1),
-                 has valid-from 2026-01-01T00:00:00;
-             population-member (owning-population: $pb, member: $cb2),
-                 has valid-from 2026-07-11T00:00:00;"#,
-    )
-    .await;
-    let believed = read_concept_ids(
-        &db,
-        r#"match
-             let $bel in believed-at(2026-01-01T00:00:00);
-             $bel has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        believed,
-        vec!["comp/b/B".to_string()],
-        "(a) believed-at(t0) must return Bb only; got {believed:?}"
-    );
-    let members_t0 = read_concept_ids(
-        &db,
-        r#"match
-             $pb isa population, has spec-hash "comp/pop/B";
-             let $m in population-members-at($pb, 2026-01-01T00:00:00);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        members_t0,
-        vec!["comp/b/c1".to_string()],
-        "(a) population-members-at(Pb, t0) must return the t0 cohort {{Cb1}}, agreeing with believed-at(t0); got {members_t0:?}"
-    );
-    let members_now = read_concept_ids(
-        &db,
-        r#"match
-             $pb isa population, has spec-hash "comp/pop/B";
-             let $m in population-members-at($pb, 2026-07-11T00:00:00);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        members_now,
-        vec!["comp/b/c1".to_string(), "comp/b/c2".to_string()],
-        "(a) population-members-at(Pb, today) must grow to {{Cb1, Cb2}} — the fix is time-varying; got {members_now:?}"
-    );
-
-    // (b) W2 from the SHIPPED C1 types: a divergence-exception inserts and plays
-    //     contradiction:claim (inherited via `sub belief`), and contradicts() holds.
+    // W2 from the SHIPPED C1 types: a divergence-exception inserts and plays
+    // contradiction:claim (inherited via `sub belief`), and contradicts() holds.
     insert(
         &db,
         r#"insert
@@ -1464,7 +1065,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     assert_eq!(
         contradicting,
         vec!["comp/c/E".to_string()],
-        "(b) the shipped divergence-exception must be a live contradiction claim (contradicts(E,BP)=true); got {contradicting:?}"
+        "the shipped divergence-exception must be a live contradiction claim (contradicts(E,BP)=true); got {contradicting:?}"
     );
 }
 
@@ -1478,7 +1079,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
 // `technique-detection`/`alert-disposition` (written by cyber through the
 // belief-edge seam) today, and W2's
 // `divergence-precedence` the day W2 lands — whereas INVARIANTS §8.4's hand-list
-// misses `divergence-precedence` (and even omits `resolves`/`scoped`).
+// misses `divergence-precedence` (and even omits `resolves`).
 //
 // This probe lives on `conflict_resolution`, whose `apply_composed_schema` reads the
 // UNFOLDED mem schema — so `divergence-precedence` is absent until the W2 candidate
@@ -1520,14 +1121,13 @@ async fn p_w5_1_folded_surface_contains_divergence_precedence() {
         "surface must include cyber's technique-detection/alert-disposition; got {surface:?}"
     );
     // Introspection also catches the core belief-tier relations INVARIANTS §8.4's
-    // hand-list omits (`resolves`, `scoped`) alongside the ones it names.
+    // hand-list omits (`resolves`) alongside the ones it names.
     for expected in [
         "derivation",
         "supersession",
         "surfaced",
         "informs-synthesis",
         "resolves",
-        "scoped",
     ] {
         assert!(
             surface.contains(expected),

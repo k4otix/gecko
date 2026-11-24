@@ -13,7 +13,6 @@ use gecko_extension_api::{GeckoExtension, HostImportDef, SchemaMigration};
 pub mod belief_edge;
 pub mod consolidation;
 pub mod disposition;
-pub mod populations;
 mod tql;
 pub mod writer;
 
@@ -23,7 +22,6 @@ pub use consolidation::{
     NoopConsolidationDaemon,
 };
 pub use disposition::{DispKeys, Disposition};
-pub use populations::MaterializeReport;
 pub use writer::{DuplicateCandidate, IndexOutcome, MemWriter};
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
@@ -169,9 +167,29 @@ mod tests {
     }
 
     #[test]
-    fn shipped_mem_schema_has_no_cohort_blast_labels() {
+    fn shipped_mem_schema_has_no_population_labels() {
         let schema: &str = &MEM_SCHEMA;
-        let found = deleted_labels_absent(schema, &["blast-radius-at", "blast-step-at"]);
+        let found = deleted_labels_absent(
+            schema,
+            &[
+                "entity population",
+                "relation scoped",
+                "relation population-member",
+                "isa population",
+                "isa scoped",
+                "scoped:",
+                "population-member:",
+                "scoped-belief",
+                "spec-dialect",
+                "spec-text",
+                "spec-hash",
+                "computed-at",
+                "population-members",
+                "population-members-at",
+                "blast-radius-at",
+                "blast-step-at",
+            ],
+        );
         assert!(
             found.is_empty(),
             "the shipped mem schema still declares {found:?}"
@@ -351,14 +369,8 @@ mod tests {
         assert!(schema.contains("fun believed-at($t: datetime) -> { belief }"));
         assert!(schema.contains("fun derivation-chain($b: memory-item) -> { memory-item }"));
         assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }"));
-        // Population / resolution functions — present-state fast path and as-of-t variants.
-        assert!(schema.contains("fun population-members($pop: population) -> { concept }"));
+        // Resolution functions — present-state fast path and as-of-t variant.
         assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }"));
-        assert!(
-            schema.contains(
-                "fun population-members-at($pop: population, $t: datetime) -> { concept }"
-            )
-        );
         assert!(
             schema.contains("fun canonical-entity-at($rec: concept, $t: datetime) -> { concept }")
         );

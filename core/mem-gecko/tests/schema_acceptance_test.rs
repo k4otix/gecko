@@ -197,82 +197,6 @@ async fn belief_evidence_restson_supersession_roundtrip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: a population-scoped belief resolves N members via the materialized
-// view; a strict read re-evaluates membership by running the stored spec-text
-// (which finds MORE than the stale materialized cache — bounded-staleness).
-// ─────────────────────────────────────────────────────────────────────────────
-#[tokio::test]
-async fn population_materialized_and_strict_membership() {
-    let (mut router, name) = fresh_db().await;
-
-    write_seed(
-        &mut router,
-        r#"
-        insert
-          $p isa population, has spec-hash "cohort-1", has spec-dialect "typeql-3",
-              has spec-text 'match $c isa concept, has tag "internet-facing";';
-          $c1 isa concept, has concept-id "asset/c1", has tag "internet-facing";
-          $c2 isa concept, has concept-id "asset/c2", has tag "internet-facing";
-          $c3 isa concept, has concept-id "asset/c3", has tag "internet-facing";
-          # materialized view is STALE: only c1, c2 are cached (c3 tagged later)
-          population-member (owning-population: $p, member: $c1), has computed-at 2026-01-01T00:00:00;
-          population-member (owning-population: $p, member: $c2), has computed-at 2026-01-01T00:00:00;
-          # a belief scopes to the POPULATION, not to each member (invariant 5)
-          $b isa belief, has concept-id "mem/bel/pop", has belief-state "asserted";
-          scoped (scoped-belief: $b, population: $p);
-        "#,
-    )
-    .await
-    .expect("insert population + members + scoped belief");
-
-    // Materialized read via the population-members function → 2 (stale cache).
-    let materialized = fetch(
-        &mut router,
-        r#"match
-             $p isa population, has spec-hash "cohort-1";
-             let $m in population-members($p);
-           fetch { "m": $m.concept-id };"#,
-    )
-    .await;
-    assert_eq!(materialized.len(), 2, "materialized view holds 2 members");
-
-    // The belief is scoped to the population.
-    let scoped = fetch(
-        &mut router,
-        r#"match
-             $b isa belief, has concept-id "mem/bel/pop";
-             scoped (scoped-belief: $b, population: $p);
-             $p has spec-hash $h;
-           fetch { "h": $h };"#,
-    )
-    .await;
-    assert_eq!(scoped.len(), 1);
-    assert_eq!(scoped[0]["h"], "cohort-1");
-
-    // Strict read: fetch the stored spec-text and RUN it verbatim. It re-evaluates
-    // membership over live data and finds 3 (c1, c2, c3) — more than the stale cache.
-    let spec_docs = fetch(
-        &mut router,
-        r#"match $p isa population, has spec-hash "cohort-1", has spec-text $t;
-           fetch { "t": $t };"#,
-    )
-    .await;
-    let spec_text = spec_docs[0]["t"].as_str().expect("spec-text is a string");
-    let strict = fetch(
-        &mut router,
-        &format!(r#"{spec_text} fetch {{ "c": $c.concept-id }};"#),
-    )
-    .await;
-    assert_eq!(
-        strict.len(),
-        3,
-        "strict re-evaluation finds 3 members (> stale materialized 2)"
-    );
-
-    drop_db(router, &name).await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Acceptance: two source-records with an identical provable `resolution` collapse
 // to one canonical-entity view (transitive closure over provable resolutions)
 // while BOTH source seams stay queryable (no physical merge — invariant 9).
@@ -349,71 +273,6 @@ async fn provable_resolution_canonicalizes_without_merge() {
     )
     .await;
     assert_eq!(seams.len(), 2, "both source seams stay queryable");
-
-    drop_db(router, &name).await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: two beliefs over the same `spec-hash` attach to ONE population node
-// (spec-hash @key dedups cohorts). A duplicate population insert is rejected.
-// ─────────────────────────────────────────────────────────────────────────────
-#[tokio::test]
-async fn same_spec_hash_shares_one_population() {
-    let (mut router, name) = fresh_db().await;
-
-    // Create the population once, plus the first scoped belief.
-    write_seed(
-        &mut router,
-        r#"
-        insert
-          $p isa population, has spec-hash "cohort-x";
-          $b1 isa belief, has concept-id "mem/bel/x1", has belief-state "asserted";
-          scoped (scoped-belief: $b1, population: $p);
-        "#,
-    )
-    .await
-    .expect("insert population + first belief");
-
-    // Second belief attaches to the SAME population, matched by its @key spec-hash.
-    write_seed(
-        &mut router,
-        r#"
-        match $p isa population, has spec-hash "cohort-x";
-        insert
-          $b2 isa belief, has concept-id "mem/bel/x2", has belief-state "asserted";
-          scoped (scoped-belief: $b2, population: $p);
-        "#,
-    )
-    .await
-    .expect("second belief attaches to existing population");
-
-    // Exactly one population node with that spec-hash…
-    let pops = fetch(
-        &mut router,
-        r#"match $p isa population, has spec-hash "cohort-x";
-           fetch { "h": $p.spec-hash };"#,
-    )
-    .await;
-    assert_eq!(pops.len(), 1, "one population node for the spec-hash");
-
-    // …carrying both beliefs.
-    let scoped = fetch(
-        &mut router,
-        r#"match
-             $p isa population, has spec-hash "cohort-x";
-             scoped (scoped-belief: $b, population: $p);
-           fetch { "b": $b.concept-id };"#,
-    )
-    .await;
-    assert_eq!(scoped.len(), 2, "both beliefs attach to the one population");
-
-    // A duplicate population with the same @key spec-hash is rejected.
-    let dup = write(
-        &mut router,
-        r#"insert $p2 isa population, has spec-hash "cohort-x";"#,
-    )
-    .await;
-    assert!(dup.is_err(), "spec-hash @key rejects a duplicate cohort");
 
     drop_db(router, &name).await;
 }
@@ -607,7 +466,6 @@ insert
       has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
   $ag isa agent, has agent-id "agent-p";
   $run isa doc-run, has run-id "run-p";
-  $pop isa population, has spec-hash "pop-p";
   $c1 isa concept, has concept-id "c/p1";
   $c2 isa concept, has concept-id "c/p2";
 "#;
@@ -624,7 +482,6 @@ match
   $re isa retrieval-event, has concept-id "mem/re/p";
   $ag isa agent, has agent-id "agent-p";
   $run isa doc-run, has run-id "run-p";
-  $pop isa population, has spec-hash "pop-p";
   $c1 isa concept, has concept-id "c/p1";
   $c2 isa concept, has concept-id "c/p2";
 "#;
@@ -732,18 +589,6 @@ const CONSOLIDATION_STEP: RoleCase = case(
     &[],
     r#", has consolidation-action "dedup", has created-at 2026-01-02T00:00:00"#,
 );
-const SCOPED: RoleCase = case(
-    "scoped",
-    &[("scoped-belief", "$b1"), ("population", "$pop")],
-    &[],
-    "",
-);
-const POPULATION_MEMBER: RoleCase = case(
-    "population-member",
-    &[("owning-population", "$pop"), ("member", "$c1")],
-    &[],
-    "",
-);
 const RESOLVES: RoleCase = case(
     "resolves",
     &[
@@ -849,10 +694,6 @@ missing_role_refused! {
     a_consolidation_step_missing_its_affected_is_refused_at_commit: CONSOLIDATION_STEP, "affected";
     a_consolidation_step_missing_its_run_is_refused_at_commit: CONSOLIDATION_STEP, "run";
     a_consolidation_step_missing_its_performer_is_refused_at_commit: CONSOLIDATION_STEP, "performer";
-    a_scoped_missing_its_scoped_belief_is_refused_at_commit: SCOPED, "scoped-belief";
-    a_scoped_missing_its_population_is_refused_at_commit: SCOPED, "population";
-    a_population_member_missing_its_owning_population_is_refused_at_commit: POPULATION_MEMBER, "owning-population";
-    a_population_member_missing_its_member_is_refused_at_commit: POPULATION_MEMBER, "member";
     a_resolves_missing_its_resolution_belief_is_refused_at_commit: RESOLVES, "resolution-belief";
     a_resolves_missing_its_record_a_is_refused_at_commit: RESOLVES, "record-a";
     a_resolves_missing_its_record_b_is_refused_at_commit: RESOLVES, "record-b";
@@ -913,12 +754,8 @@ async fn a_database_holding_a_one_player_row_upgrades() {
           $b isa belief, has concept-id "mem/bel/up", has belief-state "asserted";
           $ep isa episode, has concept-id "mem/ep/up",
               has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
-          $p isa population, has spec-hash "pop-up";
-          $c isa concept, has concept-id "c/up";
           derivation (derived: $b, source: $ep), has derivation-method "type-join";
           derivation (source: $ep), has derivation-method "type-join";
-          population-member (owning-population: $p, member: $c);
-          population-member (owning-population: $p);
         "#,
     )
     .await
@@ -936,26 +773,18 @@ async fn a_database_holding_a_one_player_row_upgrades() {
             .expect("mem upgrades over one-player rows");
     }
 
-    for (rel, full) in [
-        ("derivation", "links (derived: $x, source: $y)"),
-        (
-            "population-member",
-            "links (owning-population: $x, member: $y)",
-        ),
-    ] {
-        let all = fetch(
-            &mut router,
-            &format!(r#"match $r isa {rel}; fetch {{ "kind": "row" }};"#),
-        )
-        .await;
-        let played = fetch(
-            &mut router,
-            &format!(r#"match $r isa {rel}, {full}; fetch {{ "kind": "row" }};"#),
-        )
-        .await;
-        assert_eq!(all.len(), 1, "{rel}: only the fully-played row is left");
-        assert_eq!(played.len(), 1, "{rel}: the fully-played row survives");
-    }
+    let all = fetch(
+        &mut router,
+        r#"match $r isa derivation; fetch { "kind": "row" };"#,
+    )
+    .await;
+    let played = fetch(
+        &mut router,
+        r#"match $r isa derivation, links (derived: $x, source: $y); fetch { "kind": "row" };"#,
+    )
+    .await;
+    assert_eq!(all.len(), 1, "only the fully-played derivation is left");
+    assert_eq!(played.len(), 1, "the fully-played derivation survives");
     drop_db(router, &name).await;
 }
 

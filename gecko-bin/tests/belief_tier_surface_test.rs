@@ -72,7 +72,6 @@ async fn surface_of_the_mem_schema_has_the_root_closure_and_its_belief_edges() {
         "rests-on",
         "surfaced",
         "informs-synthesis",
-        "scoped",
         "resolves",
     ]);
     assert!(
@@ -80,7 +79,7 @@ async fn surface_of_the_mem_schema_has_the_root_closure_and_its_belief_edges() {
         "relations must include {relations:?}; got {:?}",
         surface.relations
     );
-    for record in ["population-member", "containment", "concept-link"] {
+    for record in ["containment", "concept-link"] {
         assert!(
             !surface.relations.contains(record),
             "relations must exclude `{record}`; got {:?}",

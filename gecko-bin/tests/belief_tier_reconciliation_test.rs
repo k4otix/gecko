@@ -532,7 +532,6 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
         "divergence-precedence",
         LabelDisposition::Owed { owner: "A5" },
     ),
-    ("scoped", LabelDisposition::Owed { owner: "A7" }),
     ("resolution", LabelDisposition::Owed { owner: "M3" }),
     ("resolves", LabelDisposition::Owed { owner: "M3" }),
     ("playbook", LabelDisposition::Owed { owner: "M5" }),
@@ -900,35 +899,6 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             .await
             .expect("resolve_prediction")
     );
-    // Population tables are outside the belief tier, so this drive's delta is empty.
-    drive!("populations", {
-        assert!(
-            ref_writer
-                .define_population("rig-pop", "typeql-3", "match $c isa concept;")
-                .await
-                .expect("define_population"),
-            "rig-pop already existed"
-        );
-        ref_writer
-            .materialize_population(
-                "rig-pop",
-                &[ConceptId::new(MEM_PLAYBOOK), ConceptId::new(CYBER_PLAYBOOK)],
-                chrono::Utc::now(),
-            )
-            .await
-            .expect("materialize_population");
-        assert!(
-            ref_writer
-                .close_population_membership(
-                    "rig-pop",
-                    &ConceptId::new(MEM_PLAYBOOK),
-                    chrono::Utc::now(),
-                )
-                .await
-                .expect("close_population_membership"),
-            "rig-pop had no open row for {MEM_PLAYBOOK}"
-        );
-    });
     drive!("dedup", {
         let mut episodes = Vec::new();
         for _ in 0..2 {
