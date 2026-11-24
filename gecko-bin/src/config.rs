@@ -56,8 +56,8 @@ pub struct SemanticIndexConfig {
     /// [`index_path`] resolves the effective location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Which embedder to build. Only `"stub"` is compiled today; the real
-    /// `bge-large-en-v1.5` impl is deferred behind a feature.
+    /// Which embedder to build: `"stub"` (the deterministic hash embedder) or
+    /// `"candle"` (bge-large-en-v1.5, compiled only with the `real-embedder` feature).
     #[serde(default = "default_embedder")]
     pub embedder: String,
     /// Which index backend. Only `"hnsw"` today; `"typedb-native"` is the future
@@ -595,6 +595,46 @@ mod tests {
         assert!(!sic.auto_fetch, "never silently pull 1.3GB");
         assert!(sic.model_path.is_none());
         assert!(sic.model_source.is_none());
+    }
+
+    /// Every `gecko.toml` snippet the user docs show parses, names an embedder
+    /// `build_epistemic_writer` accepts, and enables only extensions
+    /// `build_extensions` knows.
+    #[test]
+    fn documented_config_snippets_are_accepted() {
+        let docs = [
+            ("README.md", include_str!("../../README.md")),
+            ("docs/INSTALL.md", include_str!("../../docs/INSTALL.md")),
+            ("gecko.toml", include_str!("../../gecko.toml")),
+        ];
+        let mut snippets = 0;
+        for (file, text) in docs {
+            let blocks: Vec<&str> = if file.ends_with(".toml") {
+                vec![text]
+            } else {
+                text.split("```toml\n")
+                    .skip(1)
+                    .map(|rest| rest.split("```").next().unwrap_or(""))
+                    .collect()
+            };
+            for block in blocks {
+                snippets += 1;
+                let cfg: GeckoConfig = toml::from_str(block)
+                    .unwrap_or_else(|e| panic!("{file}: a snippet does not parse: {e}\n{block}"));
+                let embedder = cfg.semantic_index.embedder.as_str();
+                assert!(
+                    ["stub", "candle"].contains(&embedder),
+                    "{file}: embedder {embedder:?} is not one the binary accepts\n{block}"
+                );
+                for ext in &cfg.extensions.enabled {
+                    assert!(
+                        ["mem", "cyber"].contains(&ext.as_str()),
+                        "{file}: extension {ext:?} is not one the binary knows\n{block}"
+                    );
+                }
+            }
+        }
+        assert!(snippets >= 4, "found only {snippets} snippets");
     }
 
     #[test]
