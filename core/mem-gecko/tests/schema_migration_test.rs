@@ -20,8 +20,8 @@ const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tq
 /// The mem schema of an earlier release, before belief's `@doc` changed.
 const PREVIOUS_MEM_SCHEMA: &str = include_str!("fixtures/mem_schema_95ebac1.tql");
 
-/// The shipped `canonical-step` body's first line, and an earlier line that did
-/// not exclude resolutions no longer asserted.
+/// The shipped `canonical-step` body's first line, which matches only asserted
+/// resolutions, and a variant that matches resolutions in any belief-state.
 const NEW_BODY: &str = "          $res isa resolution, has belief-state \"asserted\";";
 const OLD_BODY: &str = "          $res isa resolution;";
 

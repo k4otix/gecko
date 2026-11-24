@@ -490,6 +490,23 @@ async fn blast_radius_terminates_on_a_rests_on_cycle() {
         .await
         .unwrap();
 
+    // The function itself yields each member once, before the reader dedups.
+    let rows = fx
+        .raw_fetch(&format!(
+            r#"match
+                 $a isa memory-item, has concept-id "{}";
+                 let $m in blast-radius($a);
+                 $m has concept-id $c;
+               fetch {{ "c": $c }};"#,
+            a.as_str()
+        ))
+        .await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "blast-radius yields each member once: {rows:?}"
+    );
+
     let mut radius = w.blast_radius(a.clone()).await.unwrap();
     assert_eq!(radius.len(), 2, "each cycle member once: {radius:?}");
     radius.sort();

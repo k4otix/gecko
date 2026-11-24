@@ -1,9 +1,10 @@
 //! The closure functions return exactly what an independent oracle returns, on
-//! random graphs: `blast-radius` of each belief matches a Rust reachability over the
-//! graph's `rests-on` and `derivation` edges (resolutions included), and `canonical-entity` and
-//! `canonical-entity-at` of each concept match their reference bodies
-//! (`tests/fixtures/closure_canonical_ref.tql`, the bodies before the closures were
-//! split into step functions).
+//! random graphs:
+//! - `blast-radius` of each belief matches [`reachable`], a Rust reachability over
+//!   the graph's `rests-on` and `derivation` edges (resolutions included);
+//! - `canonical-entity` and `canonical-entity-at` of each concept match their
+//!   reference bodies in `tests/fixtures/closure_canonical_ref.tql`, written as one
+//!   recursive function each, without step functions.
 //!
 //! Each case writes a graph under its own concept-id prefix, so the cases share one
 //! database without reaching each other: beliefs joined by `rests-on` and by
@@ -197,6 +198,7 @@ async fn closure(
     .await
 }
 
+/// Each closure matches its oracle (module doc) on every generated graph.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closures_match_their_reference_bodies() {
     let name = format!("clostest_{}", Ulid::generate().to_string().to_lowercase());
