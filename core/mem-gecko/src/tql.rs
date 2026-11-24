@@ -1049,19 +1049,6 @@ pub(crate) fn blast_radius_read(retracted: &MemId) -> Read {
     )
 }
 
-/// `blast-radius-at($r, $at)` of any concept or memory item `retracted`.
-pub(crate) fn blast_radius_at_read(retracted: &ConceptId, at: DateTime) -> Read {
-    let mut p = Params::new();
-    p.s("rid", retracted.0.clone());
-    p.dt("at", at);
-    p.read(
-        "match $r isa okf-concept, has concept-id $rc; $rc == $rid;
-               let $m in blast-radius-at($r, $at);
-               $m has concept-id $mid;
-         fetch { \"id\": $mid };",
-    )
-}
-
 /// `canonical-entity($rec)` of record `rec`.
 pub(crate) fn canonical_entity_read(rec: &ConceptId) -> Read {
     let mut p = Params::new();

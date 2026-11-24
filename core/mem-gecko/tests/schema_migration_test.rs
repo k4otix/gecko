@@ -118,7 +118,6 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
     for m in mem.schema_migrations() {
         assert!(!schema.contains(m.applies_when), "{} left old text", m.id);
     }
-    assert!(schema.contains("fun blast-radius-at("));
     assert!(schema.contains("fun population-members-at("));
 
     common::drop_db_with_retry(&mut router, &name).await;
@@ -230,6 +229,56 @@ async fn callee_signature_change_lands_before_its_caller() {
         "{schema}"
     );
     assert!(schema.contains("pick($w, \"a\")"), "{schema}");
+    common::drop_db_with_retry(&mut router, &name).await;
+}
+
+#[tokio::test]
+async fn narrowing_a_callee_under_a_stored_caller_applies() {
+    let (mut router, name) = router();
+    // Both functions take the supertype, and the caller calls the callee.
+    let before = r#"define
+  entity gadget, owns label;
+  entity widget sub gadget;
+  attribute label, value string;
+  fun reach($g: gadget) -> { gadget }:
+      match let $x in step($g);
+      return { $x };
+  fun step($g: gadget) -> { gadget }:
+      match $g isa gadget;
+      return { $g };
+"#;
+    // Both narrow to the subtype. The plan redefines the callee first, so TypeDB
+    // checks the narrowed callee against the stored, still-wide caller.
+    let after = r#"define
+  entity gadget, owns label;
+  entity widget sub gadget;
+  attribute label, value string;
+  fun reach($w: widget) -> { gadget }:
+      match let $x in step($w);
+      return { $x };
+  fun step($w: widget) -> { gadget }:
+      match $w isa widget;
+      return { $w };
+"#;
+    router.apply_schema(before).await.expect("first release");
+    write(&mut router, r#"insert $w isa widget, has label "w";"#)
+        .await
+        .expect("seed a widget");
+    for _ in 0..2 {
+        router.apply_schema(after).await.expect("narrowed release");
+    }
+    let schema = router.database_schema().await.expect("schema");
+    assert!(schema.contains("fun step($w: widget)"), "{schema}");
+    assert!(schema.contains("fun reach($w: widget)"), "{schema}");
+    assert_eq!(
+        count(
+            &mut router,
+            r#"match $w isa widget, has label "w"; let $x in reach($w);"#
+        )
+        .await,
+        1,
+        "the caller answers through the narrowed callee"
+    );
     common::drop_db_with_retry(&mut router, &name).await;
 }
 

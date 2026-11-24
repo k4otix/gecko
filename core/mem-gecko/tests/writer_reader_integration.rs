@@ -8,6 +8,7 @@
 //!
 //! Requires a running TypeDB service (CI provides one).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -433,6 +434,108 @@ async fn blast_radius_propagates_transitively() {
         radius.contains(&b2),
         "…and transitively its downstream derivation"
     );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn blast_radius_of_a_leaf_belief_is_empty() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let leaf = w
+        .assert_belief(
+            &ctx,
+            belief("nothing depends on this", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(w.blast_radius(leaf).await.unwrap(), Vec::<MemId>::new());
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn blast_radius_terminates_on_a_rests_on_cycle() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("cycle a", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("cycle b", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.rests_on(&ctx, a.clone(), std::slice::from_ref(&b))
+        .await
+        .unwrap();
+    w.rests_on(&ctx, b.clone(), std::slice::from_ref(&a))
+        .await
+        .unwrap();
+
+    let mut radius = w.blast_radius(a.clone()).await.unwrap();
+    assert_eq!(radius.len(), 2, "each cycle member once: {radius:?}");
+    radius.sort();
+    let mut want = vec![a, b];
+    want.sort();
+    assert_eq!(radius, want);
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn blast_radius_follows_a_derivation_chain() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("chain root", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("chain middle", "agent-1", 0.8),
+            std::slice::from_ref(&a),
+            DerivationMethod::TypeJoin,
+        )
+        .await
+        .unwrap();
+    let c = w
+        .assert_belief(
+            &ctx,
+            belief("chain tip", "agent-1", 0.7),
+            std::slice::from_ref(&b),
+            DerivationMethod::TypeJoin,
+        )
+        .await
+        .unwrap();
+
+    let radius: BTreeSet<MemId> = w.blast_radius(a).await.unwrap().into_iter().collect();
+    assert_eq!(radius, BTreeSet::from([b, c]));
 
     fx.drop_db().await;
 }
@@ -3239,75 +3342,6 @@ async fn populations_writer_rejects_bad_input_and_writes_nothing() {
     assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
 
     fx.drop_db().await;
-}
-
-#[tokio::test]
-async fn blast_radius_at_follows_the_materialized_window() {
-    let fx = Fixture::new().await;
-    let w = fx.writer(None, None);
-    seed_concepts(&fx, &["asset/a"]).await;
-    fx.raw_seed(&format!(
-        r#"insert
-             $p isa population, has spec-hash "{POP}", has spec-dialect "typeql-3",
-                 has spec-text "match $c isa concept;";
-             $b isa belief, has concept-id "mem/bel/cohort", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);"#
-    ))
-    .await;
-
-    let a = ConceptId::new("asset/a");
-    w.materialize_population(POP, std::slice::from_ref(&a), dt("2026-01-01T00:00:00Z"))
-        .await
-        .unwrap();
-    assert_eq!(
-        present_blast_radius(&fx, "asset/a").await,
-        ["mem/bel/cohort"],
-        "a current member sweeps its cohort through present-state blast-radius"
-    );
-    w.materialize_population(POP, &[], dt("2026-03-01T00:00:00Z"))
-        .await
-        .unwrap();
-    assert!(
-        present_blast_radius(&fx, "asset/a").await.is_empty(),
-        "a departed member no longer sweeps its former cohort"
-    );
-
-    assert_eq!(
-        w.blast_radius_at(&a, dt("2026-02-01T00:00:00Z"))
-            .await
-            .unwrap(),
-        vec![MemId::new("mem/bel/cohort")],
-        "while a was a member, retracting it sweeps the cohort belief"
-    );
-    assert!(
-        w.blast_radius_at(&a, dt("2026-04-01T00:00:00Z"))
-            .await
-            .unwrap()
-            .is_empty(),
-        "after a left, retracting it sweeps nothing"
-    );
-
-    fx.drop_db().await;
-}
-
-/// Present-state `blast-radius($r)` of concept `member`, read directly (the
-/// `EpistemicReader` entry point takes a memory item).
-async fn present_blast_radius(fx: &Fixture, member: &str) -> Vec<String> {
-    let docs = fx
-        .raw_fetch(&format!(
-            "match $r isa concept, has concept-id \"{member}\";
-                   let $m in blast-radius($r);
-                   $m has concept-id $mid;
-             fetch {{ \"id\": $mid }};"
-        ))
-        .await;
-    let mut out: Vec<String> = docs
-        .iter()
-        .map(|d| d["id"].as_str().unwrap().to_string())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
 }
 
 /// Two writers (separate per-population locks) race overlapping passes; the write

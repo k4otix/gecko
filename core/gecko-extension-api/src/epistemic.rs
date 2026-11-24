@@ -265,10 +265,9 @@ pub trait EpistemicReader: Send + Sync {
     /// routes through TypeDB's temporal path, never the index (invariant 8).
     async fn believed_at(&self, ctx: &RunContext, at: DateTime) -> Result<Vec<MemId>>;
 
-    /// The memory items undermined by retracting memory item `retracted`, following
-    /// `rests-on`, derivation, and open population-member edges. Retracting a
-    /// population member concept goes through the mem extension's as-of
-    /// `blast_radius_at` instead.
+    /// The memory items undermined by retracting memory item `retracted`: everything
+    /// reachable from it through `rests-on` (assumption to resting) and derivation
+    /// (source to derived) edges.
     async fn blast_radius(&self, retracted: MemId) -> Result<Vec<MemId>>;
 }
 

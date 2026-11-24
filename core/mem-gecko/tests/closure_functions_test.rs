@@ -1,13 +1,14 @@
-//! The closure functions `blast-radius`, `blast-radius-at`, `canonical-entity` and
-//! `canonical-entity-at` return exactly what their reference bodies
-//! (`tests/fixtures/closure_functions_ref.tql`, the bodies before the closures were
-//! split into step functions) return, on random graphs.
+//! The closure functions return exactly what an independent oracle returns, on
+//! random graphs: `blast-radius` of each belief matches a Rust reachability over the
+//! graph's `rests-on` and `derivation` edges (resolutions included), and `canonical-entity` and
+//! `canonical-entity-at` of each concept match their reference bodies
+//! (`tests/fixtures/closure_canonical_ref.tql`, the bodies before the closures were
+//! split into step functions).
 //!
 //! Each case writes a graph under its own concept-id prefix, so the cases share one
 //! database without reaching each other: beliefs joined by `rests-on` and by
-//! `derivation` (provable and not), populations whose windowed memberships hold
-//! concepts and scope beliefs, and resolutions in random states and windows, derived
-//! by random methods, resolving pairs of concepts.
+//! `derivation` (provable and not), and resolutions in random states and windows,
+//! derived by random methods, resolving pairs of concepts.
 
 use std::collections::BTreeSet;
 
@@ -25,11 +26,10 @@ mod common;
 mod provenance;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
-const REFERENCE: &str = include_str!("fixtures/closure_functions_ref.tql");
+const REFERENCE: &str = include_str!("fixtures/closure_canonical_ref.tql");
 
 const BELIEFS: usize = 6;
 const CONCEPTS: usize = 5;
-const POPULATIONS: usize = 2;
 const RESOLUTIONS: usize = 4;
 const METHODS: [&str; 5] = [
     "type-join",
@@ -38,7 +38,7 @@ const METHODS: [&str; 5] = [
     "llm-synthesis",
     "human-assertion",
 ];
-/// The times the as-of variants are asked at, between the window bounds below.
+/// The times `canonical-entity-at` is asked at, between the window bounds below.
 const AT: [&str; 3] = [
     "2026-02-15T00:00:00",
     "2026-04-15T00:00:00",
@@ -46,14 +46,6 @@ const AT: [&str; 3] = [
 ];
 const FROMS: [&str; 2] = ["2026-01-01T00:00:00", "2026-03-01T00:00:00"];
 const TOS: [&str; 2] = ["2026-04-01T00:00:00", "2026-05-01T00:00:00"];
-
-#[derive(Debug, Clone)]
-struct Membership {
-    population: usize,
-    concept: usize,
-    from: Option<usize>,
-    to: Option<usize>,
-}
 
 #[derive(Debug, Clone)]
 struct Resolution {
@@ -68,26 +60,12 @@ struct Resolution {
 struct Graph {
     rests_on: Vec<(usize, usize)>,
     derivations: Vec<(usize, usize, usize)>,
-    scoped: Vec<(usize, usize)>,
-    memberships: Vec<Membership>,
     resolutions: Vec<Resolution>,
 }
 
 fn graph() -> impl Strategy<Value = Graph> {
     let belief = 0..BELIEFS;
     let concept = 0..CONCEPTS;
-    let membership = (
-        0..POPULATIONS,
-        concept.clone(),
-        proptest::option::of(0..FROMS.len()),
-        proptest::option::of(0..TOS.len()),
-    )
-        .prop_map(|(population, concept, from, to)| Membership {
-            population,
-            concept,
-            from,
-            to,
-        });
     let resolution = (
         proptest::sample::select(vec!["asserted", "superseded", "retracted"]),
         0..FROMS.len(),
@@ -104,20 +82,40 @@ fn graph() -> impl Strategy<Value = Graph> {
         });
     (
         proptest::collection::vec((belief.clone(), belief.clone()), 0..=6),
-        proptest::collection::vec((belief.clone(), belief.clone(), 0..METHODS.len()), 0..=6),
-        proptest::collection::vec((belief, 0..POPULATIONS), 0..=4),
-        proptest::collection::vec(membership, 0..=6),
+        proptest::collection::vec((belief.clone(), belief, 0..METHODS.len()), 0..=6),
         proptest::collection::vec(resolution, 0..=RESOLUTIONS),
     )
-        .prop_map(
-            |(rests_on, derivations, scoped, memberships, resolutions)| Graph {
-                rests_on,
-                derivations,
-                scoped,
-                memberships,
-                resolutions,
-            },
-        )
+        .prop_map(|(rests_on, derivations, resolutions)| Graph {
+            rests_on,
+            derivations,
+            resolutions,
+        })
+}
+
+/// The beliefs reachable from belief `from` in one or more steps over `rests-on`
+/// (assumption to resting) and `derivation` (source to derived, any method); a
+/// belief on a cycle reaches itself.
+fn reachable(g: &Graph, from: usize) -> BTreeSet<usize> {
+    let next = |b: usize| {
+        g.rests_on
+            .iter()
+            .filter(move |(a, _)| *a == b)
+            .map(|(_, r)| *r)
+            .chain(
+                g.derivations
+                    .iter()
+                    .filter(move |(s, _, _)| *s == b)
+                    .map(|(_, d, _)| *d),
+            )
+    };
+    let mut seen = BTreeSet::new();
+    let mut frontier: Vec<usize> = next(from).collect();
+    while let Some(b) = frontier.pop() {
+        if seen.insert(b) {
+            frontier.extend(next(b));
+        }
+    }
+    seen
 }
 
 /// The insert for `g` under the concept-id prefix `p`.
@@ -131,12 +129,6 @@ fn insert(p: &str, g: &Graph) -> String {
     for i in 0..CONCEPTS {
         q += &format!("$k{i} isa concept, has concept-id \"{p}/k{i}\";\n");
     }
-    for i in 0..POPULATIONS {
-        q += &format!(
-            "$p{i} isa population, has spec-hash \"{p}/pop{i}\", has spec-dialect \"typeql-3\", \
-             has spec-text \"match $c isa concept;\";\n"
-        );
-    }
     for (a, r) in &g.rests_on {
         q += &format!("rests-on (assumption: $b{a}, resting: $b{r});\n");
     }
@@ -145,22 +137,6 @@ fn insert(p: &str, g: &Graph) -> String {
             "derivation (source: $b{s}, derived: $b{d}), has derivation-method \"{}\";\n",
             METHODS[*m]
         );
-    }
-    for (b, pop) in &g.scoped {
-        q += &format!("scoped (scoped-belief: $b{b}, population: $p{pop});\n");
-    }
-    for m in &g.memberships {
-        q += &format!(
-            "population-member (owning-population: $p{}, member: $k{})",
-            m.population, m.concept
-        );
-        if let Some(f) = m.from {
-            q += &format!(", has valid-from {}", FROMS[f]);
-        }
-        if let Some(t) = m.to {
-            q += &format!(", has valid-to {}", TOS[t]);
-        }
-        q += ";\n";
     }
     for (i, r) in g.resolutions.iter().enumerate() {
         q += &format!(
@@ -263,23 +239,46 @@ async fn closures_match_their_reference_bodies() {
     let mut nonempty = 0;
     for (n, g) in graphs.iter().enumerate() {
         let p = format!("c{n}");
-        let nodes = (0..BELIEFS)
-            .map(|i| ("belief", format!("{p}/b{i}")))
-            .chain((0..CONCEPTS).map(|i| ("concept", format!("{p}/k{i}"))));
-        for (ty, id) in nodes {
-            let mut checks = vec![("blast-radius", String::new())];
-            for t in AT {
-                checks.push(("blast-radius-at", format!(", {t}")));
+        for i in 0..BELIEFS {
+            let id = format!("{p}/b{i}");
+            let got = closure(&mut router, "belief", &id, "blast-radius", "").await;
+            let beliefs = reachable(g, i);
+            // Every resolution with a method is derived from b0 and derives nothing.
+            let resolutions = g
+                .resolutions
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| (i == 0 || beliefs.contains(&0)) && !r.methods.is_empty())
+                .map(|(r, _)| format!("{p}/r{r}"));
+            let want: BTreeSet<String> = beliefs
+                .iter()
+                .map(|b| format!("{p}/b{b}"))
+                .chain(resolutions)
+                .collect();
+            assert_eq!(
+                got, want,
+                "case {n}: blast-radius({id}) differs from reachability; graph: {g:?}"
+            );
+            if !got.is_empty() {
+                nonempty += 1;
             }
-            if ty == "concept" {
-                checks.push(("canonical-entity", String::new()));
-                for t in AT {
-                    checks.push(("canonical-entity-at", format!(", {t}")));
-                }
+        }
+        for i in 0..CONCEPTS {
+            let id = format!("{p}/k{i}");
+            let mut checks = vec![("canonical-entity", String::new())];
+            for t in AT {
+                checks.push(("canonical-entity-at", format!(", {t}")));
             }
             for (function, extra) in checks {
-                let got = closure(&mut router, ty, &id, function, &extra).await;
-                let want = closure(&mut router, ty, &id, &format!("{function}-ref"), &extra).await;
+                let got = closure(&mut router, "concept", &id, function, &extra).await;
+                let want = closure(
+                    &mut router,
+                    "concept",
+                    &id,
+                    &format!("{function}-ref"),
+                    &extra,
+                )
+                .await;
                 assert_eq!(
                     got, want,
                     "case {n}: {function}({id}{extra}) differs from its reference; graph: {g:?}"

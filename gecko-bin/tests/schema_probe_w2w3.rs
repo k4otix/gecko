@@ -7,9 +7,6 @@
 //! Rust writers — the D3 method) to reproduce ratified conflict findings and to
 //! probe the W2 divergence-exception candidate shapes on top.
 //!
-//! - **T2** — `blast-radius` misses a cohort belief: its traversal set is
-//!   `rests-on ∪ derivation`, so a belief attached to a population via `scoped`
-//!   is never swept up when a member is retracted.
 //! - **T5** — `population-members` ignores time: it takes no `$t`, so a belief
 //!   `believed-at(t0)` is reconstructed against *today's* cohort.
 //! - **W2** — the belief-anchored `divergence-exception`/`divergence-precedence`
@@ -21,8 +18,7 @@
 //! **Post-fold: these are graduated acceptance tests, not probes.** The W2/W3
 //! schema fold landed on `conflict_resolution`, so `apply_composed_schema` now reads
 //! the SHIPPED (folded) mem schema — divergence-exception/-precedence, the
-//! population-member window, the b1 `blast-radius` body, and the as-of-t functions are
-//! all in the base. The graduated tests (no `#[ignore]`) assert the shipped behavior
+//! population-member window, and the as-of-t functions are all in the base. The graduated tests (no `#[ignore]`) assert the shipped behavior
 //! directly against the composed schema and run under `just test-it` / CI's TypeDB job,
 //! exactly as `cyber_detect_test` does. They no longer apply the winning candidates as
 //! Mode-A deltas — those constructs live in the base now; a re-applied type delta would
@@ -31,21 +27,16 @@
 //! replacing the shipped body, so the vestigial deltas were removed.
 //!
 //! Probes that remain `#[ignore]` test constructs that were NOT shipped — the C2
-//! `out-entrenches` predicate (`p_disp_1`), the b2 companion (`p_br_3`), the b3
-//! resolution-entry (`p_br_4`/`p_br_5`), and the windowed-blast compositional seam
-//! (`p_br_6`, the evidence behind the shipped `blast-radius-at`, which
-//! `windowed_blast_radius_traversal_respects_membership_window` tests) — kept as manual
-//! evidence for the owed/rejected work (SPEC-W2-W3 §5). Run them with:
+//! `out-entrenches` predicate (`p_disp_1`) — kept as manual evidence for the
+//! owed/rejected work (SPEC-W2-W3 §5). Run them with:
 //!
 //! ```text
 //! cargo test --test schema_probe_w2w3 --no-default-features --features cyber \
 //!     -- --ignored --test-threads=1
 //! ```
 //!
-//! The T2/T5 baselines are now regression floors: `blast-radius` from a NON-member
-//! assumption still does not reach the cohort (the b1 population branch is member-keyed;
-//! the fix, driving from the member, is `p_br_1`/`p_br_2`), and the present-state
-//! `population-members` still ignores time by design (the as-of fix is `p_pm_3`).
+//! The T5 baseline is a regression floor: the present-state `population-members`
+//! ignores time by design (the as-of fix is `p_pm_3`).
 //!
 //! Gated on `cyber` (the rig composes the cyber schema) and needs the multi-thread
 //! runtime the TypeDB driver expects.
@@ -99,22 +90,6 @@ async fn read_col(db: &TestDb, query: &str, col: &str) -> Vec<String> {
 /// Candidate **C2** — the entrenchment ordering as a `return check` predicate
 /// (`out-entrenches`). Applied as a Mode-A delta on top of the composed schema.
 const W2_DISPOSITION: &str = include_str!("probes/w2_disposition.tql");
-
-/// Candidate **C3-b2** — a NEW companion `cohort-blast-radius($member: concept)`
-/// function (additive `define`, no param widening); the union with `blast-radius` is
-/// host-side.
-const W3_BLAST_B2: &str = include_str!("probes/w3_blast_radius_b2.tql");
-
-/// Candidate **C3-b3** — `redefine fun blast-radius` keeping the `memory-item` param,
-/// adding a `resolves`→`population-member`→`scoped` entry branch so retracting the
-/// identity belief that binds a member undermines the cohort.
-const W3_BLAST_B3: &str = include_str!("probes/w3_blast_radius_b3.tql");
-
-/// Candidate **C4b** — the as-of-t functions `population-members-at($pop, $t)` and
-/// the recursive `canonical-entity-at($rec, $t)`, both reading membership/identity
-/// through per-branch validity-window predicates. Requires the window delta first
-/// (`population-members-at` reads `population-member`'s `valid-from`/`valid-to`).
-const W3_ASOF_FUNCTIONS: &str = include_str!("probes/w3_asof_functions.tql");
 
 /// Applies the composed production schema as THREE separate schema transactions in
 /// registration order — core, then mem (always-on substrate), then cyber — exactly
@@ -182,63 +157,8 @@ async fn count_rows(db: &TestDb, query: &str) -> usize {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// T2 / T5 baselines — recreate the ratified D3 conflict findings.
+// T5 baseline — recreate the ratified D3 conflict finding.
 // ══════════════════════════════════════════════════════════════════════════════
-
-/// **Regression floor (was the T2 baseline)** — `blast-radius` from a NON-member does
-/// not reach the cohort.
-///
-/// Ground state (raw TQL against the folded composed schema): a cohort `{P, C1, B}` — C1
-/// a member of population P via `population-member`, belief B `scoped` to P — plus a
-/// `rests-on` chain where belief D rests on assumption A. `blast-radius(A)` is driven
-/// from the assumption A, which is NOT a population member, so the folded b1 population
-/// branch (`population-member:member`) does not fire: it returns D (via `rests-on`) and
-/// never reaches the cohort belief B. The complementary fix — driving from the MEMBER
-/// concept C1, where b1 DOES sweep B — is `p_br_1`/`p_br_2`; together they show the b1
-/// branch is correctly member-keyed. `blast-radius(A)` = `{t2/bel/D}` only, B absent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_base_t2_blast_radius_misses_cohort_belief() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // Cohort {P, C1, B-scoped-to-P} is fully present; the rests-on chain D->A is what
-    // blast-radius can actually traverse.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "t2/pop/P";
-             $c1 isa concept, has concept-id "t2/c1";
-             $b isa belief, has concept-id "t2/bel/B", has belief-state "asserted";
-             $a isa belief, has concept-id "t2/bel/A", has belief-state "asserted";
-             $d isa belief, has concept-id "t2/bel/D", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1);
-             rests-on (resting: $d, assumption: $a);"#,
-    )
-    .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
-             $a isa belief, has concept-id "t2/bel/A";
-             let $m in blast-radius($a);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-
-    // The documented T2 conflict: D (via rests-on) is returned; the cohort belief B
-    // (reachable only via the untraversed scoped/population-member edges) is NOT.
-    assert_eq!(
-        reachable,
-        vec!["t2/bel/D".to_string()],
-        "blast-radius(A) must return D only; got {reachable:?}"
-    );
-    assert!(
-        !reachable.contains(&"t2/bel/B".to_string()),
-        "cohort belief B must be absent from blast-radius(A) — the T2 traversal wall"
-    );
-}
 
 /// **Regression floor (was the T5 baseline)** — the present-state `population-members`
 /// ignores time by design; the as-of variant is the fix.
@@ -1012,395 +932,6 @@ async fn host_side_ranking_reproduces_dispositions() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// W3 — blast-radius fix (C3: b1/b2/b3) + as-of-t populations / canonical (C4)
-//
-// The T2 baseline drives blast-radius from an assumption A with NO path to the
-// cohort; these fix probes drive from the MEMBER concept C1, the only node reaching
-// the cohort belief B through population-member → scoped. b1's whole point is
-// widening the param so blast-radius(C1: concept) type-checks — concept and
-// memory-item are SIBLINGS under okf-concept, the central type-inference risk.
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// **P-BR-1 (C3-b1)** — the widened-param `redefine` type-checks AND admits a
-/// `concept` (population member) argument.
-///
-/// b1 widens `blast-radius`'s param `memory-item` → `okf-concept` so a member concept
-/// C1 (sibling of `memory-item`) can be the retractee. Per-branch role narrowing
-/// (`rests-on:assumption`/`derivation:source` want a `memory-item`;
-/// `population-member:member` wants a `concept`) is the central type-inference risk —
-/// and TypeDB admits it. The redefine is ASSERTED to be accepted (a rejection
-/// fails the test, not merely logged: `apply_schema` collapses every failure to
-/// `DbError::Schema`, so an `Err`-tolerant match could not certify acceptance), then
-/// `blast-radius(C1: concept)` must return the cohort belief B (exact set). This is
-/// the assertion-backed evidence that b1's cross-sibling widening is viable.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn blast_radius_widens_param_and_reaches_cohort() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // The `okf-concept`-widened redefine with per-branch sibling narrowing is accepted
-    // by TypeDB — a rejection here is a hard test failure, not an open verdict.
-
-    // b1 admits a `concept` argument and sweeps the cohort belief B from the member C1.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "br1/pop/P";
-             $c1 isa concept, has concept-id "br1/c1";
-             $b isa belief, has concept-id "br1/B", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1);"#,
-    )
-    .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
-             $c1 isa concept, has concept-id "br1/c1";
-             let $m in blast-radius($c1);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        reachable,
-        vec!["br1/B".to_string()],
-        "b1 blast-radius(C1: concept) must sweep the cohort belief B; got {reachable:?}"
-    );
-}
-
-/// **P-BR-2 (C3-b1)** — recursion through the new population branch: a scoped belief
-/// feeds back into `blast-radius`.
-///
-/// The b1 redefine is ASSERTED accepted (same evidentiary reason as P-BR-1), then
-/// recursion is proven. Fixture: member C1 of population P, belief B scoped to P, and
-/// belief D `rests-on` B. b1 sweeps B (direct population branch) AND D (recursion: the
-/// scoped belief B re-enters `blast-radius`, whose `rests-on` branch reaches D).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn blast_radius_widens_param_and_reaches_cohort_recursive() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // C1 → member → P → scoped → B (the scoped belief), and D rests-on B.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "br2/pop/P";
-             $c1 isa concept, has concept-id "br2/c1";
-             $b isa belief, has concept-id "br2/B", has belief-state "asserted";
-             $d isa belief, has concept-id "br2/D", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1);
-             rests-on (resting: $d, assumption: $b);"#,
-    )
-    .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
-             $c1 isa concept, has concept-id "br2/c1";
-             let $m in blast-radius($c1);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        reachable,
-        vec!["br2/B".to_string(), "br2/D".to_string()],
-        "b1 blast-radius(C1) must sweep B (direct) AND D (recursion via the scoped belief); got {reachable:?}"
-    );
-}
-
-/// **P-BR-3 (C3-b2)** — the companion `cohort-blast-radius($member: concept)` returns
-/// the cohort belief B on the T2 fixture, no param widening.
-///
-/// b2 is additive (`define`, not `redefine`); the union with `blast-radius` is
-/// host-side. Driven from member C1 it must return B directly.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
-async fn p_br_3_b2_companion_returns_cohort_belief() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-    apply_delta(&db, W3_BLAST_B2)
-        .await
-        .expect("candidate C3-b2 (cohort-blast-radius) defines clean as a delta");
-
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "br3/pop/P";
-             $c1 isa concept, has concept-id "br3/c1";
-             $b isa belief, has concept-id "br3/B", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1);"#,
-    )
-    .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
-             $c1 isa concept, has concept-id "br3/c1";
-             let $b in cohort-blast-radius($c1);
-             $b has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        reachable,
-        vec!["br3/B".to_string()],
-        "cohort-blast-radius(C1) must return the cohort belief B; got {reachable:?}"
-    );
-}
-
-/// **P-BR-4 (C3-b3)** — the resolution-entry branch returns the cohort belief when
-/// the binding resolution belief is the retractee.
-///
-/// b3 keeps the `memory-item` param and adds a `resolves`→`population-member`→`scoped`
-/// branch. Retracting the identity belief RES that binds member C1 must undermine the
-/// belief B scoped to C1's population.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
-async fn p_br_4_b3_resolution_entry_returns_cohort_belief() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-    apply_delta(&db, W3_BLAST_B3)
-        .await
-        .expect("candidate C3-b3 (resolution-entry redefine) applies as a schema tx");
-
-    // RES resolves (record-a: C1, record-b: C2); C1 is a member of P; B is scoped to P.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "br4/pop/P";
-             $c1 isa concept, has concept-id "br4/c1";
-             $c2 isa concept, has concept-id "br4/c2";
-             $b isa belief, has concept-id "br4/B", has belief-state "asserted";
-             $res isa resolution, has concept-id "br4/RES", has belief-state "asserted";
-             resolves (resolution-belief: $res, record-a: $c1, record-b: $c2);
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1);"#,
-    )
-    .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
-             $res isa resolution, has concept-id "br4/RES";
-             let $m in blast-radius($res);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        reachable,
-        vec!["br4/B".to_string()],
-        "b3 blast-radius(RES) must return the cohort belief B via the resolves entry; got {reachable:?}"
-    );
-}
-
-/// **P-BR-5** — `redefine fun blast-radius` is accepted as a schema transaction on a
-/// DB where the function already exists, and the new body actually takes effect.
-///
-/// Uses b3 (the `memory-item`-param redefine, whose types are unambiguous) to isolate
-/// the redefine MECHANISM from b1's param-widening question. The new body must be in
-/// force: `blast-radius(RES)` (a `resolves` entry) returns the cohort belief, which
-/// the original (rests-on ∪ derivation only) body could never reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
-async fn p_br_5_redefine_blast_radius_accepted() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    // The original blast-radius is present (defined by the mem substrate schema);
-    // redefining it must be accepted as a schema transaction.
-    apply_delta(&db, W3_BLAST_B3)
-        .await
-        .expect("redefine fun blast-radius must be accepted on a DB where the fun exists");
-
-    // Prove the redefined body is in force (not a silent old body): the resolves
-    // entry branch — absent from the original — now reaches the cohort belief.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "br5/pop/P";
-             $c1 isa concept, has concept-id "br5/c1";
-             $c2 isa concept, has concept-id "br5/c2";
-             $b isa belief, has concept-id "br5/B", has belief-state "asserted";
-             $res isa resolution, has concept-id "br5/RES", has belief-state "asserted";
-             resolves (resolution-belief: $res, record-a: $c1, record-b: $c2);
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1);"#,
-    )
-    .await;
-
-    let reachable = read_concept_ids(
-        &db,
-        r#"match
-             $res isa resolution, has concept-id "br5/RES";
-             let $m in blast-radius($res);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        reachable,
-        vec!["br5/B".to_string()],
-        "the redefined blast-radius body must be in force (reaches B via resolves); got {reachable:?}"
-    );
-}
-
-/// **P-BR-6** — the T2×T5 seam: windowed blast propagation. Probes BOTH branches of
-/// the §3.1 decision so the verdict is definite regardless of the A/B lean.
-///
-/// Fixture: member C1 with a CLOSED `population-member` window [t₀, t₁); cohort belief
-/// B scoped to P and valid from t₀. Then:
-///   - Present-state (b2 `cohort-blast-radius`, window-blind): reaches B even though
-///     C1 has left the cohort — the row still exists — so present-state traversal is
-///     OVER-broad as-of-now.
-///   - Window-respecting entry (`population-members-at(P, t)`): reaches B for
-///     t ∈ [t₀, t₁) (C1 was a member) and EXCLUDES it for t ≥ t₁ (C1 left) — the
-///     as-of-t-correct behavior. This discrimination is only expressible WITH the
-///     window, which is the evidence for §3.1 → (A) as-of-t variants.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "non-shipped blast-radius construct (b2 rejected / b3 & windowed OWED, SPEC-W2-W3 §5) — evidence-only probe; run with --ignored --test-threads=1"]
-async fn p_br_6_windowed_blast_propagation_seam() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-    // The population-member window and the as-of-t functions are FOLDED into the shipped
-    // mem schema (Mode B): `apply_composed_schema` already provides them, so re-applying
-    // them as a delta would be refused ([FUN5] already-exists — see P-REDEF). Only b2
-    // (cohort-blast-radius) stays a genuine delta — it is deliberately NOT folded.
-    apply_delta(&db, W3_BLAST_B2)
-        .await
-        .expect("b2 companion defines");
-
-    // C1 was a member of P only during [2026-01-01, 2026-04-01); B is scoped to P.
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "br6/pop/P";
-             $c1 isa concept, has concept-id "br6/c1";
-             $b isa belief, has concept-id "br6/B", has belief-state "asserted",
-                 has valid-from 2026-01-01T00:00:00;
-             scoped (scoped-belief: $b, population: $p);
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;"#,
-    )
-    .await;
-
-    // Present-state traversal (b2) is window-BLIND: the row still exists, so B is swept
-    // even though C1's window is closed — over-broad as-of-now.
-    let present = read_concept_ids(
-        &db,
-        r#"match
-             $c1 isa concept, has concept-id "br6/c1";
-             let $b in cohort-blast-radius($c1);
-             $b has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        present,
-        vec!["br6/B".to_string()],
-        "present-state cohort-blast-radius is window-blind and still sweeps B; got {present:?}"
-    );
-
-    // Window-respecting entry at t ∈ [t₀, t₁): C1 was a member → B is in the windowed blast.
-    let in_window = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "br6/pop/P";
-             let $m in population-members-at($p, 2026-02-01T00:00:00);
-             $m has concept-id "br6/c1";
-             scoped (scoped-belief: $b, population: $p);
-             $b has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        in_window,
-        vec!["br6/B".to_string()],
-        "a window-respecting blast at t in [t0,t1) must reach B (C1 was a member); got {in_window:?}"
-    );
-
-    // Window-respecting entry at t ≥ t₁: C1 has left → the windowed blast excludes B.
-    let after_window = read_concept_ids(
-        &db,
-        r#"match
-             $p isa population, has spec-hash "br6/pop/P";
-             let $m in population-members-at($p, 2026-05-01T00:00:00);
-             $m has concept-id "br6/c1";
-             scoped (scoped-belief: $b, population: $p);
-             $b has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert!(
-        after_window.is_empty(),
-        "a window-respecting blast at t >= t1 must exclude B (C1 left the cohort); got {after_window:?}"
-    );
-}
-
-/// **P-BR-6 graduated** — the shipped `blast-radius-at` traversal gates the cohort
-/// edge on the membership window, recursively.
-///
-/// Fixture: member C1 with a CLOSED window [t₀, t₁); cohort belief B scoped to P; D
-/// rests on B. As of t ∈ [t₀, t₁) retracting C1 sweeps B and, recursively, D; as of
-/// t ≥ t₁ it sweeps nothing. A row with no `valid-from` (written before windows) is
-/// never followed as-of-t.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn windowed_blast_radius_traversal_respects_membership_window() {
-    let db = TestDb::new("probe_w2w3");
-    apply_composed_schema(&db).await;
-
-    insert(
-        &db,
-        r#"insert
-             $p isa population, has spec-hash "wbr/pop/P";
-             $c1 isa concept, has concept-id "wbr/c1";
-             $c2 isa concept, has concept-id "wbr/c2";
-             $b isa belief, has concept-id "wbr/B", has belief-state "asserted",
-                 has valid-from 2026-01-01T00:00:00;
-             $d isa belief, has concept-id "wbr/D", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);
-             rests-on (resting: $d, assumption: $b);
-             population-member (owning-population: $p, member: $c1),
-                 has valid-from 2026-01-01T00:00:00, has valid-to 2026-04-01T00:00:00;
-             population-member (owning-population: $p, member: $c2);"#,
-    )
-    .await;
-
-    let blast_at = |member: &'static str, t: &'static str| {
-        format!(
-            r#"match
-                 $c isa concept, has concept-id "{member}";
-                 let $m in blast-radius-at($c, {t});
-                 $m has concept-id $cid;
-               select $cid;"#
-        )
-    };
-
-    let in_window = read_concept_ids(&db, &blast_at("wbr/c1", "2026-02-01T00:00:00")).await;
-    assert_eq!(
-        in_window,
-        vec!["wbr/B".to_string(), "wbr/D".to_string()],
-        "inside C1's window the cohort belief and what rests on it are swept"
-    );
-
-    let after = read_concept_ids(&db, &blast_at("wbr/c1", "2026-05-01T00:00:00")).await;
-    assert!(
-        after.is_empty(),
-        "after C1 left, nothing is swept; got {after:?}"
-    );
-
-    let unwindowed = read_concept_ids(&db, &blast_at("wbr/c2", "2026-02-01T00:00:00")).await;
-    assert!(
-        unwindowed.is_empty(),
-        "a membership row without valid-from is not followed as-of-t; got {unwindowed:?}"
-    );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
 // W3 — population window (C4a) + as-of-t functions (C4b)
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1719,26 +1250,38 @@ async fn believed_at_and_members_at_agree_as_of_t() {
 //
 // After the Mode-B fold, `apply_composed_schema` reads the mem schema files that now
 // ALREADY carry the winning candidates (divergence-exception + divergence-precedence,
-// the population-member window, the b1 blast-radius body, and the as-of-t functions).
+// the population-member window, and the as-of-t functions).
 // These two probes validate the SHIPPED shape directly — no Mode-A delta on top.
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// A blast-radius body that changed from the folded (b1) one: the derivation branch
-/// ONLY (no rests-on branch, no population branch, no recursion). Applied through the
-/// production `define` path (`apply_schema`) to probe the migration posture — if it
-/// takes effect, `blast-radius` over a rests-on fixture returns empty; if the folded
-/// body stays, it returns the resting item.
+/// A `blast-radius` body changed from the shipped one: the derivation branch only, with
+/// no rests-on branch and no recursion. Applied through the production `define` path
+/// (`apply_schema`) to probe the migration posture: if it takes effect, `blast-radius`
+/// over a rests-on fixture returns empty; if the shipped body stays, it returns the
+/// resting item.
 const REDEF_CHANGED_BLAST: &str = r#"define
-  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Changed body (derivation branch only) — P-REDEF migration probe."):
+  fun blast-radius($r: memory-item) -> { memory-item } @doc("Changed body (derivation branch only) — P-REDEF migration probe."):
       match
           derivation (source: $r, derived: $m);
       return { $m };
 "#;
 
+/// A shipped mem function, byte-identical to its text in `mem_functions.tql`.
+const SHIPPED_CANONICAL_STEP: &str = r#"define
+  fun canonical-step($rec: concept) -> { concept } @doc("The source records an asserted, provable resolution belief resolves $rec directly to, in either record role."):
+      match
+          $res isa resolution, has belief-state "asserted";
+          true == provably-derived($res);
+          { resolves (resolution-belief: $res, record-a: $rec, record-b: $other); }
+          or
+          { resolves (resolution-belief: $res, record-a: $other, record-b: $rec); };
+      return { $other };
+"#;
+
 /// **P-REDEF** — the §1.4 migration posture: a persisted function's body can only be
 /// mutated with `redefine`, so the production apply path emits one.
 ///
-/// From the FOLDED composed schema (`blast-radius` is already the b1 body):
+/// From the shipped composed schema:
 ///   1. a raw `define` of a CHANGED body is refused by TypeDB with `[FUN5]` and the
 ///      stored body stays in force — the engine fact §1.4 rests on;
 ///   2. a byte-identical raw `define` of an existing function is ALSO refused —
@@ -1750,7 +1293,7 @@ async fn shipped_function_mutation_requires_redefine_not_define() {
     let db = TestDb::new("probe_w2w3");
     apply_composed_schema(&db).await;
 
-    // A rests-on-only fixture: the folded b1 body reaches M (rests-on branch); the
+    // A rests-on-only fixture: the shipped body reaches M (rests-on branch); the
     // changed derivation-only body would NOT (M rests on A, no derivation edge).
     insert(
         &db,
@@ -1775,11 +1318,18 @@ async fn shipped_function_mutation_requires_redefine_not_define() {
     assert_eq!(
         read_concept_ids(&db, blast_of_a).await,
         vec!["redef/M".to_string()],
-        "after the refused define the folded b1 body must remain in force"
+        "after the refused define the shipped body must remain in force"
     );
 
     // 2. Byte-identical raw `define`: also refused.
-    let msg = raw_define_error(&db, W3_ASOF_FUNCTIONS).await;
+    let shipped_body = SHIPPED_CANONICAL_STEP
+        .strip_prefix("define\n")
+        .expect("a define block");
+    assert!(
+        MemGecko::new().schema().contains(shipped_body),
+        "SHIPPED_CANONICAL_STEP drifted from mem_functions.tql"
+    );
+    let msg = raw_define_error(&db, SHIPPED_CANONICAL_STEP).await;
     assert!(
         msg.contains("FUN5") || msg.contains("already exists"),
         "an identical raw define of an existing fun must also be refused; got {msg}"
@@ -1815,11 +1365,10 @@ async fn raw_define_error(db: &TestDb, schema: &str) -> String {
 ///
 /// `apply_composed_schema` applies core, then the folded mem substrate (strip-`define`
 /// assembly intact), then cyber, each `.expect`-ing a clean apply — a define collision
-/// would panic there. On the composed schema, with no delta, the three acceptance
+/// would panic there. On the composed schema, with no delta, the two acceptance
 /// shapes hold from the shipped functions/types alone:
-///   (a) `blast-radius(<member concept>)` sweeps the cohort belief (T2 fix, b1 folded);
-///   (b) `believed-at(t)` and `population-members-at(P, t)` agree as-of-t (T5 fix);
-///   (c) a `divergence-exception` inserts and can be a `contradiction:claim` (W2, C1).
+///   (a) `believed-at(t)` and `population-members-at(P, t)` agree as-of-t (T5 fix);
+///   (b) a `divergence-exception` inserts and can be a `contradiction:claim` (W2, C1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_candidate_stack_composes_define_clean_with_cyber() {
     let db = TestDb::new("probe_w2w3");
@@ -1827,35 +1376,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     // a folded-in define collision (or a broken strip-define assembly) panics here.
     apply_composed_schema(&db).await;
 
-    // (a) T2 fix from the SHIPPED b1 body: blast-radius(member concept) sweeps the cohort
-    //     belief with no delta. Population Pa, member Ca1, belief Ba scoped to Pa.
-    insert(
-        &db,
-        r#"insert
-             $pa isa population, has spec-hash "comp/pop/A";
-             $ca1 isa concept, has concept-id "comp/a/c1";
-             $ba isa belief, has concept-id "comp/a/B", has belief-state "asserted",
-                 has valid-from 2026-07-11T00:00:00;
-             scoped (scoped-belief: $ba, population: $pa);
-             population-member (owning-population: $pa, member: $ca1);"#,
-    )
-    .await;
-    let cohort_blast = read_concept_ids(
-        &db,
-        r#"match
-             $ca1 isa concept, has concept-id "comp/a/c1";
-             let $m in blast-radius($ca1);
-             $m has concept-id $cid;
-           select $cid;"#,
-    )
-    .await;
-    assert_eq!(
-        cohort_blast,
-        vec!["comp/a/B".to_string()],
-        "(a) shipped blast-radius(member) must sweep the cohort belief; got {cohort_blast:?}"
-    );
-
-    // (b) T5 fix from the SHIPPED window + as-of-t fn: believed-at(t0) and
+    // (a) T5 fix from the SHIPPED window + as-of-t fn: believed-at(t0) and
     //     population-members-at(Pb, t0) agree. Belief Bb scoped to Pb valid-from t0
     //     (the only belief valid by t0, so believed-at(t0) = {Bb}); member Cb1
     //     from t0, Cb2 from today.
@@ -1885,7 +1406,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     assert_eq!(
         believed,
         vec!["comp/b/B".to_string()],
-        "(b) believed-at(t0) must return Bb only; got {believed:?}"
+        "(a) believed-at(t0) must return Bb only; got {believed:?}"
     );
     let members_t0 = read_concept_ids(
         &db,
@@ -1899,7 +1420,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     assert_eq!(
         members_t0,
         vec!["comp/b/c1".to_string()],
-        "(b) population-members-at(Pb, t0) must return the t0 cohort {{Cb1}}, agreeing with believed-at(t0); got {members_t0:?}"
+        "(a) population-members-at(Pb, t0) must return the t0 cohort {{Cb1}}, agreeing with believed-at(t0); got {members_t0:?}"
     );
     let members_now = read_concept_ids(
         &db,
@@ -1913,10 +1434,10 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     assert_eq!(
         members_now,
         vec!["comp/b/c1".to_string(), "comp/b/c2".to_string()],
-        "(b) population-members-at(Pb, today) must grow to {{Cb1, Cb2}} — the fix is time-varying; got {members_now:?}"
+        "(a) population-members-at(Pb, today) must grow to {{Cb1, Cb2}} — the fix is time-varying; got {members_now:?}"
     );
 
-    // (c) W2 from the SHIPPED C1 types: a divergence-exception inserts and plays
+    // (b) W2 from the SHIPPED C1 types: a divergence-exception inserts and plays
     //     contradiction:claim (inherited via `sub belief`), and contradicts() holds.
     insert(
         &db,
@@ -1943,7 +1464,7 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
     assert_eq!(
         contradicting,
         vec!["comp/c/E".to_string()],
-        "(c) the shipped divergence-exception must be a live contradiction claim (contradicts(E,BP)=true); got {contradicting:?}"
+        "(b) the shipped divergence-exception must be a live contradiction claim (contradicts(E,BP)=true); got {contradicting:?}"
     );
 }
 

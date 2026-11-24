@@ -91,15 +91,6 @@ impl MemWriter {
         Ok(dedup_mapped(&docs, ConceptId))
     }
 
-    /// `blast-radius-at($r, $t)` — what retracting `retracted` (any concept or memory
-    /// item, e.g. a population member) would undermine as of `at`: the cohort edge is
-    /// followed only while the membership window contains `at`.
-    pub async fn blast_radius_at(&self, retracted: &ConceptId, at: DateTime) -> Result<Vec<MemId>> {
-        let (q, v, r) = tql::blast_radius_at_read(retracted, at);
-        let docs = self.graph.read(&q, &v, &r).await?;
-        Ok(dedup_mapped(&docs, MemId))
-    }
-
     /// `canonical-entity($rec)` — the transitive closure over **provable**
     /// resolutions (probabilistic ones are never collapsed).
     pub async fn canonical_entity(&self, rec: &ConceptId) -> Result<Vec<ConceptId>> {

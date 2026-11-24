@@ -889,29 +889,58 @@ fn attack_with_malware() -> String {
     bundle.to_string()
 }
 
-/// A database schema export as its type definitions and its functions, sorted. An
-/// upgrade appends a newly defined type, capability or function after the existing
-/// ones, where a fresh database lists it in definition order; that order carries no
-/// meaning. Each type's capabilities stay with it, sorted, and the types are sorted.
+/// The schema parts an upgraded pre-tightening database keeps that a fresh database
+/// does not have. Each is inert: nothing shipped references it. A `fun <name>` entry
+/// names a function whose text is the pre-tightening fixture's own; any other entry
+/// is a `schema_parts` part verbatim.
 #[cfg(feature = "cyber")]
-fn schema_parts(schema: &str) -> (Vec<String>, Vec<String>) {
+const CUT_LEFTOVERS: &[&str] = &["fun blast-radius-at"];
+
+/// [`CUT_LEFTOVERS`] as `schema_parts` parts, each function read from the
+/// pre-tightening fixture.
+#[cfg(feature = "cyber")]
+fn cut_leftover_parts() -> std::collections::BTreeSet<String> {
+    CUT_LEFTOVERS
+        .iter()
+        .map(|entry| match entry.strip_prefix("fun ") {
+            Some(name) => {
+                let start = PRE_MEM_FUNCTIONS
+                    .find(&format!("  fun {name}("))
+                    .unwrap_or_else(|| panic!("the fixture declares no function {name}"));
+                let text = &PRE_MEM_FUNCTIONS[start..];
+                text[..text.find("\n\n").unwrap_or(text.len())]
+                    .trim()
+                    .to_string()
+            }
+            None => entry.to_string(),
+        })
+        .collect()
+}
+
+/// A database schema export as the set of its `(type head, capability)` pairs and
+/// the set of its function texts. An upgrade appends a newly defined type, capability
+/// or function after the existing ones, where a fresh database lists it in definition
+/// order; that order carries no meaning. A type with no capability contributes its
+/// head alone.
+#[cfg(feature = "cyber")]
+fn schema_parts(schema: &str) -> std::collections::BTreeSet<String> {
     let mut chunks = schema.split("\nfun ");
     let types_text = chunks.next().unwrap_or_default();
-    let mut types: Vec<String> = types_text
-        .trim_start_matches("define")
-        .split(";\n")
-        .map(|decl| {
-            let decl = decl.trim().trim_end_matches(';');
-            let mut lines: Vec<&str> = decl.split(",\n").map(str::trim).collect();
-            let head = lines.remove(0);
-            lines.sort_unstable();
-            format!("{head} | {}", lines.join(" | "))
-        })
-        .collect();
-    types.sort();
-    let mut functions: Vec<String> = chunks.map(|f| format!("fun {}", f.trim_end())).collect();
-    functions.sort();
-    (types, functions)
+    let mut parts = std::collections::BTreeSet::new();
+    for decl in types_text.trim_start_matches("define").split(";\n") {
+        let decl = decl.trim().trim_end_matches(';');
+        let mut lines = decl.split(",\n").map(str::trim);
+        let head = lines.next().unwrap_or_default();
+        let mut capabilities = lines.peekable();
+        if capabilities.peek().is_none() {
+            parts.insert(head.to_string());
+        }
+        for capability in capabilities {
+            parts.insert(format!("{head} | {capability}"));
+        }
+    }
+    parts.extend(chunks.map(|f| format!("fun {}", f.trim_end())));
+    parts
 }
 
 /// A database on the pre-tightening schemas, populated by every current writer path
@@ -1297,10 +1326,18 @@ async fn tightened_schema_applies_to_a_populated_database() {
     let fresh_db = TestDb::new("gecko_test_tightened_fresh");
     attack::sync_fixture(&fresh_db).await;
     let fresh = fresh_db.router().database_schema().await.expect("schema");
+    let (after_parts, fresh_parts) = (schema_parts(&after), schema_parts(&fresh));
+    let missing: Vec<&String> = fresh_parts.difference(&after_parts).collect();
+    assert!(
+        missing.is_empty(),
+        "the upgraded schema lacks parts a fresh one has: {missing:#?}"
+    );
+    let leftovers: std::collections::BTreeSet<String> =
+        after_parts.difference(&fresh_parts).cloned().collect();
     assert_eq!(
-        schema_parts(&after),
-        schema_parts(&fresh),
-        "the upgraded schema differs from a fresh one"
+        leftovers,
+        cut_leftover_parts(),
+        "the upgraded schema keeps exactly the named leftovers beyond a fresh one"
     );
 
     // mem's required roles: the one-player membership is gone, and another is refused.

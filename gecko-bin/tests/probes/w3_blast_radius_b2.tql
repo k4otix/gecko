@@ -1,6 +1,0 @@
-define
-  fun cohort-blast-radius($member: concept) -> { belief } @doc("The population-scoped beliefs undermined when this member's cohort standing changes."):
-      match
-          population-member (owning-population: $pop, member: $member);
-          scoped (scoped-belief: $b, population: $pop);
-      return { $b };

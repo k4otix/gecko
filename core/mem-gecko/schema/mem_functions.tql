@@ -60,28 +60,22 @@ define
           not { $b1 is $b2; };
       return check;
 
-  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation U population-member->scoped)
-  #   Param is okf-concept (not memory-item) so a population member — a `concept`,
-  #   sibling of memory-item under okf-concept — type-checks as the retractee; the
-  #   population branch then sweeps the cohort beliefs scoped to that member's population.
-  #   Only open membership rows count, matching population-members; blast-radius-at
-  #   answers for a past membership window.
-  fun blast-radius($r: okf-concept) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions, derivation sources, and open population-member cohort edges (a retracted current member sweeps the beliefs scoped to its population)."):
+  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
+  #   blast-step is the one-edge relation: the items resting on $r as an assumption
+  #   and the items derived from $r as a source. The closure recurses over it and
+  #   terminates on a cycle of either edge.
+  fun blast-radius($r: memory-item) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r — all memory items reachable through rests-on assumptions and derivation sources."):
       match
           { let $m in blast-step($r); }
           or { let $mid in blast-step($r); let $m in blast-radius($mid); };
       return { $m };
 
-  fun blast-step($r: okf-concept) -> { memory-item } @doc("The memory items one edge from $r that retracting $r undermines directly: those resting on it, those derived from it, and the beliefs scoped to a population it is an open member of."):
+  fun blast-step($r: memory-item) -> { memory-item } @doc("The memory items one edge from $r that retracting $r undermines directly: those resting on it as an assumption and those derived from it as a source."):
       match
           {
               rests-on (assumption: $r, resting: $m);
           } or {
               derivation (source: $r, derived: $m);
-          } or {
-              $pm isa population-member, links (owning-population: $pop, member: $r);
-              not { $pm has valid-to $vt; };
-              scoped (scoped-belief: $m, population: $pop);
           };
       return { $m };
 
@@ -181,29 +175,6 @@ define
           $pm isa population-member, links (owning-population: $pop, member: $m);
           $pm has valid-from $vf; $vf <= $t;
           not { $pm has valid-to $vt; $vt <= $t; };
-      return { $m };
-
-  #   blast-radius as of $t: the rests-on and derivation branches are unchanged, and the
-  #   population-member cohort branch follows only a membership row whose window
-  #   contains $t, so a member that had left the cohort by $t no longer sweeps it.
-  fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("Recursive closure of everything that would be undermined by retracting $r as of time $t — like blast-radius, but the population-member cohort edge is followed only while the membership window contains $t."):
-      match
-          { let $m in blast-step-at($r, $t); }
-          or { let $mid in blast-step-at($r, $t); let $m in blast-radius-at($mid, $t); };
-      return { $m };
-
-  fun blast-step-at($r: okf-concept, $t: datetime) -> { memory-item } @doc("The memory items one edge from $r that retracting $r as of time $t undermines directly: like blast-step, but a population membership counts only while its window contains $t."):
-      match
-          {
-              rests-on (assumption: $r, resting: $m);
-          } or {
-              derivation (source: $r, derived: $m);
-          } or {
-              $pm isa population-member, links (owning-population: $pop, member: $r);
-              $pm has valid-from $vf; $vf <= $t;
-              not { $pm has valid-to $vt; $vt <= $t; };
-              scoped (scoped-belief: $m, population: $pop);
-          };
       return { $m };
 
   fun canonical-entity-at($rec: concept, $t: datetime) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec as of time $t, following provable resolution beliefs whose validity window contains $t."):
