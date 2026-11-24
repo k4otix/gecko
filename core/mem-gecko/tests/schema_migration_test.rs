@@ -117,6 +117,17 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
     for m in mem.schema_migrations() {
         assert!(!schema.contains(m.applies_when), "{} left old text", m.id);
     }
+    // The shipped functions land alongside the migrations; the earlier release's
+    // population function and relation stay stored and unused.
+    for shipped in [
+        "fun blast-step($r: memory-item)",
+        "fun canonical-entity-at(",
+    ] {
+        assert!(schema.contains(shipped), "upgrade lacks `{shipped}`");
+    }
+    for leftover in ["fun population-members(", "relation population-member"] {
+        assert!(schema.contains(leftover), "upgrade dropped `{leftover}`");
+    }
 
     common::drop_db_with_retry(&mut router, &name).await;
 }
@@ -536,9 +547,9 @@ fn the_registry_accepts_the_tightening_migrations() {
     let mut migrations = mem_gecko::MEM_MIGRATIONS.to_vec();
     migrations.extend([
         SchemaMigration {
-            id: "probe/population-member-one-player",
-            applies_when: "relates member @doc(\"A concept the population's spec currently matches.\")",
-            tql: "match $r isa population-member; { not { $r links (owning-population: $p); }; } or { not { $r links (member: $m); }; }; delete $r;",
+            id: "probe/resolves-one-player",
+            applies_when: "relates record-b @card(1) @doc(\"The other record being resolved together.\")",
+            tql: "match $r isa resolves; { not { $r links (record-a: $a); }; } or { not { $r links (record-b: $b); }; }; delete $r;",
         },
         SchemaMigration {
             id: "probe/belief-valid-from-required",

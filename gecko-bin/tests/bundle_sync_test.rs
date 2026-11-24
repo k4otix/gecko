@@ -1025,10 +1025,11 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
     tx.query(
         r#"match $a isa concept, has concept-id "notes/a";
                  $b isa concept, has concept-id "notes/b";
-           insert test-ext-link (left: $a, right: $b);"#,
+           insert test-ext-link (left: $a, right: $b);
+           insert test-ext-link (left: $b, right: $b);"#,
     )
     .await
-    .expect("insert the link");
+    .expect("insert the links");
     // A STIX `uses` whose user is the plain bundle's concept and whose used
     // malware no bundle contains.
     #[cfg(feature = "cyber")]
@@ -1040,7 +1041,7 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
     .await
     .expect("insert the cross-bundle uses");
     tx.commit().await.expect("commit the extension relations");
-    assert_eq!(count(&mut db, "match $l isa test-ext-link;").await, 1);
+    assert_eq!(count(&mut db, "match $l isa test-ext-link;").await, 2);
 
     let mut dropped = full.clone();
     dropped.concepts.retain(|c| c.concept_id != "notes/a");
@@ -1050,17 +1051,19 @@ async fn garbage_collecting_a_concept_deletes_every_non_surface_relation_it_play
     assert_eq!(r.concepts_deleted, 1);
     assert_eq!(
         count(&mut db, "match $l isa test-ext-link;").await,
-        0,
-        "no link to the collected concept remains"
+        1,
+        "only the link to the collected concept is deleted"
     );
     assert_eq!(
         count(
             &mut db,
-            r#"match $c isa concept, has concept-id "notes/b";"#
+            r#"match $l isa test-ext-link (left: $x, right: $y);
+               $x isa concept, has concept-id "notes/b";
+               $y isa concept, has concept-id "notes/b";"#
         )
         .await,
         1,
-        "the link's other concept is kept"
+        "the surviving link is the one between notes/b and itself"
     );
     #[cfg(feature = "cyber")]
     {

@@ -843,9 +843,9 @@ async fn host_side_ranking_reproduces_dispositions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_entity_at_recursive_asof_closure() {
     let db = TestDb::new("probe_w2w3");
-    // C4b is FOLDED (Mode B): `apply_composed_schema` provides the as-of-t functions,
-    // so this probe reads the SHIPPED `canonical-entity-at` — the folded delta cannot
-    // be re-applied ([FUN5] already-exists; see P-REDEF).
+    // `apply_composed_schema` provides the as-of-t functions, so this probe reads the
+    // shipped `canonical-entity-at`; re-applying its definition fails with [FUN5]
+    // already-exists (see P-REDEF).
     apply_composed_schema(&db).await;
 
     // Two epochs of provable identity: RES1(C1,C2) from t0; RES2(C2,C3) from t2.
@@ -1081,9 +1081,9 @@ async fn full_candidate_stack_composes_define_clean_with_cyber() {
 // `divergence-precedence` the day W2 lands — whereas INVARIANTS §8.4's hand-list
 // misses `divergence-precedence` (and even omits `resolves`).
 //
-// This probe lives on `conflict_resolution`, whose `apply_composed_schema` reads the
-// UNFOLDED mem schema — so `divergence-precedence` is absent until the W2 candidate
-// delta is applied, which is what makes the ratchet observable.
+// `apply_composed_schema` composes the shipped mem schema, which has no
+// `divergence-precedence`; the ratchet becomes observable once the W2 candidate delta
+// is applied.
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// **W5a surface — graduated from the P-W5-1 ratchet to surface-MEMBERSHIP.**
