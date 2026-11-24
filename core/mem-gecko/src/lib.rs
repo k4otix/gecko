@@ -13,7 +13,6 @@ use gecko_extension_api::{GeckoExtension, HostImportDef, SchemaMigration};
 pub mod belief_edge;
 pub mod consolidation;
 pub mod disposition;
-pub mod populations;
 mod tql;
 pub mod writer;
 
@@ -23,7 +22,6 @@ pub use consolidation::{
     NoopConsolidationDaemon,
 };
 pub use disposition::{DispKeys, Disposition};
-pub use populations::MaterializeReport;
 pub use writer::{DuplicateCandidate, IndexOutcome, MemWriter};
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
@@ -103,6 +101,101 @@ impl GeckoExtension for MemGecko {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_label_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    }
+
+    /// Every needle that occurs in `text` at a label boundary: where a needle starts
+    /// (ends) with a label character, the character before (after) the match is not one.
+    fn deleted_labels_absent(text: &str, needles: &[&str]) -> Vec<String> {
+        let mut found = Vec::new();
+        for needle in needles {
+            let check_start = needle.chars().next().is_some_and(is_label_char);
+            let check_end = needle.chars().next_back().is_some_and(is_label_char);
+            let hit = text.match_indices(needle).any(|(i, _)| {
+                let before_ok =
+                    !check_start || !text[..i].chars().next_back().is_some_and(is_label_char);
+                let after_ok = !check_end
+                    || !text[i + needle.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(is_label_char);
+                before_ok && after_ok
+            });
+            if hit {
+                found.push((*needle).to_string());
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn deleted_labels_absent_matches_whole_labels_only() {
+        let rel = "relation scoped";
+        let role = "scoped:";
+        assert_eq!(
+            deleted_labels_absent("relation scoped @doc(", &[rel]),
+            [rel]
+        );
+        assert_eq!(
+            deleted_labels_absent("plays scoped:scoped-belief", &[role]),
+            [role]
+        );
+        assert_eq!(
+            deleted_labels_absent("blast-radius-at(", &["blast-radius-at"]),
+            ["blast-radius-at"]
+        );
+        assert!(deleted_labels_absent("blast-radius(", &["blast-radius-at"]).is_empty());
+        for text in [
+            "relation scoped-thing",
+            "relation scoped_thing",
+            "relation scopedX",
+            "for a scoped member",
+        ] {
+            assert!(
+                deleted_labels_absent(text, &[rel, role]).is_empty(),
+                "{text:?} must match neither needle"
+            );
+        }
+        for text in ["plays unscoped:role", "plays exception-scoped:role"] {
+            assert!(
+                deleted_labels_absent(text, &[role]).is_empty(),
+                "{text:?} must not match {role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_mem_schema_has_no_population_labels() {
+        let schema: &str = &MEM_SCHEMA;
+        let found = deleted_labels_absent(
+            schema,
+            &[
+                "entity population",
+                "relation scoped",
+                "relation population-member",
+                "isa population",
+                "isa scoped",
+                "scoped:",
+                "population-member:",
+                "scoped-belief",
+                "spec-dialect",
+                "spec-text",
+                "spec-hash",
+                "computed-at",
+                "population-members",
+                "population-members-at",
+                "blast-radius-at",
+                "blast-step-at",
+            ],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped mem schema still declares {found:?}"
+        );
+        assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }"));
+    }
 
     #[test]
     fn shipped_queries_use_current_relation_syntax() {
@@ -275,21 +368,9 @@ mod tests {
         assert!(schema.contains("fun is-superseded($b: memory-item) -> boolean"));
         assert!(schema.contains("fun believed-at($t: datetime) -> { belief }"));
         assert!(schema.contains("fun derivation-chain($b: memory-item) -> { memory-item }"));
-        // blast-radius's param is widened to okf-concept so a population member (a
-        // `concept`, sibling of memory-item) type-checks as the retractee.
-        assert!(schema.contains("fun blast-radius($r: okf-concept) -> { memory-item }"));
-        assert!(
-            schema
-                .contains("fun blast-radius-at($r: okf-concept, $t: datetime) -> { memory-item }")
-        );
-        // Population / resolution functions — present-state fast path and as-of-t variants.
-        assert!(schema.contains("fun population-members($pop: population) -> { concept }"));
+        assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }"));
+        // Resolution functions — present-state fast path and as-of-t variant.
         assert!(schema.contains("fun canonical-entity($rec: concept) -> { concept }"));
-        assert!(
-            schema.contains(
-                "fun population-members-at($pop: population, $t: datetime) -> { concept }"
-            )
-        );
         assert!(
             schema.contains("fun canonical-entity-at($rec: concept, $t: datetime) -> { concept }")
         );

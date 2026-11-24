@@ -8,6 +8,7 @@
 //!
 //! Requires a running TypeDB service (CI provides one).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -433,6 +434,125 @@ async fn blast_radius_propagates_transitively() {
         radius.contains(&b2),
         "…and transitively its downstream derivation"
     );
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn blast_radius_of_a_leaf_belief_is_empty() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let leaf = w
+        .assert_belief(
+            &ctx,
+            belief("nothing depends on this", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(w.blast_radius(leaf).await.unwrap(), Vec::<MemId>::new());
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn blast_radius_terminates_on_a_rests_on_cycle() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("cycle a", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("cycle b", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.rests_on(&ctx, a.clone(), std::slice::from_ref(&b))
+        .await
+        .unwrap();
+    w.rests_on(&ctx, b.clone(), std::slice::from_ref(&a))
+        .await
+        .unwrap();
+
+    // The function itself yields each member once, before the reader dedups.
+    let rows = fx
+        .raw_fetch(&format!(
+            r#"match
+                 $a isa memory-item, has concept-id "{}";
+                 let $m in blast-radius($a);
+                 $m has concept-id $c;
+               fetch {{ "c": $c }};"#,
+            a.as_str()
+        ))
+        .await;
+    assert_eq!(
+        rows.len(),
+        2,
+        "blast-radius yields each member once: {rows:?}"
+    );
+
+    let mut radius = w.blast_radius(a.clone()).await.unwrap();
+    assert_eq!(radius.len(), 2, "each cycle member once: {radius:?}");
+    radius.sort();
+    let mut want = vec![a, b];
+    want.sort();
+    assert_eq!(radius, want);
+
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn blast_radius_follows_a_derivation_chain() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+
+    let a = w
+        .assert_belief(
+            &ctx,
+            belief("chain root", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let b = w
+        .assert_belief(
+            &ctx,
+            belief("chain middle", "agent-1", 0.8),
+            std::slice::from_ref(&a),
+            DerivationMethod::TypeJoin,
+        )
+        .await
+        .unwrap();
+    let c = w
+        .assert_belief(
+            &ctx,
+            belief("chain tip", "agent-1", 0.7),
+            std::slice::from_ref(&b),
+            DerivationMethod::TypeJoin,
+        )
+        .await
+        .unwrap();
+
+    let radius: BTreeSet<MemId> = w.blast_radius(a).await.unwrap().into_iter().collect();
+    assert_eq!(radius, BTreeSet::from([b, c]));
 
     fx.drop_db().await;
 }
@@ -2033,8 +2153,8 @@ async fn recall_falls_back_when_no_index() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fixture tests: retrieval-score (decayed), select-for-context, population,
-// canonical-entity, prediction lifecycle.
+// Fixture tests: retrieval-score (decayed), select-for-context, canonical-entity,
+// prediction lifecycle.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
 async fn retrieval_score_and_select_for_context() {
@@ -2075,19 +2195,13 @@ async fn retrieval_score_and_select_for_context() {
 }
 
 #[tokio::test]
-async fn population_members_and_canonical_entity() {
+async fn canonical_entity_reads_the_resolution_closure() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);
 
-    // Seed a population + materialized members + a provable cross-source resolution.
+    // Seed a provable cross-source resolution.
     fx.raw_seed(
         r#"insert
-             $p isa population, has spec-hash "cohort-1", has spec-dialect "typeql-3",
-                 has spec-text 'match $c isa concept, has tag "internet-facing";';
-             $c1 isa concept, has concept-id "asset/c1";
-             $c2 isa concept, has concept-id "asset/c2";
-             population-member (owning-population: $p, member: $c1), has computed-at 2026-01-01T00:00:00;
-             population-member (owning-population: $p, member: $c2), has computed-at 2026-01-01T00:00:00;
              $ra isa concept, has concept-id "src-a/evil.com";
              $rb isa concept, has concept-id "src-b/evil.com";
              $res isa resolution, has concept-id "mem/bel/res", has belief-state "asserted";
@@ -2097,13 +2211,6 @@ async fn population_members_and_canonical_entity() {
              resolves (resolution-belief: $res, record-a: $ra, record-b: $rb);"#,
     )
     .await;
-
-    let mut members = w.population_members("cohort-1").await.unwrap();
-    members.sort();
-    assert_eq!(
-        members,
-        vec![ConceptId::new("asset/c1"), ConceptId::new("asset/c2")]
-    );
 
     let mut canon = w
         .canonical_entity(&ConceptId::new("src-a/evil.com"))
@@ -2981,412 +3088,4 @@ async fn store_reads_run_concurrently_and_writes_are_gated() {
     );
 
     fx.drop_db().await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Populations writer (SPEC-W2-W3 §3.5): materialization keeps the window and the
-// freshness marker in step, closes departed members, and opens a fresh epoch on
-// rejoin — so present-state and as-of-t reads both stay correct.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const POP: &str = "pop/internet-facing";
-
-async fn seed_concepts(fx: &Fixture, ids: &[&str]) {
-    let lines: String = ids
-        .iter()
-        .enumerate()
-        .map(|(i, id)| format!("$c{i} isa concept, has concept-id \"{id}\";\n"))
-        .collect();
-    fx.raw_write(&format!("insert {lines}")).await;
-}
-
-async fn members_at(fx: &Fixture, t: &str) -> Vec<String> {
-    let docs = fx
-        .raw_fetch(&format!(
-            "match $p isa population, has spec-hash \"{POP}\";
-                   let $m in population-members-at($p, {t});
-                   $m has concept-id $id;
-             fetch {{ \"id\": $id }};"
-        ))
-        .await;
-    let mut ids: Vec<String> = docs
-        .iter()
-        .map(|d| d["id"].as_str().unwrap().to_string())
-        .collect();
-    ids.sort();
-    ids
-}
-
-/// Every row of `member` as (valid-from, valid-to, computed-at), oldest first.
-async fn rows_of(fx: &Fixture, member: &str) -> Vec<(String, Option<String>, String)> {
-    let docs = fx
-        .raw_fetch(&format!(
-            "match $p isa population, has spec-hash \"{POP}\";
-                   $c isa concept, has concept-id \"{member}\";
-                   $pm isa population-member, links (owning-population: $p, member: $c);
-             fetch {{ \"vf\": $pm.valid-from, \"vt\": $pm.valid-to, \"ca\": $pm.computed-at }};"
-        ))
-        .await;
-    let mut rows: Vec<_> = docs
-        .iter()
-        .map(|d| {
-            (
-                d["vf"].as_str().unwrap().to_string(),
-                d["vt"].as_str().map(str::to_string),
-                d["ca"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
-    rows.sort();
-    rows
-}
-
-fn ids(xs: &[&str]) -> Vec<ConceptId> {
-    xs.iter().map(|x| ConceptId::new(*x)).collect()
-}
-
-#[tokio::test]
-async fn populations_writer_maintains_windows_across_passes() {
-    let fx = Fixture::new().await;
-    let w = fx.writer(None, None);
-    seed_concepts(&fx, &["asset/a", "asset/b", "asset/c"]).await;
-
-    assert!(
-        w.define_population(POP, "typeql-3", "match $c isa concept;")
-            .await
-            .unwrap()
-    );
-    assert!(
-        !w.define_population(POP, "typeql-3", "match $c isa concept;")
-            .await
-            .unwrap(),
-        "redefining with the same spec is a no-op"
-    );
-
-    let t0 = dt("2026-01-01T00:00:00Z");
-    let t1 = dt("2026-02-01T00:00:00Z");
-    let t2 = dt("2026-03-01T00:00:00Z");
-    let t3 = dt("2026-04-01T00:00:00Z");
-
-    // t0: {a, b}.
-    let r = w
-        .materialize_population(POP, &ids(&["asset/a", "asset/b"]), t0)
-        .await
-        .unwrap();
-    assert_eq!(
-        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
-        (2, 0, 0)
-    );
-
-    // t1: unchanged — valid-from must not move; computed-at advances.
-    let r = w
-        .materialize_population(POP, &ids(&["asset/a", "asset/b"]), t1)
-        .await
-        .unwrap();
-    assert_eq!(
-        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
-        (0, 0, 2)
-    );
-    assert_eq!(
-        rows_of(&fx, "asset/a").await,
-        vec![(
-            "2026-01-01T00:00:00.000000000".into(),
-            None,
-            "2026-02-01T00:00:00.000000000".into()
-        )]
-    );
-
-    // t2: a leaves, c joins.
-    let r = w
-        .materialize_population(POP, &ids(&["asset/b", "asset/c"]), t2)
-        .await
-        .unwrap();
-    assert_eq!(
-        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
-        (1, 1, 1)
-    );
-    assert_eq!(
-        rows_of(&fx, "asset/a").await,
-        vec![(
-            "2026-01-01T00:00:00.000000000".into(),
-            Some("2026-03-01T00:00:00.000000000".into()),
-            "2026-03-01T00:00:00.000000000".into()
-        )],
-        "a departed member's window closes AND its computed-at advances"
-    );
-
-    // t3: a rejoins — a second epoch row, the closed one stays.
-    let r = w
-        .materialize_population(POP, &ids(&["asset/a", "asset/b", "asset/c"]), t3)
-        .await
-        .unwrap();
-    assert_eq!(
-        (r.opens_attempted, r.closes_attempted, r.refreshes_attempted),
-        (1, 0, 2)
-    );
-    assert_eq!(rows_of(&fx, "asset/a").await.len(), 2);
-
-    // As-of reads follow the epochs; the present-state view excludes closed rows.
-    assert_eq!(
-        members_at(&fx, "2026-01-15T00:00:00").await,
-        vec!["asset/a", "asset/b"]
-    );
-    assert_eq!(
-        members_at(&fx, "2026-03-15T00:00:00").await,
-        vec!["asset/b", "asset/c"]
-    );
-    let mut now = w.population_members(POP).await.unwrap();
-    now.sort();
-    assert_eq!(now, ids(&["asset/a", "asset/b", "asset/c"]));
-
-    fx.drop_db().await;
-}
-
-#[tokio::test]
-async fn populations_writer_closes_one_membership() {
-    let fx = Fixture::new().await;
-    let w = fx.writer(None, None);
-    seed_concepts(&fx, &["asset/a", "asset/b"]).await;
-    w.define_population(POP, "typeql-3", "match $c isa concept;")
-        .await
-        .unwrap();
-    w.materialize_population(
-        POP,
-        &ids(&["asset/a", "asset/b"]),
-        dt("2026-01-01T00:00:00Z"),
-    )
-    .await
-    .unwrap();
-
-    let t1 = dt("2026-02-01T00:00:00Z");
-    assert!(
-        w.close_population_membership(POP, &ConceptId::new("asset/a"), t1)
-            .await
-            .unwrap()
-    );
-    assert!(
-        !w.close_population_membership(POP, &ConceptId::new("asset/a"), t1)
-            .await
-            .unwrap(),
-        "an already-closed membership reports nothing closed"
-    );
-    assert_eq!(w.population_members(POP).await.unwrap(), ids(&["asset/b"]));
-    // b's row is untouched by the single close.
-    assert_eq!(
-        rows_of(&fx, "asset/b").await,
-        vec![(
-            "2026-01-01T00:00:00.000000000".into(),
-            None,
-            "2026-01-01T00:00:00.000000000".into()
-        )]
-    );
-
-    fx.drop_db().await;
-}
-
-#[tokio::test]
-async fn populations_writer_rejects_bad_input_and_writes_nothing() {
-    let fx = Fixture::new().await;
-    let w = fx.writer(None, None);
-    seed_concepts(&fx, &["asset/a"]).await;
-    let t0 = dt("2026-01-01T00:00:00Z");
-
-    // Unknown population.
-    let err = w
-        .materialize_population("pop/missing", &ids(&["asset/a"]), t0)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-
-    w.define_population(POP, "typeql-3", "match $c isa concept;")
-        .await
-        .unwrap();
-
-    // Same hash, different spec.
-    let err = w
-        .define_population(POP, "typeql-3", "match $c isa concept, has tag \"x\";")
-        .await
-        .unwrap_err();
-    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-
-    // A member that is not a stored concept fails the whole pass.
-    let err = w
-        .materialize_population(POP, &ids(&["asset/a", "asset/ghost"]), t0)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-    assert!(w.population_members(POP).await.unwrap().is_empty());
-
-    // A pass older than the population's latest recorded time.
-    w.materialize_population(POP, &ids(&["asset/a"]), dt("2026-02-01T00:00:00Z"))
-        .await
-        .unwrap();
-    let err = w.materialize_population(POP, &[], t0).await.unwrap_err();
-    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-    assert_eq!(w.population_members(POP).await.unwrap(), ids(&["asset/a"]));
-
-    // A pass stamped ahead of the host clock.
-    let ahead = chrono::Utc::now() + chrono::TimeDelta::hours(1);
-    let err = w
-        .materialize_population(POP, &ids(&["asset/a"]), ahead)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-    let err = w
-        .close_population_membership(POP, &ConceptId::new("asset/a"), ahead)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, EpistemicError::InvalidInput(_)), "{err:?}");
-
-    fx.drop_db().await;
-}
-
-#[tokio::test]
-async fn blast_radius_at_follows_the_materialized_window() {
-    let fx = Fixture::new().await;
-    let w = fx.writer(None, None);
-    seed_concepts(&fx, &["asset/a"]).await;
-    fx.raw_seed(&format!(
-        r#"insert
-             $p isa population, has spec-hash "{POP}", has spec-dialect "typeql-3",
-                 has spec-text "match $c isa concept;";
-             $b isa belief, has concept-id "mem/bel/cohort", has belief-state "asserted";
-             scoped (scoped-belief: $b, population: $p);"#
-    ))
-    .await;
-
-    let a = ConceptId::new("asset/a");
-    w.materialize_population(POP, std::slice::from_ref(&a), dt("2026-01-01T00:00:00Z"))
-        .await
-        .unwrap();
-    assert_eq!(
-        present_blast_radius(&fx, "asset/a").await,
-        ["mem/bel/cohort"],
-        "a current member sweeps its cohort through present-state blast-radius"
-    );
-    w.materialize_population(POP, &[], dt("2026-03-01T00:00:00Z"))
-        .await
-        .unwrap();
-    assert!(
-        present_blast_radius(&fx, "asset/a").await.is_empty(),
-        "a departed member no longer sweeps its former cohort"
-    );
-
-    assert_eq!(
-        w.blast_radius_at(&a, dt("2026-02-01T00:00:00Z"))
-            .await
-            .unwrap(),
-        vec![MemId::new("mem/bel/cohort")],
-        "while a was a member, retracting it sweeps the cohort belief"
-    );
-    assert!(
-        w.blast_radius_at(&a, dt("2026-04-01T00:00:00Z"))
-            .await
-            .unwrap()
-            .is_empty(),
-        "after a left, retracting it sweeps nothing"
-    );
-
-    fx.drop_db().await;
-}
-
-/// Present-state `blast-radius($r)` of concept `member`, read directly (the
-/// `EpistemicReader` entry point takes a memory item).
-async fn present_blast_radius(fx: &Fixture, member: &str) -> Vec<String> {
-    let docs = fx
-        .raw_fetch(&format!(
-            "match $r isa concept, has concept-id \"{member}\";
-                   let $m in blast-radius($r);
-                   $m has concept-id $mid;
-             fetch {{ \"id\": $mid }};"
-        ))
-        .await;
-    let mut out: Vec<String> = docs
-        .iter()
-        .map(|d| d["id"].as_str().unwrap().to_string())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// Two writers (separate per-population locks) race overlapping passes; the write
-/// guards alone must keep one open row per member and `computed-at` from moving
-/// backwards.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn populations_writer_overlapping_passes_keep_one_open_row() {
-    let fx = Fixture::new().await;
-    let w1 = fx.writer(None, None);
-    let w2 = fx.writer(None, None);
-    seed_concepts(&fx, &["asset/a", "asset/b", "asset/c"]).await;
-    let (d1, d2) = tokio::join!(
-        w1.define_population(POP, "typeql-3", "match $c isa concept;"),
-        w2.define_population(POP, "typeql-3", "match $c isa concept;"),
-    );
-    assert_eq!(
-        [d1.unwrap(), d2.unwrap()].iter().filter(|c| **c).count(),
-        1,
-        "exactly one writer creates the population"
-    );
-
-    let rounds: [(&[&str], &[&str]); 4] = [
-        (&["asset/a", "asset/b"], &["asset/a", "asset/b"]),
-        (&["asset/a", "asset/c"], &["asset/b", "asset/c"]),
-        (&["asset/a"], &["asset/a", "asset/b", "asset/c"]),
-        (&["asset/b", "asset/c"], &["asset/c"]),
-    ];
-    let mut latest = String::new();
-    for (i, (m1, m2)) in rounds.iter().enumerate() {
-        let t1 = dt(&format!("2026-0{}-01T00:00:00Z", i + 1));
-        let t2 = dt(&format!("2026-0{}-15T00:00:00Z", i + 1));
-        // The later pass may finish first; the earlier one is then refused as
-        // stale by the planner or made a no-op by the write guards.
-        let (m1, m2) = (ids(m1), ids(m2));
-        let (r1, r2) = tokio::join!(
-            w1.materialize_population(POP, &m1, t1),
-            w2.materialize_population(POP, &m2, t2),
-        );
-        for r in [r1, r2] {
-            if let Err(e) = r {
-                assert!(matches!(e, EpistemicError::InvalidInput(_)), "{e:?}");
-            }
-        }
-        for member in ["asset/a", "asset/b", "asset/c"] {
-            let rows = rows_of(&fx, member).await;
-            assert!(
-                rows.iter().filter(|(_, vt, _)| vt.is_none()).count() <= 1,
-                "round {i}: {member} has more than one open row: {rows:?}"
-            );
-            for (vf, vt, _) in &rows {
-                if let Some(vt) = vt {
-                    assert!(
-                        vf <= vt,
-                        "round {i}: {member} window closes before it opens"
-                    );
-                }
-            }
-        }
-        let now_latest = latest_computed_at(&fx).await;
-        assert!(
-            now_latest >= latest,
-            "round {i}: computed-at moved backwards"
-        );
-        latest = now_latest;
-    }
-    fx.drop_db().await;
-}
-
-async fn latest_computed_at(fx: &Fixture) -> String {
-    let docs = fx
-        .raw_fetch(&format!(
-            "match $p isa population, has spec-hash \"{POP}\";
-                   $pm isa population-member, links (owning-population: $p),
-                       has computed-at $ca;
-             fetch {{ \"ca\": $ca }};"
-        ))
-        .await;
-    docs.iter()
-        .filter_map(|d| d["ca"].as_str().map(str::to_string))
-        .max()
-        .unwrap_or_default()
 }

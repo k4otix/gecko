@@ -183,8 +183,17 @@ async fn old_cyber_detection_types_migrate_away() {
     mem_gecko::BeliefEdgeRegistry::from_extensions(CORE_SCHEMA, &exts)
         .expect("the registry accepts the cyber migrations");
 
+    // The frozen cyber schema has `population` play a role, so the database starts
+    // on the pre-tightening core and mem, which declare it, and takes the shipped
+    // core and mem with their migrations before the frozen cyber schema.
     let test_db = TestDb::new("gecko_test_cyber_migration");
     let mut db = test_db.router();
+    db.apply_schema(PRE_CORE)
+        .await
+        .expect("pre-tightening core");
+    db.apply_schema(&pre_mem_schema())
+        .await
+        .expect("pre-tightening mem");
     db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
         .await
         .expect("core schema");
@@ -889,29 +898,80 @@ fn attack_with_malware() -> String {
     bundle.to_string()
 }
 
-/// A database schema export as its type definitions and its functions, sorted. An
-/// upgrade appends a newly defined type, capability or function after the existing
-/// ones, where a fresh database lists it in definition order; that order carries no
-/// meaning. Each type's capabilities stay with it, sorted, and the types are sorted.
+/// The schema parts an upgraded pre-tightening database keeps that a fresh database
+/// does not have. Each is inert: nothing shipped references it. A `fun <name>` entry
+/// names a function whose text is the pre-tightening fixture's own; any other entry
+/// is a `schema_parts` part verbatim.
 #[cfg(feature = "cyber")]
-fn schema_parts(schema: &str) -> (Vec<String>, Vec<String>) {
+const CUT_LEFTOVERS: &[&str] = &[
+    "fun blast-radius-at",
+    "fun population-members",
+    "fun population-members-at",
+    "attribute computed-at | value datetime",
+    "attribute spec-dialect | value string",
+    "attribute spec-hash | value string",
+    "attribute spec-text | value string",
+    "entity belief | plays scoped:scoped-belief",
+    "entity concept | plays population-member:member",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-dialect @card(0..1)",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-text @card(0..1)",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-hash @key",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | plays scoped:population",
+    "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | plays population-member:owning-population",
+    "relation scoped @doc(\"Scopes a belief to the population it is about.\") | relates scoped-belief @doc(\"The belief scoped to the population.\")",
+    "relation scoped @doc(\"Scopes a belief to the population it is about.\") | relates population @doc(\"The population the belief concerns.\")",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | relates owning-population @doc(\"The population the membership belongs to.\")",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | relates member @doc(\"A concept the population's spec currently matches.\")",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns valid-from @card(0..1)",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns valid-to @card(0..1)",
+    "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns computed-at @card(0..1)",
+];
+
+/// [`CUT_LEFTOVERS`] as `schema_parts` parts, each function read from the
+/// pre-tightening fixture.
+#[cfg(feature = "cyber")]
+fn cut_leftover_parts() -> std::collections::BTreeSet<String> {
+    CUT_LEFTOVERS
+        .iter()
+        .map(|entry| match entry.strip_prefix("fun ") {
+            Some(name) => {
+                let start = PRE_MEM_FUNCTIONS
+                    .find(&format!("  fun {name}("))
+                    .unwrap_or_else(|| panic!("the fixture declares no function {name}"));
+                let text = &PRE_MEM_FUNCTIONS[start..];
+                text[..text.find("\n\n").unwrap_or(text.len())]
+                    .trim()
+                    .to_string()
+            }
+            None => entry.to_string(),
+        })
+        .collect()
+}
+
+/// A database schema export as the set of its `(type head, capability)` pairs and
+/// the set of its function texts. An upgrade appends a newly defined type, capability
+/// or function after the existing ones, where a fresh database lists it in definition
+/// order; that order carries no meaning. A type with no capability contributes its
+/// head alone.
+#[cfg(feature = "cyber")]
+fn schema_parts(schema: &str) -> std::collections::BTreeSet<String> {
     let mut chunks = schema.split("\nfun ");
     let types_text = chunks.next().unwrap_or_default();
-    let mut types: Vec<String> = types_text
-        .trim_start_matches("define")
-        .split(";\n")
-        .map(|decl| {
-            let decl = decl.trim().trim_end_matches(';');
-            let mut lines: Vec<&str> = decl.split(",\n").map(str::trim).collect();
-            let head = lines.remove(0);
-            lines.sort_unstable();
-            format!("{head} | {}", lines.join(" | "))
-        })
-        .collect();
-    types.sort();
-    let mut functions: Vec<String> = chunks.map(|f| format!("fun {}", f.trim_end())).collect();
-    functions.sort();
-    (types, functions)
+    let mut parts = std::collections::BTreeSet::new();
+    for decl in types_text.trim_start_matches("define").split(";\n") {
+        let decl = decl.trim().trim_end_matches(';');
+        let mut lines = decl.split(",\n").map(str::trim);
+        let head = lines.next().unwrap_or_default();
+        let mut capabilities = lines.peekable();
+        if capabilities.peek().is_none() {
+            parts.insert(head.to_string());
+        }
+        for capability in capabilities {
+            parts.insert(format!("{head} | {capability}"));
+        }
+    }
+    parts.extend(chunks.map(|f| format!("fun {}", f.trim_end())));
+    parts
 }
 
 /// A database on the pre-tightening schemas, populated by every current writer path
@@ -1132,30 +1192,6 @@ async fn tightened_schema_applies_to_a_populated_database() {
         .resolve_prediction(&ctx, asserted.clone(), Outcome::Confirmed)
         .await
         .expect("resolve_prediction");
-    assert!(
-        writer
-            .define_population("upgrade-pop", "typeql-3", "match $c isa concept;")
-            .await
-            .expect("define_population")
-    );
-    writer
-        .materialize_population(
-            "upgrade-pop",
-            &[ConceptId::new("notes/a"), ConceptId::new("notes/b")],
-            chrono::Utc::now(),
-        )
-        .await
-        .expect("materialize_population");
-    assert!(
-        writer
-            .close_population_membership(
-                "upgrade-pop",
-                &ConceptId::new("notes/b"),
-                chrono::Utc::now()
-            )
-            .await
-            .expect("close_population_membership")
-    );
     let pair = [
         writer.observe(&ctx, episode()).await.expect("observe"),
         writer.observe(&ctx, episode()).await.expect("observe"),
@@ -1218,27 +1254,16 @@ async fn tightened_schema_applies_to_a_populated_database() {
         .await
         .expect("disposition");
 
-    // One-player rows a database synced by an earlier release can hold, which
-    // today's GC deletes with their concept: a concept link and a population
-    // membership.
-    let seed = [
-        GraphWrite::single(
-            "given $id: string; \
-             match $c isa concept, has concept-id $cid; $cid == $id; \
-             insert concept-link (source: $c);",
-            vec!["id".into()],
-            vec![GraphValue::from(LOGIC)],
-        )
-        .expecting(1),
-        GraphWrite::single(
-            "given $h: string; \
-             match $p isa population, has spec-hash $s; $s == $h; \
-             insert population-member (owning-population: $p);",
-            vec!["h".into()],
-            vec![GraphValue::from("upgrade-pop")],
-        )
-        .expecting(1),
-    ];
+    // A one-player concept link a database synced by an earlier release can hold,
+    // which today's GC deletes with its concept.
+    let seed = [GraphWrite::single(
+        "given $id: string; \
+         match $c isa concept, has concept-id $cid; $cid == $id; \
+         insert concept-link (source: $c);",
+        vec!["id".into()],
+        vec![GraphValue::from(LOGIC)],
+    )
+    .expecting(1)];
     {
         let tx = db.begin_write().await.expect("write tx");
         gecko_engine::db::run_graph_writes(&tx, &seed)
@@ -1268,7 +1293,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
     }
     assert_eq!(
         added,
-        BTreeMap::from([("core", 4), ("mem", 22), ("cyber", 9)]),
+        BTreeMap::from([("core", 4), ("mem", 20), ("cyber", 9)]),
         "the triggers checked"
     );
 
@@ -1297,27 +1322,19 @@ async fn tightened_schema_applies_to_a_populated_database() {
     let fresh_db = TestDb::new("gecko_test_tightened_fresh");
     attack::sync_fixture(&fresh_db).await;
     let fresh = fresh_db.router().database_schema().await.expect("schema");
-    assert_eq!(
-        schema_parts(&after),
-        schema_parts(&fresh),
-        "the upgraded schema differs from a fresh one"
+    let (after_parts, fresh_parts) = (schema_parts(&after), schema_parts(&fresh));
+    let missing: Vec<&String> = fresh_parts.difference(&after_parts).collect();
+    assert!(
+        missing.is_empty(),
+        "the upgraded schema lacks parts a fresh one has: {missing:#?}"
     );
-
-    // mem's required roles: the one-player membership is gone, and another is refused.
+    let leftovers: std::collections::BTreeSet<String> =
+        after_parts.difference(&fresh_parts).cloned().collect();
     assert_eq!(
-        count_rows(
-            &mut db,
-            "match $r isa population-member; not { $r links (member: $m); };"
-        )
-        .await,
-        0
+        leftovers,
+        cut_leftover_parts(),
+        "the upgraded schema keeps exactly the named leftovers beyond a fresh one"
     );
-    assert_eq!(
-        count_rows(&mut db, "match $r isa population-member;").await,
-        2
-    );
-    let err = refusal(&mut db, &[seed[1].clone()]).await;
-    assert!(err.contains("population-member"), "{err}");
 
     // core's required roles: the one-player link is gone, the synced link stays.
     assert_eq!(

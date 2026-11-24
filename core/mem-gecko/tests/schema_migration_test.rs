@@ -17,15 +17,13 @@ mod provenance;
 
 const CORE_SCHEMA: &str = include_str!("../../gecko-engine/schema/core_schema.tql");
 
-/// The mem schema as released before the population-member window landed.
+/// The mem schema of an earlier release, before belief's `@doc` changed.
 const PREVIOUS_MEM_SCHEMA: &str = include_str!("fixtures/mem_schema_95ebac1.tql");
 
-/// The shipped `population-members` body, and the earlier body that did not
-/// exclude closed membership rows.
-const NEW_BODY: &str =
-    "          $pm isa population-member, links (owning-population: $pop, member: $m);
-          not { $pm has valid-to $vt; };";
-const OLD_BODY: &str = "          population-member (owning-population: $pop, member: $m);";
+/// The shipped `canonical-step` body's first line, which matches only asserted
+/// resolutions, and a variant that matches resolutions in any belief-state.
+const NEW_BODY: &str = "          $res isa resolution, has belief-state \"asserted\";";
+const OLD_BODY: &str = "          $res isa resolution;";
 
 fn router() -> (TypeDbRouter, String) {
     let name = format!("migtest_{}", Ulid::generate().to_string().to_lowercase());
@@ -39,13 +37,14 @@ fn router() -> (TypeDbRouter, String) {
     (router, name)
 }
 
-async fn members(router: &mut TypeDbRouter) -> Vec<String> {
+/// The records `canonical-step` resolves `r/a` to directly, sorted.
+async fn steps(router: &mut TypeDbRouter) -> Vec<String> {
     let tx = router.begin_read().await.expect("read tx");
     let answer = tx
         .query(
-            r#"match $p isa population, has spec-hash "pop/m";
-                     let $m in population-members($p);
-                     $m has concept-id $id;
+            r#"match $r isa concept, has concept-id "r/a";
+                     let $o in canonical-step($r);
+                     $o has concept-id $id;
                fetch { "id": $id };"#,
         )
         .await
@@ -98,15 +97,15 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
         .await
         .expect("previous mem schema");
 
-    // A changed type annotation is refused by a plain re-define…
+    // A changed annotation is refused by a plain re-define…
     let err = router
         .apply_schema(mem.schema())
         .await
         .expect_err("a changed @doc cannot be re-defined");
-    assert!(format!("{err}").contains("DEX15"), "{err}");
+    assert!(format!("{err}").contains("DEX16"), "{err}");
 
-    // …and lands through the migration, together with the new functions and the
-    // window attributes, in one transaction. A second apply skips the migration.
+    // …and lands through the migrations, together with the new functions, in one
+    // transaction. A second apply skips the migrations.
     for _ in 0..2 {
         router.apply_schema(CORE_SCHEMA).await.expect("core schema");
         router
@@ -118,8 +117,17 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
     for m in mem.schema_migrations() {
         assert!(!schema.contains(m.applies_when), "{} left old text", m.id);
     }
-    assert!(schema.contains("fun blast-radius-at("));
-    assert!(schema.contains("fun population-members-at("));
+    // The shipped functions land alongside the migrations; the earlier release's
+    // population function and relation stay stored and unused.
+    for shipped in [
+        "fun blast-step($r: memory-item)",
+        "fun canonical-entity-at(",
+    ] {
+        assert!(schema.contains(shipped), "upgrade lacks `{shipped}`");
+    }
+    for leftover in ["fun population-members(", "relation population-member"] {
+        assert!(schema.contains(leftover), "upgrade dropped `{leftover}`");
+    }
 
     common::drop_db_with_retry(&mut router, &name).await;
 }
@@ -128,8 +136,9 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
 async fn changed_function_body_reaches_an_initialized_database() {
     let (mut router, name) = router();
     let shipped = mem_gecko::MemGecko::new().schema().to_string();
-    assert!(
-        shipped.contains(NEW_BODY),
+    assert_eq!(
+        shipped.matches(NEW_BODY).count(),
+        1,
         "shipped body drifted from the test"
     );
     let old_schema = shipped.replace(NEW_BODY, OLD_BODY);
@@ -140,26 +149,28 @@ async fn changed_function_body_reaches_an_initialized_database() {
         .await
         .expect("old mem schema");
 
-    {
-        let tx = router.begin_write().await.expect("write tx");
-        tx.query(
-            r#"insert
-                 $p isa population, has spec-hash "pop/m";
-                 $a isa concept, has concept-id "m/a";
-                 $b isa concept, has concept-id "m/b";
-                 population-member (owning-population: $p, member: $a),
-                     has valid-from 2026-01-01T00:00:00, has valid-to 2026-02-01T00:00:00;
-                 population-member (owning-population: $p, member: $b),
-                     has valid-from 2026-01-01T00:00:00;"#,
-        )
-        .await
-        .expect("seed rows");
-        tx.commit().await.expect("commit");
-    }
+    // Two provable resolutions of `r/a`: one asserted, one retracted.
+    write_seed(
+        &mut router,
+        r#"insert
+             $a isa concept, has concept-id "r/a";
+             $b isa concept, has concept-id "r/b";
+             $c isa concept, has concept-id "r/c";
+             $ep isa episode, has concept-id "mem/ep/r",
+                 has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
+             $live isa resolution, has concept-id "mem/bel/r-live", has belief-state "asserted";
+             $gone isa resolution, has concept-id "mem/bel/r-gone", has belief-state "retracted";
+             derivation (derived: $live, source: $ep), has derivation-method "type-join";
+             derivation (derived: $gone, source: $ep), has derivation-method "type-join";
+             resolves (resolution-belief: $live, record-a: $a, record-b: $b);
+             resolves (resolution-belief: $gone, record-a: $a, record-b: $c);"#,
+    )
+    .await
+    .expect("seed resolutions");
     assert_eq!(
-        members(&mut router).await,
-        ["m/a", "m/b"],
-        "the old body returns closed rows"
+        steps(&mut router).await,
+        ["r/b", "r/c"],
+        "the old body follows the retracted resolution"
     );
 
     router
@@ -167,8 +178,8 @@ async fn changed_function_body_reaches_an_initialized_database() {
         .await
         .expect("re-apply shipped schema");
     assert_eq!(
-        members(&mut router).await,
-        ["m/b"],
+        steps(&mut router).await,
+        ["r/b"],
         "the shipped body replaced the stored one"
     );
 
@@ -233,8 +244,58 @@ async fn callee_signature_change_lands_before_its_caller() {
     common::drop_db_with_retry(&mut router, &name).await;
 }
 
+#[tokio::test]
+async fn narrowing_a_callee_under_a_stored_caller_applies() {
+    let (mut router, name) = router();
+    // Both functions take the supertype, and the caller calls the callee.
+    let before = r#"define
+  entity gadget, owns label;
+  entity widget sub gadget;
+  attribute label, value string;
+  fun reach($g: gadget) -> { gadget }:
+      match let $x in step($g);
+      return { $x };
+  fun step($g: gadget) -> { gadget }:
+      match $g isa gadget;
+      return { $g };
+"#;
+    // Both narrow to the subtype. The plan redefines the callee first, so TypeDB
+    // checks the narrowed callee against the stored, still-wide caller.
+    let after = r#"define
+  entity gadget, owns label;
+  entity widget sub gadget;
+  attribute label, value string;
+  fun reach($w: widget) -> { gadget }:
+      match let $x in step($w);
+      return { $x };
+  fun step($w: widget) -> { gadget }:
+      match $w isa widget;
+      return { $w };
+"#;
+    router.apply_schema(before).await.expect("first release");
+    write(&mut router, r#"insert $w isa widget, has label "w";"#)
+        .await
+        .expect("seed a widget");
+    for _ in 0..2 {
+        router.apply_schema(after).await.expect("narrowed release");
+    }
+    let schema = router.database_schema().await.expect("schema");
+    assert!(schema.contains("fun step($w: widget)"), "{schema}");
+    assert!(schema.contains("fun reach($w: widget)"), "{schema}");
+    assert_eq!(
+        count(
+            &mut router,
+            r#"match $w isa widget, has label "w"; let $x in reach($w);"#
+        )
+        .await,
+        1,
+        "the caller answers through the narrowed callee"
+    );
+    common::drop_db_with_retry(&mut router, &name).await;
+}
+
 /// The probe's schema before tightening. `probe-mark` is owned with an explicit
-/// card by two types, like `valid-from` on `belief` and `population-member`.
+/// card by two types, as the pre-tightening fixture owns `valid-from`.
 const PROBE_BEFORE: &str = r#"define
   attribute probe-weight @doc("A score the probe bounds to [0, 1]."), value double;
   attribute probe-count @doc("A count the probe bounds below by zero."), value integer;
@@ -486,9 +547,9 @@ fn the_registry_accepts_the_tightening_migrations() {
     let mut migrations = mem_gecko::MEM_MIGRATIONS.to_vec();
     migrations.extend([
         SchemaMigration {
-            id: "probe/population-member-one-player",
-            applies_when: "relates member @doc(\"A concept the population's spec currently matches.\")",
-            tql: "match $r isa population-member; { not { $r links (owning-population: $p); }; } or { not { $r links (member: $m); }; }; delete $r;",
+            id: "probe/resolves-one-player",
+            applies_when: "relates record-b @card(1) @doc(\"The other record being resolved together.\")",
+            tql: "match $r isa resolves; { not { $r links (record-a: $a); }; } or { not { $r links (record-b: $b); }; }; delete $r;",
         },
         SchemaMigration {
             id: "probe/belief-valid-from-required",
@@ -552,17 +613,14 @@ async fn the_valid_from_migration_applies_once_to_an_existing_database() {
         .apply_schema(&pre_mem_schema())
         .await
         .expect("pre-change mem");
-    // A belief as the writer stores it, a population membership whose window
-    // stays optional, and a similarity score just above 1 from an f32 cosine.
+    // A belief as the writer stores it, and a similarity score just above 1 from an
+    // f32 cosine.
     write_seed(
         &mut router,
         r#"insert
           $b isa belief, has concept-id "mem/bel/vf", has belief-state "asserted",
               has valid-from 2026-01-01T00:00:00, has salience 0.5,
               has base-activation 1.0, has last-access 2026-01-01T00:00:00;
-          $p isa population, has spec-hash "pop-vf";
-          $c isa concept, has concept-id "c/vf";
-          population-member (owning-population: $p, member: $c);
           $re isa retrieval-event, has concept-id "mem/re/vf",
               has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
           surfaced (surfacer: $re, item: $b), has similarity-score 1.0000001192092896;"#,
@@ -600,7 +658,7 @@ async fn the_valid_from_migration_applies_once_to_an_existing_database() {
     assert_eq!(
         after.matches("owns valid-from @card(0..1)").count(),
         1,
-        "population-member's valid-from stays optional:\n{after}"
+        "the fixture's other owner of valid-from keeps it optional:\n{after}"
     );
     assert!(
         after.contains("validity window that opens at valid-from"),

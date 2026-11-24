@@ -17,20 +17,18 @@
 //!
 //! The implementation is split by concern: `index` (dirty set, rebuild, index
 //! hooks), `reader` (persisted-function reads and recall), `beliefs` (the writer
-//! trait), `edges` (the per-extension belief-edge writer), `populations` (the
-//! populations writer) and `consolidation`.
+//! trait), `edges` (the per-extension belief-edge writer) and `consolidation`.
 //! Query text lives in the crate's `tql` module.
 
 mod beliefs;
 mod consolidation;
 mod edges;
 mod index;
-mod populations;
 mod reader;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub use consolidation::DuplicateCandidate;
@@ -68,9 +66,6 @@ pub struct MemWriter {
     /// gated candidates overlap its evidence. Off ⇒ beliefs simply lack the
     /// retrieval axis and no retrieval-events are minted (no-drag preserved).
     record_retrieval_provenance: bool,
-    /// One lock per population `spec-hash`, held across a populations-writer
-    /// method's read, plan and write so passes from this writer never interleave.
-    population_locks: Mutex<HashMap<String, Arc<futures_util::lock::Mutex<()>>>>,
     /// The belief-edge relations each extension may write through its bound handle.
     belief_edges: BeliefEdgeRegistry,
     /// Relations whose declaration has passed the live-schema check against the
@@ -91,7 +86,6 @@ impl MemWriter {
             index,
             dirty: Mutex::new(HashSet::new()),
             record_retrieval_provenance: false,
-            population_locks: Mutex::new(HashMap::new()),
             belief_edges: BeliefEdgeRegistry::default(),
             checked_relations: Mutex::new(HashSet::new()),
         }

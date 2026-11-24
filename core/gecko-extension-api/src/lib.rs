@@ -83,7 +83,7 @@ pub type ExtensionCallback = std::sync::Arc<
 /// transaction as the extension's `define`, before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SchemaMigration {
-    /// Stable identifier, namespaced by extension (e.g. `mem/population-member-doc`).
+    /// Stable identifier, namespaced by extension (e.g. `mem/belief-valid-from-required`).
     pub id: &'static str,
     /// Text present in the database's exported schema only before this migration.
     pub applies_when: &'static str,
