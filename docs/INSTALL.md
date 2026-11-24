@@ -70,7 +70,7 @@ Then set, in `gecko.toml`:
 ```toml
 [semantic_index]
 enabled  = true
-embedder = "bge-large-en-v1.5"
+embedder = "candle"   # the bge-large-en-v1.5 model
 ```
 
 Both the model and the TypeDB server live under the GECKO cache root
@@ -86,8 +86,8 @@ ahead of time on a machine that does have access, copy them over, and point
 ```toml
 [semantic_index]
 enabled    = true
-embedder   = "bge-large-en-v1.5"
-model_id   = "bge-large-en-v1.5@<pinned-revision>"
+embedder   = "candle"
+model_id   = "BAAI/bge-large-en-v1.5@<pinned-revision>"
 auto_fetch = false                              # default — never a silent pull
 model_path = "/opt/gecko/models/bge-large-en-v1.5"  # pre-provisioned model dir
                                                      # (config.json, tokenizer.json,

@@ -4,7 +4,7 @@ A GECKO domain extension for detection engineering. It imports STIX 2.1 / MITRE
 ATT&CK bundles into typed cyber entities, loads a sensor file describing what you
 monitor, and gives playbooks the `cyber-gecko` host imports `claim`, `disposition`,
 `coverage_gaps`, `blinded`, `recommend_sources` and `precision`. It compiles in under the `cyber` feature
-and is activated with `cyber-gecko` in `gecko.toml`'s `[extensions] enabled`. The
+and is activated with `"cyber"` in `gecko.toml`'s `[extensions] enabled`. The
 extension contract it follows is [`extensions/README.md`](../README.md); its caveats
 are in [`docs/refactor/KNOWN-LIMITATIONS.md`](../../docs/refactor/KNOWN-LIMITATIONS.md).
 

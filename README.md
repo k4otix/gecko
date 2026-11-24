@@ -42,7 +42,7 @@ The project is divided into core abstractions, domain extensions, and the final 
 *   **`core/mem-gecko/`**: The epistemic memory substrate (always-on; not an optional feature). Bitemporal belief/provenance schema, index-seeded recall, and the A5.7 retrieval-provenance write path.
 *   **`core/gecko-semantic-index/`**: The in-process HNSW semantic index and embedder (a deterministic stub by default; a candle-backed `bge-large-en-v1.5` embedder behind the `real-embedder` feature).
 *   **`core/js-sandbox/`**: Source for the WebAssembly JS guest (Boa), compiled to `wasm32-wasip1` and checked in as a prebuilt binary. See [`docs/refactor/guest-wasm.md`](docs/refactor/guest-wasm.md) for rebuilding.
-*   **`extensions/cyber-gecko/`**: A domain extension for cybersecurity operations, defining entities like networks, vulnerabilities, and host configurations, and subtyping the core schema. It imports STIX/ATT&CK bundles (`gecko sync-stix`), loads a sensor file (`gecko sync-sensors`), and reports blind detections; see [`extensions/cyber-gecko/README.md`](extensions/cyber-gecko/README.md).
+*   **`extensions/cyber-gecko/`**: A domain extension for detection engineering: it types STIX/ATT&CK objects (techniques, detection strategies, analytics and their log-source requirements) as subtypes of the core schema. It imports STIX/ATT&CK bundles (`gecko sync-stix`), loads a sensor file (`gecko sync-sensors`), and reports blind detections; see [`extensions/cyber-gecko/README.md`](extensions/cyber-gecko/README.md).
 *   **`gecko-bin/`**: The final Assembler executable (`gecko`). It parses CLI arguments, instantiates the core engine, wires the selected extensions, and dispatches the execution lifecycle.
 
 ## Getting Started
@@ -99,7 +99,9 @@ The `gecko` CLI manages the full lifecycle of the knowledge graph and playbook e
 | `gecko sync <bundle>` | Parse an OKF bundle directory and sync its concepts, hierarchy, and code blocks. |
 | `gecko run <concept-id>` | Execute a synced playbook's code block in the sandbox. |
 | `gecko query '<TypeQL>'` | Run an ad-hoc TypeQL read query. |
-| `gecko status` | Show synced bundles and concept counts. |
+| `gecko status` | List the synced bundles (name and path). |
+| `gecko sync-stix <file>` | Import a STIX 2.1 / ATT&CK bundle (`cyber` builds). |
+| `gecko sync-sensors <file>` | Load a sensor file into an ATT&CK database (`cyber` builds). |
 | `gecko databases` / `gecko drop <name>` | List / delete TypeDB databases. |
 | `gecko model fetch` | Pre-stage the embedding model into the cache (one-time ~1.3 GB). |
 | `gecko doctor` | Report every precondition (config, cache, TypeDB, model, index, embedder) as ✓/⚠/✗ with a fix; non-zero exit iff a hard check fails. |
@@ -147,7 +149,7 @@ gecko model fetch      # stage bge-large-en-v1.5 (~1.3 GB, one time)
 # gecko.toml
 [semantic_index]
 enabled  = true
-embedder = "bge-large-en-v1.5"   # requires a build with the `real-embedder` feature
+embedder = "candle"   # the bge-large-en-v1.5 model; requires a build with the `real-embedder` feature
 backend  = "hnsw"
 record_retrieval_provenance = true
 ```
@@ -181,7 +183,7 @@ just build-guest    # rebuild + re-commit the WASM JS guest after editing core/j
 just check          # pre-push gate: fmt + clippy + fast tests
 ```
 
-CI (`ci.yml`) runs the candle-free, model-free suite against a TypeDB 3.15 service on every push; the real-model Tier-3 tests run nightly (`model-integration.yml`). The checked-in WASM guest is never rebuilt in CI — rebuild it locally with `just build-guest` and commit the binary.
+CI (`ci.yml`) runs the candle-free, model-free suite against a TypeDB 3.15 service on every push; the real-model Tier-3 tests run on manual dispatch only (`model-integration.yml`). The checked-in WASM guest is never rebuilt in CI — rebuild it locally with `just build-guest` and commit the binary.
 
 ## Contributing
 

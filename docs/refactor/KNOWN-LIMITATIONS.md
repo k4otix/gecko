@@ -45,7 +45,7 @@ proven through the real sandbox against live TypeDB.
   Low reachability today (recall replies are small; the write ops return tiny `{id}`
   payloads that never overflow), but the proper fix is a **host-reported
   required-size ABI**: on overflow the host returns the needed size (without
-  re-running the callback) so the guest allocates exactly once. Tracked follow-up.
+  re-running the callback) so the guest allocates exactly once. Owed: ledger **N2**.
 - The guest is a prebuilt binary kept out of CI; after editing
   `core/js-sandbox/src/main.rs` you must `just build-guest` and re-commit the wasm
   (see `docs/refactor/guest-wasm.md`).
@@ -160,7 +160,8 @@ which removes the belief from its original owner's recall.
 
 The consolidation daemon writes as actor `consolidation-daemon` while production runs write as
 `system`, so a daemon job that derives from or supersedes a run's private beliefs or episodes is
-refused by this rule (owed decision: ledger **C9**).
+refused by this rule. Nothing schedules the daemon, and the ledger's cut pass (**X1**)
+removes it.
 
 ## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
 
