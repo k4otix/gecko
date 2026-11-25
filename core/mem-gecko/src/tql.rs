@@ -90,11 +90,6 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         applies_when: "relates retrieval @doc(\"The retrieval event that fed the synthesis.\")",
         tql: "match $r isa informs-synthesis; { not { $r links (retrieval: $p0); }; } or { not { $r links (synthesized: $p1); }; }; delete $r;",
     },
-    SchemaMigration {
-        id: "mem/divergence-precedence-required-roles",
-        applies_when: "relates prevailing @doc(\"The belief the disposition resolved toward.\")",
-        tql: "match $r isa divergence-precedence; { not { $r links (prevailing: $p0); }; } or { not { $r links (overridden: $p1); }; }; delete $r;",
-    },
     // Belief's `@doc` sits on its `sub` declaration, which `redefine` cannot reach;
     // the shipped `define` sets the new text once the old one is gone.
     SchemaMigration {

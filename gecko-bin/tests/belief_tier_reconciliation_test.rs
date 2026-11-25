@@ -514,14 +514,6 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
     ),
     ("sighting", LabelDisposition::Owed { owner: "A8" }),
     ("sighting-of", LabelDisposition::Owed { owner: "A8" }),
-    (
-        "divergence-exception",
-        LabelDisposition::Owed { owner: "A5" },
-    ),
-    (
-        "divergence-precedence",
-        LabelDisposition::Owed { owner: "A5" },
-    ),
     ("resolution", LabelDisposition::Owed { owner: "M3" }),
     ("resolves", LabelDisposition::Owed { owner: "M3" }),
     ("playbook", LabelDisposition::Owed { owner: "M5" }),

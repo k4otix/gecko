@@ -411,7 +411,6 @@ insert
       has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
   $an isa anomaly, has concept-id "mem/an/p";
   $res isa resolution, has concept-id "mem/res/p", has belief-state "asserted";
-  $de isa divergence-exception, has concept-id "mem/de/p", has belief-state "asserted";
   $re isa retrieval-event, has concept-id "mem/re/p",
       has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
   $ag isa agent, has agent-id "agent-p";
@@ -428,7 +427,6 @@ match
   $ep isa episode, has concept-id "mem/ep/p";
   $an isa anomaly, has concept-id "mem/an/p";
   $res isa resolution, has concept-id "mem/res/p";
-  $de isa divergence-exception, has concept-id "mem/de/p";
   $re isa retrieval-event, has concept-id "mem/re/p";
   $ag isa agent, has agent-id "agent-p";
   $run isa doc-run, has run-id "run-p";
@@ -550,12 +548,6 @@ const INFORMS_SYNTHESIS: RoleCase = case(
     &[],
     "",
 );
-const DIVERGENCE_PRECEDENCE: RoleCase = case(
-    "divergence-precedence",
-    &[("prevailing", "$b1"), ("overridden", "$b2")],
-    &[("exception-belief", "$de")],
-    "",
-);
 
 impl RoleCase {
     /// The insert of this relation with every player except `omit`'s.
@@ -642,8 +634,6 @@ missing_role_refused! {
     a_surfaced_missing_its_item_is_refused_at_commit: SURFACED, "item";
     a_informs_synthesis_missing_its_retrieval_is_refused_at_commit: INFORMS_SYNTHESIS, "retrieval";
     a_informs_synthesis_missing_its_synthesized_is_refused_at_commit: INFORMS_SYNTHESIS, "synthesized";
-    a_divergence_precedence_missing_its_prevailing_is_refused_at_commit: DIVERGENCE_PRECEDENCE, "prevailing";
-    a_divergence_precedence_missing_its_overridden_is_refused_at_commit: DIVERGENCE_PRECEDENCE, "overridden";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

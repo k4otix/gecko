@@ -1,9 +1,0 @@
-define
-  fun out-entrenches($a: belief, $b: belief) -> boolean @doc("True if $a's entrenchment tier strictly out-ranks $b's."):
-      match
-          $a has entrenchment $ea; $b has entrenchment $eb;
-          { $ea == "axiom"; $eb != "axiom"; }
-          or { $ea == "user-stated"; { $eb == "tool-derived"; } or { $eb == "inferred"; } or { $eb == "llm"; }; }
-          or { $ea == "tool-derived"; { $eb == "inferred"; } or { $eb == "llm"; }; }
-          or { $ea == "inferred"; $eb == "llm"; };
-      return check;

@@ -11,12 +11,10 @@ use std::sync::LazyLock;
 use gecko_extension_api::{GeckoExtension, HostImportDef, SchemaMigration};
 
 pub mod belief_edge;
-pub mod disposition;
 mod tql;
 pub mod writer;
 
 pub use belief_edge::{BeliefEdgeRegistry, ExtensionFragment, RegistryError};
-pub use disposition::{DispKeys, Disposition};
 pub use writer::{IndexReconciliation, MemWriter};
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
@@ -139,6 +137,24 @@ mod tests {
                 "consolidation-action",
                 "relation consolidation-step",
                 "consolidation-step:",
+            ],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped mem schema still declares {found:?}"
+        );
+    }
+
+    #[test]
+    fn shipped_mem_schema_declares_no_divergence_labels() {
+        let found = deleted_labels_absent(
+            &MEM_SCHEMA,
+            &[
+                "entity divergence-exception",
+                "relation divergence-precedence",
+                "divergence-precedence:",
+                "exception-scope",
+                "exception-belief",
             ],
         );
         assert!(

@@ -917,6 +917,11 @@ const CUT_LEFTOVERS: &[&str] = &[
     "entity agent @doc(\"An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping.\") | plays consolidation-step:performer",
     "entity belief | plays scoped:scoped-belief",
     "entity concept | plays population-member:member",
+    "entity belief | plays divergence-precedence:overridden",
+    "entity belief | plays divergence-precedence:prevailing",
+    "entity concept | plays divergence-precedence:exception-scope",
+    "entity divergence-exception | plays divergence-precedence:exception-belief",
+    "entity divergence-exception | sub belief @doc(\"A reified disposition belief recording that one belief takes precedence over another for a scoped member, carrying the ranking evidence as provenance.\")",
     "entity doc-run @doc(\"A single execution run of a playbook code block; the provenance origin stamped onto memory produced during the run, keyed by run-id.\") | plays consolidation-step:run",
     "entity memory-item @abstract | owns consolidation-state @card(0..1)",
     "entity memory-item @abstract | plays consolidation-step:affected",
@@ -937,6 +942,10 @@ const CUT_LEFTOVERS: &[&str] = &[
     "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns valid-from @card(0..1)",
     "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns valid-to @card(0..1)",
     "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | owns computed-at @card(0..1)",
+    "relation divergence-precedence @doc(\"Anchors a divergence-exception belief to the beliefs it disposes between and the member concept the exception is scoped to.\") | relates exception-belief @card(1..1) @doc(\"The disposition belief carrying provenance and retractability for this precedence.\")",
+    "relation divergence-precedence @doc(\"Anchors a divergence-exception belief to the beliefs it disposes between and the member concept the exception is scoped to.\") | relates exception-scope @card(0..1) @doc(\"The member concept the exception is scoped to.\")",
+    "relation divergence-precedence @doc(\"Anchors a divergence-exception belief to the beliefs it disposes between and the member concept the exception is scoped to.\") | relates overridden @doc(\"The belief overridden for the scoped member.\")",
+    "relation divergence-precedence @doc(\"Anchors a divergence-exception belief to the beliefs it disposes between and the member concept the exception is scoped to.\") | relates prevailing @doc(\"The belief the disposition resolved toward.\")",
 ];
 
 /// [`CUT_LEFTOVERS`] as `schema_parts` parts, each function read from the
@@ -1283,7 +1292,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
     }
     assert_eq!(
         added,
-        BTreeMap::from([("core", 4), ("mem", 19), ("cyber", 9)]),
+        BTreeMap::from([("core", 4), ("mem", 18), ("cyber", 9)]),
         "the triggers checked"
     );
 
