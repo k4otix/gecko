@@ -909,16 +909,27 @@ const CUT_LEFTOVERS: &[&str] = &[
     "fun population-members",
     "fun population-members-at",
     "attribute computed-at | value datetime",
+    "attribute consolidation-action | value string",
+    "attribute consolidation-state | value string @values(\"raw\", \"candidate\", \"consolidated\", \"archived\", \"tombstoned\")",
     "attribute spec-dialect | value string",
     "attribute spec-hash | value string",
     "attribute spec-text | value string",
+    "entity agent @doc(\"An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping.\") | plays consolidation-step:performer",
     "entity belief | plays scoped:scoped-belief",
     "entity concept | plays population-member:member",
+    "entity doc-run @doc(\"A single execution run of a playbook code block; the provenance origin stamped onto memory produced during the run, keyed by run-id.\") | plays consolidation-step:run",
+    "entity memory-item @abstract | owns consolidation-state @card(0..1)",
+    "entity memory-item @abstract | plays consolidation-step:affected",
     "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-dialect @card(0..1)",
     "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-text @card(0..1)",
     "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | owns spec-hash @key",
     "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | plays scoped:population",
     "entity population @doc(\"A named cohort defined by a stored TypeDB match predicate (spec-text); the source-of-truth for a set of concepts, deduplicated by spec-hash.\") | plays population-member:owning-population",
+    "relation consolidation-step @doc(\"Records one consolidation action taken on a memory item, by which agent, in which run, and when.\") | relates affected @doc(\"The memory item the consolidation action was applied to.\")",
+    "relation consolidation-step @doc(\"Records one consolidation action taken on a memory item, by which agent, in which run, and when.\") | relates run @doc(\"The doc-run the consolidation action happened in.\")",
+    "relation consolidation-step @doc(\"Records one consolidation action taken on a memory item, by which agent, in which run, and when.\") | relates performer @doc(\"The agent that performed the consolidation action.\")",
+    "relation consolidation-step @doc(\"Records one consolidation action taken on a memory item, by which agent, in which run, and when.\") | owns consolidation-action @card(1..1)",
+    "relation consolidation-step @doc(\"Records one consolidation action taken on a memory item, by which agent, in which run, and when.\") | owns created-at @card(1..1)",
     "relation scoped @doc(\"Scopes a belief to the population it is about.\") | relates scoped-belief @doc(\"The belief scoped to the population.\")",
     "relation scoped @doc(\"Scopes a belief to the population it is about.\") | relates population @doc(\"The population the belief concerns.\")",
     "relation population-member @doc(\"Materialized cache of a population's membership: the concepts the spec currently evaluates to, over the window it held and with a staleness marker.\") | relates owning-population @doc(\"The population the membership belongs to.\")",
@@ -992,10 +1003,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
         RecallQuery, RunContext, Visibility,
     };
     use gecko_semantic_index::{HnswIndex, StubEmbedder};
-    use mem_gecko::{
-        BELIEF_TIER_ROOT, BeliefEdgeRegistry, ConsolidationDaemon, MemConsolidationDaemon,
-        MemWriter,
-    };
+    use mem_gecko::{BELIEF_TIER_ROOT, BeliefEdgeRegistry, MemWriter};
 
     const LOGIC: &str = "notes/a";
     let test_db = TestDb::new("gecko_test_tightened_populated");
@@ -1193,25 +1201,6 @@ async fn tightened_schema_applies_to_a_populated_database() {
         .resolve_prediction(&ctx, asserted.clone(), Outcome::Confirmed)
         .await
         .expect("resolve_prediction");
-    let pair = [
-        writer.observe(&ctx, episode()).await.expect("observe"),
-        writer.observe(&ctx, episode()).await.expect("observe"),
-    ];
-    let (keeper, loser) = if pair[0].0 < pair[1].0 {
-        (&pair[0], &pair[1])
-    } else {
-        (&pair[1], &pair[0])
-    };
-    writer
-        .dedup_episodes(&ctx, keeper, loser)
-        .await
-        .expect("dedup_episodes");
-    writer.observe(&ctx, episode()).await.expect("observe");
-    let report = MemConsolidationDaemon::new(writer.clone())
-        .tick(chrono::Utc::now())
-        .await
-        .expect("daemon tick");
-    assert!(report.episodes_deduped >= 1, "{report:?}");
 
     // cyber-gecko's two belief-edge writes.
     let edges = writer
@@ -1294,7 +1283,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
     }
     assert_eq!(
         added,
-        BTreeMap::from([("core", 4), ("mem", 20), ("cyber", 9)]),
+        BTreeMap::from([("core", 4), ("mem", 19), ("cyber", 9)]),
         "the triggers checked"
     );
 

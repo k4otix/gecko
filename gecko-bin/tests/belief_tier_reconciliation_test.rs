@@ -32,10 +32,7 @@ use gecko_extension_api::{
     RecallQuery, RunContext, Visibility,
 };
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
-use mem_gecko::{
-    BELIEF_TIER_ROOT, BeliefEdgeRegistry, ConsolidationDaemon, ConsolidationReport,
-    MemConsolidationDaemon, MemWriter, NoopConsolidationDaemon,
-};
+use mem_gecko::{BELIEF_TIER_ROOT, BeliefEdgeRegistry, MemWriter};
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
@@ -515,13 +512,6 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
             owner: "M2",
         },
     ),
-    (
-        "consolidation-step",
-        LabelDisposition::WriterOnly {
-            methods: &["dedup", "daemon tick"],
-            owner: "C1",
-        },
-    ),
     ("sighting", LabelDisposition::Owed { owner: "A8" }),
     ("sighting-of", LabelDisposition::Owed { owner: "A8" }),
     (
@@ -603,12 +593,6 @@ fn hostile_writes(belief_id: &str) -> Vec<GraphWrite> {
         .expecting(1),
     ];
     [writes, provenance::seed_provenance()].concat()
-}
-
-/// Orders a duplicate pair as (keeper, loser): equal ingest times are broken by the
-/// lowest concept-id.
-fn by_id<'a>(a: &'a MemId, b: &'a MemId) -> (&'a MemId, &'a MemId) {
-    if a.0 < b.0 { (a, b) } else { (b, a) }
 }
 
 /// A writer-only drive on the reference database and the delta it caused.
@@ -898,79 +882,6 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             .resolve_prediction(&cyber_ctx, b2.clone(), Outcome::Confirmed)
             .await
             .expect("resolve_prediction")
-    );
-    drive!("dedup", {
-        let mut episodes = Vec::new();
-        for _ in 0..2 {
-            episodes.push(
-                ref_writer
-                    .observe(
-                        &cyber_ctx,
-                        EpisodeDraft {
-                            text: T_EP.to_string(),
-                            event_time: cyber_ctx.occurred_at,
-                            ingest_time: cyber_ctx.occurred_at,
-                        },
-                    )
-                    .await
-                    .expect("observe duplicate"),
-            );
-        }
-        let (keeper, loser) = by_id(&episodes[0], &episodes[1]);
-        ref_writer
-            .dedup_episodes(&cyber_ctx, keeper, loser)
-            .await
-            .expect("dedup_episodes");
-    });
-    drive!("noop daemon tick", {
-        let report = NoopConsolidationDaemon
-            .tick(chrono::Utc::now())
-            .await
-            .expect("no-op tick");
-        assert_eq!(report, ConsolidationReport::default());
-    });
-    drive!("daemon setup", {
-        for _ in 0..2 {
-            ref_writer
-                .observe(
-                    &cyber_ctx,
-                    EpisodeDraft {
-                        text: T_EP.to_string(),
-                        event_time: cyber_ctx.occurred_at,
-                        ingest_time: cyber_ctx.occurred_at,
-                    },
-                )
-                .await
-                .expect("observe duplicate");
-        }
-    });
-    // daemon_is_enumerated_by_the_monopoly_test (CONTRACT-W8 §3 row 5): a daemon
-    // tick's writes are reconciled by the checks below like any other caller's.
-    drive!("daemon tick", {
-        // The whole-graph tick dedups the setup pair and the `dedup` drive's surviving
-        // keeper, which shares its text, context and time.
-        let report = MemConsolidationDaemon::new(ref_writer.clone())
-            .tick(chrono::Utc::now())
-            .await
-            .expect("daemon tick");
-        assert_eq!(report.episodes_deduped, 2);
-        assert!(report.run_id.is_some(), "the tick mints its own run");
-    });
-    let drive_delta = |name: &str| {
-        &drives
-            .iter()
-            .find(|d| d.name == name)
-            .unwrap_or_else(|| panic!("no drive named `{name}`"))
-            .delta
-    };
-    let noop = drive_delta("noop daemon tick");
-    assert!(
-        noop.is_empty(),
-        "a no-op tick changed the belief tier: {noop:?}"
-    );
-    assert!(
-        !drive_delta("daemon tick").is_empty(),
-        "the daemon tick's writes are invisible to the fingerprint"
     );
 
     // The disposition ratchet over the production surface.

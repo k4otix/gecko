@@ -4,8 +4,7 @@
 //! method takes a host-minted [`RunContext`], so every belief write is
 //! run-id-stamped and attributable. mem-gecko implements these traits; the engine
 //! hands mem's impls to sandbox host-fn injection. Signatures here are the stable
-//! contract — graph-coupled bodies may return [`EpistemicError::NotYetImplemented`]
-//! until mem-gecko implements them.
+//! contract.
 
 use std::sync::Arc;
 

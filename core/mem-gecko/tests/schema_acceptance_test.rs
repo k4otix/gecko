@@ -278,56 +278,6 @@ async fn provable_resolution_canonicalizes_without_merge() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: the consolidation-state machine (with tombstone semantics) is in
-// the APPLIED schema — an episode can be marked "tombstoned" and read back, and an
-// illegal state is rejected by @values. This is the state-machine-present acceptance.
-// ─────────────────────────────────────────────────────────────────────────────
-#[tokio::test]
-async fn consolidation_state_machine_present_with_tombstone() {
-    let (mut router, name) = fresh_db().await;
-
-    // Each of the five states is accepted on a memory-item (episode).
-    for (i, state) in ["raw", "candidate", "consolidated", "archived", "tombstoned"]
-        .iter()
-        .enumerate()
-    {
-        write_seed(
-            &mut router,
-            &format!(
-                r#"insert $e isa episode, has concept-id "mem/ep/cs{i}",
-                     has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
-                     has consolidation-state "{state}";"#
-            ),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("consolidation-state \"{state}\" is legal: {e}"));
-    }
-
-    // Tombstone semantics read back (the terminal state).
-    let tomb = fetch(
-        &mut router,
-        r#"match $e isa episode, has concept-id "mem/ep/cs4", has consolidation-state $s;
-           fetch { "s": $s };"#,
-    )
-    .await;
-    assert_eq!(tomb.len(), 1);
-    assert_eq!(tomb[0]["s"], "tombstoned", "the tombstone state is present");
-
-    // An illegal consolidation-state is rejected by @values.
-    let bad = write_seed(
-        &mut router,
-        r#"insert $e isa episode, has concept-id "mem/ep/csbad",
-             has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
-             has consolidation-state "dreaming";"#,
-    )
-    .await;
-    let err = bad.expect_err("consolidation-state @values rejects an unknown state");
-    assert!(names_values_violation(&err, "consolidation-state"), "{err}");
-
-    drop_db(router, &name).await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Acceptance: an illegal enum value is rejected by @values.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
@@ -583,12 +533,6 @@ const EXECUTION: RoleCase = case(
     &[],
     "",
 );
-const CONSOLIDATION_STEP: RoleCase = case(
-    "consolidation-step",
-    &[("affected", "$b1"), ("run", "$run"), ("performer", "$ag")],
-    &[],
-    r#", has consolidation-action "dedup", has created-at 2026-01-02T00:00:00"#,
-);
 const RESOLVES: RoleCase = case(
     "resolves",
     &[
@@ -691,9 +635,6 @@ missing_role_refused! {
     a_rests_on_missing_its_resting_is_refused_at_commit: RESTS_ON, "resting";
     a_execution_missing_its_run_is_refused_at_commit: EXECUTION, "run";
     a_execution_missing_its_episode_step_is_refused_at_commit: EXECUTION, "episode-step";
-    a_consolidation_step_missing_its_affected_is_refused_at_commit: CONSOLIDATION_STEP, "affected";
-    a_consolidation_step_missing_its_run_is_refused_at_commit: CONSOLIDATION_STEP, "run";
-    a_consolidation_step_missing_its_performer_is_refused_at_commit: CONSOLIDATION_STEP, "performer";
     a_resolves_missing_its_resolution_belief_is_refused_at_commit: RESOLVES, "resolution-belief";
     a_resolves_missing_its_record_a_is_refused_at_commit: RESOLVES, "record-a";
     a_resolves_missing_its_record_b_is_refused_at_commit: RESOLVES, "record-b";

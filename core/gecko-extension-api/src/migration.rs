@@ -42,6 +42,36 @@ pub fn check_migrations(migrations: &[SchemaMigration], schema: &str) -> Result<
     Ok(())
 }
 
+fn is_label_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Every needle that occurs in `text` at a label boundary: where a needle starts
+/// (ends) with a label character, the character before (after) the match is not one.
+// A guard each fragment's tests run over its shipped schema for labels it deleted.
+#[doc(hidden)]
+pub fn deleted_labels_absent(text: &str, needles: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for needle in needles {
+        let check_start = needle.chars().next().is_some_and(is_label_char);
+        let check_end = needle.chars().next_back().is_some_and(is_label_char);
+        let hit = text.match_indices(needle).any(|(i, _)| {
+            let before_ok =
+                !check_start || !text[..i].chars().next_back().is_some_and(is_label_char);
+            let after_ok = !check_end
+                || !text[i + needle.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_label_char);
+            before_ok && after_ok
+        });
+        if hit {
+            found.push((*needle).to_string());
+        }
+    }
+    found
+}
+
 /// Checks one entry; `later` holds the entries after it in the list.
 fn check_one(
     m: &SchemaMigration,
@@ -495,6 +525,42 @@ mod tests {
     relates end;
   attribute name value string;
 "#;
+
+    #[test]
+    fn deleted_labels_absent_matches_whole_labels_only() {
+        let rel = "relation scoped";
+        let role = "scoped:";
+        assert_eq!(
+            deleted_labels_absent("relation scoped @doc(", &[rel]),
+            [rel]
+        );
+        assert_eq!(
+            deleted_labels_absent("plays scoped:scoped-belief", &[role]),
+            [role]
+        );
+        assert_eq!(
+            deleted_labels_absent("blast-radius-at(", &["blast-radius-at"]),
+            ["blast-radius-at"]
+        );
+        assert!(deleted_labels_absent("blast-radius(", &["blast-radius-at"]).is_empty());
+        for text in [
+            "relation scoped-thing",
+            "relation scoped_thing",
+            "relation scopedX",
+            "for a scoped member",
+        ] {
+            assert!(
+                deleted_labels_absent(text, &[rel, role]).is_empty(),
+                "{text:?} must match neither needle"
+            );
+        }
+        for text in ["plays unscoped:role", "plays exception-scoped:role"] {
+            assert!(
+                deleted_labels_absent(text, &[role]).is_empty(),
+                "{text:?} must not match {role:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_doc_undefine_on_an_abstract_type_is_accepted() {

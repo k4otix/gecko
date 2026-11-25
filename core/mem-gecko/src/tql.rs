@@ -76,11 +76,6 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         tql: "match $r isa execution; { not { $r links (run: $p0); }; } or { not { $r links (episode-step: $p1); }; }; delete $r;",
     },
     SchemaMigration {
-        id: "mem/consolidation-step-required-roles",
-        applies_when: "relates affected @doc(\"The memory item the consolidation action was applied to.\")",
-        tql: "match $r isa consolidation-step; { not { $r links (affected: $p0); }; } or { not { $r links (run: $p1); }; } or { not { $r links (performer: $p2); }; }; delete $r;",
-    },
-    SchemaMigration {
         id: "mem/resolves-required-roles",
         applies_when: "relates resolution-belief @doc(\"The identity belief backing the resolution.\")",
         tql: "match $r isa resolves; { not { $r links (resolution-belief: $p0); }; } or { not { $r links (record-a: $p1); }; } or { not { $r links (record-b: $p2); }; }; delete $r;",
@@ -563,7 +558,6 @@ pub(crate) fn enumerate_episodes_read() -> &'static str {
     "match
        $e isa episode, has concept-id $eid, has title $ttl, has event-time $et;
        not { $e isa retrieval-event; };
-       not { $e has consolidation-state \"tombstoned\"; };
        $own isa ownership, links (owned: $e, owner: $ag);
        $ag has agent-id $aid;
      fetch { \"id\": $eid, \"text\": $ttl, \"owner\": $aid, \"vf\": $et };"
@@ -664,84 +658,6 @@ pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> G
         "match $b isa belief, has concept-id $bc; $bc == $bid;
          insert $b has retrieval-provenance == $pv;",
     )
-}
-
-// ── Consolidation ("dreaming") ────────────────────────────────────────────────
-
-/// The dedup cohort read: every owned plain `episode` that is neither tombstoned nor
-/// resolving a prediction and shares its title and event-time with another such
-/// episode, one row per (episode, owner).
-pub(crate) fn duplicate_episode_candidates_read() -> &'static str {
-    "match
-       $e isa! episode, has concept-id $eid, has title $ttl, has event-time $et, has ingest-time $it;
-       $f isa! episode, has title $ttl, has event-time $et;
-       not { $e is $f; };
-       not { $e has consolidation-state \"tombstoned\"; };
-       not { $f has consolidation-state \"tombstoned\"; };
-       not { $pe isa prediction-resolution, links (resolving-episode: $e); };
-       not { $pf isa prediction-resolution, links (resolving-episode: $f); };
-       $own isa ownership, links (owned: $e, owner: $ag);
-       $ag has agent-id $aid;
-     fetch { \"id\": $eid, \"title\": $ttl, \"et\": $et, \"it\": $it, \"owner\": $aid };"
-}
-
-/// The guarded dedup write: one `match … update … insert …` pipeline that applies
-/// only when `keeper` and `loser` are both exactly `episode`s with the same title and
-/// event-time and identical owner sets, neither resolves a prediction or is already
-/// tombstoned, and `keeper` ingested first (ties broken by lowest concept-id). It
-/// tombstones `loser` and records a `consolidation-step`. Op index 2 of
-/// `[ensure_run, ensure_agent, this]`; it must match exactly one row, so a refused
-/// pair surfaces as a row-count mismatch on that op.
-pub(crate) fn dedup_episodes_ops(
-    ctx: &RunContext,
-    keeper: &MemId,
-    loser: &MemId,
-) -> Vec<GraphWrite> {
-    let mut p = Params::new();
-    p.s("kid", keeper.0.clone());
-    p.s("lid", loser.0.clone());
-    p.s("rid", ctx.run_id.to_string());
-    p.s("aid", ctx.actor.0.clone());
-    p.s("act", "tombstone");
-    p.dt("now", ctx.occurred_at);
-    let body = "match
-           $k isa! episode, has concept-id $kc, has title $t, has event-time $et, has ingest-time $ki; $kc == $kid;
-           $l isa! episode, has concept-id $lc, has title $t, has event-time $et, has ingest-time $li; $lc == $lid;
-           { $ki < $li; } or { $ki == $li; $kc < $lc; };
-           not { $k has consolidation-state \"tombstoned\"; };
-           not { $l has consolidation-state \"tombstoned\"; };
-           not { $p1 isa prediction-resolution, links (resolving-episode: $k); };
-           not { $p2 isa prediction-resolution, links (resolving-episode: $l); };
-           not { $o1 isa ownership, links (owned: $k, owner: $a1); not { $o2 isa ownership, links (owned: $l, owner: $a1); }; };
-           not { $o3 isa ownership, links (owned: $l, owner: $a2); not { $o4 isa ownership, links (owned: $k, owner: $a2); }; };
-           $run isa doc-run, has run-id $rr; $rr == $rid;
-           $ag isa agent, has agent-id $aa; $aa == $aid;
-         update $l has consolidation-state \"tombstoned\";
-         insert consolidation-step (affected: $l, run: $run, performer: $ag),
-           has consolidation-action == $act, has created-at == $now;";
-    vec![
-        ensure_run(ctx),
-        ensure_agent(ctx),
-        p.write(body).expecting(1),
-    ]
-}
-
-/// Retrieval-provenance retention (concrete helper): the `retrieval-event`s that
-/// are **safe to tombstone** — those every one of whose `informs-synthesis` beliefs
-/// is superseded. The retention RULE it enforces: never tombstone a retrieval-event
-/// while any belief it synthesized is non-superseded; once all are superseded the
-/// event may decay (its episodic detail is lost) — but each belief's write-once
-/// `retrieval-provenance` flag persists (the axis is retained on the belief, not the
-/// event). A retrieval-event that fed no belief (no `informs-synthesis`) is not
-/// returned here — it is out of scope for provenance-guarded pruning.
-pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
-    "match
-       $re isa retrieval-event, has concept-id $rid;
-       informs-synthesis (retrieval: $re, synthesized: $b);
-       not { informs-synthesis (retrieval: $re, synthesized: $b2); not { true == is-superseded($b2); }; };
-       not { $re has consolidation-state \"tombstoned\"; };
-     select $rid; distinct;
-     fetch { \"id\": $rid };"
 }
 
 /// The title of the episode that resolves a prediction with `outcome`.

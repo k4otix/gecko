@@ -2,21 +2,13 @@
 //! index/embedder traits.
 //!
 //! A concrete crate error (`EpistemicError`) is used over `Box<dyn Error>` so
-//! callers can match on the failure mode — in particular the
-//! [`NotYetImplemented`](EpistemicError::NotYetImplemented) seam that lets
-//! mem-gecko land graph-coupled bodies in a later phase without changing this
-//! contract.
+//! callers can match on the failure mode.
 
 use thiserror::Error;
 
 /// Errors surfaced by the epistemic write/read path and the semantic index.
 #[derive(Debug, Error)]
 pub enum EpistemicError {
-    /// The method is part of the stable contract but its body ships in a later
-    /// phase: mem returns this for graph-coupled methods it cannot yet satisfy.
-    #[error("not yet implemented: {0}")]
-    NotYetImplemented(&'static str),
-
     /// The authoritative graph write failed.
     #[error("storage error: {0}")]
     Storage(String),

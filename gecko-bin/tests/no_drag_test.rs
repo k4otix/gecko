@@ -184,21 +184,3 @@ fn record_tier_owns_no_belief_apparatus_and_plays_no_bearer_role() {
         "concept should still be a source-link origin (records are cited, not citers)"
     );
 }
-
-#[test]
-fn retention_scaffold_present_in_schema() {
-    // Retention hooks are scaffold-only (the consolidation daemon does not exist
-    // yet). Confirm the consolidation-state lifecycle the future daemon
-    // transitions through is present.
-    let schema = mem_gecko::MemGecko::new().schema().to_string();
-    assert!(
-        schema.contains("consolidation-state"),
-        "consolidation-state lifecycle attribute must be present"
-    );
-    for state in ["raw", "candidate", "consolidated", "archived", "tombstoned"] {
-        assert!(
-            schema.contains(&format!("\"{state}\"")),
-            "consolidation-state must enumerate `{state}`"
-        );
-    }
-}
