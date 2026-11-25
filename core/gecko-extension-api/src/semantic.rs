@@ -4,6 +4,8 @@
 //! backend is a drop-in replacement later (invariant 8: the index is a pure,
 //! rebuildable retrieval accelerator, never a source of truth).
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::EpistemicError;
@@ -140,7 +142,7 @@ pub trait SemanticIndex: Send + Sync {
     fn upsert(&self, id: ConceptId, v: &[f32], meta: FilterMeta) -> Result<()>;
 
     /// Inserts or replaces many vectors, persisting durable state at most once for
-    /// the whole batch. Bulk-load paths (rebuild-from-graph, dirty-set drain) use
+    /// the whole batch. Bulk-load paths (startup reconciliation) use
     /// this so a load of `n` vectors costs one persist rather than `n`. The default
     /// applies each item via [`upsert`](Self::upsert); impls that persist per call
     /// should override it to defer persistence until the batch completes.
@@ -154,15 +156,31 @@ pub trait SemanticIndex: Send + Sync {
     /// Removes `id`'s vector (e.g. on supersession).
     fn remove(&self, id: ConceptId) -> Result<()>;
 
+    /// Removes many vectors, persisting durable state at most once for the batch.
+    /// The default applies each id via [`remove`](Self::remove).
+    fn remove_many(&self, ids: Vec<ConceptId>) -> Result<()> {
+        for id in ids {
+            self.remove(id)?;
+        }
+        Ok(())
+    }
+
+    /// The concept-ids the index holds, for reconciling it with the graph. `None`
+    /// means the backend keeps itself in step with the graph, so callers skip the
+    /// diff; the default is `None`.
+    fn ids(&self) -> Option<HashSet<ConceptId>> {
+        None
+    }
+
     /// Returns up to `k` nearest concept-ids with similarity scores.
     fn query(&self, v: &[f32], k: usize, pre: &FilterMeta) -> Result<Vec<(ConceptId, f32)>>;
 
     /// Model identity; must match the [`Embedder`]'s or the index needs a rebuild.
     fn model_id(&self) -> &str;
 
-    /// Number of live vectors currently held. Used by the rebuild-from-graph path:
-    /// a `0` length (missing/corrupt/model-id-bumped index) signals a full
-    /// reconstruction is due. Defaults to `0` for trivial/no-op impls.
+    /// Number of live vectors currently held. A self-managed index (no
+    /// [`ids`](Self::ids)) that reports `0` is rebuilt in full at startup. Defaults
+    /// to `0` for trivial/no-op impls.
     fn len(&self) -> usize {
         0
     }
