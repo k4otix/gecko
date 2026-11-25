@@ -23,12 +23,11 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | # | ID | Item | Size |
 |---|---|---|---|
-| 1 | X1 | Second cut pass (design doc first) | M, mostly deletion |
-| 2 | B1 | Beliefs end: supersede closes `valid-to`, as-of recall reads the window | M |
-| 3 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
-| 4 | S6 | `coverage_gaps` grouped by tactic | S |
-| 5 | N6 | Cyber worked example and `gecko run --args` | M |
-| 6 | N5 | `timeout-ms` reaches the run | S |
+| 1 | B1 | Beliefs end: supersede closes `valid-to`, as-of recall reads the window | M |
+| 2 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
+| 3 | S6 | `coverage_gaps` grouped by tactic | S |
+| 4 | N6 | Cyber worked example and `gecko run --args` | M |
+| 5 | N5 | `timeout-ms` reaches the run | S |
 
 ## Open work
 
@@ -52,7 +51,6 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
 | **N5** | `timeout-ms` is persisted and honoured by `gecko run`; `consumes` and `produces` are persisted or no longer parsed | playbook authors | A playbook with `timeout-ms: 500` times out at 500 ms | — |
-| **X1** | **Second cut pass,** with a design doc in the shape of `2026-11-24-populations-cut-design.md`, listing the superseded passages of CONTRACT-W8, SPEC-W2-W3, SPEC-W5 and INVARIANTS. Scope, per decisions U1–U3: **(a) divergence** — `mem_gecko::disposition` (538 lines), `divergence-exception`, `divergence-precedence` and its roles, the `mem/divergence-precedence-required-roles` migration, the W2 halves of `schema_probe_w2w3.rs`, and `DerivationMethod::rank()` if nothing else calls it; **(b) consolidation** — the ten stub jobs, `NoopConsolidationDaemon`, `MemConsolidationDaemon` and its dedup tick, `dedup_episodes`, and the labels left with no writer: `consolidation-step`, `consolidation-action`, `consolidation-state`, the `mem/consolidation-step-required-roles` migration and the `not { … consolidation-state "tombstoned"; }` guards in `tql.rs`; **(c) schema diet** — the twelve mem labels no production path writes and no invariant names (`intention`, `goal-hierarchy`, `working-set`, mem's `playbook`, `execution`, `tool-invocation`, `learned-constraint`, `contextualizes`, `evidence`, `justification`, `support`, `attack`) and cyber's `sighting` and `sighting-of`; **(d)** the uncalled public methods those leave behind, and plan-tag comments in `mem_types.tql` and `mem_functions.tql`. Audit shared attributes and supertypes before deleting: `condition` is owned by `anomaly` (kept) and `learned-constraint` (cut); `execution-episode` stays as the supertype of `retrieval-event` | an introspected schema whose `@doc`s describe only what GECKO holds; a smaller belief-tier surface for the sync fingerprint | A guard test: the shipped schemas name none of the deleted labels; the rig's `DISPOSITIONS` re-derived; the CONTRACT-W8 §3 rows and `daemon tick` drive go with the daemon | — |
 
 ## Landed since the review
 
@@ -60,6 +58,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 |---|---|---|
 | **N1** | The first-run docs say what the code accepts (PR #81) | `documented_config_snippets_are_accepted` |
 | **N3** | One semantic index file per database, `<[semantic_index] dir>/<encoded database>.hnsw` (the old `path` key is refused), reconciled with the graph at startup: stale ids are removed and missing ones embedded, so another database's file, a recreated database, items written while the index was off and failed index writes all heal on the next run. The in-memory dirty set is cut. Design: `docs/superpowers/specs/2026-11-24-index-per-database-design.md` | `semantic_index_integration.rs` (`an_index_built_for_another_database_does_not_hide_this_ones_beliefs`, `reconcile_with_an_empty_graph_empties_the_file`, `items_written_while_the_index_was_off_are_recalled`, `a_warm_start_with_matching_ids_embeds_nothing`, `a_failed_persist_during_reconcile_keeps_episode_vectors`, `a_failed_live_upsert_is_repaired_by_the_next_reconcile`); `index_per_database_cli_test.rs`; the `index_dir`/`index_file` unit tests in `config/paths.rs` |
+| **X1** | The second cut pass: the divergence mechanism and host disposition ranker (U1), the consolidation daemon and tombstone state (U2), and the fourteen belief-tier types nothing wrote with their attributes and cleanup migrations (U3). `memory-item`'s `@doc` now names what it holds, through `mem/memory-item-doc`. Design: `docs/superpowers/specs/2026-11-24-second-cut-design.md` | the guards `shipped_mem_schema_declares_no_{consolidation,divergence,diet}_labels` and `shipped_cyber_schema_declares_no_cut_labels`; `a_database_holding_the_old_memory_item_doc_upgrades`; the re-derived rig in `belief_tier_reconciliation_test.rs` |
 
 ## Deferred (reopen on the trigger)
 
@@ -67,7 +66,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 |---|---|---|
 | **S5** | Objects shared across STIX imports. Today a second ATT&CK domain is refused with one-database-per-domain guidance (history: S5) | A query or belief spans two ATT&CK domains, or MITRE ships differing copies of a shared object |
 | **O2–O4** | OKF v0.2 reads: `generated` replaces `timestamp`, `sources` replaces body citations, and the trust and lifecycle fields (history: O2, O3, O4) | Someone needs to sync a v0.2-authored bundle |
-| **M1** | `rests-on` reachable from a playbook. `MemWriter::rests_on` exists and nothing calls it | N4 lands and a playbook wants to declare an assumption |
+| **M1** | `rests-on` and `pivot` reachable from a playbook. `MemWriter::rests_on` exists and nothing calls it; `pivot` has no writer. INVARIANTS 5 keeps both types | N4 lands and a playbook wants to declare an assumption or record an investigative move |
 | **M2** | Prediction calibration on a production path. `record_prediction` and `resolve_prediction` exist and nothing calls them | A playbook or cyber flow scores a prediction against an outcome |
 | **M3-r** | Entity resolution. `resolution`/`resolves` stay (invariant 9 names them) and keep `canonical-entity`, `canonical-entity-at`, their step functions, `provably-derived` and `MemWriter::canonical_entity` alive with no writer and no caller | A writer that asserts two records denote one entity. If none appears, cutting them supersedes invariant 9 and is its own decision |
 
@@ -91,17 +90,19 @@ cutting any of them is a new decision.
 - **Populations,** `scoped`, the cohort branch of `blast-radius` and its `-at` twins:
   A7, B4, P1–P4, D-F; `docs/superpowers/specs/2026-11-24-populations-cut-design.md`.
 - **Divergence writers** A5 and A6, with D-C, D-E and D-K: nothing detects a divergence or
-  reads a precedence (U1). Their owed tests go with them:
+  reads a precedence (U1); the mechanism is cut by
+  `docs/superpowers/specs/2026-11-24-second-cut-design.md`. Their owed tests go with them:
   `divergence_precedence_write_requires_cominted_anchor`,
   `empty_winner_yields_contested_anomaly_hub_no_exception_minted`, and the writer halves of
   the three partially graduated W2 tests.
 - **Consolidation jobs** C2's remainder, C3–C7 and C9, with D-H, D-I and D-J: no scheduler,
-  no CLI, no caller (U2).
+  no CLI, no caller (U2); the daemon is cut by the second-cut design.
 - **Belief-tier rows with no writer:** M4, M5, M6 and the four non-`rests-on` labels of M1
-  (U3); M3 as a work row (its types are deferred as M3-r).
+  (U3), their types cut by the second-cut design (`pivot` folds into M1); M3 as a work row
+  (its types are deferred as M3-r).
 - **B3** (`canonical-entity-at` past a superseded resolution): no resolution writer.
 - **A8** (cyber sighting writer): blocked on a sighting feature that does not exist; its
-  types go in X1.
+  types are cut by the second-cut design.
 - **O5** (Attested Computation) with D-N: pure design, no consumer, overlaps the sandbox.
 - **A11's** remaining entry, `set_retrieval_provenance_op`'s row count: an opportunistic
   one-line fix, not a tracked row. Its guest half is N2.
@@ -111,7 +112,8 @@ cutting any of them is a new decision.
 Ratified documents are not edited; these are the passages a reader should not trust.
 
 - Everything the populations-cut design lists under "Ratified docs are not edited".
-- What X1's design will list for U1–U3.
+- Everything `docs/superpowers/specs/2026-11-24-second-cut-design.md` lists under
+  "Ratified and locked docs are not edited", including CONTRACT-W8 whole.
 - The former D-G errata, verbatim in the history file: a renamed SPEC-W5 surface test; the
   `writer.rs` line anchors in SPEC-W5, SPEC-W2-W3 and CONTRACT-W8, which predate PR #50;
   CONTRACT-W8's description of the daemon as unbuilt; SPEC-W5's description of the daemon as

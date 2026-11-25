@@ -80,9 +80,8 @@ proven through the real sandbox against live TypeDB.
 ## Schema constraints and upgrades
 
 - **The schema enforces required roles, ownership and recall fields.** Every relation
-  role the design lists is required (the bare roles `pivot`, `contextualizes`,
-  `tool-invocation`, the goal-hierarchy roles, `prediction-resolution:predicted-belief`
-  and `sighting-of` stay optional), a memory item needs one ownership and a
+  role the design lists is required (the bare roles of `pivot` and
+  `prediction-resolution:predicted-belief` stay optional), a memory item needs one ownership and a
   source-link, a belief needs `valid-from`, `salience`, `base-activation` and
   `last-access`, and confidence, predicted probability and similarity scores are ranged.
   `schema-init` (and `sync` / `sync-sensors`, which apply the schema first) deletes each
@@ -115,6 +114,21 @@ proven through the real sandbox against live TypeDB.
   behavior when a callee narrows under a stored caller. `gecko drop <db>`,
   `schema-init` and a re-sync recreate a database without the leftovers. See
   `docs/superpowers/specs/2026-11-24-populations-cut-design.md`.
+- **A database that predates the second cut keeps its cut types as inert leftovers
+  too.** These are:
+  - divergence (`divergence-exception`, `divergence-precedence`);
+  - consolidation (`consolidation-step`, `consolidation-state`, `consolidation-action`);
+  - the belief-tier types nothing wrote (`intention`, `goal-hierarchy`, `working-set`,
+    mem's `playbook`, `execution`, `tool-invocation`, `learned-constraint`, `contextualizes`,
+    `evidence`, `justification`, `support`, `attack`, and cyber's `sighting` and
+    `sighting-of`);
+  - their attributes and `plays` lines.
+
+  Their one-player rows are no longer cleaned up. `memory-item`'s `@doc` is replaced by the
+  `mem/memory-item-doc` migration (`a_database_holding_the_old_memory_item_doc_upgrades`).
+  A database whose episodes a test dedup marked `tombstoned` re-indexes those episodes,
+  because reconciliation no longer reads that state. Drop and recreate a database to shed
+  the leftovers. See `docs/superpowers/specs/2026-11-24-second-cut-design.md`.
 - **Garbage collection deletes every relation a concept plays.** A sync that deletes a
   concept first deletes each relation the concept plays in, of any extension, so a
   relation linking it to a concept another bundle owns is deleted with it rather than
@@ -167,23 +181,6 @@ and do not check visibility.
 
 Another agent may supersede a team or shared belief, including with a private replacement,
 which removes the belief from its original owner's recall.
-
-The consolidation daemon writes as actor `consolidation-daemon` while production runs write as
-`system`, so a daemon job that derives from or supersedes a run's private beliefs or episodes is
-refused by this rule. Nothing schedules the daemon, and the ledger's cut pass (**X1**)
-removes it.
-
-## Consolidation ("dreaming") daemon: episode dedup ships, the other jobs are stubs
-
-`core/mem-gecko/src/consolidation.rs` ships the `ConsolidationDaemon` trait, a no-op
-daemon, and `MemConsolidationDaemon`, whose `tick` mints one run and dedups duplicate
-episodes under it through `MemWriter::dedup_episodes`. Nothing calls `tick` outside tests:
-there is no scheduler and no CLI command. The other ten jobs are build-later stubs that
-return `EpistemicError::NotYetImplemented` (no panic). The dedup tick mints no belief or
-derivation, so the provable-merge checks of CONTRACT-W8 §3 stay owed. A daemon tick is not
-exempt from the belief-tier accounting: the reconciliation rig drives the real daemon's
-tick and requires every belief-tier label its writes change to be accounted for, as for
-any other caller.
 
 ## cyber-gecko `blinded`: ATT&CK's current detection model
 
