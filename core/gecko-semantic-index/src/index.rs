@@ -201,8 +201,11 @@ impl HnswIndex {
         let tmp = self
             .path
             .with_file_name(format!("{file_name}.{}.{n}.tmp", std::process::id()));
-        std::fs::write(&tmp, &bytes)
-            .map_err(|e| EpistemicError::Index(format!("write index tmp: {e}")))?;
+        std::fs::write(&tmp, &bytes).map_err(|e| {
+            // A partial temp file is useless; leave nothing behind.
+            let _ = std::fs::remove_file(&tmp);
+            EpistemicError::Index(format!("write index tmp: {e}"))
+        })?;
         std::fs::rename(&tmp, &self.path).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
             EpistemicError::Index(format!("rename index: {e}"))
@@ -637,9 +640,11 @@ mod tests {
         idx.upsert_many(items).unwrap();
         idx.query(&v_i(0), 3, &meta("u", Visibility::Private))
             .unwrap();
-        idx.remove_many((0..45).map(cid).collect()).unwrap();
+        // Remove the cluster around the query point: without compaction, the
+        // over-search would surface only tombstones and miss the retained ids.
+        idx.remove_many((5..50).map(cid).collect()).unwrap();
         assert_eq!(idx.len(), 5);
-        let kept: HashSet<ConceptId> = (45..50).map(cid).collect();
+        let kept: HashSet<ConceptId> = (0..5).map(cid).collect();
         let hits: HashSet<ConceptId> = idx
             .query(&v_i(47), 5, &meta("u", Visibility::Private))
             .unwrap()
