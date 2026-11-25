@@ -85,8 +85,14 @@ build the extension only inside the CLI arms that use it — a typo in
 A sandboxed playbook calls `gecko.callExtension(ext, func, args)`. Every such call
 is **S3 default-deny gated** in `wasm_executor.rs`: it runs only if the concept
 granted the `"{ext}:{func}"` scope in its frontmatter (e.g.
-`scopes: [cyber-gecko:claim]`). The gate is checked **before** any dispatch, so a
-host function never has to re-check scopes.
+`scopes: [cyber-gecko:claim]`). The gate is checked **before** the args are read or
+any dispatch runs, so a host function never has to re-check scopes.
+
+`ext` and `func` must be strings, or the guest throws a `TypeError`. An absent,
+`undefined` or `null` `args` is sent as `{}`. Any other `args` must convert to JSON:
+a function, a non-finite number, a `Symbol`, a cyclic object or a `BigInt` throws a
+`TypeError`. A non-object `args` is forwarded as is, and the handler judges it. The
+callback runs once per call, and its reply may be up to 16 MiB.
 
 There are two ways to service a call. Pick by what the function needs:
 

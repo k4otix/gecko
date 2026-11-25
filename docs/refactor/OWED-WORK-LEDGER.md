@@ -23,9 +23,9 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | # | ID | Item | Size |
 |---|---|---|---|
-| 1 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
+| 1 | N4 | `mem.retract` | M |
 | 2 | S6 | `coverage_gaps` grouped by tactic | S |
-| 3 | N6 | Cyber worked example and `gecko run --args` | M |
+| 3 | N6 | Cyber worked example and `gecko run --args` (N6a) | M |
 | 4 | N5 | `timeout-ms` reaches the run | S |
 
 ## Open work
@@ -34,20 +34,21 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
-| **N4** | `retract(ctx, id, reason)`: sets `belief-state "retracted"` and closes `valid-to` with `tql::close_valid_to_op` (as supersede does), visible-to gated, exactly one row; removes the belief's vector from the index, as supersede does; the reply lists the `blast-radius` of the retracted belief | `mem.retract`; withdrawing a cyber claim without a dummy replacement | A retracted claim leaves `blinded` and `coverage_gaps`; present-state indexed recall no longer surfaces it; the reply names what rested on it | the guest rebuild (N2) |
-| **N2** | The guest and host refuse malformed arguments instead of defaulting them: `evidence` and `claims` (A11's guest half), `asOf`, `maxChunks`, `maxTokens`, `confidence`, an unparseable `event_time` (today "now"), an unknown `method` (today `llm-synthesis`; cyber's `claim` already refuses), and `callExtension`'s extension and function names (today `""`). A reply over the guest buffer reports the size needed without running the callback twice, so an oversized `mem.recall` mints one `retrieval-event` | every `mem.*` and `callExtension` call | One host test per field; the guest tests are green after `just build-guest`; an oversized recall mints exactly one retrieval-event | One `quickjs.wasm` rebuild, shared with N4 and N6a |
+| **N4** | `retract(ctx, id, reason)`: sets `belief-state "retracted"` and closes `valid-to` with `tql::close_valid_to_op` (as supersede does), visible-to gated, exactly one row; removes the belief's vector from the index, as supersede does; the reply lists the `blast-radius` of the retracted belief | `mem.retract`; withdrawing a cyber claim without a dummy replacement | A retracted claim leaves `blinded` and `coverage_gaps`; present-state indexed recall no longer surfaces it; the reply names what rested on it | its own guest rebuild |
 
 ### Cyber
 
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
+| **N8** | `precision.window` accepts a whole-number float (`5.0`), which `Math.floor` returns, reusing the mem bridge's integer rule (`as_u64` or a whole float up to `Number.MAX_SAFE_INTEGER`) | playbooks computing a window | `precision.window: 5.0` is read as 5 and `1e20` is refused | — |
 | **S6** | `coverage_gaps` groups live unclaimed techniques by tactic. The tactic read filters liveness, because retired techniques keep their `technique-tactic` edges. S3 imported tactics and nothing reads them yet. The parent roll-up of `blinded` is cut: it changes presentation only, and `coverage_gaps` already reports `sub_techniques` | playbooks calling `coverage_gaps` | The report carries a per-tactic breakdown; a retired technique appears under no tactic | — |
-| **N6** | A cyber sample bundle (claim, disposition, coverage, blinded) and README sections for the host imports, with their argument names (`technique_id` is an ATT&CK id, not a concept id). **N6a:** `gecko run <id> --args <json>`, exposed to the guest as a read-only `gecko.args`, built in N2's guest rebuild | the detection flow end to end | The README walkthrough runs against a synced ATT&CK database; a verdict is recorded without editing a playbook | N6a: the guest rebuild (N2) |
+| **N6** | A cyber sample bundle (claim, disposition, coverage, blinded) and README sections for the host imports, with their argument names (`technique_id` is an ATT&CK id, not a concept id). **N6a:** `gecko run <id> --args <json>`, exposed to the guest as a read-only `gecko.args` | the detection flow end to end | The README walkthrough runs against a synced ATT&CK database; a verdict is recorded without editing a playbook | N6a: its own guest rebuild |
 
 ### Engine and CLI
 
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
+| **N7** | A guest whose stdout is not JSON is reported as a failure, not as `success: true` with `raw_output` (`WasmExecutor::evaluate`'s result parsing) | `gecko run` callers | A guest printing non-JSON fails the run with the raw text in the error | — |
 | **N5** | `timeout-ms` is persisted and honoured by `gecko run`; `consumes` and `produces` are persisted or no longer parsed | playbook authors | A playbook with `timeout-ms: 500` times out at 500 ms | — |
 
 ## Landed since the review
@@ -58,6 +59,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | **N3** | One semantic index file per database, `<[semantic_index] dir>/<encoded database>.hnsw` (the old `path` key is refused), reconciled with the graph at startup: stale ids are removed and missing ones embedded, so another database's file, a recreated database, items written while the index was off and failed index writes all heal on the next run. The in-memory dirty set is cut. Design: `docs/superpowers/specs/2026-11-24-index-per-database-design.md` | `semantic_index_integration.rs` (`an_index_built_for_another_database_does_not_hide_this_ones_beliefs`, `reconcile_with_an_empty_graph_empties_the_file`, `items_written_while_the_index_was_off_are_recalled`, `a_warm_start_with_matching_ids_embeds_nothing`, `a_failed_persist_during_reconcile_keeps_episode_vectors`, `a_failed_live_upsert_is_repaired_by_the_next_reconcile`); `index_per_database_cli_test.rs`; the `index_dir`/`index_file` unit tests in `config/paths.rs` |
 | **X1** | The second cut pass: the divergence mechanism and host disposition ranker (U1), the consolidation daemon and tombstone state (U2), and the fourteen belief-tier types nothing wrote with their attributes and cleanup migrations (U3). `memory-item`'s `@doc` now names what it holds, through `mem/memory-item-doc`. Design: `docs/superpowers/specs/2026-11-24-second-cut-design.md` | the guards `shipped_mem_schema_declares_no_{consolidation,divergence,diet}_labels` and `shipped_cyber_schema_declares_no_cut_labels`; `a_database_holding_the_old_memory_item_doc_upgrades`; the re-derived rig in `belief_tier_reconciliation_test.rs` |
 | **B1** | A belief's validity window ends at its supersede: `supersede` closes the old belief's `valid-to` through `tql::close_valid_to_op` (never extending an earlier end), and `believed-at` reads `[valid-from, valid-to)` with no `belief-state` gate, also excluding beliefs a supersession at or before T replaced, so older databases answer correctly. Absorbs B2. Design: `docs/superpowers/specs/2026-11-25-belief-validity-window-design.md` | `believed_at_reads_across_a_supersede`, `a_supersede_chain_gives_the_middle_belief_its_window`, `as_of_recall_reads_across_a_supersede`, `a_same_instant_supersede_leaves_the_old_belief_an_empty_window`, `a_legacy_superseded_belief_without_valid_to_ends_at_its_supersession`, `a_supersede_keeps_an_earlier_valid_to`, `a_supersede_shortens_a_later_valid_to`, `a_refused_supersede_leaves_valid_to_untouched`, `a_backdated_supersede_is_returned_by_no_as_of_read`, `supersession_ops_closes_the_old_window_in_the_same_batch` |
+| **N2** | The guest boundary refuses bad input. A host call runs its callback once and stashes the outcome; the guest reads it with `host_read_reply` into a buffer of exactly its size, so an oversized `mem.recall` mints one `retrieval-event`. The S3 gate runs before the args are read. The guest checks shape only: options bags are objects with known keys, and a function, a non-finite number or an unconvertible value throws; values are forwarded unconverted. The host refuses a non-object payload, an unknown field and every malformed value (`event_time`, `method`, `confidence`, `reason`, `evidence`, `claims`, `max_chunks`, `as_of`), and `claims` is required. `ContextBudget.max_tokens` and `maxTokens` were cut, not validated, because nothing enforced them. Design: `docs/superpowers/specs/2026-11-25-guest-boundary-refuses-bad-input-design.md` | the `mem_host.rs` validation tests (`an_unknown_key_is_refused_for_each_mem_function`, `recall_max_chunks_must_be_a_positive_integer`, `contest_requires_claims`, …); `wasm_tests.rs` (`a_reply_over_one_mib_arrives_intact_and_runs_once`, `ungranted_call_with_oversized_args_reports_not_granted`, `mem_values_must_be_json`, …); `an_oversized_recall_mints_one_retrieval_event` |
 
 ## Deferred (reopen on the trigger)
 
@@ -104,7 +106,7 @@ cutting any of them is a new decision.
   types are cut by the second-cut design.
 - **O5** (Attested Computation) with D-N: pure design, no consumer, overlaps the sandbox.
 - **A11's** remaining entry, `set_retrieval_provenance_op`'s row count: an opportunistic
-  one-line fix, not a tracked row. Its guest half is N2.
+  one-line fix, not a tracked row. Its guest half landed with N2.
 
 ### Superseded and stale passages in ratified text
 

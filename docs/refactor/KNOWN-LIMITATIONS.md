@@ -35,17 +35,11 @@ proven through the real sandbox against live TypeDB.
   dispatch. A worked example ships at `sample-bundle/playbooks/mem_recall_demo.md`.
 
 **Residual caveats (not blocking):**
-- The guest reads a host reply into a grow-and-retry buffer capped at 16 MiB; a
-  single `mem.recall` returning more than that throws a clear "response exceeded
-  16 MiB" error rather than truncating. **Caveat on the retry:** the host runs the
-  extension callback to completion *before* it discovers the reply overflowed the
-  buffer, so a retry re-runs the callback. For `mem.recall` that is effectful (it
-  mints a `retrieval-event`), so a reply exceeding the 1 MiB first tier would record
-  a *duplicate* retrieval-event on the retry — muddying A5.7 for that one recall.
-  Low reachability today (recall replies are small; the write ops return tiny `{id}`
-  payloads that never overflow), but the proper fix is a **host-reported
-  required-size ABI**: on overflow the host returns the needed size (without
-  re-running the callback) so the guest allocates exactly once. Owed: ledger **N2**.
+- A host call runs its extension callback once and the guest reads the reply into a
+  buffer sized to fit, up to 16 MiB. A reply over 16 MiB is refused with "host response
+  exceeded 16 MiB" after the callback has run, so an effectful call (a write, or a
+  `mem.recall` that mints a `retrieval-event`) has taken effect even though the guest sees
+  an error.
 - The guest is a prebuilt binary kept out of CI; after editing
   `core/js-sandbox/src/main.rs` you must `just build-guest` and re-commit the wasm
   (see `docs/refactor/guest-wasm.md`).
