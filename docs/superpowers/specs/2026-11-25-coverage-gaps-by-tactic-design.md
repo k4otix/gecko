@@ -43,6 +43,9 @@ by_tactic: [ { attack_id: "TA0002", concept_id, shortname: "execution", name: "E
   for it. The grouping key is the tactic's `attack_id`, which S3's import sets on every tactic.
   A live tactic without one makes `coverage_gaps` fail with an error naming its concept id,
   rather than being dropped silently or keyed by an invented value.
+- **A technique with no `attack-id`.** The gap read already tolerates one, since `attack-id` is
+  `@card(0..1)`. Counts are keyed by concept id, so it counts in `live` and `undetected`. In a
+  `techniques` list it appears by its concept id, which is a real identifier, not an invented one.
 - **Reads.** The gap read is unchanged. One more read covers the live `technique-tactic` join:
   it fetches each pair's technique `attack_id`, technique concept id, tactic `attack_id`, concept
   id, shortname and title. Grouping happens host-side, so a technique is undetected when its
@@ -72,12 +75,13 @@ in both, `SUB1` in execution, `SUB2` in persistence, and a deprecated sub-techni
 - `a_fully_covered_tactic_stays_with_no_gaps`. Claiming the parent and `SUB1` leaves execution
   with `live` 2, `undetected` 0 and `techniques: []`.
 - `a_retired_technique_counts_in_no_tactic`. The deprecated sub-technique has no kill-chain phase
-  in the fixture today, so it gains `execution` (`gecko-bin/tests/common/structure.rs:86`; this is
+  in the fixture today, so it gains `execution` (`gecko-bin/tests/common/structure.rs:121`; this is
   shared test code, not a frozen fixture). It must then be in no `live` count and no `techniques`
-  list. Any `cyber_stix_sync_test` assertion that counts `technique-tactic` edges is updated to
-  match.
-- `a_dead_tactic_is_not_grouped`. Deprecate or retire one tactic with a raw write: it leaves
-  `by_tactic` and every `tactics` list.
+  list. `cyber_stix_sync_test`'s exact `technique-tactic` pair list gains
+  `(RETIRED_SUB, EXECUTION)`.
+- `a_dead_tactic_is_not_grouped`. Re-sync the fixture with the persistence tactic deprecated,
+  using `edited_structure_bridge` (a raw insert would give the tactic two `deprecated` values).
+  It leaves `by_tactic` and every `tactics` list.
 - The existing `coverage_gaps_*` tests pass unchanged.
 - Docs: the `coverage_gaps` description in `detect/mod.rs` and `extensions/cyber-gecko/README.md`
   names the new fields. The ledger moves S6 to Landed.
