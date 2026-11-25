@@ -64,23 +64,38 @@ const REPLY_TOO_LARGE: &str = "host response exceeded 16 MiB";
 /// The message stashed for an extension error that carried none.
 const EMPTY_ERROR: &str = "the extension call failed with an empty error";
 
-/// Reads a guest-supplied UTF-8 string from linear memory, rejecting any `len`
+/// Why a guest-supplied string could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadError {
+    /// Its length is over the cap.
+    TooLong,
+    /// `ptr..ptr + len` lies outside guest memory.
+    OutOfBounds,
+    /// Its bytes are not UTF-8.
+    NotUtf8,
+}
+
+/// Reads `len` bytes at `ptr` from guest memory `mem` as UTF-8, rejecting a `len`
 /// above `max` before allocating (untrusted-boundary DoS guard).
-fn read_string<T>(
-    memory: &wasmtime::Memory,
-    caller: &Caller<'_, T>,
-    ptr: u32,
-    len: u32,
-    max: usize,
-) -> Result<String, ()> {
+fn read_guest_str(mem: &[u8], ptr: u32, len: u32, max: usize) -> Result<String, ReadError> {
     if len as usize > max {
-        return Err(());
+        return Err(ReadError::TooLong);
     }
-    let mut buf = vec![0u8; len as usize];
-    memory
-        .read(caller, ptr as usize, &mut buf)
-        .map_err(|_| ())?;
-    String::from_utf8(buf).map_err(|_| ())
+    let start = ptr as usize;
+    let bytes = start
+        .checked_add(len as usize)
+        .and_then(|end| mem.get(start..end))
+        .ok_or(ReadError::OutOfBounds)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| ReadError::NotUtf8)
+}
+
+/// The message for a guest string `what` that failed `e`, `limit` being its cap.
+fn read_error(what: &str, limit: &str, e: ReadError) -> String {
+    match e {
+        ReadError::TooLong => format!("{what} is over {limit}"),
+        ReadError::OutOfBounds => format!("{what} lies outside guest memory"),
+        ReadError::NotUtf8 => format!("{what} is not UTF-8"),
+    }
 }
 
 /// Turns a host-call outcome into the bytes the guest will read and the length it
@@ -119,6 +134,27 @@ fn take_reply(pending: &mut Option<Vec<u8>>, out_cap: u32) -> Result<Vec<u8>, i3
         return Err(-2);
     }
     Ok(bytes)
+}
+
+/// Takes the pending reply and copies it into guest memory `mem` at `out_ptr`,
+/// returning its length, or `-1` none pending, `-2` buffer too small, `-3` buffer
+/// outside guest memory. The reply is cleared in every case.
+fn copy_reply(pending: &mut Option<Vec<u8>>, mem: &mut [u8], out_ptr: u32, out_cap: u32) -> i32 {
+    let bytes = match take_reply(pending, out_cap) {
+        Ok(bytes) => bytes,
+        Err(code) => return code,
+    };
+    let start = out_ptr as usize;
+    match start
+        .checked_add(bytes.len())
+        .and_then(|end| mem.get_mut(start..end))
+    {
+        Some(dest) => {
+            dest.copy_from_slice(&bytes);
+            bytes.len() as i32
+        }
+        None => -3,
+    }
 }
 
 /// The guest's exported linear memory, or a trap: neither import can answer a guest
@@ -276,30 +312,13 @@ impl WasmExecutor {
                     let memory = guest_memory(&mut caller)?;
 
                     let res: Result<String, String> = (|| {
-                        let ext_name = read_string(
-                            &memory,
-                            &caller,
-                            ext_name_ptr,
-                            ext_name_len,
-                            MAX_IMPORT_NAME_LEN,
-                        )
-                        .map_err(|()| {
-                            format!(
-                                "extension name exceeds {MAX_IMPORT_NAME_LEN} bytes or is not UTF-8"
-                            )
-                        })?;
-                        let func_name = read_string(
-                            &memory,
-                            &caller,
-                            func_name_ptr,
-                            func_name_len,
-                            MAX_IMPORT_NAME_LEN,
-                        )
-                        .map_err(|()| {
-                            format!(
-                                "function name exceeds {MAX_IMPORT_NAME_LEN} bytes or is not UTF-8"
-                            )
-                        })?;
+                        let mem = memory.data(&caller);
+                        let ext_name =
+                            read_guest_str(mem, ext_name_ptr, ext_name_len, MAX_IMPORT_NAME_LEN)
+                                .map_err(|e| read_error("the extension name", "256 bytes", e))?;
+                        let func_name =
+                            read_guest_str(mem, func_name_ptr, func_name_len, MAX_IMPORT_NAME_LEN)
+                                .map_err(|e| read_error("the function name", "256 bytes", e))?;
 
                         // S3: default-deny, checked before the args are read, so an
                         // ungranted call learns nothing about its payload.
@@ -315,16 +334,13 @@ impl WasmExecutor {
                             ));
                         }
 
-                        let args_json_str = read_string(
-                            &memory,
-                            &caller,
+                        let args_json_str = read_guest_str(
+                            memory.data(&caller),
                             args_json_ptr,
                             args_json_len,
                             MAX_ARGS_JSON_LEN,
                         )
-                        .map_err(|()| {
-                            format!("args exceed {MAX_ARGS_JSON_LEN} bytes or are not UTF-8")
-                        })?;
+                        .map_err(|e| read_error("the args JSON", "8 MiB", e))?;
                         let args = serde_json::from_str::<serde_json::Value>(&args_json_str)
                             .map_err(|e| format!("invalid args JSON: {e}"))?;
                         let callback = caller
@@ -355,14 +371,8 @@ impl WasmExecutor {
              out_cap: u32|
              -> wasmtime::Result<i32> {
                 let memory = guest_memory(&mut caller)?;
-                let bytes = match take_reply(&mut caller.data_mut().pending_reply, out_cap) {
-                    Ok(bytes) => bytes,
-                    Err(code) => return Ok(code),
-                };
-                if memory.write(&mut caller, out_ptr as usize, &bytes).is_err() {
-                    return Ok(-3);
-                }
-                Ok(bytes.len() as i32)
+                let (mem, ctx) = memory.data_and_store_mut(&mut caller);
+                Ok(copy_reply(&mut ctx.pending_reply, mem, out_ptr, out_cap))
             },
         ) {
             return fail(format!("Failed to link host_read_reply: {e}"));
@@ -453,6 +463,51 @@ mod tests {
         let mut pending = Some(b"{}".to_vec());
         assert_eq!(take_reply(&mut pending, 2), Ok(b"{}".to_vec()));
         assert_eq!(take_reply(&mut pending, 2), Err(-1));
+    }
+
+    #[test]
+    fn read_guest_str_names_each_failure() {
+        let mem = b"ok\xff\xfe".to_vec();
+        assert_eq!(read_guest_str(&mem, 0, 2, 8), Ok("ok".to_string()));
+        assert_eq!(read_guest_str(&mem, 0, 9, 8), Err(ReadError::TooLong));
+        assert_eq!(read_guest_str(&mem, 3, 2, 8), Err(ReadError::OutOfBounds));
+        assert_eq!(
+            read_guest_str(&mem, u32::MAX, 2, 8),
+            Err(ReadError::OutOfBounds)
+        );
+        assert_eq!(read_guest_str(&mem, 2, 2, 8), Err(ReadError::NotUtf8));
+    }
+
+    #[test]
+    fn boundary_messages_name_the_failed_check() {
+        assert_eq!(
+            read_error("the args JSON", "8 MiB", ReadError::TooLong),
+            "the args JSON is over 8 MiB"
+        );
+        assert_eq!(
+            read_error("the extension name", "256 bytes", ReadError::OutOfBounds),
+            "the extension name lies outside guest memory"
+        );
+        assert_eq!(
+            read_error("the function name", "256 bytes", ReadError::NotUtf8),
+            "the function name is not UTF-8"
+        );
+    }
+
+    #[test]
+    fn copy_reply_refuses_an_out_of_bounds_buffer_and_clears() {
+        let mut mem = vec![0u8; 16];
+        let mut pending = Some(b"{}".to_vec());
+        assert_eq!(copy_reply(&mut pending, &mut mem, 15, 2), -3);
+        assert_eq!(
+            copy_reply(&mut pending, &mut mem, 0, 2),
+            -1,
+            "the reply was cleared"
+        );
+
+        let mut pending = Some(b"{}".to_vec());
+        assert_eq!(copy_reply(&mut pending, &mut mem, 4, 2), 2);
+        assert_eq!(&mem[4..6], b"{}");
     }
 
     #[test]

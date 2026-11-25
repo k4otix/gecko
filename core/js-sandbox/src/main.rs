@@ -84,8 +84,9 @@ fn require_str_arg(args: &[JsValue], idx: usize, name: &str) -> JsResult<String>
 }
 
 /// Converts a guest value to its JSON wire form: `undefined` is absent (`None`),
-/// and a non-finite number, a function, or a value `to_json` cannot convert (a
-/// `Symbol`, a cyclic object, a `BigInt`) is a `TypeError` naming `name`. Anything
+/// and a non-finite number, a function, or a value `to_json` cannot convert or
+/// gives no JSON for (a `Symbol`, a cyclic object, a `BigInt`) is a `TypeError`
+/// naming `name`. Anything
 /// else is forwarded as JSON unchanged; the host judges its type.
 fn to_wire(v: &JsValue, name: &str, context: &mut Context) -> JsResult<Option<Value>> {
     if v.is_undefined() {
@@ -99,7 +100,7 @@ fn to_wire(v: &JsValue, name: &str, context: &mut Context) -> JsResult<Option<Va
     }
     match v.to_json(context) {
         Ok(Some(json)) => Ok(Some(json)),
-        Ok(None) => Ok(None),
+        Ok(None) => Err(type_error(format!("'{name}' has no JSON form"))),
         Err(e) => Err(type_error(format!(
             "'{name}' cannot be converted to JSON: {e}"
         ))),
@@ -197,7 +198,7 @@ fn mem_recall(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     match reply.get("chunks") {
         Some(chunks @ Value::Array(_)) => JsValue::from_json(chunks, context),
         _ => Err(JsNativeError::error()
-            .with_message(format!("mem.recall reply carries no chunks array: {reply}"))
+            .with_message("mem.recall reply carries no chunks array")
             .into()),
     }
 }

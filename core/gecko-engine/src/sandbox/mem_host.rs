@@ -146,6 +146,25 @@ pub fn bind_mem_call(ctx: &RunContext, func: MemHostFn, mut args: Value) -> Stam
 /// The largest integer a JS number represents exactly (`Number.MAX_SAFE_INTEGER`).
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
+/// The longest serialized value a refusal quotes; a longer one is named by type.
+const MAX_SHOWN_VALUE_LEN: usize = 64;
+
+/// A guest value as a refusal shows it: the JSON text when short, otherwise its type
+/// and size, so an error never echoes a large payload back.
+fn shown(v: &Value) -> String {
+    let text = v.to_string();
+    if text.len() <= MAX_SHOWN_VALUE_LEN {
+        return text;
+    }
+    let kind = match v {
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+        _ => "a value",
+    };
+    format!("{kind} of {} bytes", text.len())
+}
+
 /// The payload keys each mem function accepts, after the reserved provenance keys
 /// are stripped. `gecko.callExtension("mem", …)` reaches the dispatchers without the
 /// guest's own checks, so the host refuses anything else itself.
@@ -164,11 +183,12 @@ fn check_payload(func: MemHostFn, p: &Value) -> Result<(), String> {
     let name = func.as_str();
     let obj = p
         .as_object()
-        .ok_or_else(|| format!("mem.{name} payload must be a JSON object, got {p}"))?;
+        .ok_or_else(|| format!("mem.{name} payload must be a JSON object, got {}", shown(p)))?;
     let allowed = allowed_keys(func);
     match obj.keys().find(|k| !allowed.contains(&k.as_str())) {
         Some(k) => Err(format!(
-            "mem.{name} does not accept the field '{k}'; it accepts {}",
+            "mem.{name} does not accept the field {}; it accepts {}",
+            shown(&Value::String(k.clone())),
             allowed.join(", ")
         )),
         None => Ok(()),
@@ -194,7 +214,7 @@ fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     present(p, key)
         .map(|v| {
             v.as_str()
-                .ok_or_else(|| format!("mem call field '{key}' must be a string, got {v}"))
+                .ok_or_else(|| format!("mem call field '{key}' must be a string, got {}", shown(v)))
         })
         .transpose()
 }
@@ -204,7 +224,7 @@ fn opt_number(p: &Value, key: &str) -> Result<Option<f64>, String> {
     present(p, key)
         .map(|v| {
             v.as_f64()
-                .ok_or_else(|| format!("mem call field '{key}' must be a number, got {v}"))
+                .ok_or_else(|| format!("mem call field '{key}' must be a number, got {}", shown(v)))
         })
         .transpose()
 }
@@ -240,7 +260,8 @@ fn opt_positive_int(p: &Value, key: &str) -> Result<Option<usize>, String> {
     match n {
         Some(n) if n >= 1 => Ok(Some(n)),
         _ => Err(format!(
-            "mem call field '{key}' must be an integer of at least 1, got {v}"
+            "mem call field '{key}' must be an integer of at least 1, got {}",
+            shown(v)
         )),
     }
 }
@@ -258,7 +279,10 @@ fn mem_ids(payload: &Value, key: &str) -> Result<Vec<MemId>, String> {
         .enumerate()
         .map(|(i, v)| {
             v.as_str().map(MemId::new).ok_or_else(|| {
-                format!("mem call field '{key}' must be an array of id strings; [{i}] is {v}")
+                format!(
+                    "mem call field '{key}' must be an array of id strings; [{i}] is {}",
+                    shown(v)
+                )
             })
         })
         .collect()
@@ -290,8 +314,9 @@ fn derivation_method(p: &Value) -> Result<DerivationMethod, String> {
             .and_then(DerivationMethod::from_str)
             .ok_or_else(|| {
                 format!(
-                    "mem call field 'method' must be one of {}, got {v}",
-                    accepted()
+                    "mem call field 'method' must be one of {}, got {}",
+                    accepted(),
+                    shown(v)
                 )
             }),
     }
@@ -1080,5 +1105,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(captured(&mock).1.max_chunks, DEFAULT_RECALL_MAX_CHUNKS);
+    }
+
+    #[tokio::test]
+    async fn refusals_do_not_echo_a_large_value() {
+        let big = "x".repeat(1 << 20);
+        let cases = [
+            (MemHostFn::Derive, json!(big.clone())),
+            (
+                MemHostFn::Derive,
+                json!({"text": "t", "confidence": big.clone()}),
+            ),
+            (
+                MemHostFn::Derive,
+                json!({"text": "t", "method": big.clone()}),
+            ),
+            (
+                MemHostFn::Derive,
+                json!({"text": "t", "evidence": [{"k": big.clone()}]}),
+            ),
+            (
+                MemHostFn::Supersede,
+                json!({"old": "o", "text": "t", "reason": {"k": big.clone()}}),
+            ),
+            (
+                MemHostFn::Remember,
+                json!({"text": "t", "event_time": [big.clone()]}),
+            ),
+            (MemHostFn::Contest, json!({ big.clone(): 1 })),
+        ];
+        for (func, args) in cases {
+            let (out, _) = write_call(func, args).await;
+            let e = out.unwrap_err();
+            assert!(e.len() < 300, "{func:?}: a {}-byte error", e.len());
+        }
+        let e = run_recall(
+            &reader_with(vec![]),
+            &host_ctx(),
+            json!({"text": "q", "max_chunks": big}),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.len() < 300, "recall: a {}-byte error", e.len());
+    }
+
+    #[test]
+    fn a_short_value_is_still_shown_in_a_refusal() {
+        let e = opt_number(&json!({"confidence": "0.5"}), "confidence").unwrap_err();
+        assert!(e.contains("\"0.5\""), "{e}");
     }
 }

@@ -370,3 +370,109 @@ async fn mem_contest_forwards_missing_claims_for_the_host_to_refuse() {
     assert_eq!(calls[0].2, json!({}));
     assert_eq!(calls[1].2, json!({ "claims": null }));
 }
+
+#[tokio::test]
+async fn an_error_over_the_cap_reaches_the_guest_truncated() {
+    let (cb, _) = counting(Err("x".repeat(17 << 20)));
+    let code = r#"
+        let len = -1;
+        try { gecko.callExtension("e", "f", {}); } catch (e) { len = String(e.message).length; }
+        ({ len })
+    "#;
+    let (ok, out, err) = run(code, &["e:f"], cb).await;
+    assert!(ok, "{err}");
+    let len = out["len"].as_u64().unwrap();
+    let cap = 16u64 << 20;
+    let prefix = "Host call failed: ".len() as u64;
+    assert!(len > cap - 4 && len <= cap + prefix, "len {len}");
+}
+
+#[tokio::test]
+async fn mem_recall_does_not_echo_a_bad_reply() {
+    let (cb, _) = recording(|_| Ok(json!({ "chunks": "x".repeat(1 << 20) })));
+    let (ok, _, err) = run(r#"mem.recall("q")"#, &MEM_SCOPES, cb).await;
+    assert!(!ok);
+    assert!(err.contains("chunks"), "{err}");
+    assert!(err.len() < 300, "a {}-byte error", err.len());
+}
+
+/// A writer the contest refusal must never reach.
+struct UnreachableWriter;
+
+#[async_trait::async_trait]
+impl gecko_extension_api::EpistemicWriter for UnreachableWriter {
+    async fn observe(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::EpisodeDraft,
+    ) -> Result<gecko_extension_api::MemId, gecko_extension_api::EpistemicError> {
+        unreachable!("observe")
+    }
+    async fn assert_belief(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::BeliefDraft,
+        _: &[gecko_extension_api::MemId],
+        _: gecko_extension_api::DerivationMethod,
+    ) -> Result<gecko_extension_api::MemId, gecko_extension_api::EpistemicError> {
+        unreachable!("assert_belief")
+    }
+    async fn supersede(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::MemId,
+        _: gecko_extension_api::BeliefDraft,
+        _: &str,
+    ) -> Result<gecko_extension_api::MemId, gecko_extension_api::EpistemicError> {
+        unreachable!("supersede")
+    }
+    async fn contest(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: &[gecko_extension_api::MemId],
+    ) -> Result<gecko_extension_api::AnomalyId, gecko_extension_api::EpistemicError> {
+        unreachable!("contest")
+    }
+    async fn rests_on(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::MemId,
+        _: &[gecko_extension_api::MemId],
+    ) -> Result<(), gecko_extension_api::EpistemicError> {
+        unreachable!("rests_on")
+    }
+    async fn record_prediction(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::MemId,
+        _: f64,
+    ) -> Result<(), gecko_extension_api::EpistemicError> {
+        unreachable!("record_prediction")
+    }
+    async fn resolve_prediction(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::MemId,
+        _: gecko_extension_api::Outcome,
+    ) -> Result<(), gecko_extension_api::EpistemicError> {
+        unreachable!("resolve_prediction")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mem_contest_without_claims_throws_end_to_end() {
+    use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
+    use gecko_extension_api::{ActorId, ProvenanceSource, RunContext};
+    for code in ["mem.contest()", "mem.contest(null)"] {
+        let ctx = RunContext::new(
+            ActorId::new("agent-1"),
+            ProvenanceSource::Manual,
+            chrono::Utc::now(),
+        );
+        let base: ExtensionCallback = Arc::new(|_, _, _| Err("base".to_string()));
+        let cb = epistemic_extension_callback(ctx, Arc::new(UnreachableWriter), None, base);
+        let (ok, _, err) = run(code, &MEM_SCOPES, cb).await;
+        assert!(!ok, "{code} must throw");
+        assert!(err.contains("claims"), "{code}: {err}");
+    }
+}
