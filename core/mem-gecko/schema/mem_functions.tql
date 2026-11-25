@@ -1,10 +1,10 @@
 define
 
   # ══════════════════════════════════════════════════════════════════
-  # A3 — substrate functions (persisted; query-time reasoning)
+  # Substrate functions (persisted; query-time reasoning)
   # ══════════════════════════════════════════════════════════════════
 
-  # 1 — is-superseded($b) -> bool
+  # is-superseded($b) -> bool
   fun is-superseded($b: memory-item) -> boolean @doc("True if the memory item has been superseded or retracted — either a supersession edge points at it, or its belief-state is 'superseded'/'retracted'."):
       match
           {
@@ -16,7 +16,7 @@ define
           };
       return check;
 
-  # 2 — believed-at($t) -> {belief}  (temporal; index NOT involved)
+  # believed-at($t) -> {belief}  (temporal; index NOT involved)
   fun believed-at($t: datetime) -> { belief } @doc("Returns the beliefs asserted and within their validity window as of time $t (valid-from <= $t and no valid-to on or before $t)."):
       match
           $b isa belief, has belief-state "asserted", has valid-from $vf;
@@ -24,7 +24,7 @@ define
           not { $b has valid-to $vt; $vt <= $t; };
       return { $b };
 
-  # 3 — derivation-chain($b) -> {memory-item}  (recursive transitive closure)
+  # derivation-chain($b) -> {memory-item}  (recursive transitive closure)
   fun derivation-chain($b: memory-item) -> { memory-item } @doc("Recursive transitive closure of the sources $b was derived from, following derivation edges to their roots."):
       match
           {
@@ -35,7 +35,7 @@ define
           };
       return { $m };
 
-  # 4 — retrieval-score($m,$now) -> double
+  # retrieval-score($m,$now) -> double
   #   THREE validated 3.12 constraints shape this body:
   #   (a) CONTINUOUS half-life decay is NOT expressible in pure TQL — datetime-datetime yields a
   #       duration, but duration/duration, duration->scalar, scalar->duration and ln/log are all
@@ -53,14 +53,14 @@ define
           let $score = $ba + $s;                       # top-level binding, visible to `return`
       return first $score;
 
-  # 6 — contradicts($b1,$b2) -> bool
+  # contradicts($b1,$b2) -> bool
   fun contradicts($b1: belief, $b2: belief) -> boolean @doc("True if two distinct beliefs are both claims of the same contradiction."):
       match
           $c isa contradiction, links (claim: $b1, claim: $b2);
           not { $b1 is $b2; };
       return check;
 
-  # 7 — blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
+  # blast-radius($retracted) -> {memory-item}  (recursive over rests-on U derivation)
   #   blast-step is the one-edge relation: the items resting on $r as an assumption
   #   and the items derived from $r as a source. The closure recurses over it and
   #   terminates on a cycle of either edge.
@@ -98,7 +98,7 @@ define
           };
       return check;
 
-  # 5 — gate($n,$agent,$now) -> bool  (composes is-superseded + validity + visible-to)
+  # gate($n,$agent,$now) -> bool  (composes is-superseded + validity + visible-to)
   #   A belief passes gate iff it is (a) NOT superseded, (b) within its validity window
   #   (valid-from <= now, and valid-to absent or > now), AND (c) visible-to $agent.
   fun gate($n: belief, $agent: agent, $now: datetime) -> boolean @doc("Access predicate for a belief: true iff it is asserted, not superseded, within its validity window at $now, and visible to $agent (team/shared, or private and owned by $agent)."):
@@ -110,7 +110,7 @@ define
           true == visible-to($n, $agent);
       return check;
 
-  # 8 — select-for-context($agent,$now) -> {belief, double}  (tuple stream)
+  # select-for-context($agent,$now) -> {belief, double}  (tuple stream)
   fun select-for-context($agent: agent, $now: datetime) -> { belief, double } @doc("Returns each belief visible to $agent at $now paired with its retrieval score; the gated, scored candidate set for context assembly."):
       match
           $b isa belief;
@@ -118,7 +118,7 @@ define
           let $score in retrieval-score($b, $now);
       return { $b, $score };
 
-  # ── Retrieval-provenance function (A2.10) ─────────────────────────
+  # ── Retrieval-provenance function ───────────────────────────────
   # walks informs-synthesis; MUST NOT be reachable from derivation-chain
   fun retrieval-provenance-of($b: belief) -> { retrieval-event } @doc("The retrieval events that informed the synthesis of belief $b; walks informs-synthesis and never crosses into the logical derivation chain."):
       match

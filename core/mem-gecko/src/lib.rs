@@ -1,28 +1,18 @@
 //! # mem-gecko
 //!
-//! Cognitive memory extension for the GECKO framework.
-//!
-//! Transforms temporary execution state into structured, queryable GraphRAG memory.
-//! Generates `execution-episode` nodes linked to involved entities via `contextualizes`
-//! relations for future LLM-powered retrieval (design §4.3).
+//! GECKO's epistemic memory substrate: the bitemporal episode and belief schema, its
+//! persisted functions, and the [`MemWriter`] that writes and recalls through them.
 
 use std::sync::LazyLock;
 
 use gecko_extension_api::{GeckoExtension, HostImportDef, SchemaMigration};
 
 pub mod belief_edge;
-pub mod consolidation;
-pub mod disposition;
 mod tql;
 pub mod writer;
 
 pub use belief_edge::{BeliefEdgeRegistry, ExtensionFragment, RegistryError};
-pub use consolidation::{
-    ConsolidationDaemon, ConsolidationReport, DedupSummary, MemConsolidationDaemon,
-    NoopConsolidationDaemon,
-};
-pub use disposition::{DispKeys, Disposition};
-pub use writer::{DuplicateCandidate, IndexOutcome, IndexReconciliation, MemWriter};
+pub use writer::{IndexReconciliation, MemWriter};
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
 /// the type ontology (`mem_types.tql`) and the persisted reasoning functions
@@ -102,74 +92,12 @@ impl GeckoExtension for MemGecko {
 mod tests {
     use super::*;
 
-    fn is_label_char(c: char) -> bool {
-        c.is_ascii_alphanumeric() || c == '_' || c == '-'
-    }
-
-    /// Every needle that occurs in `text` at a label boundary: where a needle starts
-    /// (ends) with a label character, the character before (after) the match is not one.
-    fn deleted_labels_absent(text: &str, needles: &[&str]) -> Vec<String> {
-        let mut found = Vec::new();
-        for needle in needles {
-            let check_start = needle.chars().next().is_some_and(is_label_char);
-            let check_end = needle.chars().next_back().is_some_and(is_label_char);
-            let hit = text.match_indices(needle).any(|(i, _)| {
-                let before_ok =
-                    !check_start || !text[..i].chars().next_back().is_some_and(is_label_char);
-                let after_ok = !check_end
-                    || !text[i + needle.len()..]
-                        .chars()
-                        .next()
-                        .is_some_and(is_label_char);
-                before_ok && after_ok
-            });
-            if hit {
-                found.push((*needle).to_string());
-            }
-        }
-        found
-    }
-
-    #[test]
-    fn deleted_labels_absent_matches_whole_labels_only() {
-        let rel = "relation scoped";
-        let role = "scoped:";
-        assert_eq!(
-            deleted_labels_absent("relation scoped @doc(", &[rel]),
-            [rel]
-        );
-        assert_eq!(
-            deleted_labels_absent("plays scoped:scoped-belief", &[role]),
-            [role]
-        );
-        assert_eq!(
-            deleted_labels_absent("blast-radius-at(", &["blast-radius-at"]),
-            ["blast-radius-at"]
-        );
-        assert!(deleted_labels_absent("blast-radius(", &["blast-radius-at"]).is_empty());
-        for text in [
-            "relation scoped-thing",
-            "relation scoped_thing",
-            "relation scopedX",
-            "for a scoped member",
-        ] {
-            assert!(
-                deleted_labels_absent(text, &[rel, role]).is_empty(),
-                "{text:?} must match neither needle"
-            );
-        }
-        for text in ["plays unscoped:role", "plays exception-scoped:role"] {
-            assert!(
-                deleted_labels_absent(text, &[role]).is_empty(),
-                "{text:?} must not match {role:?}"
-            );
-        }
-    }
+    use gecko_extension_api::migration::deleted_labels_present;
 
     #[test]
     fn shipped_mem_schema_has_no_population_labels() {
         let schema: &str = &MEM_SCHEMA;
-        let found = deleted_labels_absent(
+        let found = deleted_labels_present(
             schema,
             &[
                 "entity population",
@@ -195,6 +123,82 @@ mod tests {
             "the shipped mem schema still declares {found:?}"
         );
         assert!(schema.contains("fun blast-radius($r: memory-item) -> { memory-item }"));
+    }
+
+    #[test]
+    fn shipped_mem_schema_declares_no_consolidation_labels() {
+        let found = deleted_labels_present(
+            &MEM_SCHEMA,
+            &[
+                "consolidation-state",
+                "consolidation-action",
+                "relation consolidation-step",
+                "consolidation-step:",
+            ],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped mem schema still declares {found:?}"
+        );
+    }
+
+    #[test]
+    fn shipped_mem_schema_declares_no_divergence_labels() {
+        let found = deleted_labels_present(
+            &MEM_SCHEMA,
+            &[
+                "entity divergence-exception",
+                "relation divergence-precedence",
+                "divergence-precedence:",
+                "exception-scope",
+                "exception-belief",
+            ],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped mem schema still declares {found:?}"
+        );
+    }
+
+    #[test]
+    fn shipped_mem_schema_declares_no_diet_labels() {
+        let found = deleted_labels_present(
+            &MEM_SCHEMA,
+            &[
+                "entity intention",
+                "entity working-set",
+                "entity playbook",
+                "entity learned-constraint",
+                "relation goal-hierarchy",
+                "relation execution",
+                "relation tool-invocation",
+                "relation contextualizes",
+                "relation evidence",
+                "relation justification",
+                "relation support",
+                "relation attack",
+                "goal-hierarchy:",
+                "execution:",
+                "tool-invocation:",
+                "contextualizes:",
+                "evidence:",
+                "justification:",
+                "support:",
+                "attack:",
+                "execution-status",
+                "stability-tier",
+                "corroboration-count",
+                "justification-status",
+                "tool-name",
+                "attribute deadline",
+                "owns deadline",
+                "has deadline",
+            ],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped mem schema still declares {found:?}"
+        );
     }
 
     #[test]
@@ -281,12 +285,10 @@ mod tests {
     #[test]
     fn test_schema_contains_memory_item_hierarchy() {
         let schema: &str = &MEM_SCHEMA;
-        // Four-layer substrate: abstract memory-item + its subtypes.
+        // The abstract memory-item and its subtypes.
         assert!(schema.contains("entity memory-item @abstract, sub okf-concept"));
         assert!(schema.contains("entity belief sub memory-item"));
         assert!(schema.contains("entity episode sub memory-item"));
-        assert!(schema.contains("entity playbook sub memory-item"));
-        assert!(schema.contains("entity working-set sub memory-item"));
         // Cross-source identity: resolution IS a belief.
         assert!(schema.contains("entity resolution sub belief"));
     }
@@ -323,25 +325,6 @@ mod tests {
             6,
             "derivation-method must enumerate exactly 7 @values"
         );
-    }
-
-    #[test]
-    fn test_schema_contains_consolidation_state_machine() {
-        // The consolidation-state machine (with tombstone semantics) must be in
-        // the schema so the dreaming daemon slots in without schema churn.
-        let schema: &str = &MEM_SCHEMA;
-        assert!(schema.contains(
-            r#"attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");"#
-        ));
-        // All five states present, including the tombstone terminal state.
-        for state in ["raw", "candidate", "consolidated", "archived", "tombstoned"] {
-            assert!(
-                schema.contains(&format!("\"{state}\"")),
-                "consolidation-state missing {state}"
-            );
-        }
-        // memory-item owns consolidation-state (the state machine is on the substrate).
-        assert!(schema.contains("owns consolidation-state @card(0..1)"));
     }
 
     #[test]

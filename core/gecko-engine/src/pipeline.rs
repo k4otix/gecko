@@ -142,8 +142,7 @@ pub async fn execute_playbook(
 
 /// Records a successful execution event.
 ///
-/// For now this logs the execution; full mem-gecko episode generation (writing a
-/// contextualizing relation into the graph) lands when that extension is wired in.
+/// Logs the execution; playbooks record memory themselves through `mem.*`.
 fn record_execution(
     _db: &mut TypeDbRouter,
     concept_id: &str,

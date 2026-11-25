@@ -17,11 +17,10 @@
 //!
 //! The implementation is split by concern: `index` (startup reconciliation, index
 //! hooks), `reader` (persisted-function reads and recall), `beliefs` (the writer
-//! trait), `edges` (the per-extension belief-edge writer) and `consolidation`.
+//! trait) and `edges` (the per-extension belief-edge writer).
 //! Query text lives in the crate's `tql` module.
 
 mod beliefs;
-mod consolidation;
 mod edges;
 mod index;
 mod reader;
@@ -31,8 +30,7 @@ mod tests;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-pub use consolidation::DuplicateCandidate;
-pub use index::{IndexOutcome, IndexReconciliation};
+pub use index::IndexReconciliation;
 
 use gecko_extension_api::{
     BeliefEdgeWriter, DateTime, Embedder, EpistemicError, GraphStore, MemId, SemanticIndex,

@@ -631,9 +631,9 @@ mod tests {
                 "confidence",
             ),
             (
-                "redefine probe-link relates evidence @card(0..1);",
+                "redefine probe-link relates pivot @card(0..1);",
                 "redefine",
-                "evidence",
+                "pivot",
             ),
             (
                 "define\nfun believed-at($b: belief) -> boolean:\n match $b isa belief;\n return check;",

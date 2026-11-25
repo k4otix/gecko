@@ -328,19 +328,6 @@ async fn supersede_survives_a_failing_remove() {
     assert_eq!(idx.removes.load(Ordering::SeqCst), 1);
 }
 
-#[test]
-fn supersede_with_failing_remove_reports_failed() {
-    let w = MemWriter::new(
-        Arc::new(RecordingGraphStore::default()),
-        Some(Arc::new(OkEmbedder)),
-        Some(Arc::new(FailingUpsertIndex::default())),
-    );
-    assert_eq!(
-        w.best_effort_remove(ConceptId("mem/bel/OLD".into())),
-        IndexOutcome::Failed
-    );
-}
-
 #[tokio::test]
 async fn supersede_without_embedder_never_removes() {
     // Old-vector remove is gated on BOTH embedder+index.

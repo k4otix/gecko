@@ -13,7 +13,7 @@
 //!   `>=`, `<=`) with nothing after it, where the shipped `owns A` of `T` (or a
 //!   supertype) carries a `@range`;
 //! - an `undefine @doc from X;`, where a shipped statement declares `X` followed by
-//!   `@doc(`;
+//!   `@doc(`, ignoring an `@abstract` annotation after the label;
 //! - an `undefine T;` or `undefine fun F;`, where the shipped schema declares no `T`
 //!   or `F`;
 //! - a `redefine X;`, where the shipped schema contains `X`.
@@ -42,6 +42,36 @@ pub fn check_migrations(migrations: &[SchemaMigration], schema: &str) -> Result<
     Ok(())
 }
 
+fn is_label_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Every needle that occurs in `text` at a label boundary: where a needle starts
+/// (ends) with a label character, the character before (after) the match is not one.
+/// Each fragment's tests run it over the shipped schema for the labels a cut deleted.
+#[doc(hidden)]
+pub fn deleted_labels_present(text: &str, needles: &[&str]) -> Vec<String> {
+    let mut found = Vec::new();
+    for needle in needles {
+        let check_start = needle.chars().next().is_some_and(is_label_char);
+        let check_end = needle.chars().next_back().is_some_and(is_label_char);
+        let hit = text.match_indices(needle).any(|(i, _)| {
+            let before_ok =
+                !check_start || !text[..i].chars().next_back().is_some_and(is_label_char);
+            let after_ok = !check_end
+                || !text[i + needle.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_label_char);
+            before_ok && after_ok
+        });
+        if hit {
+            found.push((*needle).to_string());
+        }
+    }
+    found
+}
+
 /// Checks one entry; `later` holds the entries after it in the list.
 fn check_one(
     m: &SchemaMigration,
@@ -65,7 +95,8 @@ fn check_one(
                 .iter()
                 .find_map(|kind| s.strip_prefix(kind))
                 .unwrap_or(s);
-            normalize(declared).starts_with(&format!("{} @doc(", normalize(target)))
+            without_abstract(&normalize(declared))
+                .starts_with(&format!("{} @doc(", normalize(target)))
         });
         if !reinstalled {
             return Err(format!(
@@ -292,6 +323,24 @@ fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A normalized declaration with an `@abstract` annotation (and its trailing `,`)
+/// after the label removed, so `item @abstract, sub root @doc(` reads as
+/// `item sub root @doc(`.
+fn without_abstract(declared: &str) -> String {
+    match declared.split_once(' ') {
+        Some((label, rest)) => match rest.strip_prefix("@abstract") {
+            // Only a whole `@abstract` token: `declared` is normalized, so a space or
+            // a comma ends it.
+            Some(after) if after.starts_with([' ', ',']) => {
+                let after = after.trim_start().trim_start_matches(',').trim_start();
+                format!("{label} {after}")
+            }
+            _ => declared.to_string(),
+        },
+        None => declared.to_string(),
+    }
+}
+
 /// `statement` with every `@doc("…")` annotation removed.
 fn strip_docs(statement: &str) -> String {
     let mut out = String::with_capacity(statement.len());
@@ -467,6 +516,94 @@ mod tests {
 
     fn check(tql: &'static str) -> Result<(), String> {
         check_migrations(&[entry(tql)], SCHEMA)
+    }
+
+    /// Abstract types, with and without a comma after `@abstract`.
+    const ABSTRACT_SCHEMA: &str = r#"define
+  entity root @doc("A root.");
+  entity item @abstract, sub root @doc("An abstract item."),
+    owns name;
+  relation edge @abstract @doc("An abstract edge."),
+    relates end;
+  attribute name value string;
+"#;
+
+    #[test]
+    fn deleted_labels_present_matches_whole_labels_only() {
+        let rel = "relation scoped";
+        let role = "scoped:";
+        assert_eq!(
+            deleted_labels_present("relation scoped @doc(", &[rel]),
+            [rel]
+        );
+        assert_eq!(
+            deleted_labels_present("plays scoped:scoped-belief", &[role]),
+            [role]
+        );
+        assert_eq!(
+            deleted_labels_present("blast-radius-at(", &["blast-radius-at"]),
+            ["blast-radius-at"]
+        );
+        assert!(deleted_labels_present("blast-radius(", &["blast-radius-at"]).is_empty());
+        for text in [
+            "relation scoped-thing",
+            "relation scoped_thing",
+            "relation scopedX",
+            "for a scoped member",
+        ] {
+            assert!(
+                deleted_labels_present(text, &[rel, role]).is_empty(),
+                "{text:?} must match neither needle"
+            );
+        }
+        for text in ["plays unscoped:role", "plays exception-scoped:role"] {
+            assert!(
+                deleted_labels_present(text, &[role]).is_empty(),
+                "{text:?} must not match {role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_doc_undefine_on_an_abstract_type_is_accepted() {
+        for tql in [
+            "undefine @doc from item sub root;",
+            "undefine @doc from edge;",
+        ] {
+            check_migrations(&[entry(tql)], ABSTRACT_SCHEMA)
+                .unwrap_or_else(|e| panic!("{tql}: {e}"));
+        }
+    }
+
+    #[test]
+    fn only_a_whole_abstract_annotation_is_skipped() {
+        for (schema, tql) in [
+            (
+                "define\n  entity root @doc(\"A root.\");\n  entity item @abstractish sub root @doc(\"x\");\n",
+                "undefine @doc from item sub root;",
+            ),
+            (
+                "define\n  entity root @doc(\"A root.\");\n  entity item @abstractsub root @doc(\"x\");\n",
+                "undefine @doc from item sub root;",
+            ),
+            (
+                "define\n  relation edge @abstract@doc(\"x\");\n",
+                "undefine @doc from edge;",
+            ),
+        ] {
+            let err = check_migrations(&[entry(tql)], schema).unwrap_err();
+            assert!(err.contains("no @doc to replace"), "{tql}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_doc_undefine_on_an_abstract_type_still_matches_its_supertype() {
+        let err = check_migrations(
+            &[entry("undefine @doc from item sub other;")],
+            ABSTRACT_SCHEMA,
+        )
+        .unwrap_err();
+        assert!(err.contains("no @doc to replace"), "{err}");
     }
 
     #[test]

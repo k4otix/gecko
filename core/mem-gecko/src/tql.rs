@@ -26,26 +26,6 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         tql: "match $r isa derivation; not { $r links (derived: $x); }; delete $r;",
     },
     SchemaMigration {
-        id: "mem/evidence-required-roles",
-        applies_when: "relates evidenced @doc(\"The memory item being evidenced.\")",
-        tql: "match $r isa evidence; not { $r links (evidenced: $x); }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/justification-required-roles",
-        applies_when: "relates consequent @doc(\"The memory item justified by the antecedents.\")",
-        tql: "match $r isa justification; not { $r links (consequent: $x); }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/support-required-roles",
-        applies_when: "relates supported @doc(\"The memory item being supported.\")",
-        tql: "match $r isa support; { not { $r links (supporter: $p0); }; } or { not { $r links (supported: $p1); }; }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/attack-required-roles",
-        applies_when: "relates attacked @doc(\"The memory item being attacked.\")",
-        tql: "match $r isa attack; { not { $r links (attacker: $p0); }; } or { not { $r links (attacked: $p1); }; }; delete $r;",
-    },
-    SchemaMigration {
         id: "mem/contradiction-required-roles",
         applies_when: "relates hub @doc(\"The anomaly node collecting the conflicting claims.\")",
         tql: "match $r isa contradiction; not { $r links (hub: $x); }; delete $r;",
@@ -71,16 +51,6 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         tql: "match $r isa rests-on; not { $r links (resting: $x); }; delete $r;",
     },
     SchemaMigration {
-        id: "mem/execution-required-roles",
-        applies_when: "relates run @doc(\"The doc-run being executed.\")",
-        tql: "match $r isa execution; { not { $r links (run: $p0); }; } or { not { $r links (episode-step: $p1); }; }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/consolidation-step-required-roles",
-        applies_when: "relates affected @doc(\"The memory item the consolidation action was applied to.\")",
-        tql: "match $r isa consolidation-step; { not { $r links (affected: $p0); }; } or { not { $r links (run: $p1); }; } or { not { $r links (performer: $p2); }; }; delete $r;",
-    },
-    SchemaMigration {
         id: "mem/resolves-required-roles",
         applies_when: "relates resolution-belief @doc(\"The identity belief backing the resolution.\")",
         tql: "match $r isa resolves; { not { $r links (resolution-belief: $p0); }; } or { not { $r links (record-a: $p1); }; } or { not { $r links (record-b: $p2); }; }; delete $r;",
@@ -95,17 +65,18 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         applies_when: "relates retrieval @doc(\"The retrieval event that fed the synthesis.\")",
         tql: "match $r isa informs-synthesis; { not { $r links (retrieval: $p0); }; } or { not { $r links (synthesized: $p1); }; }; delete $r;",
     },
-    SchemaMigration {
-        id: "mem/divergence-precedence-required-roles",
-        applies_when: "relates prevailing @doc(\"The belief the disposition resolved toward.\")",
-        tql: "match $r isa divergence-precedence; { not { $r links (prevailing: $p0); }; } or { not { $r links (overridden: $p1); }; }; delete $r;",
-    },
     // Belief's `@doc` sits on its `sub` declaration, which `redefine` cannot reach;
     // the shipped `define` sets the new text once the old one is gone.
     SchemaMigration {
         id: "mem/belief-required-window-doc",
         applies_when: "@doc(\"A bitemporal proposition the system holds, with a lifecycle state, optional confidence and entrenchment, and an optional validity window.\")",
         tql: "undefine @doc from belief sub memory-item;",
+    },
+    // `memory-item`'s `@doc` likewise sits on its `sub` declaration.
+    SchemaMigration {
+        id: "mem/memory-item-doc",
+        applies_when: "@doc(\"Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies.\")",
+        tql: "undefine @doc from memory-item sub okf-concept;",
     },
     // An upgraded database can hold another relation that prints the same
     // `owns valid-from` line, so the trigger takes belief's next line and the start
@@ -557,7 +528,6 @@ pub(crate) fn enumerate_episodes_read() -> &'static str {
     "match
        $e isa episode, has concept-id $eid, has title $ttl, has event-time $et;
        not { $e isa retrieval-event; };
-       not { $e has consolidation-state \"tombstoned\"; };
        $own isa ownership, links (owned: $e, owner: $ag);
        $ag has agent-id $aid;
      fetch { \"id\": $eid, \"text\": $ttl, \"owner\": $aid, \"vf\": $et };"
@@ -658,84 +628,6 @@ pub(crate) fn set_retrieval_provenance_op(belief: &MemId, provenance: &str) -> G
         "match $b isa belief, has concept-id $bc; $bc == $bid;
          insert $b has retrieval-provenance == $pv;",
     )
-}
-
-// ── Consolidation ("dreaming") ────────────────────────────────────────────────
-
-/// The dedup cohort read: every owned plain `episode` that is neither tombstoned nor
-/// resolving a prediction and shares its title and event-time with another such
-/// episode, one row per (episode, owner).
-pub(crate) fn duplicate_episode_candidates_read() -> &'static str {
-    "match
-       $e isa! episode, has concept-id $eid, has title $ttl, has event-time $et, has ingest-time $it;
-       $f isa! episode, has title $ttl, has event-time $et;
-       not { $e is $f; };
-       not { $e has consolidation-state \"tombstoned\"; };
-       not { $f has consolidation-state \"tombstoned\"; };
-       not { $pe isa prediction-resolution, links (resolving-episode: $e); };
-       not { $pf isa prediction-resolution, links (resolving-episode: $f); };
-       $own isa ownership, links (owned: $e, owner: $ag);
-       $ag has agent-id $aid;
-     fetch { \"id\": $eid, \"title\": $ttl, \"et\": $et, \"it\": $it, \"owner\": $aid };"
-}
-
-/// The guarded dedup write: one `match … update … insert …` pipeline that applies
-/// only when `keeper` and `loser` are both exactly `episode`s with the same title and
-/// event-time and identical owner sets, neither resolves a prediction or is already
-/// tombstoned, and `keeper` ingested first (ties broken by lowest concept-id). It
-/// tombstones `loser` and records a `consolidation-step`. Op index 2 of
-/// `[ensure_run, ensure_agent, this]`; it must match exactly one row, so a refused
-/// pair surfaces as a row-count mismatch on that op.
-pub(crate) fn dedup_episodes_ops(
-    ctx: &RunContext,
-    keeper: &MemId,
-    loser: &MemId,
-) -> Vec<GraphWrite> {
-    let mut p = Params::new();
-    p.s("kid", keeper.0.clone());
-    p.s("lid", loser.0.clone());
-    p.s("rid", ctx.run_id.to_string());
-    p.s("aid", ctx.actor.0.clone());
-    p.s("act", "tombstone");
-    p.dt("now", ctx.occurred_at);
-    let body = "match
-           $k isa! episode, has concept-id $kc, has title $t, has event-time $et, has ingest-time $ki; $kc == $kid;
-           $l isa! episode, has concept-id $lc, has title $t, has event-time $et, has ingest-time $li; $lc == $lid;
-           { $ki < $li; } or { $ki == $li; $kc < $lc; };
-           not { $k has consolidation-state \"tombstoned\"; };
-           not { $l has consolidation-state \"tombstoned\"; };
-           not { $p1 isa prediction-resolution, links (resolving-episode: $k); };
-           not { $p2 isa prediction-resolution, links (resolving-episode: $l); };
-           not { $o1 isa ownership, links (owned: $k, owner: $a1); not { $o2 isa ownership, links (owned: $l, owner: $a1); }; };
-           not { $o3 isa ownership, links (owned: $l, owner: $a2); not { $o4 isa ownership, links (owned: $k, owner: $a2); }; };
-           $run isa doc-run, has run-id $rr; $rr == $rid;
-           $ag isa agent, has agent-id $aa; $aa == $aid;
-         update $l has consolidation-state \"tombstoned\";
-         insert consolidation-step (affected: $l, run: $run, performer: $ag),
-           has consolidation-action == $act, has created-at == $now;";
-    vec![
-        ensure_run(ctx),
-        ensure_agent(ctx),
-        p.write(body).expecting(1),
-    ]
-}
-
-/// Retrieval-provenance retention (concrete helper): the `retrieval-event`s that
-/// are **safe to tombstone** — those every one of whose `informs-synthesis` beliefs
-/// is superseded. The retention RULE it enforces: never tombstone a retrieval-event
-/// while any belief it synthesized is non-superseded; once all are superseded the
-/// event may decay (its episodic detail is lost) — but each belief's write-once
-/// `retrieval-provenance` flag persists (the axis is retained on the belief, not the
-/// event). A retrieval-event that fed no belief (no `informs-synthesis`) is not
-/// returned here — it is out of scope for provenance-guarded pruning.
-pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
-    "match
-       $re isa retrieval-event, has concept-id $rid;
-       informs-synthesis (retrieval: $re, synthesized: $b);
-       not { informs-synthesis (retrieval: $re, synthesized: $b2); not { true == is-superseded($b2); }; };
-       not { $re has consolidation-state \"tombstoned\"; };
-     select $rid; distinct;
-     fetch { \"id\": $rid };"
 }
 
 /// The title of the episode that resolves a prediction with `outcome`.

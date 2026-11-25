@@ -32,10 +32,7 @@ use gecko_extension_api::{
     RecallQuery, RunContext, Visibility,
 };
 use gecko_semantic_index::{HnswIndex, StubEmbedder};
-use mem_gecko::{
-    BELIEF_TIER_ROOT, BeliefEdgeRegistry, ConsolidationDaemon, ConsolidationReport,
-    MemConsolidationDaemon, MemWriter, NoopConsolidationDaemon,
-};
+use mem_gecko::{BELIEF_TIER_ROOT, BeliefEdgeRegistry, MemWriter};
 use typedb_driver::concept::Value;
 use typedb_driver::given::{GivenRowEntry, GivenRows};
 
@@ -497,7 +494,7 @@ impl LabelDisposition {
 }
 
 /// The ledger items that may own a disposition.
-const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6", "C1"];
+const KNOWN_OWNERS: &[&str] = &["M1", "M2", "M3-r"];
 
 /// Every belief-tier label no production step reaches, with how it is accounted for.
 const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
@@ -515,38 +512,9 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
             owner: "M2",
         },
     ),
-    (
-        "consolidation-step",
-        LabelDisposition::WriterOnly {
-            methods: &["dedup", "daemon tick"],
-            owner: "C1",
-        },
-    ),
-    ("sighting", LabelDisposition::Owed { owner: "A8" }),
-    ("sighting-of", LabelDisposition::Owed { owner: "A8" }),
-    (
-        "divergence-exception",
-        LabelDisposition::Owed { owner: "A5" },
-    ),
-    (
-        "divergence-precedence",
-        LabelDisposition::Owed { owner: "A5" },
-    ),
-    ("resolution", LabelDisposition::Owed { owner: "M3" }),
-    ("resolves", LabelDisposition::Owed { owner: "M3" }),
-    ("playbook", LabelDisposition::Owed { owner: "M5" }),
-    ("working-set", LabelDisposition::Owed { owner: "M4" }),
-    ("intention", LabelDisposition::Owed { owner: "M4" }),
-    ("learned-constraint", LabelDisposition::Owed { owner: "M6" }),
-    ("evidence", LabelDisposition::Owed { owner: "M1" }),
-    ("justification", LabelDisposition::Owed { owner: "M1" }),
-    ("support", LabelDisposition::Owed { owner: "M1" }),
-    ("attack", LabelDisposition::Owed { owner: "M1" }),
-    ("goal-hierarchy", LabelDisposition::Owed { owner: "M4" }),
-    ("contextualizes", LabelDisposition::Owed { owner: "M6" }),
-    ("pivot", LabelDisposition::Owed { owner: "M5" }),
-    ("execution", LabelDisposition::Owed { owner: "M5" }),
-    ("tool-invocation", LabelDisposition::Owed { owner: "M5" }),
+    ("resolution", LabelDisposition::Owed { owner: "M3-r" }),
+    ("resolves", LabelDisposition::Owed { owner: "M3-r" }),
+    ("pivot", LabelDisposition::Owed { owner: "M1" }),
 ];
 
 /// The run context `gecko run` mints for `concept_id`.
@@ -603,12 +571,6 @@ fn hostile_writes(belief_id: &str) -> Vec<GraphWrite> {
         .expecting(1),
     ];
     [writes, provenance::seed_provenance()].concat()
-}
-
-/// Orders a duplicate pair as (keeper, loser): equal ingest times are broken by the
-/// lowest concept-id.
-fn by_id<'a>(a: &'a MemId, b: &'a MemId) -> (&'a MemId, &'a MemId) {
-    if a.0 < b.0 { (a, b) } else { (b, a) }
 }
 
 /// A writer-only drive on the reference database and the delta it caused.
@@ -899,79 +861,6 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             .await
             .expect("resolve_prediction")
     );
-    drive!("dedup", {
-        let mut episodes = Vec::new();
-        for _ in 0..2 {
-            episodes.push(
-                ref_writer
-                    .observe(
-                        &cyber_ctx,
-                        EpisodeDraft {
-                            text: T_EP.to_string(),
-                            event_time: cyber_ctx.occurred_at,
-                            ingest_time: cyber_ctx.occurred_at,
-                        },
-                    )
-                    .await
-                    .expect("observe duplicate"),
-            );
-        }
-        let (keeper, loser) = by_id(&episodes[0], &episodes[1]);
-        ref_writer
-            .dedup_episodes(&cyber_ctx, keeper, loser)
-            .await
-            .expect("dedup_episodes");
-    });
-    drive!("noop daemon tick", {
-        let report = NoopConsolidationDaemon
-            .tick(chrono::Utc::now())
-            .await
-            .expect("no-op tick");
-        assert_eq!(report, ConsolidationReport::default());
-    });
-    drive!("daemon setup", {
-        for _ in 0..2 {
-            ref_writer
-                .observe(
-                    &cyber_ctx,
-                    EpisodeDraft {
-                        text: T_EP.to_string(),
-                        event_time: cyber_ctx.occurred_at,
-                        ingest_time: cyber_ctx.occurred_at,
-                    },
-                )
-                .await
-                .expect("observe duplicate");
-        }
-    });
-    // daemon_is_enumerated_by_the_monopoly_test (CONTRACT-W8 §3 row 5): a daemon
-    // tick's writes are reconciled by the checks below like any other caller's.
-    drive!("daemon tick", {
-        // The whole-graph tick dedups the setup pair and the `dedup` drive's surviving
-        // keeper, which shares its text, context and time.
-        let report = MemConsolidationDaemon::new(ref_writer.clone())
-            .tick(chrono::Utc::now())
-            .await
-            .expect("daemon tick");
-        assert_eq!(report.episodes_deduped, 2);
-        assert!(report.run_id.is_some(), "the tick mints its own run");
-    });
-    let drive_delta = |name: &str| {
-        &drives
-            .iter()
-            .find(|d| d.name == name)
-            .unwrap_or_else(|| panic!("no drive named `{name}`"))
-            .delta
-    };
-    let noop = drive_delta("noop daemon tick");
-    assert!(
-        noop.is_empty(),
-        "a no-op tick changed the belief tier: {noop:?}"
-    );
-    assert!(
-        !drive_delta("daemon tick").is_empty(),
-        "the daemon tick's writes are invisible to the fingerprint"
-    );
 
     // The disposition ratchet over the production surface.
     let surface = {
@@ -1136,15 +1025,15 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
     // An importer concept typed as a belief-tier entity.
     let mut imported = manifest.clone();
     let mut hostile = imported.concepts[0].clone();
-    hostile.concept_id = "hostile/working-set".to_string();
-    hostile.type_hint = Some("working-set".into());
+    hostile.concept_id = "hostile/anomaly".to_string();
+    hostile.type_hint = Some("anomaly".into());
     hostile.typed_attributes = Vec::new();
-    hostile.file_hash = "hostile-working-set".to_string();
+    hostile.file_hash = "hostile-anomaly".to_string();
     imported.concepts.push(hostile);
     match sync_bundle(&mut db.router(), &imported, &[], BELIEF_TIER_ROOT).await {
         Err(DbError::Schema(m)) => assert!(
-            m.contains("working-set"),
-            "importer type_hint: error does not name working-set: {m}"
+            m.contains("type_hint \"anomaly\" is not a subtype of `concept`"),
+            "importer type_hint: error does not refuse anomaly as a non-concept: {m}"
         ),
         other => panic!("importer type_hint: expected a schema error, got {other:?}"),
     }

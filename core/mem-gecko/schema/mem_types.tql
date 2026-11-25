@@ -1,19 +1,16 @@
 define
 
   # ══════════════════════════════════════════════════════════════════
-  # A2 — mem-gecko substrate ontology (additive on core_schema.tql)
+  # mem-gecko substrate ontology (additive on core_schema.tql)
   # ══════════════════════════════════════════════════════════════════
 
-  # ── A2.2 State enums ──────────────────────────────────────────────
+  # ── State enums ───────────────────────────────────────────────────
   attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");
-  attribute consolidation-state value string @values("raw", "candidate", "consolidated", "archived", "tombstoned");
   attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "type-db-function", "external-tool", "human-assertion", "llm-synthesis");
   attribute entrenchment value string @values("axiom", "user-stated", "tool-derived", "inferred", "llm");
-  attribute stability-tier value string @values("volatile", "provisional", "stable", "canonical");
   attribute visibility value string @values("private", "team", "shared");
-  attribute justification-status value string @values("in", "out");
 
-  # ── A2.4 Bitemporal + decay attrs ─────────────────────────────────
+  # ── Bitemporal + decay attrs ──────────────────────────────────────
   attribute event-time value datetime;
   attribute ingest-time value datetime;
   attribute valid-from value datetime;
@@ -26,74 +23,57 @@ define
 
   # ── misc scalar attrs ─────────────────────────────────────────────
   attribute confidence value double;
-  attribute corroboration-count value integer;
   attribute supersession-reason value string;
   attribute created-at value datetime;
   attribute condition value string;
-  attribute execution-status value string @values("pending", "active", "suspended", "completed", "failed");
-  attribute deadline value datetime;
   attribute agent-id value string;
   attribute origin-kind value string;          # OPEN, adapter-extensible set (invariant 9) — NOT @values
   attribute run-id value string;
-  attribute tool-name value string;
   attribute pivot-method value string;
   attribute calibration-score value double;
   attribute predicted-probability value double;
   attribute outcome value string;
-  attribute consolidation-action value string;   # OPEN set of consolidation step kinds — NOT @values
 
-  # ── A2.10 retrieval-provenance attrs ──────────────────────────────
+  # ── Retrieval-provenance attrs ───────────────────────────────────
   attribute retrieval-method value string @values("semantic", "typed", "hybrid");
   attribute retrieval-provenance value string @values("semantic", "typed", "hybrid", "none");
   attribute similarity-score value double;
   attribute was-used value boolean;
-  attribute candidate-count value integer;     # sketch said `long`; 3.x has no long -> integer (64-bit)
+  attribute candidate-count value integer;     # 64-bit
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.1 Memory-item hierarchy (four-layer substrate)
+  # Memory-item hierarchy
   #   id scheme: concept-id @key inherited from okf-concept (mem/ep|bel/{ulid})
   # ══════════════════════════════════════════════════════════════════
-  entity memory-item @abstract, sub okf-concept @doc("Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies."),
+  entity memory-item @abstract, sub okf-concept @doc("Abstract supertype of the substrate's memory: episodes, beliefs and anomalies, linked by derivation, supersession, assumption and provenance edges."),
       owns salience @card(0..1),
       owns base-activation @card(0..1),
       owns access-count @card(0..1) @range(0..),
       owns last-access @card(0..1),
-      owns consolidation-state @card(0..1),
       plays derivation:derived,
       plays derivation:source,
-      plays evidence:evidenced,
-      plays evidence:evidence-item,
-      plays justification:consequent,
-      plays justification:antecedent,
-      plays support:supporter,
-      plays support:supported,
-      plays attack:attacker,
-      plays attack:attacked,
       plays supersession:superseded,
       plays supersession:superseding,
       plays source-link:memory @card(1..),
       plays ownership:owned @card(1),
-      plays consolidation-step:affected,
       plays rests-on:resting,
       plays rests-on:assumption,
-      plays pivot:from-state,            # A2.8 pivot: a memory-item is the state pivoted from
-      plays pivot:to-state,              # A2.8 pivot: ...and the state pivoted to
+      plays pivot:from-state,            # a memory-item is the state pivoted from
+      plays pivot:to-state,              # ...and the state pivoted to
       plays surfaced:item;               # anything surfaced by a retrieval (typically a belief)
 
   entity episode sub memory-item @doc("A time-stamped episodic memory of something that happened, carrying its event-time, ingest-time, and an optional decay half-life."),
       owns event-time @card(1),
       owns ingest-time @card(1),
       owns half-life-hours @card(0..1),
-      plays prediction-resolution:resolving-episode,
-      plays execution:episode-step,
-      plays tool-invocation:invocation-episode;
+      plays prediction-resolution:resolving-episode;
 
   entity belief sub memory-item @doc("A bitemporal proposition the system holds, with a lifecycle state, a validity window that opens at valid-from and may close at valid-to, optional confidence and entrenchment, and the salience, activation and last access recall ranks it by."),
       owns belief-state @card(1),
       owns confidence @card(0..1) @range(0.0..1.0),
       owns entrenchment @card(0..1),
       owns valid-to @card(0..1),
-      owns retrieval-provenance @card(0..1),   # write-once summary flag (A2.10)
+      owns retrieval-provenance @card(0..1),   # write-once summary flag
       plays contradiction:claim,
       plays prediction-resolution:predicted-belief,
       plays informs-synthesis:synthesized;
@@ -104,18 +84,12 @@ define
   belief owns base-activation @card(1);
   belief owns last-access @card(1);
 
-  entity playbook sub memory-item @doc("A reusable procedure held in memory, with a stability tier and a count of how many times it has been corroborated."),
-      owns stability-tier @card(0..1),
-      owns corroboration-count @card(0..1) @range(0..);
-
-  entity working-set sub memory-item @doc("A transient grouping of memory items held together for the duration of a task.");
-
   # episode domain subtype used by retrieval provenance
   entity execution-episode sub episode @doc("An episode representing a step of an execution run; the episodic tier from which retrievals inform belief synthesis."),
       plays informs-synthesis:retrieval;
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.3 Provenance relations (reified)
+  # Provenance relations (reified)
   # ══════════════════════════════════════════════════════════════════
   relation derivation @doc("Records that one memory item was derived from one or more source items by a named derivation method, with optional confidence."),
       relates derived @card(1) @doc("The memory item produced by the derivation."),
@@ -123,24 +97,7 @@ define
       owns derivation-method @card(1),
       owns confidence @card(0..1) @range(0.0..1.0);
 
-  relation evidence @doc("Ties a memory item to the one or more evidence items that support it."),                       # n-ary
-      relates evidenced @card(1) @doc("The memory item being evidenced."),
-      relates evidence-item @card(1..) @doc("A memory item serving as evidence.");
-
-  relation justification @doc("A JTMS justification: a consequent held IN or OUT depending on the status of its antecedents."),                  # JTMS IN/OUT
-      relates consequent @card(1) @doc("The memory item justified by the antecedents."),
-      relates antecedent @card(0..) @doc("A memory item the justification depends on; zero antecedents is an unconditional premise."),
-      owns justification-status @card(0..1);
-
-  relation support @doc("One memory item lends support to another."),
-      relates supporter @card(1) @doc("The memory item offering support."),
-      relates supported @card(1) @doc("The memory item being supported.");
-
-  relation attack @doc("One memory item argues against another."),
-      relates attacker @card(1) @doc("The memory item making the attack."),
-      relates attacked @card(1) @doc("The memory item being attacked.");
-
-  # A2.3 contradiction -> anomaly hub (claims 2..)
+  # contradiction -> anomaly hub (claims 2..)
   entity anomaly sub memory-item @doc("A contradiction hub: a memory node linking a set of claims that cannot all hold, with the condition under which they conflict."),
       owns condition @card(0..1),
       plays contradiction:hub;
@@ -163,37 +120,12 @@ define
       owns origin-kind @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.5 Prospective: intention + goal-hierarchy
-  # ══════════════════════════════════════════════════════════════════
-  entity intention sub memory-item @doc("A prospective goal the system holds, with an execution status, optional deadline, and a place in a goal hierarchy."),
-      owns execution-status @card(1),
-      owns deadline @card(0..1),
-      plays goal-hierarchy:parent-goal,
-      plays goal-hierarchy:child-goal;
-
-  relation goal-hierarchy @doc("Parent/child decomposition of an intention into sub-goals."),                 # self-referential on intention
-      relates parent-goal @doc("The enclosing goal."),
-      relates child-goal @doc("A sub-goal of the parent.");
-
-  # ══════════════════════════════════════════════════════════════════
-  # A2.6 Anti-context: learned-constraint + contextualizes
-  # ══════════════════════════════════════════════════════════════════
-  entity learned-constraint sub memory-item @doc("A learned anti-context rule: a condition under which some concept does not apply, used to suppress out-of-context recall."),
-      owns condition @card(0..1),
-      plays contextualizes:constraint;
-
-  relation contextualizes @doc("Applies a learned constraint to the concept whose context it narrows."),                 # constraint -> any concept
-      relates constraint @doc("The learned constraint being applied."),
-      relates context-target @doc("The concept the constraint contextualizes.");
-
-  # ══════════════════════════════════════════════════════════════════
-  # A2.7 Multi-agent: agent + ownership
+  # Multi-agent: agent + ownership
   # ══════════════════════════════════════════════════════════════════
   entity agent @doc("An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping."),
       owns agent-id @key,
       plays ownership:owner,
-      plays consolidation-step:performer,
-      plays pivot:pivoting-agent;         # A2.8 pivot: the agent that made the investigative move
+      plays pivot:pivoting-agent;         # the agent that made the investigative move
 
   relation ownership @doc("Assigns a memory item to its owning agent(s) and carries the visibility scope that gates who can recall it."),
       relates owned @card(1) @doc("The memory item being owned."),
@@ -201,7 +133,7 @@ define
       owns visibility @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.8 Cross-cutting primitives (substrate, invariant 5)
+  # Cross-cutting primitives (substrate, invariant 5)
   # ══════════════════════════════════════════════════════════════════
   relation rests-on @doc("Records the assumptions a memory item depends on; retracting an assumption propagates through this edge to everything resting on it."),
       relates resting @card(1) @doc("The memory item that depends on the assumptions."),
@@ -224,24 +156,7 @@ define
   entity doc-run @doc("A single execution run of a playbook code block; the provenance origin stamped onto memory produced during the run, keyed by run-id."),
       owns run-id @key,
       owns event-time @card(0..1),
-      plays execution:run,
-      plays consolidation-step:run,
       plays source-link:origin;
-
-  relation execution @doc("Groups the episode steps that make up a doc-run."),
-      relates run @card(1) @doc("The doc-run being executed."),
-      relates episode-step @card(1) @doc("An episode recorded as a step of the run.");
-
-  relation consolidation-step @doc("Records one consolidation action taken on a memory item, by which agent, in which run, and when."),
-      relates affected @card(1) @doc("The memory item the consolidation action was applied to."),
-      relates run @card(1) @doc("The doc-run the consolidation action happened in."),
-      relates performer @card(1) @doc("The agent that performed the consolidation action."),
-      owns consolidation-action @card(1),
-      owns created-at @card(1);
-
-  relation tool-invocation @doc("An episode recording a call to an external tool, identified by tool name."),
-      relates invocation-episode @doc("The episode in which the tool was invoked."),
-      owns tool-name @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
   # Cross-source resolution
@@ -257,26 +172,7 @@ define
       relates record-b @card(1) @doc("The other record being resolved together.");
 
   # ══════════════════════════════════════════════════════════════════
-  # Divergence resolution (reified, member-scoped precedence)
-  #   §8.2's evidence-ranked disposition: the winner is a first-class,
-  #   attributed, retractable belief anchoring the precedence relation —
-  #   never a hand-written bare-edge override.
-  # ══════════════════════════════════════════════════════════════════
-  entity divergence-exception sub belief @doc("A reified disposition belief recording that one belief takes precedence over another for a scoped member, carrying the ranking evidence as provenance.");
-
-  relation divergence-precedence @doc("Anchors a divergence-exception belief to the beliefs it disposes between and the member concept the exception is scoped to."),
-      relates exception-belief @card(1) @doc("The disposition belief carrying provenance and retractability for this precedence."),
-      relates prevailing @card(1) @doc("The belief the disposition resolved toward."),
-      relates overridden @card(1) @doc("The belief overridden for the scoped member."),
-      relates exception-scope @card(0..1) @doc("The member concept the exception is scoped to.");
-
-  divergence-exception plays divergence-precedence:exception-belief;
-  belief plays divergence-precedence:prevailing;
-  belief plays divergence-precedence:overridden;
-  concept plays divergence-precedence:exception-scope;
-
-  # ══════════════════════════════════════════════════════════════════
-  # A2.10 Retrieval provenance (episodic tier, firewalled from derivation)
+  # Retrieval provenance (episodic tier, firewalled from derivation)
   # ══════════════════════════════════════════════════════════════════
   relation surfaced @doc("Reified record of what a retrieval surfaced, and the search signal behind it — similarity score and whether the item was actually used."),                       # reified: what was surfaced + the SEARCH signal
       relates surfacer @card(1) @doc("The retrieval event that surfaced the item."),
@@ -305,7 +201,6 @@ define
   # `concept` and `external-resource` are DEFINED in core_schema.tql; mem only ADDS plays roles
   # (additive `<type> plays <role>;` form — never a root re-declaration of `entity concept`).
   concept plays source-link:origin,
-      plays contextualizes:context-target,
       plays resolves:record-a,
       plays resolves:record-b;
 

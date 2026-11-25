@@ -116,10 +116,10 @@ async fn schema_applies_clean() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: a belief with evidence + rests-on + supersession round-trips.
+// Acceptance: a belief with rests-on + supersession round-trips.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
-async fn belief_evidence_restson_supersession_roundtrip() {
+async fn belief_restson_supersession_roundtrip() {
     let (mut router, name) = fresh_db().await;
 
     write_seed(
@@ -128,9 +128,6 @@ async fn belief_evidence_restson_supersession_roundtrip() {
         insert
           $b1 isa belief, has concept-id "mem/bel/b1", has belief-state "asserted",
               has valid-from 2026-01-01T00:00:00;
-          $e1 isa episode, has concept-id "mem/ep/e1",
-              has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
-          evidence (evidenced: $b1, evidence-item: $e1);
           $a1 isa belief, has concept-id "mem/bel/a1", has belief-state "asserted";
           rests-on (resting: $b1, assumption: $a1);
           $b2 isa belief, has concept-id "mem/bel/b2", has belief-state "asserted";
@@ -139,20 +136,7 @@ async fn belief_evidence_restson_supersession_roundtrip() {
         "#,
     )
     .await
-    .expect("insert belief + evidence + rests-on + supersession");
-
-    // Evidence edge reads back.
-    let ev = fetch(
-        &mut router,
-        r#"match
-             $b isa belief, has concept-id "mem/bel/b1";
-             evidence (evidenced: $b, evidence-item: $e);
-             $e has concept-id $eid;
-           fetch { "e": $eid };"#,
-    )
-    .await;
-    assert_eq!(ev.len(), 1);
-    assert_eq!(ev[0]["e"], "mem/ep/e1");
+    .expect("insert belief + rests-on + supersession");
 
     // rests-on assumption reads back.
     let assumptions = fetch(
@@ -273,56 +257,6 @@ async fn provable_resolution_canonicalizes_without_merge() {
     )
     .await;
     assert_eq!(seams.len(), 2, "both source seams stay queryable");
-
-    drop_db(router, &name).await;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Acceptance: the consolidation-state machine (with tombstone semantics) is in
-// the APPLIED schema — an episode can be marked "tombstoned" and read back, and an
-// illegal state is rejected by @values. This is the state-machine-present acceptance.
-// ─────────────────────────────────────────────────────────────────────────────
-#[tokio::test]
-async fn consolidation_state_machine_present_with_tombstone() {
-    let (mut router, name) = fresh_db().await;
-
-    // Each of the five states is accepted on a memory-item (episode).
-    for (i, state) in ["raw", "candidate", "consolidated", "archived", "tombstoned"]
-        .iter()
-        .enumerate()
-    {
-        write_seed(
-            &mut router,
-            &format!(
-                r#"insert $e isa episode, has concept-id "mem/ep/cs{i}",
-                     has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
-                     has consolidation-state "{state}";"#
-            ),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("consolidation-state \"{state}\" is legal: {e}"));
-    }
-
-    // Tombstone semantics read back (the terminal state).
-    let tomb = fetch(
-        &mut router,
-        r#"match $e isa episode, has concept-id "mem/ep/cs4", has consolidation-state $s;
-           fetch { "s": $s };"#,
-    )
-    .await;
-    assert_eq!(tomb.len(), 1);
-    assert_eq!(tomb[0]["s"], "tombstoned", "the tombstone state is present");
-
-    // An illegal consolidation-state is rejected by @values.
-    let bad = write_seed(
-        &mut router,
-        r#"insert $e isa episode, has concept-id "mem/ep/csbad",
-             has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00,
-             has consolidation-state "dreaming";"#,
-    )
-    .await;
-    let err = bad.expect_err("consolidation-state @values rejects an unknown state");
-    assert!(names_values_violation(&err, "consolidation-state"), "{err}");
 
     drop_db(router, &name).await;
 }
@@ -461,7 +395,6 @@ insert
       has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
   $an isa anomaly, has concept-id "mem/an/p";
   $res isa resolution, has concept-id "mem/res/p", has belief-state "asserted";
-  $de isa divergence-exception, has concept-id "mem/de/p", has belief-state "asserted";
   $re isa retrieval-event, has concept-id "mem/re/p",
       has event-time 2026-01-01T00:00:00, has ingest-time 2026-01-01T00:00:00;
   $ag isa agent, has agent-id "agent-p";
@@ -478,7 +411,6 @@ match
   $ep isa episode, has concept-id "mem/ep/p";
   $an isa anomaly, has concept-id "mem/an/p";
   $res isa resolution, has concept-id "mem/res/p";
-  $de isa divergence-exception, has concept-id "mem/de/p";
   $re isa retrieval-event, has concept-id "mem/re/p";
   $ag isa agent, has agent-id "agent-p";
   $run isa doc-run, has run-id "run-p";
@@ -517,30 +449,6 @@ const DERIVATION: RoleCase = case(
     &[("source", "$ep")],
     r#", has derivation-method "type-join""#,
 );
-const EVIDENCE: RoleCase = case(
-    "evidence",
-    &[("evidenced", "$b1")],
-    &[("evidence-item", "$ep")],
-    "",
-);
-const JUSTIFICATION: RoleCase = case(
-    "justification",
-    &[("consequent", "$b1")],
-    &[("antecedent", "$b2")],
-    "",
-);
-const SUPPORT: RoleCase = case(
-    "support",
-    &[("supporter", "$b1"), ("supported", "$b2")],
-    &[],
-    "",
-);
-const ATTACK: RoleCase = case(
-    "attack",
-    &[("attacker", "$b1"), ("attacked", "$b2")],
-    &[],
-    "",
-);
 const CONTRADICTION: RoleCase = case(
     "contradiction",
     &[("hub", "$an")],
@@ -577,18 +485,6 @@ const RESTS_ON: RoleCase = case(
     &[("assumption", "$b2")],
     "",
 );
-const EXECUTION: RoleCase = case(
-    "execution",
-    &[("run", "$run"), ("episode-step", "$ep")],
-    &[],
-    "",
-);
-const CONSOLIDATION_STEP: RoleCase = case(
-    "consolidation-step",
-    &[("affected", "$b1"), ("run", "$run"), ("performer", "$ag")],
-    &[],
-    r#", has consolidation-action "dedup", has created-at 2026-01-02T00:00:00"#,
-);
 const RESOLVES: RoleCase = case(
     "resolves",
     &[
@@ -604,12 +500,6 @@ const INFORMS_SYNTHESIS: RoleCase = case(
     "informs-synthesis",
     &[("retrieval", "$re"), ("synthesized", "$b1")],
     &[],
-    "",
-);
-const DIVERGENCE_PRECEDENCE: RoleCase = case(
-    "divergence-precedence",
-    &[("prevailing", "$b1"), ("overridden", "$b2")],
-    &[("exception-belief", "$de")],
     "",
 );
 
@@ -677,23 +567,12 @@ macro_rules! missing_role_refused {
 
 missing_role_refused! {
     a_derivation_missing_its_derived_is_refused_at_commit: DERIVATION, "derived";
-    a_evidence_missing_its_evidenced_is_refused_at_commit: EVIDENCE, "evidenced";
-    a_justification_missing_its_consequent_is_refused_at_commit: JUSTIFICATION, "consequent";
-    a_support_missing_its_supporter_is_refused_at_commit: SUPPORT, "supporter";
-    a_support_missing_its_supported_is_refused_at_commit: SUPPORT, "supported";
-    a_attack_missing_its_attacker_is_refused_at_commit: ATTACK, "attacker";
-    a_attack_missing_its_attacked_is_refused_at_commit: ATTACK, "attacked";
     a_contradiction_missing_its_hub_is_refused_at_commit: CONTRADICTION, "hub";
     a_supersession_missing_its_superseded_is_refused_at_commit: SUPERSESSION, "superseded";
     a_supersession_missing_its_superseding_is_refused_at_commit: SUPERSESSION, "superseding";
     a_source_link_missing_its_memory_is_refused_at_commit: SOURCE_LINK, "memory";
     a_ownership_missing_its_owned_is_refused_at_commit: OWNERSHIP, "owned";
     a_rests_on_missing_its_resting_is_refused_at_commit: RESTS_ON, "resting";
-    a_execution_missing_its_run_is_refused_at_commit: EXECUTION, "run";
-    a_execution_missing_its_episode_step_is_refused_at_commit: EXECUTION, "episode-step";
-    a_consolidation_step_missing_its_affected_is_refused_at_commit: CONSOLIDATION_STEP, "affected";
-    a_consolidation_step_missing_its_run_is_refused_at_commit: CONSOLIDATION_STEP, "run";
-    a_consolidation_step_missing_its_performer_is_refused_at_commit: CONSOLIDATION_STEP, "performer";
     a_resolves_missing_its_resolution_belief_is_refused_at_commit: RESOLVES, "resolution-belief";
     a_resolves_missing_its_record_a_is_refused_at_commit: RESOLVES, "record-a";
     a_resolves_missing_its_record_b_is_refused_at_commit: RESOLVES, "record-b";
@@ -701,8 +580,6 @@ missing_role_refused! {
     a_surfaced_missing_its_item_is_refused_at_commit: SURFACED, "item";
     a_informs_synthesis_missing_its_retrieval_is_refused_at_commit: INFORMS_SYNTHESIS, "retrieval";
     a_informs_synthesis_missing_its_synthesized_is_refused_at_commit: INFORMS_SYNTHESIS, "synthesized";
-    a_divergence_precedence_missing_its_prevailing_is_refused_at_commit: DIVERGENCE_PRECEDENCE, "prevailing";
-    a_divergence_precedence_missing_its_overridden_is_refused_at_commit: DIVERGENCE_PRECEDENCE, "overridden";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1007,17 +884,6 @@ async fn a_negative_access_count_is_refused() {
         format!(
             r#"insert $b isa belief, has concept-id "mem/bel/{id}", has belief-state "asserted",
                    has access-count {value};"#
-        )
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn a_negative_corroboration_count_is_refused() {
-    assert_out_of_range_refused("", "corroboration-count", "0", "-1", |value| {
-        let id = if value.starts_with('-') { "neg" } else { "zero" };
-        format!(
-            r#"insert $p isa playbook, has concept-id "mem/pb/{id}", has corroboration-count {value};"#
         )
     })
     .await;

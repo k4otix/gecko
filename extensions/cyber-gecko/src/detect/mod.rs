@@ -192,7 +192,7 @@ async fn disposition(
             "unknown verdict {verdict:?}; expected one of {VERDICTS:?}"
         ));
     }
-    // Alert/sighting references, if supplied, back the disposition belief.
+    // Alert references, if supplied, back the disposition belief.
     let evidence = mem_ids(args, "evidence")?;
     ensure_concept(graph, &logic_id).await?;
 

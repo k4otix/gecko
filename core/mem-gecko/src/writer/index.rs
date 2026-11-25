@@ -14,17 +14,6 @@ use tracing::warn;
 use super::{MemWriter, Result, dt_field, str_field};
 use crate::tql;
 
-/// What a best-effort vector removal did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexOutcome {
-    /// The vector was removed from the index.
-    Removed,
-    /// The removal failed; the next startup reconciliation removes it.
-    Failed,
-    /// No embedder or index is configured, so there was nothing to remove.
-    NoIndex,
-}
-
 /// What a startup reconciliation changed in the index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexReconciliation {
@@ -41,7 +30,7 @@ type Embedded = (ConceptId, Vec<f32>, FilterMeta);
 
 impl MemWriter {
     /// Enumerates the graph's current-state embeddables — asserted beliefs and
-    /// (non-retrieval-event, non-tombstoned) episodes — as `(id, text, FilterMeta)`,
+    /// episodes other than retrieval-events — as `(id, text, FilterMeta)`,
     /// sorted and de-duplicated by concept-id. The graph is the source of truth; the
     /// index is reconstructible from this (invariant 8).
     pub async fn enumerate_current_state_embeddables(&self) -> Result<Vec<Embeddable>> {
@@ -170,15 +159,13 @@ impl MemWriter {
     /// attempted exactly when an upsert would have happened. A failure warns and
     /// **never** fails the caller; the next startup reconciliation removes the id
     /// (invariant 8: the graph is the source of truth; the index is rebuildable).
-    pub(super) fn best_effort_remove(&self, id: ConceptId) -> IndexOutcome {
+    pub(super) fn best_effort_remove(&self, id: ConceptId) {
         let (true, Some(idx)) = (self.embedder.is_some(), &self.index) else {
-            return IndexOutcome::NoIndex;
+            return;
         };
         if let Err(e) = idx.remove(id.clone()) {
             warn!(id = %id.0, error = %e, "semantic index: remove failed");
-            return IndexOutcome::Failed;
         }
-        IndexOutcome::Removed
     }
 
     pub(super) fn belief_meta(
