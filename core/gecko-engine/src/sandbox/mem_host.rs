@@ -869,7 +869,7 @@ mod tests {
                 id,
                 reason: reason.map(str::to_string),
             });
-            Ok(Vec::new())
+            Ok(vec![MemId::new("mem/bel/dependent")])
         }
         async fn rests_on(
             &self,
@@ -1129,7 +1129,10 @@ mod tests {
             json!({"id": "mem/bel/x", "reason": "r"}),
         )
         .await;
-        assert_eq!(out.unwrap(), json!({"id": "mem/bel/x", "blast_radius": []}));
+        assert_eq!(
+            out.unwrap(),
+            json!({"id": "mem/bel/x", "blast_radius": ["mem/bel/dependent"]})
+        );
         assert_eq!(
             probe.probed(),
             Some(Probed::Retract {

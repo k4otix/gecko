@@ -131,6 +131,7 @@ async fn retract_removes_the_vector_from_the_index() {
         .await
         .unwrap();
     assert_eq!(index.len(), 0, "retract removed the vector");
+    std::fs::remove_file(&path).ok();
     fx.drop_db().await;
 }
 
