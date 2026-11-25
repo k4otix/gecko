@@ -1265,7 +1265,7 @@ async fn build_host_bridge(
         chrono::Utc::now(),
     );
     // Wraps the base bridge so mem host fns
-    // (`remember`/`derive`/`supersede`/`contest`/`recall`) reach mem's writer.
+    // (`remember`/`derive`/`supersede`/`contest`/`retract`/`recall`) reach mem's writer.
     let mem_cb = epistemic_extension_callback(run_ctx.clone(), writer, reader, base_cb);
 
     // cyber's detect host imports read the graph and write beliefs with cyber's

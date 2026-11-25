@@ -137,7 +137,7 @@ const belief = mem.derive(
 ({ recalled: chunks.length, belief: belief.id });
 ```
 
-`mem.*` exposes `recall`, `remember`, `derive`, `supersede`, and `contest`. The **host** stamps run identity (`run_id`/`actor`/`source`) — sandbox code cannot forge or supply it. A worked example ships at [`sample-bundle/playbooks/mem_recall_demo.md`](sample-bundle/playbooks/mem_recall_demo.md).
+`mem.*` exposes `recall`, `remember`, `derive`, `supersede`, `contest`, and `retract` (`mem.retract(id, reason?)` withdraws a belief with no replacement and returns `{ id, blast_radius }`, the visible current beliefs that rested on it). The **host** stamps run identity (`run_id`/`actor`/`source`) — sandbox code cannot forge or supply it. A worked example ships at [`sample-bundle/playbooks/mem_recall_demo.md`](sample-bundle/playbooks/mem_recall_demo.md).
 
 Semantic recall is an **explicit opt-in**. The default `gecko.toml` runs with a deterministic **stub** embedder (correctness/gating only). For real retrieval quality:
 

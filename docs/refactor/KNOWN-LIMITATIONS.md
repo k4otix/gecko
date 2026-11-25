@@ -6,7 +6,7 @@ end-to-end when it is not.
 ## `mem.*` sandbox namespace — RESOLVED (recall proven end-to-end)
 
 **Status: shipped end-to-end.** The guest binding landed, so the full `mem.*`
-surface (`recall`/`remember`/`derive`/`supersede`/`contest`) is now callable from
+surface (`recall`/`remember`/`derive`/`supersede`/`contest`/`retract`) is now callable from
 exec-doc JS in a live `gecko run`, and A5.7 retrieval-provenance correlation is
 proven through the real sandbox against live TypeDB.
 
@@ -140,7 +140,7 @@ startup reconciles the index with the graph, but each alternation re-embeds the
 difference. A `gecko.toml` that still sets `[semantic_index] path` is refused by
 `gecko run` with a pointer to `dir`.
 
-## As-of recall and supersede
+## As-of recall, supersede and retract
 
 As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
 empty result).
@@ -161,12 +161,18 @@ empty result).
   its successor holds from the supersede on
   (`a_same_instant_supersede_leaves_the_old_belief_an_empty_window`,
   `a_backdated_supersede_is_returned_by_no_as_of_read`).
-- **`belief-state` is not read.** A belief raw-written as `retracted`, or as `superseded`
-  with no supersession edge, stays in as-of reads unless its `valid-to` is closed. No writer
-  does that today, and N4's `retract` will close `valid-to`.
+- **Retractions.** A retract closes the belief's `valid-to` at the run's `occurred_at`, by
+  the same rule as supersede: it never extends an earlier end and shortens a later one. As-of
+  recall returns the belief before the retraction and not from it on
+  (`as_of_recall_ends_a_retracted_belief_at_its_retraction`). A belief asserted and retracted
+  in one run gets the empty window `[t, t)` (`a_same_instant_retract_leaves_an_empty_window`).
+- **`belief-state` is not read.** `supersede` and `retract` both close `valid-to`, so only a
+  belief raw-written as `retracted` or `superseded` with no `valid-to` (and, for a
+  supersede, no supersession edge) stays in as-of reads.
 
-A supersede requires a currently asserted belief; superseding a retracted or already
-superseded belief is refused (`superseding_a_retracted_belief_is_refused`).
+A supersede or a retract requires a currently asserted belief; superseding or retracting a
+retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`,
+`retracting_a_superseded_belief_is_refused`, `retracting_twice_is_refused`).
 
 ## Writes act only on what the caller can see
 
@@ -181,6 +187,16 @@ Each write enforces it inside its own write, so a refused write commits nothing:
   a visible belief, so the refusal does not reveal its tier
   (`superseding_another_agents_private_belief_is_refused_and_commits_nothing`,
   `superseding_a_team_belief_of_another_agent_is_allowed`).
+- **`retract`** requires the belief to be asserted and visible to the caller; another
+  agent's private belief is refused with the same message as a missing one
+  (`retracting_another_agents_private_belief_is_refused_and_commits_nothing`,
+  `retracting_a_team_belief_of_another_agent_is_allowed`). It has no entrenchment guard:
+  there is no replacement to compare tiers against, so visibility and the `mem:retract`
+  scope are the gate. Its reply lists the blast radius only as the beliefs that rested on the
+  retracted one that the caller can see and that are still current, read after the
+  retraction commits, so a refused retract reveals nothing
+  (`retract_reports_the_visible_current_beliefs_that_rested_on_it`). Dependents are
+  reported, not retracted.
 - **`contest`** requires every claim to be visible to the caller
   (`contesting_another_agents_private_belief_is_refused`).
 - **`derive`** (`assert_belief` with evidence) requires every evidence belief to be visible to
@@ -193,8 +209,8 @@ Each write enforces it inside its own write, so a refused write commits nothing:
 `rests_on`, `record_prediction` and `resolve_prediction` are not reachable from the guest
 and do not check visibility.
 
-Another agent may supersede a team or shared belief, including with a private replacement,
-which removes the belief from its original owner's recall.
+Another agent may supersede or retract a team or shared belief; a supersede may use a
+private replacement. Either removes the belief from its original owner's recall.
 
 ## cyber-gecko `blinded`: ATT&CK's current detection model
 
