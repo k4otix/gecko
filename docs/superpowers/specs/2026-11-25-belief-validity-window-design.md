@@ -58,15 +58,16 @@ and drops its state gate, the same window `canonical-entity-at` already reads.
    - Its `@doc` says it returns the beliefs whose half-open window `[valid-from, valid-to)` contains
      `$t` and that were not superseded at or before `$t`, and that `belief-state` is not read.
    - A changed function body reaches existing databases through the normal `redefine`, as in
-     `a_changed_function_doc_reaches_an_existing_database`.
+     `changed_function_body_reaches_an_initialized_database`.
    - Stale text is fixed:
      - the comment over `canonical-entity-at` that says "believed-at does read belief-state";
      - the `believed-at` comment (`mem_functions.tql:19`);
      - `tql.rs:804` ("Supersession is not applied as of `at`");
      - the `supersession_ops` doc comment (`tql.rs:390`).
-   - **Resolutions follow.** `resolution sub belief`, so a superseded resolution now leaves
-     `canonical-step-at` from its supersede on. That is the window that function already reads,
-     and it is correct.
+   - **Resolutions follow.** `resolution sub belief`, so a resolution superseded through the
+     writer now leaves `canonical-step-at` from its supersede on. `canonical-step-at` has no
+     supersession clause, and no older database holds superseded resolutions, because no
+     resolution writer exists.
 3. **Present-state reads are unchanged.**
    - `gate`, `is-superseded` and recall without `asOf` still exclude superseded beliefs through
      `is-superseded`.

@@ -23,11 +23,10 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | # | ID | Item | Size |
 |---|---|---|---|
-| 1 | B1 | Beliefs end: supersede closes `valid-to`, as-of recall reads the window | M |
-| 2 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
-| 3 | S6 | `coverage_gaps` grouped by tactic | S |
-| 4 | N6 | Cyber worked example and `gecko run --args` | M |
-| 5 | N5 | `timeout-ms` reaches the run | S |
+| 1 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
+| 2 | S6 | `coverage_gaps` grouped by tactic | S |
+| 3 | N6 | Cyber worked example and `gecko run --args` | M |
+| 4 | N5 | `timeout-ms` reaches the run | S |
 
 ## Open work
 
@@ -35,8 +34,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
-| **B1** | Per D-A: `supersede` sets `valid-to` on the belief it replaces, `retract` (N4) sets it on the belief it withdraws, and `believed-at` reads the half-open window `[valid-from, valid-to)` and drops its `belief-state` gate (the same window `canonical-entity-at` reads). Absorbs B2 | `mem.recall(q, { asOf })` | As-of recall at T returns a belief superseded after T and not its successor; a supersede within one run at a single `occurred_at` gives the old belief an empty window and the new one `[t, ∞)` (one test); the as-of fixtures supersede through the writer. `KNOWN-LIMITATIONS.md` says a database written before B1 holds superseded beliefs with no `valid-to`, which as-of recall then returns | — |
-| **N4** | `retract(ctx, id, reason)`: sets `belief-state "retracted"` and `valid-to`, visible-to gated, exactly one row; removes the belief's vector from the index, as supersede does; the reply lists the `blast-radius` of the retracted belief | `mem.retract`; withdrawing a cyber claim without a dummy replacement | A retracted claim leaves `blinded` and `coverage_gaps`; present-state indexed recall no longer surfaces it; the reply names what rested on it | B1; the guest rebuild (N2) |
+| **N4** | `retract(ctx, id, reason)`: sets `belief-state "retracted"` and closes `valid-to` with `tql::close_valid_to_op` (as supersede does), visible-to gated, exactly one row; removes the belief's vector from the index, as supersede does; the reply lists the `blast-radius` of the retracted belief | `mem.retract`; withdrawing a cyber claim without a dummy replacement | A retracted claim leaves `blinded` and `coverage_gaps`; present-state indexed recall no longer surfaces it; the reply names what rested on it | B1; the guest rebuild (N2) |
 | **N2** | The guest and host refuse malformed arguments instead of defaulting them: `evidence` and `claims` (A11's guest half), `asOf`, `maxChunks`, `maxTokens`, `confidence`, an unparseable `event_time` (today "now"), an unknown `method` (today `llm-synthesis`; cyber's `claim` already refuses), and `callExtension`'s extension and function names (today `""`). A reply over the guest buffer reports the size needed without running the callback twice, so an oversized `mem.recall` mints one `retrieval-event` | every `mem.*` and `callExtension` call | One host test per field; the guest tests are green after `just build-guest`; an oversized recall mints exactly one retrieval-event | One `quickjs.wasm` rebuild, shared with N4 and N6a |
 
 ### Cyber
@@ -59,6 +57,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | **N1** | The first-run docs say what the code accepts (PR #81) | `documented_config_snippets_are_accepted` |
 | **N3** | One semantic index file per database, `<[semantic_index] dir>/<encoded database>.hnsw` (the old `path` key is refused), reconciled with the graph at startup: stale ids are removed and missing ones embedded, so another database's file, a recreated database, items written while the index was off and failed index writes all heal on the next run. The in-memory dirty set is cut. Design: `docs/superpowers/specs/2026-11-24-index-per-database-design.md` | `semantic_index_integration.rs` (`an_index_built_for_another_database_does_not_hide_this_ones_beliefs`, `reconcile_with_an_empty_graph_empties_the_file`, `items_written_while_the_index_was_off_are_recalled`, `a_warm_start_with_matching_ids_embeds_nothing`, `a_failed_persist_during_reconcile_keeps_episode_vectors`, `a_failed_live_upsert_is_repaired_by_the_next_reconcile`); `index_per_database_cli_test.rs`; the `index_dir`/`index_file` unit tests in `config/paths.rs` |
 | **X1** | The second cut pass: the divergence mechanism and host disposition ranker (U1), the consolidation daemon and tombstone state (U2), and the fourteen belief-tier types nothing wrote with their attributes and cleanup migrations (U3). `memory-item`'s `@doc` now names what it holds, through `mem/memory-item-doc`. Design: `docs/superpowers/specs/2026-11-24-second-cut-design.md` | the guards `shipped_mem_schema_declares_no_{consolidation,divergence,diet}_labels` and `shipped_cyber_schema_declares_no_cut_labels`; `a_database_holding_the_old_memory_item_doc_upgrades`; the re-derived rig in `belief_tier_reconciliation_test.rs` |
+| **B1** | A belief's validity window ends at its supersede: `supersede` closes the old belief's `valid-to` through `tql::close_valid_to_op` (never extending an earlier end), and `believed-at` reads `[valid-from, valid-to)` with no `belief-state` gate, also excluding beliefs a supersession at or before T replaced, so older databases answer correctly. Absorbs B2. Design: `docs/superpowers/specs/2026-11-25-belief-validity-window-design.md` | `believed_at_reads_across_a_supersede`, `a_supersede_chain_gives_the_middle_belief_its_window`, `as_of_recall_reads_across_a_supersede`, `a_same_instant_supersede_leaves_the_old_belief_an_empty_window`, `a_legacy_superseded_belief_without_valid_to_ends_at_its_supersession`, `a_supersede_keeps_an_earlier_valid_to`, `a_supersede_shortens_a_later_valid_to`, `a_refused_supersede_leaves_valid_to_untouched`, `a_backdated_supersede_is_returned_by_no_as_of_read`, `supersession_ops_closes_the_old_window_in_the_same_batch` |
 
 ## Deferred (reopen on the trigger)
 
@@ -80,7 +79,7 @@ cutting any of them is a new decision.
 
 | ID | Decision | Lands in |
 |---|---|---|
-| **D-A / U4** | A belief's validity ends by closing `valid-to`: `supersede` and `retract` both set it (a retraction has no supersession edge, so `supersession.created-at` cannot cover it). `believed-at` reads the half-open window and drops its state gate. `asOf` stays on `mem.recall` | B1, N4 |
+| **D-A / U4** | A belief's validity ends by closing `valid-to`: `supersede` and `retract` both set it (a retraction has no supersession edge, so `supersession.created-at` cannot cover it). `believed-at` reads the half-open window and drops its state gate. `asOf` stays on `mem.recall` Refined 2026-11-25: `believed-at` also excludes beliefs a supersession at or before T replaced, so databases written before B1 answer correctly | B1, N4 |
 | **U1** | Cut the shipped divergence mechanism, not only its writer rows: once populations went, `exception-scope` has no group-scoped belief producer, and instance-versus-instance disagreement already has `supersede` and `contest`. Reverses a non-goal of the populations cut. Supersedes SPEC-W2-W3 §2.1–§2.4 and INVARIANTS §8.2 | X1 (a) |
 | **U2** | Cut the dedup tick with the ten stubs, rather than add `gecko consolidate`. `mem.remember` defaults `event_time` to the run's clock, so exact duplicates do not arise on the live path. Supersedes CONTRACT-W8's job list (§2, §2a) and its §3 checks | X1 (b) |
 | **U3** | Delete the belief-tier labels nothing writes and no invariant names. The `@doc` strings exist for agents introspecting the graph, and a schema that advertises intentions and learned constraints it never holds misleads that reader. Supersedes D-O (2026-11-20). Existing databases keep the types as inert leftovers, as with populations | X1 (c) |

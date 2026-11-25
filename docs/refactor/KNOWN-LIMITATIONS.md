@@ -149,10 +149,24 @@ difference. A `gecko.toml` that still sets `[semantic_index] path` is refused by
 ## As-of recall and supersede
 
 As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
-empty result). It filters the *current* (asserted) beliefs by `valid-from`, so a belief
-superseded since T is omitted, and its successor's `valid-from` is after T, so neither
-appears: as-of recall does not reconstruct history across a supersession. A supersede requires a currently asserted
-belief; superseding a retracted or already superseded belief is refused (`superseding_a_retracted_belief_is_refused`).
+empty result).
+
+- **Supersessions.** As-of recall at T returns the beliefs that held at T: those whose
+  half-open validity window `[valid-from, valid-to)` contains T and that no supersession at
+  or before T replaced. A supersede closes the old belief's `valid-to` at the instant the
+  successor's `valid-from` opens, so a read before it sees the old belief and a read from it
+  on sees only the successor (`believed_at_reads_across_a_supersede`).
+- **Older databases.** A database written before supersede closed `valid-to` answers the
+  same way, through its supersession edges
+  (`a_legacy_superseded_belief_without_valid_to_ends_at_its_supersession`). The new
+  `believed-at` reaches a database when `gecko schema-init` or `sync` next applies the
+  schema.
+- **`belief-state` is not read.** A belief raw-written as `retracted`, or as `superseded`
+  with no supersession edge, stays in as-of reads unless its `valid-to` is closed. No writer
+  does that today, and N4's `retract` will close `valid-to`.
+
+A supersede requires a currently asserted belief; superseding a retracted or already
+superseded belief is refused (`superseding_a_retracted_belief_is_refused`).
 
 ## Writes act only on what the caller can see
 
