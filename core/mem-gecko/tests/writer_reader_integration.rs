@@ -809,11 +809,17 @@ async fn a_backdated_supersede_is_returned_by_no_as_of_read() {
     for at in [
         "2026-01-01T00:00:00Z",
         "2026-02-01T00:00:00Z",
+        "2026-03-01T00:00:00Z",
         "2026-04-01T00:00:00Z",
     ] {
         let got = w.believed_at(&ctx, dt(at)).await.unwrap();
         assert_eq!(got, vec![new.clone()], "as of {at}: only the successor");
     }
+    let before = w
+        .believed_at(&ctx, dt("2025-12-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert!(before.is_empty(), "before either window: {before:?}");
     fx.drop_db().await;
 }
 
