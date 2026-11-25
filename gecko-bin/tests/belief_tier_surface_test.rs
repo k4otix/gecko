@@ -66,6 +66,7 @@ async fn surface_of_the_mem_schema_has_the_root_closure_and_its_belief_edges() {
     );
     let relations = set(&[
         "supersession",
+        "retraction",
         "derivation",
         "ownership",
         "source-link",

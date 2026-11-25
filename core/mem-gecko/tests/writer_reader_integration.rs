@@ -3013,6 +3013,12 @@ async fn a_same_instant_retract_leaves_an_empty_window() {
         .unwrap();
     let ctx = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
     assert!(w.believed_at(&ctx, dt(t)).await.unwrap().is_empty());
+    assert!(
+        recall_as_of(&w, "agent-1", dt("2026-06-01T00:00:00Z"), dt(t), 5)
+            .await
+            .is_empty(),
+        "as-of recall at the retraction instant does not return it"
+    );
     fx.drop_db().await;
 }
 

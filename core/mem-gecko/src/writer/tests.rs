@@ -1222,6 +1222,12 @@ fn retraction_ops_expectations() {
     let ops = crate::tql::retraction_ops(&ctx, &id, Some("wrong host"));
     let expectations: Vec<Option<usize>> = ops.iter().map(|o| o.expect_rows).collect();
     assert_eq!(expectations, vec![None, None, Some(1), Some(1), None]);
+    assert!(
+        ops[crate::tql::RETRACTION_LINK_OP]
+            .query
+            .contains("insert retraction"),
+        "RETRACTION_LINK_OP indexes the link op"
+    );
     for op in &ops {
         for literal in ["wrong host", "2026-03-01", "mem/bel/target"] {
             assert!(!op.query.contains(literal), "{literal} in {}", op.query);

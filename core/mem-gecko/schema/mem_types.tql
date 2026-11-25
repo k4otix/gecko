@@ -76,7 +76,7 @@ define
       owns valid-to @card(0..1),
       owns retrieval-provenance @card(0..1),   # write-once summary flag
       plays contradiction:claim,
-      plays retraction:retracted,
+      plays retraction:retracted @card(0..1),
       plays prediction-resolution:predicted-belief,
       plays informs-synthesis:synthesized;
 

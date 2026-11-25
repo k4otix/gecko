@@ -445,6 +445,10 @@ pub(crate) fn close_valid_to_op(id: &MemId, at: DateTime) -> GraphWrite {
     )
 }
 
+/// The index of [`retraction_ops`]' `visible-to`-gated link op, the first op a
+/// refused retract fails on.
+pub(crate) const RETRACTION_LINK_OP: usize = 2;
+
 /// `retract`: records who withdrew belief `id`, in which run and why, flips its
 /// belief-state to "retracted" and closes its validity window at `ctx.occurred_at`.
 /// The link matches only a currently asserted `id` that is `visible-to` the actor,
@@ -835,7 +839,8 @@ pub(crate) fn blast_radius_read(retracted: &MemId) -> Read {
 }
 
 /// The beliefs in `blast-radius($r)` of memory item `retracted` that are
-/// `visible-to` `actor` and still current, excluding `retracted` itself.
+/// `visible-to` `actor` and still current. `retracted` is excluded explicitly,
+/// though after a retraction commits `is-superseded` already excludes it.
 pub(crate) fn visible_blast_radius_read(retracted: &MemId, actor: &ActorId) -> Read {
     let mut p = Params::new();
     p.s("rid", retracted.0.clone());

@@ -289,7 +289,7 @@ impl EpistemicWriter for MemWriter {
             .write(&ops)
             .await
             .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
-                (EpistemicError::Storage(msg), Some(m)) if m.op >= 2 => {
+                (EpistemicError::Storage(msg), Some(m)) if m.op >= tql::RETRACTION_LINK_OP => {
                     EpistemicError::Storage(format!(
                         "retract of {}: not a current belief visible to the caller; nothing was committed: {msg}",
                         id.0

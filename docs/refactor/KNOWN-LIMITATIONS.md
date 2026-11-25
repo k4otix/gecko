@@ -166,6 +166,14 @@ empty result).
   recall returns the belief before the retraction and not from it on
   (`as_of_recall_ends_a_retracted_belief_at_its_retraction`). A belief asserted and retracted
   in one run gets the empty window `[t, t)` (`a_same_instant_retract_leaves_an_empty_window`).
+  `occurred_at` is fixed when a run starts, so a long run that retracts a belief asserted
+  by a run that started after it records a `valid-to` before that belief's `valid-from`. The
+  inverted window matches no as-of read, as for a backdated supersede.
+- **One retraction per belief.** `belief plays retraction:retracted @card(0..1)`, so a
+  second retraction of one belief, from two processes racing past the state check, is
+  refused at commit (`a_belief_with_two_retractions_is_refused_at_commit`). Supersede has no
+  such guard: two processes racing a supersede, or a supersede and a retract, can still both
+  commit.
 - **`belief-state` is not read.** `supersede` and `retract` both close `valid-to`, so only a
   belief raw-written as `retracted` or `superseded` with no `valid-to` (and, for a
   supersede, no supersession edge) stays in as-of reads.
