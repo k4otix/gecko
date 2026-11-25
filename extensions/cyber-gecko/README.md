@@ -97,7 +97,7 @@ have no asserted detection claim, and groups them by live tactic:
   ],
   "by_tactic": [
     { "attack_id": "TA0002", "concept_id": "…", "shortname": "execution", "name": "Execution",
-      "live": 12, "undetected": 5, "techniques": ["T1059", "T1059.001"] }
+      "live": 12, "undetected": 2, "techniques": ["T1059", "T1059.001"] }
   ]
 }
 ```
@@ -109,7 +109,8 @@ have no asserted detection claim, and groups them by live tactic:
   live technique is absent.
 - **Liveness.** Retired, revoked and deprecated techniques and tactics are left out
   everywhere, though they keep their tactic edges.
-- **Ordering.** Every list is sorted by ATT&CK id.
+- **Ordering.** Every list is sorted by ATT&CK id. In `undetected_techniques`, a technique
+  without an ATT&CK id comes last, ordered by concept id.
 - **Missing values.** A tactic without a title has `name: null`, and a gap technique with no
   live tactic has `tactics: []`.
 

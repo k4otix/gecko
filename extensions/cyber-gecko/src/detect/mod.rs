@@ -305,7 +305,25 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         }
         row["tactics"] = json!(tactics.get(&concept_id).cloned().unwrap_or_default());
     }
+    sort_gap_rows(&mut rows);
     Ok(json!({ "undetected_techniques": rows, "by_tactic": by_tactic }))
+}
+
+/// Orders gap rows by ATT&CK id, then the rows without one by concept id.
+fn sort_gap_rows(rows: &mut [Value]) {
+    let key = |r: &Value| {
+        let aid = r
+            .get("attack_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let cid = r
+            .get("concept_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        (aid.is_none(), aid, cid)
+    };
+    rows.sort_by_key(key);
 }
 
 /// Each gap technique's sorted tactic ATT&CK ids, by concept id, and the
@@ -1369,6 +1387,22 @@ mod tests {
         ids.iter()
             .map(|(c, a)| (c.to_string(), a.map(str::to_string)))
             .collect()
+    }
+
+    #[test]
+    fn gap_rows_sort_by_attack_id_then_concept_id() {
+        let mut rows = vec![
+            json!({ "concept_id": "c/b", "attack_id": "T2" }),
+            json!({ "concept_id": "c/z", "attack_id": null }),
+            json!({ "concept_id": "c/a", "attack_id": "T1" }),
+            json!({ "concept_id": "c/y" }),
+        ];
+        sort_gap_rows(&mut rows);
+        let order: Vec<&str> = rows
+            .iter()
+            .map(|r| r["concept_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["c/a", "c/b", "c/y", "c/z"]);
     }
 
     #[test]
