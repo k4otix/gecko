@@ -143,6 +143,43 @@ pub fn bind_mem_call(ctx: &RunContext, func: MemHostFn, mut args: Value) -> Stam
 
 // ── Async writer dispatch + the async→sync sandbox bridge ────────────────────
 
+/// The largest integer a JS number represents exactly (`Number.MAX_SAFE_INTEGER`).
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// The payload keys each mem function accepts, after the reserved provenance keys
+/// are stripped. `gecko.callExtension("mem", …)` reaches the dispatchers without the
+/// guest's own checks, so the host refuses anything else itself.
+fn allowed_keys(func: MemHostFn) -> &'static [&'static str] {
+    match func {
+        MemHostFn::Remember => &["text", "event_time"],
+        MemHostFn::Derive => &["text", "evidence", "method", "confidence"],
+        MemHostFn::Supersede => &["old", "text", "reason", "confidence"],
+        MemHostFn::Contest => &["claims"],
+        MemHostFn::Recall => &["text", "max_chunks", "as_of"],
+    }
+}
+
+/// Checks that the payload is a JSON object holding only `func`'s allowed keys.
+fn check_payload(func: MemHostFn, p: &Value) -> Result<(), String> {
+    let name = func.as_str();
+    let obj = p
+        .as_object()
+        .ok_or_else(|| format!("mem.{name} payload must be a JSON object, got {p}"))?;
+    let allowed = allowed_keys(func);
+    match obj.keys().find(|k| !allowed.contains(&k.as_str())) {
+        Some(k) => Err(format!(
+            "mem.{name} does not accept the field '{k}'; it accepts {}",
+            allowed.join(", ")
+        )),
+        None => Ok(()),
+    }
+}
+
+/// An optional field's value: `None` when it is missing or `null`.
+fn present<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
+    p.get(key).filter(|v| !v.is_null())
+}
+
 /// Reads a required string field, erroring with the field name if absent/non-string.
 fn req_str(payload: &Value, key: &str) -> Result<String, String> {
     payload
@@ -152,10 +189,66 @@ fn req_str(payload: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("mem call missing required string field '{key}'"))
 }
 
+/// An optional string field; a present non-string is an error naming the field.
+fn opt_str<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+    present(p, key)
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| format!("mem call field '{key}' must be a string, got {v}"))
+        })
+        .transpose()
+}
+
+/// An optional number field; a present non-number is an error naming the field.
+fn opt_number(p: &Value, key: &str) -> Result<Option<f64>, String> {
+    present(p, key)
+        .map(|v| {
+            v.as_f64()
+                .ok_or_else(|| format!("mem call field '{key}' must be a number, got {v}"))
+        })
+        .transpose()
+}
+
+/// An optional RFC 3339 datetime field; a present value that is not one is an error.
+fn opt_rfc3339(p: &Value, key: &str) -> Result<Option<DateTime>, String> {
+    opt_str(p, key)
+        .map_err(|_| format!("mem call field '{key}' must be an RFC3339 string"))?
+        .map(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|e| format!("mem call field '{key}' is not valid RFC3339: {e}"))
+        })
+        .transpose()
+}
+
+/// An optional integer field that must be at least 1. A whole number serialized as
+/// a float (`5.0`) counts, up to `Number.MAX_SAFE_INTEGER`, so a huge float never
+/// saturates.
+fn opt_positive_int(p: &Value, key: &str) -> Result<Option<usize>, String> {
+    let Some(v) = present(p, key) else {
+        return Ok(None);
+    };
+    let n = match (v.as_u64(), v.as_f64()) {
+        (Some(n), _) => usize::try_from(n).ok(),
+        (None, Some(f))
+            if f.is_finite() && f.fract() == 0.0 && (0.0..=MAX_SAFE_INTEGER).contains(&f) =>
+        {
+            usize::try_from(f as u64).ok()
+        }
+        _ => None,
+    };
+    match n {
+        Some(n) if n >= 1 => Ok(Some(n)),
+        _ => Err(format!(
+            "mem call field '{key}' must be an integer of at least 1, got {v}"
+        )),
+    }
+}
+
 /// Collects a `[MemId]` from an optional string-array field: absent or `null` ⇒ empty,
 /// and a non-array or a non-string entry is an error naming the field.
 fn mem_ids(payload: &Value, key: &str) -> Result<Vec<MemId>, String> {
-    let Some(field) = payload.get(key).filter(|v| !v.is_null()) else {
+    let Some(field) = present(payload, key) else {
         return Ok(Vec::new());
     };
     let arr = field
@@ -171,14 +264,37 @@ fn mem_ids(payload: &Value, key: &str) -> Result<Vec<MemId>, String> {
         .collect()
 }
 
-/// Parses an optional RFC3339 datetime field, falling back to `default`.
-fn opt_dt(payload: &Value, key: &str, default: DateTime) -> DateTime {
-    payload
-        .get(key)
-        .and_then(Value::as_str)
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .unwrap_or(default)
+/// Collects a required `[MemId]` field: missing and `null` are both errors.
+fn required_mem_ids(payload: &Value, key: &str) -> Result<Vec<MemId>, String> {
+    if present(payload, key).is_none() {
+        return Err(format!(
+            "mem call missing required field '{key}' (an array of id strings)"
+        ));
+    }
+    mem_ids(payload, key)
+}
+
+/// Parses the optional `method` field; absent is [`DerivationMethod::LlmSynthesis`].
+fn derivation_method(p: &Value) -> Result<DerivationMethod, String> {
+    let accepted = || {
+        DerivationMethod::ALL
+            .iter()
+            .map(DerivationMethod::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match present(p, "method") {
+        None => Ok(DerivationMethod::LlmSynthesis),
+        Some(v) => v
+            .as_str()
+            .and_then(DerivationMethod::from_str)
+            .ok_or_else(|| {
+                format!(
+                    "mem call field 'method' must be one of {}, got {v}",
+                    accepted()
+                )
+            }),
+    }
 }
 
 /// Builds a [`BeliefDraft`] from the sandbox payload, owned by the run's actor.
@@ -191,7 +307,7 @@ fn belief_draft_from_payload(ctx: &RunContext, p: &Value) -> Result<BeliefDraft,
         text: req_str(p, "text")?,
         owner: ctx.actor.clone(),
         visibility: Visibility::Private,
-        confidence: p.get("confidence").and_then(Value::as_f64),
+        confidence: opt_number(p, "confidence")?,
         entrenchment: None,
     })
 }
@@ -202,9 +318,10 @@ fn belief_draft_from_payload(ctx: &RunContext, p: &Value) -> Result<BeliefDraft,
 /// `run_id`/`actor`/`source` are the host's, un-forgeable by the sandbox
 /// (invariant 2). See module docs for the shared-scratch mechanism. `call` only
 /// supplies the already-stamped `run_id`/`actor`/`source`/`payload` (see
-/// [`bind_mem_call`]); it must have been stamped from this same `ctx`. `recall` is a
-/// *reader* op and is not reachable through this write bridge (the reader path is
-/// wired separately).
+/// [`bind_mem_call`]); it must have been stamped from this same `ctx`. The payload
+/// is validated whole before the writer runs: a non-object, an unknown field or a
+/// malformed value is an error, and an absent optional field takes its default.
+/// `recall` is a *reader* op and is not reachable through this write bridge.
 pub async fn dispatch_mem_call(
     writer: &Arc<dyn EpistemicWriter>,
     ctx: &RunContext,
@@ -212,13 +329,16 @@ pub async fn dispatch_mem_call(
 ) -> Result<Value, String> {
     let p = &call.payload;
     let err = |e: gecko_extension_api::EpistemicError| e.to_string();
+    if call.func != MemHostFn::Recall {
+        check_payload(call.func, p)?;
+    }
 
     match call.func {
         MemHostFn::Remember => {
             let text = req_str(p, "text")?;
             let ep = EpisodeDraft {
                 text,
-                event_time: opt_dt(p, "event_time", ctx.occurred_at),
+                event_time: opt_rfc3339(p, "event_time")?.unwrap_or(ctx.occurred_at),
                 ingest_time: ctx.occurred_at,
             };
             let id = writer.observe(ctx, ep).await.map_err(err)?;
@@ -227,11 +347,7 @@ pub async fn dispatch_mem_call(
         MemHostFn::Derive => {
             let belief = belief_draft_from_payload(ctx, p)?;
             let evidence = mem_ids(p, "evidence")?;
-            let method = p
-                .get("method")
-                .and_then(Value::as_str)
-                .and_then(DerivationMethod::from_str)
-                .unwrap_or(DerivationMethod::LlmSynthesis);
+            let method = derivation_method(p)?;
             let id = writer
                 .assert_belief(ctx, belief, &evidence, method)
                 .await
@@ -241,7 +357,7 @@ pub async fn dispatch_mem_call(
         MemHostFn::Supersede => {
             let old = MemId::new(req_str(p, "old")?);
             let belief = belief_draft_from_payload(ctx, p)?;
-            let reason = p.get("reason").and_then(Value::as_str).unwrap_or("");
+            let reason = opt_str(p, "reason")?.unwrap_or("");
             let id = writer
                 .supersede(ctx, old, belief, reason)
                 .await
@@ -249,7 +365,7 @@ pub async fn dispatch_mem_call(
             Ok(json!({ "id": id.0 }))
         }
         MemHostFn::Contest => {
-            let claims = mem_ids(p, "claims")?;
+            let claims = required_mem_ids(p, "claims")?;
             let anomaly = writer.contest(ctx, &claims).await.map_err(err)?;
             Ok(json!({ "anomaly": anomaly.0 }))
         }
@@ -272,41 +388,22 @@ const DEFAULT_RECALL_MAX_CHUNKS: usize = 8;
 ///
 /// The reader shares the SAME per-run [`RunContext`] as the write bridge. See module
 /// docs for the shared-scratch mechanism. The sandbox supplies only the query
-/// payload; `run_id`/`actor`/`source` are the host's (already stripped + stamped by
-/// [`bind_mem_call`]). Returns `{ "chunks": [{ id, text, score }, …] }`.
+/// payload, validated whole before the reader runs; `run_id`/`actor`/`source` are
+/// the host's (already stripped + stamped by [`bind_mem_call`]). Returns
+/// `{ "chunks": [{ id, text, score }, …] }`.
 pub async fn dispatch_mem_recall(
     reader: &Arc<dyn EpistemicReader>,
     ctx: &RunContext,
     call: StampedMemCall,
 ) -> Result<Value, String> {
     let p = &call.payload;
+    check_payload(MemHostFn::Recall, p)?;
 
     let text = req_str(p, "text")?;
-
-    // `as_of`, when present, MUST be a valid RFC3339 timestamp — a malformed value
-    // is an error, never a silent fall-through to present-state recall.
-    let as_of = match p.get("as_of") {
-        None | Some(Value::Null) => None,
-        Some(v) => {
-            let s = v
-                .as_str()
-                .ok_or_else(|| "mem.recall 'as_of' must be an RFC3339 string".to_string())?;
-            let dt = chrono::DateTime::parse_from_rfc3339(s)
-                .map_err(|e| format!("mem.recall 'as_of' is not valid RFC3339: {e}"))?;
-            Some(dt.with_timezone(&chrono::Utc))
-        }
-    };
-
+    // A malformed `as_of` is an error, never a silent fall-through to present-state recall.
+    let as_of = opt_rfc3339(p, "as_of")?;
     let budget = ContextBudget {
-        max_chunks: p
-            .get("max_chunks")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_RECALL_MAX_CHUNKS),
-        max_tokens: p
-            .get("max_tokens")
-            .and_then(Value::as_u64)
-            .map(|n| n as usize),
+        max_chunks: opt_positive_int(p, "max_chunks")?.unwrap_or(DEFAULT_RECALL_MAX_CHUNKS),
     };
 
     let query = RecallQuery { text, as_of };
@@ -643,43 +740,79 @@ mod tests {
         assert!(e.contains("[1]"), "{e}");
     }
 
-    /// A writer that records the evidence `assert_belief` receives; every other
-    /// method panics.
+    /// What a [`ProbeWriter`] method received.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Probed {
+        Observe {
+            event_time: DateTime,
+        },
+        Derive {
+            method: DerivationMethod,
+            confidence: Option<f64>,
+        },
+        Supersede {
+            reason: String,
+            confidence: Option<f64>,
+        },
+        Contest,
+    }
+
+    /// A writer that records what each write method receives; the methods the
+    /// bridge never reaches panic.
     #[derive(Default)]
     struct ProbeWriter {
         evidence: std::sync::Mutex<Option<Vec<MemId>>>,
+        probed: std::sync::Mutex<Option<Probed>>,
+    }
+
+    impl ProbeWriter {
+        fn probed(&self) -> Option<Probed> {
+            self.probed.lock().unwrap().clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl EpistemicWriter for ProbeWriter {
-        async fn observe(&self, _: &RunContext, _: EpisodeDraft) -> Result<MemId, EpistemicError> {
-            unreachable!("observe")
+        async fn observe(&self, _: &RunContext, ep: EpisodeDraft) -> Result<MemId, EpistemicError> {
+            *self.probed.lock().unwrap() = Some(Probed::Observe {
+                event_time: ep.event_time,
+            });
+            Ok(MemId::new("mem/ep/probe"))
         }
         async fn assert_belief(
             &self,
             _: &RunContext,
-            _: BeliefDraft,
+            belief: BeliefDraft,
             evidence: &[MemId],
-            _: DerivationMethod,
+            method: DerivationMethod,
         ) -> Result<MemId, EpistemicError> {
             *self.evidence.lock().unwrap() = Some(evidence.to_vec());
+            *self.probed.lock().unwrap() = Some(Probed::Derive {
+                method,
+                confidence: belief.confidence,
+            });
             Ok(MemId::new("mem/bel/probe"))
         }
         async fn supersede(
             &self,
             _: &RunContext,
             _: MemId,
-            _: BeliefDraft,
-            _: &str,
+            belief: BeliefDraft,
+            reason: &str,
         ) -> Result<MemId, EpistemicError> {
-            unreachable!("supersede")
+            *self.probed.lock().unwrap() = Some(Probed::Supersede {
+                reason: reason.to_string(),
+                confidence: belief.confidence,
+            });
+            Ok(MemId::new("mem/bel/probe"))
         }
         async fn contest(
             &self,
             _: &RunContext,
             _: &[MemId],
         ) -> Result<gecko_extension_api::AnomalyId, EpistemicError> {
-            unreachable!("contest")
+            *self.probed.lock().unwrap() = Some(Probed::Contest);
+            Ok(gecko_extension_api::AnomalyId::new("mem/anom/probe"))
         }
         async fn rests_on(
             &self,
@@ -744,5 +877,208 @@ mod tests {
                 .expect("a derive without evidence succeeds");
             assert_eq!(*probe.evidence.lock().unwrap(), Some(vec![]), "{args}");
         }
+    }
+
+    // ── Payload validation ──────────────────────────────────────────────────
+
+    /// Dispatches `args` as `func` to a fresh [`ProbeWriter`].
+    async fn write_call(func: MemHostFn, args: Value) -> (Result<Value, String>, Arc<ProbeWriter>) {
+        let ctx = host_ctx();
+        let probe = Arc::new(ProbeWriter::default());
+        let writer: Arc<dyn EpistemicWriter> = probe.clone();
+        let call = bind_mem_call(&ctx, func, args);
+        (dispatch_mem_call(&writer, &ctx, call).await, probe)
+    }
+
+    /// Asserts `args` is refused as `func` with an error naming `key`, before the writer ran.
+    async fn assert_refused(func: MemHostFn, args: Value, key: &str) {
+        let (out, probe) = write_call(func, args.clone()).await;
+        let e = out.expect_err(&format!("{args} is refused"));
+        assert!(e.contains(key), "{args}: {e}");
+        assert_eq!(probe.probed(), None, "{args}: the writer never ran");
+    }
+
+    #[tokio::test]
+    async fn a_non_object_payload_is_refused_by_both_dispatchers() {
+        let (out, probe) = write_call(MemHostFn::Derive, json!("bare")).await;
+        let e = out.unwrap_err();
+        assert!(e.contains("must be a JSON object"), "{e}");
+        assert_eq!(probe.probed(), None);
+
+        let mock = reader_with(vec![]);
+        let e = run_recall(&mock, &host_ctx(), json!("bare"))
+            .await
+            .unwrap_err();
+        assert!(e.contains("must be a JSON object"), "{e}");
+        assert!(mock.last.lock().unwrap().is_none(), "the reader never ran");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_key_is_refused_for_each_mem_function() {
+        let mock = reader_with(vec![]);
+        for key in ["max_tokens", "max_chunk"] {
+            let e = run_recall(&mock, &host_ctx(), json!({"text": "q", key: 3}))
+                .await
+                .unwrap_err();
+            assert!(e.contains(key), "{key}: {e}");
+        }
+        assert!(mock.last.lock().unwrap().is_none(), "the reader never ran");
+
+        assert_refused(
+            MemHostFn::Remember,
+            json!({"text": "t", "eventTime": "x"}),
+            "eventTime",
+        )
+        .await;
+        assert_refused(
+            MemHostFn::Derive,
+            json!({"text": "t", "confidnce": 0.5}),
+            "confidnce",
+        )
+        .await;
+        assert_refused(
+            MemHostFn::Supersede,
+            json!({"old": "mem/bel/1", "text": "t", "why": "r"}),
+            "why",
+        )
+        .await;
+        assert_refused(
+            MemHostFn::Contest,
+            json!({"claims": ["mem/bel/1", "mem/bel/2"], "extra": 1}),
+            "extra",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn remember_refuses_an_unparseable_event_time() {
+        for bad in [json!("yesterday"), json!(42)] {
+            assert_refused(
+                MemHostFn::Remember,
+                json!({"text": "t", "event_time": bad}),
+                "event_time",
+            )
+            .await;
+        }
+        let ctx = host_ctx();
+        let probe = Arc::new(ProbeWriter::default());
+        let writer: Arc<dyn EpistemicWriter> = probe.clone();
+        let call = bind_mem_call(&ctx, MemHostFn::Remember, json!({"text": "t"}));
+        dispatch_mem_call(&writer, &ctx, call).await.unwrap();
+        assert_eq!(
+            probe.probed(),
+            Some(Probed::Observe {
+                event_time: ctx.occurred_at
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn derive_refuses_an_unknown_method_and_lists_the_accepted_ones() {
+        let (out, probe) =
+            write_call(MemHostFn::Derive, json!({"text": "t", "method": "guess"})).await;
+        let e = out.unwrap_err();
+        assert!(e.contains("method"), "{e}");
+        for m in DerivationMethod::ALL {
+            assert!(e.contains(m.as_str()), "{e} lists {}", m.as_str());
+        }
+        assert_eq!(probe.probed(), None);
+
+        assert_refused(
+            MemHostFn::Derive,
+            json!({"text": "t", "method": 7}),
+            "method",
+        )
+        .await;
+
+        let (out, probe) = write_call(MemHostFn::Derive, json!({"text": "t"})).await;
+        out.unwrap();
+        assert_eq!(
+            probe.probed(),
+            Some(Probed::Derive {
+                method: DerivationMethod::LlmSynthesis,
+                confidence: None
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn derive_and_supersede_refuse_a_non_number_confidence() {
+        assert_refused(
+            MemHostFn::Derive,
+            json!({"text": "t", "confidence": "0.5"}),
+            "confidence",
+        )
+        .await;
+        assert_refused(
+            MemHostFn::Supersede,
+            json!({"old": "mem/bel/1", "text": "t", "confidence": "0.5"}),
+            "confidence",
+        )
+        .await;
+        let (out, probe) = write_call(
+            MemHostFn::Supersede,
+            json!({"old": "mem/bel/1", "text": "t"}),
+        )
+        .await;
+        out.unwrap();
+        assert_eq!(
+            probe.probed(),
+            Some(Probed::Supersede {
+                reason: String::new(),
+                confidence: None
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn supersede_refuses_a_non_string_reason() {
+        assert_refused(
+            MemHostFn::Supersede,
+            json!({"old": "mem/bel/1", "text": "t", "reason": 5}),
+            "reason",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn contest_requires_claims() {
+        assert_refused(MemHostFn::Contest, json!({}), "claims").await;
+        assert_refused(MemHostFn::Contest, json!({"claims": null}), "claims").await;
+    }
+
+    #[tokio::test]
+    async fn recall_max_chunks_must_be_a_positive_integer() {
+        let ctx = host_ctx();
+        for (given, want) in [(json!(5.0), 5), (json!(5), 5)] {
+            let mock = reader_with(vec![]);
+            run_recall(&mock, &ctx, json!({"text": "q", "max_chunks": given}))
+                .await
+                .unwrap();
+            assert_eq!(captured(&mock).1.max_chunks, want, "{given}");
+        }
+        for bad in [
+            json!(0),
+            json!(-1),
+            json!(2.5),
+            json!(1e20),
+            json!("5"),
+            json!(true),
+        ] {
+            let mock = reader_with(vec![]);
+            let e = run_recall(&mock, &ctx, json!({"text": "q", "max_chunks": bad}))
+                .await
+                .unwrap_err();
+            assert!(e.contains("max_chunks"), "{bad}: {e}");
+            assert!(
+                mock.last.lock().unwrap().is_none(),
+                "{bad}: the reader never ran"
+            );
+        }
+        let mock = reader_with(vec![]);
+        run_recall(&mock, &ctx, json!({"text": "q", "max_chunks": null}))
+            .await
+            .unwrap();
+        assert_eq!(captured(&mock).1.max_chunks, DEFAULT_RECALL_MAX_CHUNKS);
     }
 }

@@ -55,21 +55,23 @@ impl DerivationMethod {
         }
     }
 
+    /// Every derivation method, in declaration order.
+    pub const ALL: [DerivationMethod; 7] = [
+        Self::TypeJoin,
+        Self::Cardinality,
+        Self::FunctionalDependency,
+        Self::TypeDbFunction,
+        Self::ExternalTool,
+        Self::HumanAssertion,
+        Self::LlmSynthesis,
+    ];
+
     /// Parses the canonical kebab-case string. `None` on an unknown value.
     // Intentionally an inherent method, not `std::str::FromStr` (no `Err` type
     // is warranted — unknown values are just `None`).
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "type-join" => Self::TypeJoin,
-            "cardinality" => Self::Cardinality,
-            "functional-dependency" => Self::FunctionalDependency,
-            "type-db-function" => Self::TypeDbFunction,
-            "external-tool" => Self::ExternalTool,
-            "human-assertion" => Self::HumanAssertion,
-            "llm-synthesis" => Self::LlmSynthesis,
-            _ => return None,
-        })
+        Self::ALL.into_iter().find(|m| m.as_str() == s)
     }
 
     /// `true` for the type-enforced derivations that may carry confidence 1.0
@@ -161,8 +163,6 @@ impl RecallQuery {
 pub struct ContextBudget {
     /// Maximum number of chunks to return.
     pub max_chunks: usize,
-    /// Optional token ceiling across returned chunks.
-    pub max_tokens: Option<usize>,
 }
 
 /// A unit of recalled context.

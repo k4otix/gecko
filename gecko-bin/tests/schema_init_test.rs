@@ -1220,10 +1220,7 @@ async fn tightened_schema_applies_to_a_populated_database() {
                 text: "host is not compromised".to_string(),
                 as_of: None,
             },
-            ContextBudget {
-                max_chunks: 5,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 5 },
         )
         .await
         .expect("recall");

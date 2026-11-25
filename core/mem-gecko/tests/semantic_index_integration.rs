@@ -106,10 +106,7 @@ fn belief(text: &str, owner: &str, conf: f64) -> BeliefDraft {
 }
 
 fn budget(n: usize) -> ContextBudget {
-    ContextBudget {
-        max_chunks: n,
-        max_tokens: None,
-    }
+    ContextBudget { max_chunks: n }
 }
 
 // ── Acceptance: belief write upserts a vector; supersede removes old + inserts new ──
