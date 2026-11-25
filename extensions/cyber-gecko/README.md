@@ -83,6 +83,36 @@ sensor platform outside the file's `platforms`, and each declared platform no li
 analytic runs on. A re-sync under the same bundle name replaces the previous file. Two
 sensor files can share a database under two bundle names; `blinded` reads their union.
 
+## `coverage_gaps`
+
+A playbook granted the `cyber-gecko:coverage_gaps` scope calls
+`gecko.callExtension("cyber-gecko", "coverage_gaps", {})`. It lists the live techniques that
+have no asserted detection claim, and groups them by live tactic:
+
+```json
+{
+  "undetected_techniques": [
+    { "concept_id": "…", "attack_id": "T1059", "tactics": ["TA0002"],
+      "sub_techniques": { "claimed": 1, "total": 3 } }
+  ],
+  "by_tactic": [
+    { "attack_id": "TA0002", "concept_id": "…", "shortname": "execution", "name": "Execution",
+      "live": 12, "undetected": 5, "techniques": ["T1059", "T1059.001"] }
+  ]
+}
+```
+
+- **`live` and `undetected`.** `live` counts the tactic's live techniques, parents and
+  sub-techniques alike. `undetected` counts how many of them are gaps, and `techniques` lists
+  those gaps by ATT&CK id.
+- **Which tactics appear.** A fully covered tactic stays, with `undetected: 0`. A tactic with no
+  live technique is absent.
+- **Liveness.** Retired, revoked and deprecated techniques and tactics are left out
+  everywhere, though they keep their tactic edges.
+- **Ordering.** Every list is sorted by ATT&CK id.
+- **Missing values.** A tactic without a title has `name: null`, and a gap technique with no
+  live tactic has `tactics: []`.
+
 ## `blinded`
 
 A playbook granted the `cyber-gecko:blinded` scope calls
