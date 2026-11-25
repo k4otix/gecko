@@ -2835,3 +2835,400 @@ async fn store_reads_run_concurrently_and_writes_are_gated() {
 
     fx.drop_db().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// retract: withdraws a current, visible belief with no replacement, records who
+// withdrew it, in which run and why, and reports the visible current beliefs that
+// rested on it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The `retraction` edges on belief `id`: retractor agent-id, run-id and created-at.
+async fn retractions_of(fx: &Fixture, id: &MemId) -> Vec<serde_json::Value> {
+    fx.raw_fetch(&format!(
+        r#"match $b isa belief, has concept-id "{}";
+             $r isa retraction, links (retracted: $b, retractor: $ag, run: $run);
+             $ag has agent-id $aid; $run has run-id $rid; $r has created-at $ca;
+           fetch {{ "aid": $aid, "rid": $rid, "ca": $ca }};"#,
+        id.0
+    ))
+    .await
+}
+
+/// The `retraction-reason` values recorded for belief `id`.
+async fn retraction_reasons(fx: &Fixture, id: &MemId) -> Vec<String> {
+    fx.raw_fetch(&format!(
+        r#"match $b isa belief, has concept-id "{}";
+             $r isa retraction, links (retracted: $b), has retraction-reason $why;
+           fetch {{ "why": $why }};"#,
+        id.0
+    ))
+    .await
+    .iter()
+    .map(|r| r["why"].as_str().unwrap().to_string())
+    .collect()
+}
+
+/// A present-state recall by `actor` at `at`.
+async fn recall_now(w: &MemWriter, actor: &str, at: DateTime) -> Vec<MemId> {
+    w.recall(
+        &ctx_at(actor, at),
+        RecallQuery {
+            text: String::new(),
+            as_of: None,
+        },
+        ContextBudget { max_chunks: 20 },
+    )
+    .await
+    .expect("recall")
+    .into_iter()
+    .map(|c| c.id)
+    .collect()
+}
+
+#[tokio::test]
+async fn retract_flips_state_closes_the_window_and_records_who_and_why() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let b = assert_at(
+        &w,
+        "agent-1",
+        "2026-01-01T00:00:00Z",
+        "the host is compromised",
+    )
+    .await;
+    let ctx = ctx_at("agent-1", dt("2026-03-01T00:00:00Z"));
+    let radius = w
+        .retract(&ctx, b.clone(), Some("wrong host"))
+        .await
+        .unwrap();
+    assert!(radius.is_empty(), "{radius:?}");
+
+    assert_eq!(belief_state(&fx, &b).await, "retracted");
+    assert_eq!(
+        valid_to(&fx, &b).await.as_deref(),
+        Some("2026-03-01T00:00:00")
+    );
+    let edges = retractions_of(&fx, &b).await;
+    assert_eq!(edges.len(), 1, "{edges:?}");
+    assert_eq!(edges[0]["aid"], "agent-1");
+    assert_eq!(edges[0]["rid"], ctx.run_id.to_string());
+    assert!(
+        edges[0]["ca"]
+            .as_str()
+            .unwrap()
+            .starts_with("2026-03-01T00:00:00"),
+        "{edges:?}"
+    );
+    assert_eq!(retraction_reasons(&fx, &b).await, vec!["wrong host"]);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retract_without_a_reason_writes_no_reason() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let b = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "unsure").await;
+    w.retract(
+        &ctx_at("agent-1", dt("2026-02-01T00:00:00Z")),
+        b.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retractions_of(&fx, &b).await.len(), 1);
+    assert!(retraction_reasons(&fx, &b).await.is_empty());
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn a_retracted_belief_leaves_present_state_recall_and_gate() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let b = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "withdrawn soon").await;
+    let keep = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "still held").await;
+    let now = dt("2026-01-03T00:00:00Z");
+    assert!(w.gate(&b, &ActorId::new("agent-1"), now).await.unwrap());
+    w.retract(
+        &ctx_at("agent-1", dt("2026-01-02T00:00:00Z")),
+        b.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!w.gate(&b, &ActorId::new("agent-1"), now).await.unwrap());
+    assert!(
+        w.is_superseded(&b).await.unwrap(),
+        "retracted counts as not current"
+    );
+    assert_eq!(recall_now(&w, "agent-1", now).await, vec![keep]);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_ends_a_retracted_belief_at_its_retraction() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let b = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "held a while").await;
+    w.retract(
+        &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+        b.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    let ctx = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
+    assert_eq!(
+        w.believed_at(&ctx, dt("2026-01-01T00:00:01Z"))
+            .await
+            .unwrap(),
+        vec![b.clone()]
+    );
+    for at in ["2026-03-01T00:00:00Z", "2026-03-01T00:00:01Z"] {
+        assert!(
+            w.believed_at(&ctx, dt(at)).await.unwrap().is_empty(),
+            "as of {at}"
+        );
+    }
+    let run = dt("2026-06-01T00:00:00Z");
+    assert_eq!(
+        recall_as_of(&w, "agent-1", run, dt("2026-02-01T00:00:00Z"), 5).await,
+        vec![b.clone()]
+    );
+    assert!(
+        recall_as_of(&w, "agent-1", run, dt("2026-04-01T00:00:00Z"), 5)
+            .await
+            .is_empty()
+    );
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn a_same_instant_retract_leaves_an_empty_window() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let t = "2026-01-01T00:00:00Z";
+    let b = assert_at(&w, "agent-1", t, "asserted and withdrawn in one run").await;
+    w.retract(&ctx_at("agent-1", dt(t)), b.clone(), None)
+        .await
+        .unwrap();
+    let ctx = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
+    assert!(w.believed_at(&ctx, dt(t)).await.unwrap().is_empty());
+    assert!(
+        recall_as_of(&w, "agent-1", dt("2026-06-01T00:00:00Z"), dt(t), 5)
+            .await
+            .is_empty(),
+        "as-of recall at the retraction instant does not return it"
+    );
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retracting_another_agents_private_belief_is_refused_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    observe_as(&w, "agent-b", at).await;
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private belief", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let hidden = storage_msg(
+        w.retract(&ctx_at("agent-b", at), private.clone(), Some("r"))
+            .await
+            .expect_err("another agent's private belief cannot be retracted"),
+    );
+    for want in [
+        private.0.as_str(),
+        "not a current belief visible to the caller",
+        "nothing was committed",
+    ] {
+        assert!(hidden.contains(want), "{want}: {hidden}");
+    }
+    assert_eq!(belief_state(&fx, &private).await, "asserted");
+    assert!(retractions_of(&fx, &private).await.is_empty());
+    assert_eq!(valid_to(&fx, &private).await, None);
+
+    let missing = MemId::new("mem/bel/NOPE");
+    let absent = storage_msg(
+        w.retract(&ctx_at("agent-b", at), missing.clone(), Some("r"))
+            .await
+            .expect_err("a missing belief cannot be retracted"),
+    );
+    assert_eq!(
+        hidden.replace(&private.0, "<id>"),
+        absent.replace(&missing.0, "<id>"),
+        "a refusal does not reveal whether the belief exists"
+    );
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retracting_a_team_belief_of_another_agent_is_allowed() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's team belief", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    w.retract(
+        &ctx_at("agent-b", dt("2026-01-02T00:00:00Z")),
+        team.clone(),
+        None,
+    )
+    .await
+    .expect("a team belief is visible to agent-b");
+    assert_eq!(belief_state(&fx, &team).await, "retracted");
+    let edges = retractions_of(&fx, &team).await;
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["aid"], "agent-b", "the retractor is the caller");
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retracting_a_superseded_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let old = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "first view").await;
+    w.supersede(
+        &ctx_at("agent-1", dt("2026-02-01T00:00:00Z")),
+        old.clone(),
+        belief("second view", "agent-1", 0.8),
+        "revised",
+    )
+    .await
+    .unwrap();
+    let msg = storage_msg(
+        w.retract(
+            &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+            old.clone(),
+            None,
+        )
+        .await
+        .expect_err("a superseded belief cannot be retracted"),
+    );
+    assert!(
+        msg.contains("not a current belief visible to the caller"),
+        "{msg}"
+    );
+    assert_eq!(belief_state(&fx, &old).await, "superseded");
+    assert!(retractions_of(&fx, &old).await.is_empty());
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retracting_twice_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let b = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "once only").await;
+    w.retract(
+        &ctx_at("agent-1", dt("2026-02-01T00:00:00Z")),
+        b.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    w.retract(
+        &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+        b.clone(),
+        None,
+    )
+    .await
+    .expect_err("an already retracted belief cannot be retracted again");
+    assert_eq!(retractions_of(&fx, &b).await.len(), 1);
+    assert_eq!(
+        valid_to(&fx, &b).await.as_deref(),
+        Some("2026-02-01T00:00:00")
+    );
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retracting_a_missing_belief_is_refused() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let msg = storage_msg(
+        w.retract(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            MemId::new("mem/bel/NOPE"),
+            None,
+        )
+        .await
+        .expect_err("a missing belief cannot be retracted"),
+    );
+    assert!(msg.contains("mem/bel/NOPE"), "{msg}");
+    assert!(msg.contains("nothing was committed"), "{msg}");
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn retract_reports_the_visible_current_beliefs_that_rested_on_it() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let me = ctx_at("agent-1", at);
+    let derive = |text: &'static str, from: MemId, ctx: RunContext, owner: &'static str| {
+        let w = &w;
+        async move {
+            w.assert_belief(
+                &ctx,
+                belief(text, owner, 0.6),
+                &[from],
+                DerivationMethod::TypeJoin,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let root = w
+        .assert_belief(
+            &me,
+            belief_vis("root", "agent-1", 0.8, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let d1 = derive("d1", root.clone(), me.clone(), "agent-1").await;
+    let d2 = derive("d2", d1.clone(), me.clone(), "agent-1").await;
+    let a = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "assumes root").await;
+    w.rests_on(&me, a.clone(), std::slice::from_ref(&root))
+        .await
+        .unwrap();
+    let p = derive("p", root.clone(), ctx_at("agent-2", at), "agent-2").await;
+    let s = derive("s", root.clone(), me.clone(), "agent-1").await;
+    w.supersede(&me, s.clone(), belief("s2", "agent-1", 0.6), "revised")
+        .await
+        .unwrap();
+    let x = derive("x", root.clone(), me.clone(), "agent-1").await;
+    w.retract(&me, x.clone(), None).await.unwrap();
+    w.rests_on(&me, root.clone(), std::slice::from_ref(&d1))
+        .await
+        .unwrap();
+
+    let radius = w
+        .retract(
+            &ctx_at("agent-1", dt("2026-02-01T00:00:00Z")),
+            root.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut want = vec![a, d1, d2];
+    want.sort_by(|l, r| l.0.cmp(&r.0));
+    assert_eq!(radius, want);
+    for gone in [&root, &p, &s, &x] {
+        assert!(!radius.contains(gone), "{gone:?} in {radius:?}");
+    }
+    fx.drop_db().await;
+}

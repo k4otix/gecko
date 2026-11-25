@@ -162,12 +162,13 @@ async fn run(code: &str, scopes: &[&str], cb: ExtensionCallback) -> (bool, Value
     )
 }
 
-const MEM_SCOPES: [&str; 5] = [
+const MEM_SCOPES: [&str; 6] = [
     "mem:recall",
     "mem:remember",
     "mem:derive",
     "mem:supersede",
     "mem:contest",
+    "mem:retract",
 ];
 
 /// A mem callback's canned reply: `{ chunks: [] }` for recall, `{ id }` otherwise.
@@ -372,6 +373,66 @@ async fn mem_contest_forwards_missing_claims_for_the_host_to_refuse() {
 }
 
 #[tokio::test]
+async fn mem_retract_forwards_id_and_reason() {
+    let (cb, calls) = recording(mem_reply);
+    let (ok, _, err) = run(
+        r#"mem.retract("mem/bel/x", "r"); mem.retract("mem/bel/x")"#,
+        &MEM_SCOPES,
+        cb,
+    )
+    .await;
+    assert!(ok, "{err}");
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls[0].0, "mem");
+    assert_eq!(calls[0].1, "retract");
+    assert_eq!(calls[0].2, json!({ "id": "mem/bel/x", "reason": "r" }));
+    assert_eq!(calls[1].2, json!({ "id": "mem/bel/x" }));
+}
+
+#[tokio::test]
+async fn mem_retract_forwards_a_non_string_reason_unconverted() {
+    let (cb, calls) = recording(mem_reply);
+    let (ok, _, err) = run(r#"mem.retract("mem/bel/x", 5)"#, &MEM_SCOPES, cb).await;
+    assert!(ok, "{err}");
+    assert_eq!(
+        calls.lock().unwrap()[0].2,
+        json!({ "id": "mem/bel/x", "reason": 5 })
+    );
+}
+
+#[tokio::test]
+async fn mem_retract_without_an_id_throws_type_error() {
+    assert_type_error(&["mem.retract()", "mem.retract(5)"], "id").await;
+}
+
+fn retract_reply(_: &str) -> Result<Value, String> {
+    Ok(json!({ "id": "mem/bel/x", "blast_radius": ["mem/bel/y"] }))
+}
+
+#[tokio::test]
+async fn mem_retract_returns_the_reply() {
+    let (cb, _) = recording(retract_reply);
+    let code = r#"const r = mem.retract("mem/bel/x"); ({ id: r.id, first: r.blast_radius[0] })"#;
+    let (ok, out, err) = run(code, &MEM_SCOPES, cb).await;
+    assert!(ok, "{err}");
+    assert_eq!(out, json!({ "id": "mem/bel/x", "first": "mem/bel/y" }));
+}
+
+#[tokio::test]
+async fn mem_retract_needs_its_scope() {
+    let (cb, calls) = recording(mem_reply);
+    let scopes: Vec<&str> = MEM_SCOPES
+        .iter()
+        .copied()
+        .filter(|s| *s != "mem:retract")
+        .collect();
+    let (ok, _, err) = run(r#"mem.retract("mem/bel/x")"#, &scopes, cb).await;
+    assert!(!ok);
+    assert!(err.contains("not granted"), "{err}");
+    assert!(calls.lock().unwrap().is_empty(), "the callback never ran");
+}
+
+#[tokio::test]
 async fn an_error_over_the_cap_reaches_the_guest_truncated() {
     let (cb, _) = counting(Err("x".repeat(17 << 20)));
     let code = r#"
@@ -432,6 +493,14 @@ impl gecko_extension_api::EpistemicWriter for UnreachableWriter {
         _: &[gecko_extension_api::MemId],
     ) -> Result<gecko_extension_api::AnomalyId, gecko_extension_api::EpistemicError> {
         unreachable!("contest")
+    }
+    async fn retract(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::MemId,
+        _: Option<&str>,
+    ) -> Result<Vec<gecko_extension_api::MemId>, gecko_extension_api::EpistemicError> {
+        unreachable!("retract")
     }
     async fn rests_on(
         &self,

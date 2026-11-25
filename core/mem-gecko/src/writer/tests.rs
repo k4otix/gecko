@@ -70,6 +70,8 @@ struct RecordingGraphStore {
     read_reply: Vec<Value>,
     /// How many `read` calls were made.
     reads: Mutex<usize>,
+    /// When set, every `read` fails.
+    fail_read: bool,
 }
 impl RecordingGraphStore {
     fn failing() -> Self {
@@ -107,6 +109,9 @@ impl GraphReader for RecordingGraphStore {
         _row: &[gecko_extension_api::GraphValue],
     ) -> Result<Vec<Value>> {
         *self.reads.lock().unwrap() += 1;
+        if self.fail_read {
+            return Err(EpistemicError::Storage("read failed".into()));
+        }
         Ok(self.read_reply.clone())
     }
 }
@@ -1204,5 +1209,146 @@ fn supersession_ops_closes_the_old_window_in_the_same_batch() {
         close.rows[0].contains(&gecko_extension_api::GraphValue::Datetime(at)),
         "the close time travels as a parameter: {:?}",
         close.rows
+    );
+}
+
+#[test]
+fn retraction_ops_expectations() {
+    let at = chrono::DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let ctx = RunContext::new(ActorId::new("agent-1"), ProvenanceSource::Manual, at);
+    let id = MemId::new("mem/bel/target");
+    let ops = crate::tql::retraction_ops(&ctx, &id, Some("wrong host"));
+    let expectations: Vec<Option<usize>> = ops.iter().map(|o| o.expect_rows).collect();
+    assert_eq!(expectations, vec![None, None, Some(1), Some(1), None]);
+    assert!(
+        ops[crate::tql::RETRACTION_LINK_OP]
+            .query
+            .contains("insert retraction"),
+        "RETRACTION_LINK_OP indexes the link op"
+    );
+    for op in &ops {
+        for literal in ["wrong host", "2026-03-01", "mem/bel/target"] {
+            assert!(!op.query.contains(literal), "{literal} in {}", op.query);
+        }
+    }
+    let link = &ops[2];
+    assert!(link.query.contains("retraction-reason"), "{}", link.query);
+    assert!(
+        link.rows[0].contains(&gecko_extension_api::GraphValue::String(
+            "wrong host".into()
+        )),
+        "{:?}",
+        link.rows
+    );
+    assert!(
+        link.rows[0].contains(&gecko_extension_api::GraphValue::Datetime(at)),
+        "{:?}",
+        link.rows
+    );
+    let bare = crate::tql::retraction_ops(&ctx, &id, None);
+    assert!(
+        !bare[2].query.contains("retraction-reason"),
+        "{}",
+        bare[2].query
+    );
+}
+
+#[tokio::test]
+async fn retract_survives_a_failing_remove() {
+    let idx = Arc::new(FailingUpsertIndex::default());
+    let w = MemWriter::new(
+        Arc::new(RecordingGraphStore::default()),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let radius = w
+        .retract(&ctx(), MemId::new("mem/bel/OLD"), Some("wrong"))
+        .await
+        .expect("retract must succeed even when the index errors");
+    assert!(radius.is_empty());
+    assert_eq!(idx.removes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn retract_without_embedder_never_removes() {
+    let idx = Arc::new(FailingUpsertIndex::default());
+    let w = MemWriter::new(
+        Arc::new(RecordingGraphStore::default()),
+        None,
+        Some(idx.clone()),
+    );
+    w.retract(&ctx(), MemId::new("mem/bel/OLD"), None)
+        .await
+        .unwrap();
+    assert_eq!(idx.removes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_failed_blast_radius_read_says_the_retraction_committed() {
+    let store = Arc::new(RecordingGraphStore {
+        fail_read: true,
+        ..Default::default()
+    });
+    let w = MemWriter::new(store.clone(), None, None);
+    let err = w
+        .retract(&ctx(), MemId::new("mem/bel/OLD"), None)
+        .await
+        .expect_err("the blast-radius read failed");
+    let EpistemicError::Storage(msg) = &err else {
+        panic!("{err:?}")
+    };
+    assert!(msg.contains("committed"), "{msg}");
+    assert!(msg.contains("blast radius"), "{msg}");
+    assert_eq!(
+        store.write_calls.lock().unwrap().len(),
+        1,
+        "the write landed"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_retract_names_the_id_and_reads_nothing() {
+    let store = Arc::new(RecordingGraphStore {
+        mismatch_at: Some(|_| 2),
+        ..Default::default()
+    });
+    let w = MemWriter::new(store.clone(), None, None);
+    let err = w
+        .retract(&ctx(), MemId::new("mem/bel/OLD"), None)
+        .await
+        .expect_err("refused");
+    let msg = err.to_string();
+    assert!(msg.contains("retract of mem/bel/OLD"), "{msg}");
+    assert!(
+        msg.contains("not a current belief visible to the caller; nothing was committed"),
+        "{msg}"
+    );
+    assert_eq!(
+        *store.reads.lock().unwrap(),
+        0,
+        "a refusal reveals no dependents"
+    );
+}
+
+#[tokio::test]
+async fn retract_sorts_and_dedups_the_blast_radius() {
+    let store = Arc::new(RecordingGraphStore {
+        read_reply: vec![
+            serde_json::json!({"id": "mem/bel/b"}),
+            serde_json::json!({"id": "mem/bel/a"}),
+            serde_json::json!({"id": "mem/bel/b"}),
+        ],
+        ..Default::default()
+    });
+    let w = MemWriter::new(store, None, None);
+    let radius = w
+        .retract(&ctx(), MemId::new("mem/bel/OLD"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        radius,
+        vec![MemId::new("mem/bel/a"), MemId::new("mem/bel/b")]
     );
 }

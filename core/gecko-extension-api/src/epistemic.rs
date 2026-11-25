@@ -204,6 +204,17 @@ pub trait EpistemicWriter: Send + Sync {
         reason: &str,
     ) -> Result<MemId>;
 
+    /// Withdraws belief `id` with no replacement, recording the caller, the run and
+    /// `reason`, and closing its validity window at the run's `occurred_at`. Returns
+    /// the beliefs that rested on it (its blast radius) that the caller can see and
+    /// that are still current, sorted by id.
+    async fn retract(
+        &self,
+        ctx: &RunContext,
+        id: MemId,
+        reason: Option<&str>,
+    ) -> Result<Vec<MemId>>;
+
     /// Records a contradiction among `claims`, minting an anomaly.
     async fn contest(&self, ctx: &RunContext, claims: &[MemId]) -> Result<crate::ids::AnomalyId>;
 

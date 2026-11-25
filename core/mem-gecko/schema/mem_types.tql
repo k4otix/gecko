@@ -24,6 +24,7 @@ define
   # ── misc scalar attrs ─────────────────────────────────────────────
   attribute confidence value double;
   attribute supersession-reason value string;
+  attribute retraction-reason value string;
   attribute created-at value datetime;
   attribute condition value string;
   attribute agent-id value string;
@@ -75,6 +76,7 @@ define
       owns valid-to @card(0..1),
       owns retrieval-provenance @card(0..1),   # write-once summary flag
       plays contradiction:claim,
+      plays retraction:retracted @card(0..1),
       plays prediction-resolution:predicted-belief,
       plays informs-synthesis:synthesized;
 
@@ -113,6 +115,14 @@ define
       owns supersession-reason @card(0..1),
       owns created-at @card(1);
 
+  # withdrawal with no replacement
+  relation retraction @doc("Records that an agent withdrew a belief during a run, with an optional reason and the time it happened."),
+      relates retracted @card(1) @doc("The belief being withdrawn."),
+      relates retractor @card(1) @doc("The agent that withdrew the belief."),
+      relates run @card(1) @doc("The run during which the belief was withdrawn."),
+      owns retraction-reason @card(0..1),
+      owns created-at @card(1);
+
   # source-link: memory -> origin (1.. in concept|document|code-block|doc-run)
   relation source-link @doc("Links a memory item to the origin(s) it was produced from — a concept, code block, or doc-run — tagged by origin kind."),
       relates memory @card(1) @doc("The memory item that was produced."),
@@ -125,6 +135,7 @@ define
   entity agent @doc("An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping."),
       owns agent-id @key,
       plays ownership:owner,
+      plays retraction:retractor,
       plays pivot:pivoting-agent;         # the agent that made the investigative move
 
   relation ownership @doc("Assigns a memory item to its owning agent(s) and carries the visibility scope that gates who can recall it."),
@@ -156,7 +167,8 @@ define
   entity doc-run @doc("A single execution run of a playbook code block; the provenance origin stamped onto memory produced during the run, keyed by run-id."),
       owns run-id @key,
       owns event-time @card(0..1),
-      plays source-link:origin;
+      plays source-link:origin,
+      plays retraction:run;
 
   # ══════════════════════════════════════════════════════════════════
   # Cross-source resolution

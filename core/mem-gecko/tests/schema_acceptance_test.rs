@@ -328,6 +328,45 @@ async fn pivot_is_instantiable() {
 // exactly once and sourced at least once; anything else is refused at commit.
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
+async fn a_belief_with_two_retractions_is_refused_at_commit() {
+    let (mut router, name) = fresh_db().await;
+    let seed = r#"
+        insert
+          $ag isa agent, has agent-id "agent-1";
+          $run isa doc-run, has run-id "run-1";
+          $b isa belief, has concept-id "mem/bel/twice", has belief-state "retracted",
+              has valid-from 2026-01-01T00:00:00, has salience 0.5,
+              has base-activation 1.0, has last-access 2026-01-01T00:00:00;
+          source-link (memory: $b, origin: $run), has origin-kind "test";
+          ownership (owned: $b, owner: $ag), has visibility "private";
+          retraction (retracted: $b, retractor: $ag, run: $run),
+              has created-at 2026-01-02T00:00:00;
+        "#;
+    write(&mut router, seed)
+        .await
+        .expect("one retraction commits");
+    let refused = write(
+        &mut router,
+        r#"
+        match
+          $ag isa agent, has agent-id "agent-1";
+          $run isa doc-run, has run-id "run-1";
+          $b isa belief, has concept-id "mem/bel/twice";
+        insert
+          retraction (retracted: $b, retractor: $ag, run: $run),
+              has created-at 2026-01-03T00:00:00;
+        "#,
+    )
+    .await;
+    let err = refused.expect_err("a second retraction of one belief commits");
+    assert!(
+        err.contains("retraction:retracted"),
+        "the refusal does not name retraction:retracted: {err}"
+    );
+    drop_db(router, &name).await;
+}
+
+#[tokio::test]
 async fn a_memory_item_with_two_ownerships_is_refused_at_commit() {
     let (mut router, name) = fresh_db().await;
 
@@ -461,6 +500,12 @@ const SUPERSESSION: RoleCase = case(
     &[],
     ", has created-at 2026-01-02T00:00:00",
 );
+const RETRACTION: RoleCase = case(
+    "retraction",
+    &[("retracted", "$b1"), ("retractor", "$ag"), ("run", "$run")],
+    &[],
+    ", has created-at 2026-01-02T00:00:00",
+);
 const SOURCE_LINK: RoleCase = RoleCase {
     fresh: true,
     ..case(
@@ -570,6 +615,9 @@ missing_role_refused! {
     a_contradiction_missing_its_hub_is_refused_at_commit: CONTRADICTION, "hub";
     a_supersession_missing_its_superseded_is_refused_at_commit: SUPERSESSION, "superseded";
     a_supersession_missing_its_superseding_is_refused_at_commit: SUPERSESSION, "superseding";
+    a_retraction_missing_its_retracted_is_refused_at_commit: RETRACTION, "retracted";
+    a_retraction_missing_its_retractor_is_refused_at_commit: RETRACTION, "retractor";
+    a_retraction_missing_its_run_is_refused_at_commit: RETRACTION, "run";
     a_source_link_missing_its_memory_is_refused_at_commit: SOURCE_LINK, "memory";
     a_ownership_missing_its_owned_is_refused_at_commit: OWNERSHIP, "owned";
     a_rests_on_missing_its_resting_is_refused_at_commit: RESTS_ON, "resting";

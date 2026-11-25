@@ -30,7 +30,7 @@ GECKO is built around a few fundamental components:
 *   **Open Knowledge Format (OKF) Parser**: Ingests Markdown bundles augmented with YAML frontmatter, parsing hierarchical directories of domain concepts, playbooks, and relationships.
 *   **Knowledge Graph Syncer**: Maps parsed OKF concepts into a TypeDB 3.x database. The syncer is idempotent (content-hashed, parameterized writes) and builds the entity-relation hierarchy (containment, concept links, hierarchy edges, and citations). A sync that would change the belief tier is refused and rolled back; a record a belief references is retired rather than deleted.
 *   **All-WASM Execution Engine**: Executes playbook code blocks in a secure, isolated **Wasmtime** WebAssembly sandbox with deterministic execution limits (epoch timeouts, bounded memory) and a single, JSON-marshalled host-function boundary. JavaScript playbooks run inside a checked-in WASM guest (a Boa JS engine, selected with `engine: quickjs`). Native Rhai was removed in the all-WASM rewrite.
-*   **Epistemic Memory Substrate (`mem-gecko`)**: A bitemporal TypeDB schema of beliefs, episodes, provenance, and reified resolutions, exposed to playbooks through a `mem.*` sandbox namespace (`recall`/`remember`/`derive`/`supersede`/`contest`). An optional in-process HNSW **semantic index** (`gecko-semantic-index`) accelerates recall; it is a pure, rebuildable accelerator, never a source of truth.
+*   **Epistemic Memory Substrate (`mem-gecko`)**: A bitemporal TypeDB schema of beliefs, episodes, provenance, and reified resolutions, exposed to playbooks through a `mem.*` sandbox namespace (`recall`/`remember`/`derive`/`supersede`/`contest`/`retract`). An optional in-process HNSW **semantic index** (`gecko-semantic-index`) accelerates recall; it is a pure, rebuildable accelerator, never a source of truth.
 *   **The Assembler Pattern**: GECKO uses Rust traits to compose the core engine with domain extensions **at compile time**, producing a single optimized binary. One binary ships every compiled-in extension; `gecko.toml` selects which are *activated* at runtime — registration is the gate for loading host functions and opening write-paths.
 
 ## Repository Structure
@@ -137,7 +137,7 @@ const belief = mem.derive(
 ({ recalled: chunks.length, belief: belief.id });
 ```
 
-`mem.*` exposes `recall`, `remember`, `derive`, `supersede`, and `contest`. The **host** stamps run identity (`run_id`/`actor`/`source`) — sandbox code cannot forge or supply it. A worked example ships at [`sample-bundle/playbooks/mem_recall_demo.md`](sample-bundle/playbooks/mem_recall_demo.md).
+`mem.*` exposes `recall`, `remember`, `derive`, `supersede`, `contest`, and `retract` (`mem.retract(id, reason?)` withdraws a belief with no replacement and returns `{ id, blast_radius }`, the visible current beliefs that rested on it). The **host** stamps run identity (`run_id`/`actor`/`source`) — sandbox code cannot forge or supply it. A worked example ships at [`sample-bundle/playbooks/mem_recall_demo.md`](sample-bundle/playbooks/mem_recall_demo.md).
 
 Semantic recall is an **explicit opt-in**. The default `gecko.toml` runs with a deterministic **stub** embedder (correctness/gating only). For real retrieval quality:
 

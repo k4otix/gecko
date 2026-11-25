@@ -109,6 +109,32 @@ fn budget(n: usize) -> ContextBudget {
     ContextBudget { max_chunks: n }
 }
 
+// ── Acceptance: retract removes the belief's vector ──
+#[tokio::test]
+async fn retract_removes_the_vector_from_the_index() {
+    let fx = Fixture::new().await;
+    let path = tmp_index_path();
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
+    let b = w
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("withdrawn view", "agent-1", 0.6),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    assert_eq!(index.len(), 1, "the belief is indexed");
+    w.retract(&ctx_at("agent-1", dt("2026-01-02T00:00:00Z")), b, None)
+        .await
+        .unwrap();
+    assert_eq!(index.len(), 0, "retract removed the vector");
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}
+
 // ── Acceptance: belief write upserts a vector; supersede removes old + inserts new ──
 #[tokio::test]
 async fn belief_write_upserts_and_supersede_swaps_the_vector() {

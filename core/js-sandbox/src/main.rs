@@ -265,6 +265,19 @@ fn mem_supersede(_this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     JsValue::from_json(&reply, context)
 }
 
+/// `mem.retract(id, reason?)` → `{ id, reason? }`. The reply is
+/// `{ id, blast_radius }`.
+fn mem_retract(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let id = require_str_arg(args, 0, "id")?;
+    let mut payload = serde_json::Map::new();
+    payload.insert("id".to_string(), json!(id));
+    if let Some(reason) = opt_arg(args, 1, "reason", context)? {
+        payload.insert("reason".to_string(), reason);
+    }
+    let reply = host_call("mem", "retract", &Value::Object(payload))?;
+    JsValue::from_json(&reply, context)
+}
+
 /// `mem.contest(claims)` → `{ claims }`. A missing `claims` is sent as missing, and
 /// the host refuses it.
 fn mem_contest(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -382,6 +395,11 @@ fn main() {
             NativeFunction::from_fn_ptr(mem_contest),
             js_string!("contest"),
             1,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(mem_retract),
+            js_string!("retract"),
+            2,
         )
         .build();
 

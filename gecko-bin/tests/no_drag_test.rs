@@ -112,6 +112,7 @@ const BELIEF_ATTRS: &[&str] = &[
     "valid-from",
     "valid-to",
     "supersession-reason",
+    "retraction-reason",
 ];
 
 /// The epistemic *bearer* roles a record-tier type must never play. (Playing
@@ -125,6 +126,7 @@ const BEARER_ROLES: &[&str] = &[
     "contradiction:claim",
     "supersession:superseded",
     "supersession:superseding",
+    "retraction:retracted",
     "rests-on:resting",
     "rests-on:assumption",
 ];

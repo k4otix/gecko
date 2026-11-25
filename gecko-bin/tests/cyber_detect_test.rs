@@ -489,6 +489,8 @@ async fn sync_sensor_file(test_db: &TestDb, yaml: &str, bundle_name: &str) {
 struct Rig {
     test_db: TestDb,
     cb: ExtensionCallback,
+    /// Each claim's belief id, in `logic_ids` order.
+    claims: Vec<MemId>,
 }
 
 impl Rig {
@@ -498,16 +500,22 @@ impl Rig {
         sync_playbooks(&test_db, logic_ids).await;
         let (graph, edges) = detect_handles(&test_db);
         let cb = cyber_extension_callback(graph, edges, run_ctx(logic_ids[0]), base());
+        let mut claims = Vec::new();
         for logic in logic_ids {
-            call(
+            let claimed = call(
                 &cb,
                 "claim",
                 json!({ "logic_id": logic, "technique_id": attack::TECHNIQUE_ATTACK_ID,
                         "method": "external-tool", "confidence": 0.9 }),
             )
             .unwrap_or_else(|e| panic!("claim {logic}: {e}"));
+            claims.push(MemId::new(claimed["belief_id"].as_str().unwrap()));
         }
-        Rig { test_db, cb }
+        Rig {
+            test_db,
+            cb,
+            claims,
+        }
     }
 
     /// A rig with the single claim of [`LOGIC_ID`] and the sensor file `yaml`.
@@ -553,6 +561,38 @@ async fn blind_with_no_sensor_lists_every_requirement_by_log_source() {
             &[],
         )])
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retracting_a_claim_removes_it_from_blinded_and_reopens_its_gap() {
+    let rig = Rig::with_sensors(
+        "gecko_test_blinded_retract",
+        "platforms: [Windows]\nsensors: []\n",
+    )
+    .await;
+    let undetected = |cb: &ExtensionCallback| {
+        call(cb, "coverage_gaps", json!({})).expect("coverage_gaps")["undetected_techniques"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_ne!(rig.blinded(), report(vec![]), "the claim starts blind");
+    assert_eq!(undetected(&rig.cb), 0, "the claim covers T1059");
+
+    let writer = MemWriter::without_index(Arc::new(RouterGraphStore::new(Arc::new(Mutex::new(
+        rig.test_db.router(),
+    )))));
+    writer
+        .retract(&run_ctx(LOGIC_ID), rig.claims[0].clone(), Some("bad rule"))
+        .await
+        .expect("retract the claim");
+
+    assert_eq!(
+        rig.blinded(),
+        report(vec![]),
+        "a retracted claim is not blind"
+    );
+    assert_eq!(undetected(&rig.cb), 1, "T1059 is uncovered again");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
