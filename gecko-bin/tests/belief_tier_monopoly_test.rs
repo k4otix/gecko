@@ -532,6 +532,7 @@ async fn no_raw_belief_tier_tql_outside_mem_tql() {
         "technique-detection",
         "alert-disposition",
         "supersession",
+        "retraction",
     ] {
         assert!(
             surface.contains(expected),
@@ -577,7 +578,7 @@ async fn no_raw_belief_tier_tql_outside_mem_tql() {
     let mem_tql = hits_by_file
         .remove("core/mem-gecko/src/tql.rs")
         .expect("the scan covers core/mem-gecko/src/tql.rs");
-    for expected in ["belief", "supersession"] {
+    for expected in ["belief", "supersession", "retraction"] {
         assert!(
             mem_tql.iter().any(|(_, l)| l == expected),
             "positive control: mem's tql.rs must show a `{expected}` write; got {mem_tql:?}"

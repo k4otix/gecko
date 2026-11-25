@@ -10,7 +10,7 @@ use gecko_extension_api::{
     RowCountMismatch, RunContext, Visibility,
 };
 
-use super::{MemWriter, Result, mint, str_field};
+use super::{MemWriter, Result, dedup_ids, mint, str_field};
 use crate::tql;
 
 /// The ops that write one belief, with the indices of the ops that must each
@@ -276,6 +276,38 @@ impl EpistemicWriter for MemWriter {
         let meta = self.belief_meta(&new, ctx, BeliefState::Asserted);
         self.best_effort_index(&new_id, &new.text, meta);
         Ok(new_id)
+    }
+
+    async fn retract(
+        &self,
+        ctx: &RunContext,
+        id: MemId,
+        reason: Option<&str>,
+    ) -> Result<Vec<MemId>> {
+        let ops = tql::retraction_ops(ctx, &id, reason);
+        self.graph
+            .write(&ops)
+            .await
+            .map_err(|e| match (&e, RowCountMismatch::from_error(&e)) {
+                (EpistemicError::Storage(msg), Some(m)) if m.op >= 2 => {
+                    EpistemicError::Storage(format!(
+                        "retract of {}: not a current belief visible to the caller; nothing was committed: {msg}",
+                        id.0
+                    ))
+                }
+                _ => e,
+            })?;
+        self.best_effort_remove(ConceptId(id.0.clone()));
+        let (q, v, r) = tql::visible_blast_radius_read(&id, &ctx.actor);
+        let docs = self.graph.read(&q, &v, &r).await.map_err(|e| {
+            EpistemicError::Storage(format!(
+                "retract of {} committed; reading its blast radius failed: {e}",
+                id.0
+            ))
+        })?;
+        let mut radius = dedup_ids(&docs);
+        radius.sort();
+        Ok(radius.into_iter().map(MemId).collect())
     }
 
     async fn contest(&self, ctx: &RunContext, claims: &[MemId]) -> Result<AnomalyId> {

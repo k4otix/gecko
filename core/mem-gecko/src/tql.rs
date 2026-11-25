@@ -445,6 +445,59 @@ pub(crate) fn close_valid_to_op(id: &MemId, at: DateTime) -> GraphWrite {
     )
 }
 
+/// `retract`: records who withdrew belief `id`, in which run and why, flips its
+/// belief-state to "retracted" and closes its validity window at `ctx.occurred_at`.
+/// The link matches only a currently asserted `id` that is `visible-to` the actor,
+/// so retracting a superseded, retracted, missing or out-of-scope belief matches no
+/// row and rolls the whole batch back. An absent `reason` writes no
+/// `retraction-reason`.
+pub(crate) fn retraction_ops(
+    ctx: &RunContext,
+    id: &MemId,
+    reason: Option<&str>,
+) -> Vec<GraphWrite> {
+    let mut link = Params::new();
+    link.s("id", id.0.clone());
+    link.s("aid", ctx.actor.0.clone());
+    link.s("rid", ctx.run_id.to_string());
+    link.dt("ca", ctx.occurred_at);
+    let reason_frag = match reason {
+        Some(r) => {
+            link.s("reason", r);
+            ", has retraction-reason == $reason"
+        }
+        None => "",
+    };
+    let link_op = link
+        .write(&format!(
+            "match
+           $b isa belief, has concept-id $bc, has belief-state \"asserted\"; $bc == $id;
+           $ag isa agent, has agent-id $aa; $aa == $aid;
+           $run isa doc-run, has run-id $rr; $rr == $rid;
+           true == visible-to($b, $ag);
+         insert retraction (retracted: $b, retractor: $ag, run: $run),
+             has created-at == $ca{reason_frag};"
+        ))
+        .expecting(1);
+
+    let mut flip = Params::new();
+    flip.s("id", id.0.clone());
+    let flip_op = flip
+        .write(
+            "match $b isa belief, has concept-id $bc; $bc == $id;
+         update $b has belief-state \"retracted\";",
+        )
+        .expecting(1);
+
+    vec![
+        ensure_run(ctx),
+        ensure_agent(ctx),
+        link_op,
+        flip_op,
+        close_valid_to_op(id, ctx.occurred_at),
+    ]
+}
+
 /// `contest`: a `contradiction` → `anomaly` hub over `claims` (2..), run + actor
 /// stamped. Every claim must be `visible-to` the actor.
 pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -> Vec<GraphWrite> {
@@ -777,6 +830,24 @@ pub(crate) fn blast_radius_read(retracted: &MemId) -> Read {
         "match $r isa memory-item, has concept-id $rc; $rc == $rid;
                let $m in blast-radius($r);
                $m has concept-id $mid;
+         fetch { \"id\": $mid };",
+    )
+}
+
+/// The beliefs in `blast-radius($r)` of memory item `retracted` that are
+/// `visible-to` `actor` and still current, excluding `retracted` itself.
+pub(crate) fn visible_blast_radius_read(retracted: &MemId, actor: &ActorId) -> Read {
+    let mut p = Params::new();
+    p.s("rid", retracted.0.clone());
+    p.s("aid", actor.0.clone());
+    p.read(
+        "match $r isa memory-item, has concept-id $rc; $rc == $rid;
+               $ag isa agent, has agent-id $aa; $aa == $aid;
+               let $m in blast-radius($r);
+               $m isa belief, has concept-id $mid;
+               not { $m is $r; };
+               true == visible-to($m, $ag);
+               not { true == is-superseded($m); };
          fetch { \"id\": $mid };",
     )
 }

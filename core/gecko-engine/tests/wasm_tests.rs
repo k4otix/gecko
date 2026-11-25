@@ -433,6 +433,14 @@ impl gecko_extension_api::EpistemicWriter for UnreachableWriter {
     ) -> Result<gecko_extension_api::AnomalyId, gecko_extension_api::EpistemicError> {
         unreachable!("contest")
     }
+    async fn retract(
+        &self,
+        _: &gecko_extension_api::RunContext,
+        _: gecko_extension_api::MemId,
+        _: Option<&str>,
+    ) -> Result<Vec<gecko_extension_api::MemId>, gecko_extension_api::EpistemicError> {
+        unreachable!("retract")
+    }
     async fn rests_on(
         &self,
         _: &gecko_extension_api::RunContext,

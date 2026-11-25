@@ -780,6 +780,10 @@ mod tests {
             confidence: Option<f64>,
         },
         Contest,
+        Retract {
+            id: MemId,
+            reason: Option<String>,
+        },
     }
 
     /// A writer that records what each write method receives; the methods the
@@ -838,6 +842,18 @@ mod tests {
         ) -> Result<gecko_extension_api::AnomalyId, EpistemicError> {
             *self.probed.lock().unwrap() = Some(Probed::Contest);
             Ok(gecko_extension_api::AnomalyId::new("mem/anom/probe"))
+        }
+        async fn retract(
+            &self,
+            _: &RunContext,
+            id: MemId,
+            reason: Option<&str>,
+        ) -> Result<Vec<MemId>, EpistemicError> {
+            *self.probed.lock().unwrap() = Some(Probed::Retract {
+                id,
+                reason: reason.map(str::to_string),
+            });
+            Ok(Vec::new())
         }
         async fn rests_on(
             &self,
