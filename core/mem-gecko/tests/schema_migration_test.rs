@@ -26,7 +26,7 @@ const NEW_BODY: &str = "          $res isa resolution, has belief-state \"assert
 const OLD_BODY: &str = "          $res isa resolution;";
 
 /// `memory-item`'s shipped `@doc`, and the one databases initialized before it hold.
-const NEW_MEMORY_ITEM_DOC: &str = "Abstract supertype of the substrate's memory: episodes and beliefs, linked by derivation, supersession, assumption and provenance edges.";
+const NEW_MEMORY_ITEM_DOC: &str = "Abstract supertype of the substrate's memory: episodes, beliefs and anomalies, linked by derivation, supersession, assumption and provenance edges.";
 const OLD_MEMORY_ITEM_DOC: &str = "Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies.";
 
 fn router() -> (TypeDbRouter, String) {

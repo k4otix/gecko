@@ -1032,8 +1032,8 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
     imported.concepts.push(hostile);
     match sync_bundle(&mut db.router(), &imported, &[], BELIEF_TIER_ROOT).await {
         Err(DbError::Schema(m)) => assert!(
-            m.contains("anomaly"),
-            "importer type_hint: error does not name anomaly: {m}"
+            m.contains("type_hint \"anomaly\" is not a subtype of `concept`"),
+            "importer type_hint: error does not refuse anomaly as a non-concept: {m}"
         ),
         other => panic!("importer type_hint: expected a schema error, got {other:?}"),
     }

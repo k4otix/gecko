@@ -92,12 +92,12 @@ impl GeckoExtension for MemGecko {
 mod tests {
     use super::*;
 
-    use gecko_extension_api::migration::deleted_labels_absent;
+    use gecko_extension_api::migration::deleted_labels_present;
 
     #[test]
     fn shipped_mem_schema_has_no_population_labels() {
         let schema: &str = &MEM_SCHEMA;
-        let found = deleted_labels_absent(
+        let found = deleted_labels_present(
             schema,
             &[
                 "entity population",
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn shipped_mem_schema_declares_no_consolidation_labels() {
-        let found = deleted_labels_absent(
+        let found = deleted_labels_present(
             &MEM_SCHEMA,
             &[
                 "consolidation-state",
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn shipped_mem_schema_declares_no_divergence_labels() {
-        let found = deleted_labels_absent(
+        let found = deleted_labels_present(
             &MEM_SCHEMA,
             &[
                 "entity divergence-exception",
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn shipped_mem_schema_declares_no_diet_labels() {
-        let found = deleted_labels_absent(
+        let found = deleted_labels_present(
             &MEM_SCHEMA,
             &[
                 "entity intention",

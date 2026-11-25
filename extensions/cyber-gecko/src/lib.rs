@@ -147,9 +147,9 @@ mod tests {
 
     #[test]
     fn shipped_cyber_schema_declares_no_cut_labels() {
-        use gecko_extension_api::migration::deleted_labels_absent;
+        use gecko_extension_api::migration::deleted_labels_present;
         let schema = format!("{CYBER_SCHEMA}\n{CYBER_FUNCTIONS}");
-        let found = deleted_labels_absent(
+        let found = deleted_labels_present(
             &schema,
             &["entity sighting", "relation sighting-of", "sighting-of:"],
         );

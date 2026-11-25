@@ -1,7 +1,7 @@
 define
 
   # ══════════════════════════════════════════════════════════════════
-  # A2 — mem-gecko substrate ontology (additive on core_schema.tql)
+  # mem-gecko substrate ontology (additive on core_schema.tql)
   # ══════════════════════════════════════════════════════════════════
 
   # ── State enums ───────────────────────────────────────────────────
@@ -45,7 +45,7 @@ define
   # Memory-item hierarchy
   #   id scheme: concept-id @key inherited from okf-concept (mem/ep|bel/{ulid})
   # ══════════════════════════════════════════════════════════════════
-  entity memory-item @abstract, sub okf-concept @doc("Abstract supertype of the substrate's memory: episodes and beliefs, linked by derivation, supersession, assumption and provenance edges."),
+  entity memory-item @abstract, sub okf-concept @doc("Abstract supertype of the substrate's memory: episodes, beliefs and anomalies, linked by derivation, supersession, assumption and provenance edges."),
       owns salience @card(0..1),
       owns base-activation @card(0..1),
       owns access-count @card(0..1) @range(0..),

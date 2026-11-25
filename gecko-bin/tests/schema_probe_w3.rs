@@ -180,6 +180,7 @@ async fn canonical_entity_at_recursive_asof_closure() {
         "as of t3 (both epochs valid) the closure of C1 grows to {{C1, C2, C3}}; got {at_t3:?}"
     );
 }
+
 // ══════════════════════════════════════════════════════════════════════════════
 // The shipped shape: composition (P-COMP) and migration posture (P-REDEF)
 //
@@ -292,6 +293,7 @@ async fn raw_define_error(db: &TestDb, schema: &str) -> String {
         result.expect_err("raw define of an existing fun must fail")
     )
 }
+
 /// **P-COMP** — the full core → mem → cyber composition is define-clean, and the
 /// shipped types carry a contradiction with no delta on top.
 ///
@@ -300,7 +302,7 @@ async fn raw_define_error(db: &TestDb, schema: &str) -> String {
 /// would panic there. On the composed schema, two plain beliefs grouped under a
 /// `contradiction` hub make `contradicts()` hold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn full_candidate_stack_composes_define_clean_with_cyber() {
+async fn composed_schema_is_define_clean_with_cyber() {
     let db = TestDb::new("probe_w3");
     // Define-clean: each of core/mem/cyber `.expect`s a clean apply inside this helper;
     // a define collision (or a broken strip-define assembly) panics here.
@@ -353,7 +355,7 @@ async fn p_w5_1_folded_surface_contains_core_and_cyber_relations() {
     apply_composed_schema(&db).await;
 
     let surface = live_belief_tier_surface(&db).await.relations;
-    eprintln!("W5a surface (core+mem+cyber) = {surface:?}");
+    eprintln!("belief-tier surface (core+mem+cyber) = {surface:?}");
 
     // cyber's belief-referencing relations are on the surface without a hand list;
     // cyber writes them through the belief-edge seam.

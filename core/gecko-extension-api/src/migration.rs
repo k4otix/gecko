@@ -48,9 +48,9 @@ fn is_label_char(c: char) -> bool {
 
 /// Every needle that occurs in `text` at a label boundary: where a needle starts
 /// (ends) with a label character, the character before (after) the match is not one.
-// A guard each fragment's tests run over its shipped schema for labels it deleted.
+/// Each fragment's tests run it over the shipped schema for the labels a cut deleted.
 #[doc(hidden)]
-pub fn deleted_labels_absent(text: &str, needles: &[&str]) -> Vec<String> {
+pub fn deleted_labels_present(text: &str, needles: &[&str]) -> Vec<String> {
     let mut found = Vec::new();
     for needle in needles {
         let check_start = needle.chars().next().is_some_and(is_label_char);
@@ -527,22 +527,22 @@ mod tests {
 "#;
 
     #[test]
-    fn deleted_labels_absent_matches_whole_labels_only() {
+    fn deleted_labels_present_matches_whole_labels_only() {
         let rel = "relation scoped";
         let role = "scoped:";
         assert_eq!(
-            deleted_labels_absent("relation scoped @doc(", &[rel]),
+            deleted_labels_present("relation scoped @doc(", &[rel]),
             [rel]
         );
         assert_eq!(
-            deleted_labels_absent("plays scoped:scoped-belief", &[role]),
+            deleted_labels_present("plays scoped:scoped-belief", &[role]),
             [role]
         );
         assert_eq!(
-            deleted_labels_absent("blast-radius-at(", &["blast-radius-at"]),
+            deleted_labels_present("blast-radius-at(", &["blast-radius-at"]),
             ["blast-radius-at"]
         );
-        assert!(deleted_labels_absent("blast-radius(", &["blast-radius-at"]).is_empty());
+        assert!(deleted_labels_present("blast-radius(", &["blast-radius-at"]).is_empty());
         for text in [
             "relation scoped-thing",
             "relation scoped_thing",
@@ -550,13 +550,13 @@ mod tests {
             "for a scoped member",
         ] {
             assert!(
-                deleted_labels_absent(text, &[rel, role]).is_empty(),
+                deleted_labels_present(text, &[rel, role]).is_empty(),
                 "{text:?} must match neither needle"
             );
         }
         for text in ["plays unscoped:role", "plays exception-scoped:role"] {
             assert!(
-                deleted_labels_absent(text, &[role]).is_empty(),
+                deleted_labels_present(text, &[role]).is_empty(),
                 "{text:?} must not match {role:?}"
             );
         }
@@ -571,6 +571,14 @@ mod tests {
             check_migrations(&[entry(tql)], ABSTRACT_SCHEMA)
                 .unwrap_or_else(|e| panic!("{tql}: {e}"));
         }
+    }
+
+    #[test]
+    fn only_a_whole_abstract_annotation_is_skipped() {
+        let schema = "define\n  entity root @doc(\"A root.\");\n  entity item @abstractish sub root @doc(\"x\");\n";
+        let err =
+            check_migrations(&[entry("undefine @doc from item sub root;")], schema).unwrap_err();
+        assert!(err.contains("no @doc to replace"), "{err}");
     }
 
     #[test]
