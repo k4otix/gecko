@@ -571,6 +571,104 @@ async fn believed_at_returns_the_as_of_set() {
     fx.drop_db().await;
 }
 
+/// A supersede closes the old belief's validity window, so as-of reads before it see
+/// the old belief and as-of reads after it see only its successor.
+#[tokio::test]
+async fn believed_at_reads_across_a_supersede() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let old = w
+        .assert_belief(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            belief("first view", "agent-1", 0.8),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let new = w
+        .supersede(
+            &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+            old.clone(),
+            belief("revised view", "agent-1", 0.8),
+            "revised",
+        )
+        .await
+        .unwrap();
+
+    let ctx = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
+    let feb = w
+        .believed_at(&ctx, dt("2026-02-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(
+        feb,
+        vec![old.clone()],
+        "before the supersede: only the old belief"
+    );
+    let apr = w
+        .believed_at(&ctx, dt("2026-04-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(
+        apr,
+        vec![new.clone()],
+        "after the supersede: only its successor"
+    );
+    let at = w
+        .believed_at(&ctx, dt("2026-03-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(
+        at,
+        vec![new],
+        "at the supersede instant: the successor, half-open window"
+    );
+
+    fx.drop_db().await;
+}
+
+/// A belief asserted and superseded at one instant gets an empty window `[t, t)`:
+/// no as-of read returns it, and its successor holds from `t` on.
+#[tokio::test]
+async fn a_same_instant_supersede_leaves_the_old_belief_an_empty_window() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let t = dt("2026-01-01T00:00:00Z");
+    let ctx = ctx_at("agent-1", t);
+    let old = w
+        .assert_belief(
+            &ctx,
+            belief("draft", "agent-1", 0.8),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let new = w
+        .supersede(
+            &ctx,
+            old.clone(),
+            belief("final", "agent-1", 0.8),
+            "same run",
+        )
+        .await
+        .unwrap();
+
+    let later = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
+    for at in [t, dt("2026-02-01T00:00:00Z")] {
+        let got = w.believed_at(&later, at).await.unwrap();
+        assert_eq!(got, vec![new.clone()], "as of {at}: only the successor");
+    }
+    let before = w
+        .believed_at(&later, dt("2025-12-31T00:00:00Z"))
+        .await
+        .unwrap();
+    assert!(before.is_empty(), "before t: neither belief: {before:?}");
+
+    fx.drop_db().await;
+}
+
 #[tokio::test]
 async fn believed_at_hides_another_agents_private_belief() {
     let fx = Fixture::new().await;
