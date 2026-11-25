@@ -17,11 +17,12 @@ define
       return check;
 
   # believed-at($t) -> {belief}  (temporal; index NOT involved)
-  fun believed-at($t: datetime) -> { belief } @doc("Returns the beliefs asserted and within their validity window as of time $t (valid-from <= $t and no valid-to on or before $t)."):
+  fun believed-at($t: datetime) -> { belief } @doc("Returns the beliefs that held at time $t: those whose half-open validity window [valid-from, valid-to) contains $t and that no supersession at or before $t replaced; belief-state is not read."):
       match
-          $b isa belief, has belief-state "asserted", has valid-from $vf;
+          $b isa belief, has valid-from $vf;
           $vf <= $t;
           not { $b has valid-to $vt; $vt <= $t; };
+          not { supersession (superseded: $b), has created-at $ca; $ca <= $t; };
       return { $b };
 
   # derivation-chain($b) -> {memory-item}  (recursive transitive closure)
@@ -155,8 +156,6 @@ define
   #   The present-state canonical-entity above stays as the fast path; these $t-taking
   #   variants answer as-of-t by gating on the resolution validity WINDOW
   #   (valid-from/valid-to), never on belief-state — which mutates on supersession.
-  #   (believed-at does read belief-state, so it is not an as-of read of superseded
-  #   beliefs.)
   fun canonical-entity-at($rec: concept, $t: datetime) -> { concept } @doc("Transitive closure of source records resolved to the same entity as $rec as of time $t, following provable resolution beliefs whose validity window contains $t."):
       match
           { let $other in canonical-step-at($rec, $t); }

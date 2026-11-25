@@ -818,6 +818,107 @@ async fn a_backdated_supersede_is_returned_by_no_as_of_read() {
 }
 
 #[tokio::test]
+async fn a_supersede_chain_gives_the_middle_belief_its_window() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let a = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "a").await;
+    let b = w
+        .supersede(
+            &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+            a.clone(),
+            belief("b", "agent-1", 0.8),
+            "to b",
+        )
+        .await
+        .unwrap();
+    let c = w
+        .supersede(
+            &ctx_at("agent-1", dt("2026-05-01T00:00:00Z")),
+            b.clone(),
+            belief("c", "agent-1", 0.8),
+            "to c",
+        )
+        .await
+        .unwrap();
+    let ctx = ctx_at("agent-1", dt("2026-12-01T00:00:00Z"));
+    for (at, want) in [
+        ("2026-02-01T00:00:00Z", &a),
+        ("2026-03-01T00:00:00Z", &b),
+        ("2026-04-01T00:00:00Z", &b),
+        ("2026-05-01T00:00:00Z", &c),
+        ("2026-06-01T00:00:00Z", &c),
+    ] {
+        let got = w.believed_at(&ctx, dt(at)).await.unwrap();
+        assert_eq!(got, vec![want.clone()], "as of {at}");
+    }
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn as_of_recall_reads_across_a_supersede() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let old = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "first view").await;
+    let new = w
+        .supersede(
+            &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+            old.clone(),
+            belief("revised view", "agent-1", 0.8),
+            "revised",
+        )
+        .await
+        .unwrap();
+    let run = dt("2026-06-01T00:00:00Z");
+    assert_eq!(
+        recall_as_of(&w, "agent-1", run, dt("2026-02-01T00:00:00Z"), 5).await,
+        vec![old]
+    );
+    assert_eq!(
+        recall_as_of(&w, "agent-1", run, dt("2026-04-01T00:00:00Z"), 5).await,
+        vec![new]
+    );
+    fx.drop_db().await;
+}
+
+/// A database written before supersede closed `valid-to` holds a superseded belief
+/// with no `valid-to`; its supersession edge still ends it.
+#[tokio::test]
+async fn a_legacy_superseded_belief_without_valid_to_ends_at_its_supersession() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let old = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "legacy view").await;
+    let new = w
+        .supersede(
+            &ctx_at("agent-1", dt("2026-03-01T00:00:00Z")),
+            old.clone(),
+            belief("current view", "agent-1", 0.8),
+            "revised",
+        )
+        .await
+        .unwrap();
+    fx.raw_write(&format!(
+        r#"match $b isa belief, has concept-id "{}", has valid-to $vt; delete has $vt of $b;"#,
+        old.0
+    ))
+    .await;
+    assert_eq!(
+        valid_to(&fx, &old).await,
+        None,
+        "the old window is open, as before B1"
+    );
+    let ctx = ctx_at("agent-1", dt("2026-06-01T00:00:00Z"));
+    for (at, want) in [
+        ("2026-02-01T00:00:00Z", &old),
+        ("2026-03-01T00:00:00Z", &new),
+        ("2026-04-01T00:00:00Z", &new),
+    ] {
+        let got = w.believed_at(&ctx, dt(at)).await.unwrap();
+        assert_eq!(got, vec![want.clone()], "as of {at}");
+    }
+    fx.drop_db().await;
+}
+
+#[tokio::test]
 async fn believed_at_hides_another_agents_private_belief() {
     let fx = Fixture::new().await;
     let w = fx.writer(None, None);
