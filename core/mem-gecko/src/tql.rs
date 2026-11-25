@@ -431,7 +431,9 @@ pub(crate) fn supersession_ops(
 
 /// Closes belief `id`'s validity window at `at`: sets `valid-to` to `at` unless the
 /// window already ended at or before `at`, so it never extends one. It carries no
-/// row expectation, because an already-ended window matches nothing.
+/// row expectation, because an already-ended window matches nothing, and no
+/// visibility gate: it must follow a `visible-to`-gated `expecting(1)` op on the same
+/// belief in the same batch, so a refused write rolls it back.
 pub(crate) fn close_valid_to_op(id: &MemId, at: DateTime) -> GraphWrite {
     let mut p = Params::new();
     p.s("id", id.0.clone());
@@ -817,8 +819,9 @@ pub(crate) fn derivation_chain_read(b: &MemId) -> Read {
 
 /// `believed-at($t)` restricted to beliefs `visible-to` `actor`: each belief's id and
 /// title for as-of recall, newest `valid-from` first, ties broken by concept id.
-/// A belief superseded after `at` is returned; its successor is not. An actor with no `agent` node matches
-/// nothing, so its as-of recall is empty, as with `gated_candidate_read`.
+/// A belief superseded after `at` is returned; its successor is not. An actor with
+/// no `agent` node matches nothing, so its as-of recall is empty, as with
+/// `gated_candidate_read`.
 pub(crate) fn believed_at_chunks_read(at: DateTime, actor: &ActorId) -> Read {
     let mut p = Params::new();
     p.dt("t", at);

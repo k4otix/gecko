@@ -161,6 +161,12 @@ empty result).
   (`a_legacy_superseded_belief_without_valid_to_ends_at_its_supersession`). The new
   `believed-at` reaches a database when `gecko schema-init` or `sync` next applies the
   schema.
+- **Empty and inverted windows.** A belief asserted and superseded at one `occurred_at`
+  (within one run) gets the empty window `[t, t)`, and a supersede dated before the old
+  belief's `valid-from` gives it an inverted one. Either way no as-of read ever returns it;
+  its successor holds from the supersede on
+  (`a_same_instant_supersede_leaves_the_old_belief_an_empty_window`,
+  `a_backdated_supersede_is_returned_by_no_as_of_read`).
 - **`belief-state` is not read.** A belief raw-written as `retracted`, or as `superseded`
   with no supersession edge, stays in as-of reads unless its `valid-to` is closed. No writer
   does that today, and N4's `retract` will close `valid-to`.

@@ -37,7 +37,7 @@ and drops its state gate, the same window `canonical-entity-at` already reads.
      `valid-to = created_at`. That is the function's existing parameter, which the writer passes
      as `ctx.occurred_at` (`writer/beliefs.rs:250-256`). It is the instant the successor's
      `valid-from` opens at (`tql.rs:299`), so the successor's window is `[t, ∞)`.
-   - The op is `match $o isa belief, has concept-id $oc; $oc == $oid; not { $o has valid-to $vt; $vt <= $t; }; update $o has valid-to == $t;`.
+   - The op is `match $b isa belief, has concept-id $bc; $bc == $id; not { $b has valid-to $vt; $vt <= $t; }; update $b has valid-to == $t;`, built by `tql::close_valid_to_op`.
      It is the repo's first parameterized `update`, so **the plan probes this syntax first** on
      live TypeDB 3.15.
    - The write is one more op in the same batch, so it is atomic with the link and the state flip.
@@ -111,6 +111,8 @@ and drops its state gate, the same window `canonical-entity-at` already reads.
     at its instant, only the successor. It fails today.
   - `a_same_instant_supersede_leaves_the_old_belief_an_empty_window`. It passes today only because
     of the state gate, and it pins that the gate's removal does not expose the old belief.
+  - `a_supersede_chain_gives_the_middle_belief_its_window`: A → B → C, with B held only over
+    `[t2, t3)`.
   - `as_of_recall_reads_across_a_supersede`: the same through `recall(… as_of …)`, the `mem.recall`
     path.
   - `a_supersede_keeps_an_earlier_valid_to`: a belief whose window already closed before the

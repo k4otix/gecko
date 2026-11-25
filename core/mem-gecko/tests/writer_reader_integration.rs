@@ -874,6 +874,10 @@ async fn as_of_recall_reads_across_a_supersede() {
         vec![old]
     );
     assert_eq!(
+        recall_as_of(&w, "agent-1", run, dt("2026-03-01T00:00:00Z"), 5).await,
+        vec![new.clone()]
+    );
+    assert_eq!(
         recall_as_of(&w, "agent-1", run, dt("2026-04-01T00:00:00Z"), 5).await,
         vec![new]
     );
