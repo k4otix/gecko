@@ -72,7 +72,7 @@ Hold new code to these — they encode recurring pitfalls specific to this codeb
 
 **The guest is untrusted.** At the `host_call_extension` boundary, cap every guest-supplied length against a constant *before* allocating a host buffer (see `MAX_IMPORT_NAME_LEN`/`MAX_ARGS_JSON_LEN` in `wasm_executor.rs`). Scope-deny (S3) is checked before anything else, so an ungranted call never leaks whether its payload was even well-formed.
 
-**The semantic index is a rebuildable bolt-on (invariant 8).** Bulk load/rebuild paths must call `SemanticIndex::upsert_many` (one persist for the batch) — never `upsert` in a loop, which re-serializes the whole snapshot per item (O(n²)). Index mutations are best-effort and post-commit; a failure marks the id dirty for background repair and never fails the authoritative graph write.
+**The semantic index is a rebuildable bolt-on (invariant 8).** Bulk load/rebuild paths must call `SemanticIndex::upsert_many` (one persist for the batch) — never `upsert` in a loop, which re-serializes the whole snapshot per item (O(n²)). Index mutations are best-effort and post-commit; a failure logs a warning, never fails the authoritative graph write, and is repaired when the next startup reconciles the index with the graph.
 
 **Don't block the async runtime.** CPU-heavy embedding, `ureq` downloads, and `std::thread::sleep`/`std::fs` reached from an `async fn` must go through `tokio::task::spawn_blocking` (or the `tokio::*` async equivalent). The real embedder and `gecko up`/`down` orchestration are the usual offenders.
 

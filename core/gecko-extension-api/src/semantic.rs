@@ -191,8 +191,8 @@ pub trait SemanticIndex: Send + Sync {
     }
 
     /// Drops all vectors, returning the index to an empty state (retaining its
-    /// model identity). The rebuild-from-graph path calls this before replaying the
-    /// graph's current-state embeddables. Defaults to a no-op.
+    /// model identity). Startup reconciliation calls this on a model change before
+    /// replaying the graph's current-state embeddables. Defaults to a no-op.
     fn reset(&self) {}
 }
 

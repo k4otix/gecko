@@ -122,6 +122,16 @@ proven through the real sandbox against live TypeDB.
   (`garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays`). A
   concept a belief edge references is retired instead.
 
+## Semantic index files
+
+The index is one file per database, `<dir>/<database>.hnsw`, where `dir` is
+`[semantic_index] dir` or `cache_dir/index/`. The file is keyed by the database name
+only, so names that differ only in case share a file on a case-insensitive filesystem,
+as do same-named databases on two TypeDB servers. Results stay correct, because every
+startup reconciles the index with the graph, but each alternation re-embeds the
+difference. A `gecko.toml` that still sets `[semantic_index] path` is refused by
+`gecko run` with a pointer to `dir`.
+
 ## As-of recall and supersede
 
 As-of recall returns only beliefs visible to the caller (an actor with no agent node gets an
