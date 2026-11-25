@@ -18,6 +18,16 @@ owed-work ledger on 2026-11-24.
   `reduce`-returned value fails at compile ("cannot be declared as both a 'Attribute' and as
   a 'Value'"). Writers that persist a computed score must bind an attribute instance; a
   `given` parameter with `has attr == $p` is fine (the populations writer uses that form).
+- **`[REP35]` parameterized `update`.** `update $o has valid-to == $t;` with `$t` a `given`
+  datetime works; `update $o has valid-to $t;` is refused ("declared as both a 'Value' and as a
+  'Attribute'"). On an owns `@card(0..1)` attribute, `update` inserts the value when the
+  instance has none and replaces it when it has one, with no cardinality error. Guarded by
+  `not { $o has valid-to $vt; $vt <= $t; }`, it never extends an earlier value. Observed on
+  3.15.0, 2026-11-25.
+- **A role-only relation with `has` inside `not` persists in a function.** `not { supersession
+  (superseded: $b), has created-at $ca; $ca <= $t; };` defines in a function body, and the
+  exported text re-plans with no rewrite, so the anonymous form needs no `$s isa … links`.
+  Observed on 3.15.0, 2026-11-25.
 - **`let $x in <single-valued fn>` yields one row.** A `return first` scalar is coerced to a
   one-row stream, so `select-for-context`'s `let $score in retrieval-score($b, $now)` is
   well-formed. Settled.
