@@ -6,7 +6,8 @@
 //!   `persistence` ([`PERSISTENCE_ATTACK_ID`]).
 //! - A live parent technique [`PARENT_ATTACK_ID`] in both tactics, with live
 //!   sub-techniques [`SUB1_ATTACK_ID`] (execution) and [`SUB2_ATTACK_ID`]
-//!   (persistence), and a deprecated sub-technique [`RETIRED_SUB_ATTACK_ID`].
+//!   (persistence), and a deprecated sub-technique [`RETIRED_SUB_ATTACK_ID`]
+//!   (execution).
 //! - A revocation chain: [`REVOKED_FIRST_ATTACK_ID`] is revoked by
 //!   [`REVOKED_SECOND_ATTACK_ID`], itself revoked by [`SUB1_ATTACK_ID`].
 //! - A deprecated technique [`DEPRECATED_ATTACK_ID`] with no replacement.
@@ -87,8 +88,8 @@ pub const COMPONENT: &str = "Module Load";
 /// The log source the analytic reads the component from.
 pub const LOG_SOURCE: &str = "WinEventLog:Sysmon";
 
-fn tactic(stix_id: &str, attack_id: &str, shortname: &str) -> Value {
-    let mut t = object("x-mitre-tactic", stix_id, shortname, attack_id);
+fn tactic(stix_id: &str, attack_id: &str, shortname: &str, name: &str) -> Value {
+    let mut t = object("x-mitre-tactic", stix_id, name, attack_id);
     t["x_mitre_shortname"] = json!(shortname);
     t["x_mitre_domains"] = json!(["enterprise-attack"]);
     t
@@ -118,7 +119,7 @@ fn relationship(n: u32, rel_type: &str, source: &str, target: &str) -> Value {
 
 /// The fixture as a STIX bundle.
 pub fn fixture_json() -> String {
-    let mut retired_sub = technique(RETIRED_SUB_STIX_ID, RETIRED_SUB_ATTACK_ID, &[]);
+    let mut retired_sub = technique(RETIRED_SUB_STIX_ID, RETIRED_SUB_ATTACK_ID, &["execution"]);
     retired_sub["x_mitre_deprecated"] = json!(true);
     let mut revoked_first = technique(REVOKED_FIRST_STIX_ID, REVOKED_FIRST_ATTACK_ID, &[]);
     revoked_first["revoked"] = json!(true);
@@ -146,8 +147,8 @@ pub fn fixture_json() -> String {
         "type": "bundle",
         "id": "bundle--5f000000-0000-4000-8000-000000000001",
         "objects": [
-            tactic(EXECUTION_STIX_ID, EXECUTION_ATTACK_ID, "execution"),
-            tactic(PERSISTENCE_STIX_ID, PERSISTENCE_ATTACK_ID, "persistence"),
+            tactic(EXECUTION_STIX_ID, EXECUTION_ATTACK_ID, "execution", "Execution"),
+            tactic(PERSISTENCE_STIX_ID, PERSISTENCE_ATTACK_ID, "persistence", "Persistence"),
             technique(PARENT_STIX_ID, PARENT_ATTACK_ID, &["execution", "persistence"]),
             technique(SUB1_STIX_ID, SUB1_ATTACK_ID, &["execution"]),
             technique(SUB2_STIX_ID, SUB2_ATTACK_ID, &["persistence"]),

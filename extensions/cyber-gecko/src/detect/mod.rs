@@ -15,9 +15,10 @@
 //! - `disposition` records an analyst verdict as a belief with an
 //!   `alert-disposition` edge carrying the verdict, so `precision` can count it.
 //! - `coverage_gaps` runs the persisted `undetected-techniques()` TypeDB function,
-//!   which skips retired, revoked and deprecated techniques. A listed technique
-//!   with live sub-techniques carries `sub_techniques`: how many are claimed, of
-//!   how many.
+//!   which skips retired, revoked and deprecated techniques. Each listed technique
+//!   carries its live `tactics`, and one with live sub-techniques carries
+//!   `sub_techniques`: how many are claimed, of how many. `by_tactic` gives each
+//!   live tactic's live technique count, its gap count and its gaps.
 //! - `blinded` checks each asserted claim against ATT&CK's detection model and the
 //!   synced sensor files. A claim's technique has detection strategies, each carried
 //!   out by one analytic per platform, and an analytic reads log sources for the data
@@ -230,8 +231,10 @@ async fn disposition(
 }
 
 /// Live techniques with no asserted detection claim (the
-/// `undetected-techniques()` TypeDB function). A technique with live
-/// sub-techniques also carries how many of them have an asserted claim.
+/// `undetected-techniques()` TypeDB function), each with the ATT&CK ids of its
+/// live tactics. A technique with live sub-techniques also carries how many of
+/// them have an asserted claim. `by_tactic` gives each live tactic's count of live
+/// techniques, how many of them are gaps, and those gaps.
 async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     let mut rows = graph
         .read(
@@ -269,13 +272,102 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
             entry.0 += 1;
         }
     }
+    let pairs = read(
+        graph,
+        &format!(
+            "match technique-tactic (technique: $t, tactic: $tac); {} {} \
+             fetch {{ \"tech_cid\": $t.concept-id, \"tech_aid\": $t.attack-id, \
+                      \"tac_cid\": $tac.concept-id, \"tac_aid\": $tac.attack-id, \
+                      \"shortname\": $tac.tactic-shortname, \"name\": $tac.title }};",
+            live("t"),
+            live("tac")
+        ),
+        &[],
+        &[],
+    )
+    .await?;
+    let gap_ids: BTreeMap<String, Option<String>> = rows
+        .iter()
+        .map(|row| {
+            Ok((
+                row_str(row, "concept_id")?,
+                row.get("attack_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ))
+        })
+        .collect::<Result<_, String>>()?;
+    let (tactics, by_tactic) = group_by_tactic(&pairs, &gap_ids)?;
     for row in &mut rows {
         let concept_id = row_str(row, "concept_id")?;
         if let Some((claimed, total)) = counts.get(&concept_id) {
             row["sub_techniques"] = json!({ "claimed": claimed, "total": total });
         }
+        row["tactics"] = json!(tactics.get(&concept_id).cloned().unwrap_or_default());
     }
-    Ok(json!({ "undetected_techniques": rows }))
+    Ok(json!({ "undetected_techniques": rows, "by_tactic": by_tactic }))
+}
+
+/// Each gap technique's sorted tactic ATT&CK ids, by concept id, and the
+/// `by_tactic` entries.
+type TacticGrouping = (BTreeMap<String, Vec<String>>, Vec<Value>);
+
+/// Groups live `technique-tactic` rows by tactic. `gaps` maps each gap technique's
+/// concept id to its ATT&CK id, if it has one. Returns each gap technique's sorted
+/// tactic ATT&CK ids, by concept id, and one entry per tactic, sorted by ATT&CK id:
+/// its live technique count, its gap count, and its gaps by ATT&CK id (or concept id
+/// for a technique without one). A tactic with no ATT&CK id is an error naming it.
+fn group_by_tactic(
+    pairs: &[Value],
+    gaps: &BTreeMap<String, Option<String>>,
+) -> Result<TacticGrouping, String> {
+    struct Tactic {
+        concept_id: String,
+        shortname: Value,
+        name: Value,
+        live: BTreeSet<String>,
+        gaps: BTreeSet<String>,
+    }
+    let mut by_tactic: BTreeMap<String, Tactic> = BTreeMap::new();
+    let mut tactics: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in pairs {
+        let tech = row_str(row, "tech_cid")?;
+        let tac_cid = row_str(row, "tac_cid")?;
+        let Some(tac_aid) = row.get("tac_aid").and_then(Value::as_str) else {
+            return Err(format!(
+                "tactic '{tac_cid}' has no ATT&CK id, so coverage cannot be grouped by it"
+            ));
+        };
+        let entry = by_tactic
+            .entry(tac_aid.to_string())
+            .or_insert_with(|| Tactic {
+                concept_id: tac_cid,
+                shortname: row.get("shortname").cloned().unwrap_or(Value::Null),
+                name: row.get("name").cloned().unwrap_or(Value::Null),
+                live: BTreeSet::new(),
+                gaps: BTreeSet::new(),
+            });
+        entry.live.insert(tech.clone());
+        if let Some(gap_aid) = gaps.get(&tech) {
+            entry
+                .gaps
+                .insert(gap_aid.clone().unwrap_or_else(|| tech.clone()));
+            tactics.entry(tech).or_default().insert(tac_aid.to_string());
+        }
+    }
+    let by_tactic = by_tactic
+        .into_iter()
+        .map(|(attack_id, t)| {
+            json!({ "attack_id": attack_id, "concept_id": t.concept_id,
+                    "shortname": t.shortname, "name": t.name, "live": t.live.len(),
+                    "undetected": t.gaps.len(), "techniques": t.gaps })
+        })
+        .collect();
+    let tactics = tactics
+        .into_iter()
+        .map(|(tech, ids)| (tech, ids.into_iter().collect()))
+        .collect();
+    Ok((tactics, by_tactic))
 }
 
 /// The pattern that skips `$var` when it has `retired-at`, `revoked true` or
@@ -1267,6 +1359,93 @@ async fn live_replacements(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tactic_pair(tech: &str, tech_aid: Option<&str>, tac: &str, tac_aid: Option<&str>) -> Value {
+        json!({ "tech_cid": tech, "tech_aid": tech_aid, "tac_cid": tac, "tac_aid": tac_aid,
+                "shortname": format!("{tac}-short"), "name": format!("{tac} name") })
+    }
+
+    fn gaps(ids: &[(&str, Option<&str>)]) -> BTreeMap<String, Option<String>> {
+        ids.iter()
+            .map(|(c, a)| (c.to_string(), a.map(str::to_string)))
+            .collect()
+    }
+
+    #[test]
+    fn group_by_tactic_counts_live_and_undetected() {
+        let pairs = [
+            tactic_pair("c/t2", Some("T2"), "c/ta2", Some("TA2")),
+            tactic_pair("c/t1", Some("T1"), "c/ta2", Some("TA2")),
+            tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1")),
+        ];
+        let (tactics, by_tactic) = group_by_tactic(&pairs, &gaps(&[("c/t1", Some("T1"))])).unwrap();
+        assert_eq!(
+            by_tactic,
+            vec![
+                json!({ "attack_id": "TA1", "concept_id": "c/ta1", "shortname": "c/ta1-short",
+                        "name": "c/ta1 name", "live": 1, "undetected": 1, "techniques": ["T1"] }),
+                json!({ "attack_id": "TA2", "concept_id": "c/ta2", "shortname": "c/ta2-short",
+                        "name": "c/ta2 name", "live": 2, "undetected": 1, "techniques": ["T1"] }),
+            ]
+        );
+        assert_eq!(tactics["c/t1"], vec!["TA1".to_string(), "TA2".to_string()]);
+        assert!(
+            !tactics.contains_key("c/t2"),
+            "only gap techniques get a tactics list"
+        );
+    }
+
+    #[test]
+    fn group_by_tactic_counts_a_duplicate_pair_once() {
+        let p = tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1"));
+        let (tactics, by_tactic) =
+            group_by_tactic(&[p.clone(), p], &gaps(&[("c/t1", Some("T1"))])).unwrap();
+        assert_eq!(by_tactic[0]["live"], 1);
+        assert_eq!(by_tactic[0]["undetected"], 1);
+        assert_eq!(by_tactic[0]["techniques"], json!(["T1"]));
+        assert_eq!(tactics["c/t1"], vec!["TA1".to_string()]);
+    }
+
+    #[test]
+    fn group_by_tactic_keeps_a_fully_covered_tactic() {
+        let (_, by_tactic) = group_by_tactic(
+            &[tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1"))],
+            &gaps(&[]),
+        )
+        .unwrap();
+        assert_eq!(by_tactic[0]["live"], 1);
+        assert_eq!(by_tactic[0]["undetected"], 0);
+        assert_eq!(by_tactic[0]["techniques"], json!([]));
+    }
+
+    #[test]
+    fn group_by_tactic_gives_a_titleless_tactic_a_null_name() {
+        let mut p = tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1"));
+        p.as_object_mut().unwrap().remove("name");
+        let (_, by_tactic) = group_by_tactic(&[p], &gaps(&[])).unwrap();
+        assert_eq!(by_tactic[0]["name"], Value::Null);
+    }
+
+    #[test]
+    fn group_by_tactic_refuses_a_tactic_without_an_attack_id() {
+        let err = group_by_tactic(
+            &[tactic_pair("c/t1", Some("T1"), "c/ta-x", None)],
+            &gaps(&[]),
+        )
+        .unwrap_err();
+        assert!(err.contains("c/ta-x"), "{err}");
+    }
+
+    #[test]
+    fn group_by_tactic_lists_an_id_less_gap_technique_by_concept_id() {
+        let (_, by_tactic) = group_by_tactic(
+            &[tactic_pair("c/t-x", None, "c/ta1", Some("TA1"))],
+            &gaps(&[("c/t-x", None)]),
+        )
+        .unwrap();
+        assert_eq!(by_tactic[0]["undetected"], 1);
+        assert_eq!(by_tactic[0]["techniques"], json!(["c/t-x"]));
+    }
 
     fn gap(has_requirements: bool, keys: &[&str]) -> GapReading {
         GapReading {

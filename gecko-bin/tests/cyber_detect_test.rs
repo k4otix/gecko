@@ -1587,6 +1587,15 @@ fn gap_row<'a>(gaps: &'a Value, attack_id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("{attack_id} is not listed in {gaps}"))
 }
 
+/// The `coverage_gaps` `by_tactic` entry for tactic `attack_id`, if listed.
+fn tactic_row<'a>(gaps: &'a Value, attack_id: &str) -> Option<&'a Value> {
+    gaps["by_tactic"]
+        .as_array()
+        .expect("by_tactic array")
+        .iter()
+        .find(|row| row["attack_id"] == attack_id)
+}
+
 /// Seeds the structure fixture and the playbook bundle, and returns the detect
 /// bridge over them.
 async fn structure_bridge(test_db: &TestDb) -> ExtensionCallback {
@@ -1639,6 +1648,112 @@ async fn coverage_gaps_counts_a_parents_claimed_sub_techniques() {
             .get("sub_techniques")
             .is_none(),
         "a sub-technique has no sub-technique counts: {gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_gaps_groups_gaps_by_tactic() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_by_tactic");
+    let cb = structure_bridge(&test_db).await;
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    let attack_ids: Vec<&Value> = gaps["by_tactic"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| &t["attack_id"])
+        .collect();
+    assert_eq!(
+        attack_ids,
+        vec![
+            structure::EXECUTION_ATTACK_ID,
+            structure::PERSISTENCE_ATTACK_ID
+        ],
+        "{gaps}"
+    );
+    let execution = tactic_row(&gaps, structure::EXECUTION_ATTACK_ID).unwrap();
+    assert_eq!(execution["shortname"], "execution");
+    assert_eq!(execution["name"], "Execution");
+    assert_eq!(execution["live"], 2, "{gaps}");
+    assert_eq!(execution["undetected"], 2);
+    assert_eq!(
+        execution["techniques"],
+        json!([structure::PARENT_ATTACK_ID, structure::SUB1_ATTACK_ID])
+    );
+    let persistence = tactic_row(&gaps, structure::PERSISTENCE_ATTACK_ID).unwrap();
+    assert_eq!(persistence["name"], "Persistence");
+    assert_eq!(persistence["live"], 2);
+    assert_eq!(persistence["undetected"], 2);
+    assert_eq!(
+        persistence["techniques"],
+        json!([structure::PARENT_ATTACK_ID, structure::SUB2_ATTACK_ID])
+    );
+    assert_eq!(
+        gap_row(&gaps, structure::PARENT_ATTACK_ID)["tactics"],
+        json!([
+            structure::EXECUTION_ATTACK_ID,
+            structure::PERSISTENCE_ATTACK_ID
+        ])
+    );
+    assert_eq!(
+        gap_row(&gaps, structure::SUB1_ATTACK_ID)["tactics"],
+        json!([structure::EXECUTION_ATTACK_ID])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fully_covered_tactic_stays_with_no_gaps() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_tactic_covered");
+    let cb = structure_bridge(&test_db).await;
+    claim_technique(&cb, structure::PARENT_ATTACK_ID);
+    claim_technique(&cb, structure::SUB1_ATTACK_ID);
+
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    let execution = tactic_row(&gaps, structure::EXECUTION_ATTACK_ID).expect("still listed");
+    assert_eq!(execution["live"], 2, "{gaps}");
+    assert_eq!(execution["undetected"], 0);
+    assert_eq!(execution["techniques"], json!([]));
+    let persistence = tactic_row(&gaps, structure::PERSISTENCE_ATTACK_ID).unwrap();
+    assert_eq!(persistence["undetected"], 1);
+    assert_eq!(
+        persistence["techniques"],
+        json!([structure::SUB2_ATTACK_ID])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retired_technique_counts_in_no_tactic() {
+    // The deprecated sub-technique keeps its execution edge; it is not live there.
+    let test_db = TestDb::new("gecko_test_detect_gaps_tactic_retired");
+    let cb = structure_bridge(&test_db).await;
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert_eq!(
+        tactic_row(&gaps, structure::EXECUTION_ATTACK_ID).unwrap()["live"],
+        2,
+        "{gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_tactic_is_not_grouped() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_tactic_dead");
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        object_mut(objects, structure::PERSISTENCE_STIX_ID)["x_mitre_deprecated"] = json!(true);
+    })
+    .await;
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    assert!(
+        tactic_row(&gaps, structure::PERSISTENCE_ATTACK_ID).is_none(),
+        "{gaps}"
+    );
+    assert_eq!(
+        gap_row(&gaps, structure::PARENT_ATTACK_ID)["tactics"],
+        json!([structure::EXECUTION_ATTACK_ID])
+    );
+    assert_eq!(
+        gap_row(&gaps, structure::SUB2_ATTACK_ID)["tactics"],
+        json!([]),
+        "a technique with no live tactic"
     );
 }
 
