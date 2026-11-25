@@ -1,6 +1,7 @@
 use boa_engine::{
     Context, JsNativeError, JsResult, JsValue, NativeFunction, Source, js_string,
-    object::ObjectInitializer, property::Attribute,
+    object::ObjectInitializer,
+    property::{Attribute, PropertyKey},
 };
 use serde_json::{Value, json};
 use std::io::{self, Read};
@@ -14,82 +15,62 @@ unsafe extern "C" {
         func_name_len: usize,
         args_json_ptr: *const u8,
         args_json_len: usize,
-        out_buf_ptr: *mut u8,
-        out_buf_capacity: usize,
     ) -> i32;
+
+    fn host_read_reply(out_buf_ptr: *mut u8, out_buf_capacity: usize) -> i32;
 }
 
-/// Out-buffer capacities tried, in order, for a single host call. On the special
-/// overflow sentinel (`-5` with an all-zero buffer) we grow to the next size; if
-/// the largest still overflows we surface a clear error.
-const HOST_CALL_CAPACITIES: [usize; 3] = [1024 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024];
+fn type_error(message: String) -> boa_engine::JsError {
+    JsNativeError::typ().with_message(message).into()
+}
 
 /// The shared host-call marshalling seam.
 ///
-/// Serializes `args_json`, invokes the `host_call_extension` FFI import with a
-/// grow-and-retry buffer strategy, and interprets the return-value ABI:
-///
-/// - `ret >= 0` → success; the first `ret` bytes of the out-buffer are the UTF-8
-///   JSON reply, parsed and converted to a `JsValue`.
-/// - `ret == -5` with an all-zero `buf[..5]` → overflow sentinel: the payload was
-///   larger than the buffer and the host wrote nothing. Retry at the next capacity;
-///   if the 16 MiB attempt still overflows, throw.
-/// - any other `ret < 0` (including a `-5` whose buffer is non-zero, i.e. a genuine
-///   5-byte error message) → error; `(-ret)` bytes hold the UTF-8 message.
-fn host_call(ext: &str, func: &str, args_json: &Value, context: &mut Context) -> JsResult<JsValue> {
+/// Serializes `args_json` and calls `host_call_extension`, which runs the call once
+/// and returns the length of its outcome: `+len` for a JSON reply, `-len` for an
+/// error message. The guest then allocates exactly that many bytes and reads the
+/// outcome with `host_read_reply`.
+fn host_call(ext: &str, func: &str, args_json: &Value) -> JsResult<Value> {
     let args_str = serde_json::to_string(args_json).map_err(|e| {
         JsNativeError::error().with_message(format!("failed to serialize host call args: {e}"))
     })?;
 
-    for (i, &cap) in HOST_CALL_CAPACITIES.iter().enumerate() {
-        // A freshly zeroed buffer each attempt so the overflow sentinel is
-        // unambiguous: after a `-5`, an all-zero `buf[..5]` means "host wrote
-        // nothing" (overflow), while a non-zero `buf[..5]` is a real 5-byte error.
-        let mut out_buf = vec![0u8; cap];
+    let ret = unsafe {
+        host_call_extension(
+            ext.as_ptr(),
+            ext.len(),
+            func.as_ptr(),
+            func.len(),
+            args_str.as_ptr(),
+            args_str.len(),
+        )
+    };
+    if ret == 0 {
+        return Err(JsNativeError::error()
+            .with_message("host call returned no reply")
+            .into());
+    }
 
-        let ret = unsafe {
-            host_call_extension(
-                ext.as_ptr(),
-                ext.len(),
-                func.as_ptr(),
-                func.len(),
-                args_str.as_ptr(),
-                args_str.len(),
-                out_buf.as_mut_ptr(),
-                out_buf.len(),
-            )
-        };
+    let mut out_buf = vec![0u8; ret.unsigned_abs() as usize];
+    let read = unsafe { host_read_reply(out_buf.as_mut_ptr(), out_buf.len()) };
+    if read < 0 {
+        return Err(JsNativeError::error()
+            .with_message(format!("host reply could not be read (code {read})"))
+            .into());
+    }
+    out_buf.truncate(read as usize);
 
-        if ret >= 0 {
-            let len = ret as usize;
-            let value: Value = serde_json::from_slice(&out_buf[..len]).map_err(|e| {
-                JsNativeError::error().with_message(format!("host reply was not valid JSON: {e}"))
-            })?;
-            return JsValue::from_json(&value, context);
-        }
-
-        // Overflow sentinel: retry with a bigger buffer, or give up at the top size.
-        if ret == -5 && out_buf[..5].iter().all(|&b| b == 0) {
-            if i + 1 < HOST_CALL_CAPACITIES.len() {
-                continue;
-            }
-            return Err(JsNativeError::error()
-                .with_message("host response exceeded 16 MiB")
-                .into());
-        }
-
-        // Genuine error: magnitude is the message length (host-truncated to cap).
-        let err_len = ((-ret) as usize).min(out_buf.len());
-        let err = String::from_utf8_lossy(&out_buf[..err_len]).into_owned();
+    if ret < 0 {
+        let err = String::from_utf8_lossy(&out_buf).into_owned();
         return Err(JsNativeError::error()
             .with_message(format!("Host call failed: {err}"))
             .into());
     }
-
-    // Unreachable: the loop returns on every branch.
-    Err(JsNativeError::error()
-        .with_message("host call exhausted all buffer capacities")
-        .into())
+    serde_json::from_slice(&out_buf).map_err(|e| {
+        JsNativeError::error()
+            .with_message(format!("host reply was not valid JSON: {e}"))
+            .into()
+    })
 }
 
 /// Reads a required string positional arg, throwing a JS error naming it if the
@@ -99,59 +80,126 @@ fn require_str_arg(args: &[JsValue], idx: usize, name: &str) -> JsResult<String>
     args.get(idx)
         .and_then(JsValue::as_string)
         .map(|s| s.to_std_string_escaped())
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message(format!("mem: missing required string argument '{name}'"))
-                .into()
-        })
+        .ok_or_else(|| type_error(format!("mem: missing required string argument '{name}'")))
 }
 
-/// Converts an optional positional arg to a `serde_json::Value`, treating
-/// `undefined`/`null`/absent (and any conversion failure) as "not supplied".
-fn opt_arg_json(args: &[JsValue], idx: usize, context: &mut Context) -> Option<Value> {
-    match args.get(idx) {
-        Some(v) if !v.is_undefined() && !v.is_null() => v.to_json(context).ok().flatten(),
-        _ => None,
+/// Converts a guest value to its JSON wire form: `undefined` is absent (`None`),
+/// and a non-finite number, a function, or a value `to_json` cannot convert (a
+/// `Symbol`, a cyclic object, a `BigInt`) is a `TypeError` naming `name`. Anything
+/// else is forwarded as JSON unchanged; the host judges its type.
+fn to_wire(v: &JsValue, name: &str, context: &mut Context) -> JsResult<Option<Value>> {
+    if v.is_undefined() {
+        return Ok(None);
     }
+    if v.as_number().is_some_and(|n| !n.is_finite()) {
+        return Err(type_error(format!("'{name}' must be a finite number")));
+    }
+    if v.is_callable() {
+        return Err(type_error(format!("'{name}' must not be a function")));
+    }
+    match v.to_json(context) {
+        Ok(Some(json)) => Ok(Some(json)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(type_error(format!(
+            "'{name}' cannot be converted to JSON: {e}"
+        ))),
+    }
+}
+
+/// An optional positional arg in wire form: absent and `undefined` are `None`.
+fn opt_arg(
+    args: &[JsValue],
+    idx: usize,
+    name: &str,
+    context: &mut Context,
+) -> JsResult<Option<Value>> {
+    match args.get(idx) {
+        Some(v) => to_wire(v, name, context),
+        None => Ok(None),
+    }
+}
+
+/// Reads the options bag at `args[idx]` into `payload`. The bag must be absent,
+/// `undefined`, `null` or an object; its own keys must each appear in `allowed`
+/// (`(guestKey, wire_key)` pairs), checked before any value is read; and each
+/// value goes through [`to_wire`], an `undefined` value being omitted.
+fn read_bag(
+    args: &[JsValue],
+    idx: usize,
+    param: &str,
+    allowed: &[(&str, &str)],
+    payload: &mut serde_json::Map<String, Value>,
+    context: &mut Context,
+) -> JsResult<()> {
+    let Some(bag) = args.get(idx).filter(|v| !v.is_undefined() && !v.is_null()) else {
+        return Ok(());
+    };
+    let obj = match bag.as_object() {
+        Some(obj) if !bag.is_callable() && !obj.is_array() => obj,
+        _ => return Err(type_error(format!("'{param}' must be an object"))),
+    };
+    let accepted = || {
+        allowed
+            .iter()
+            .map(|(k, _)| *k)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut keys = Vec::new();
+    for key in obj.own_property_keys(context)? {
+        let name = match &key {
+            PropertyKey::String(s) => s.to_std_string_escaped(),
+            PropertyKey::Index(i) => i.get().to_string(),
+            PropertyKey::Symbol(_) => continue,
+        };
+        let Some(&(_, wire)) = allowed.iter().find(|(k, _)| *k == name) else {
+            return Err(type_error(format!(
+                "'{param}' does not accept '{name}'; it accepts {}",
+                accepted()
+            )));
+        };
+        keys.push((key, name, wire));
+    }
+    for (key, name, wire) in keys {
+        let value = obj.get(key, context)?;
+        if let Some(json) = to_wire(&value, &name, context)? {
+            payload.insert(wire.to_string(), json);
+        }
+    }
+    Ok(())
 }
 
 // ── mem.* namespace ──────────────────────────────────────────────────────────
 //
-// Each guest method builds the exact snake_case payload the host parses (see
-// `dispatch_mem_call` / `dispatch_mem_recall` in the engine's `mem_host.rs`),
-// omitting a key when its arg is absent, and delegates to `host_call`. The host
-// strips and stamps provenance (`run_id`/`actor`/`source`/`occurred_at`) itself,
-// so the guest never sends those.
+// Each guest method checks argument shape, renames its options to the snake_case
+// wire keys `dispatch_mem_call` / `dispatch_mem_recall` parse in the engine's
+// `mem_host.rs`, and forwards every value unconverted: the host is the single
+// authority on types and ranges. A key is omitted when its value is absent. The
+// host strips and stamps provenance (`run_id`/`actor`/`source`/`occurred_at`)
+// itself, so the guest never sends those.
 
-/// `mem.recall(query, budget?)` → `{ text, max_chunks?, max_tokens?, as_of? }`.
+/// `mem.recall(query, budget?)` → `{ text, max_chunks?, as_of? }`.
 /// Unwraps the host's `{ chunks }` envelope, returning the array directly.
 fn mem_recall(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
     let query = require_str_arg(args, 0, "query")?;
     let mut payload = serde_json::Map::new();
     payload.insert("text".to_string(), json!(query));
+    read_bag(
+        args,
+        1,
+        "budget",
+        &[("maxChunks", "max_chunks"), ("asOf", "as_of")],
+        &mut payload,
+        context,
+    )?;
 
-    if let Some(budget) = opt_arg_json(args, 1, context) {
-        if let Some(n) = budget.get("maxChunks").and_then(Value::as_f64) {
-            payload.insert("max_chunks".to_string(), json!(n as u64));
-        }
-        if let Some(n) = budget.get("maxTokens").and_then(Value::as_f64) {
-            payload.insert("max_tokens".to_string(), json!(n as u64));
-        }
-        if let Some(s) = budget.get("asOf").and_then(Value::as_str) {
-            payload.insert("as_of".to_string(), json!(s));
-        }
+    let reply = host_call("mem", "recall", &Value::Object(payload))?;
+    match reply.get("chunks") {
+        Some(chunks @ Value::Array(_)) => JsValue::from_json(chunks, context),
+        _ => Err(JsNativeError::error()
+            .with_message(format!("mem.recall reply carries no chunks array: {reply}"))
+            .into()),
     }
-
-    let reply = host_call("mem", "recall", &Value::Object(payload), context)?;
-
-    // Unwrap `{ chunks: [...] }` → the array (empty array if the key is absent).
-    if let Some(obj) = reply.as_object() {
-        let chunks = obj.get(js_string!("chunks"), context)?;
-        if !chunks.is_undefined() && !chunks.is_null() {
-            return Ok(chunks);
-        }
-    }
-    JsValue::from_json(&json!([]), context)
 }
 
 /// `mem.remember(text, opts?)` → `{ text, event_time? }`.
@@ -159,14 +207,17 @@ fn mem_remember(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsR
     let text = require_str_arg(args, 0, "text")?;
     let mut payload = serde_json::Map::new();
     payload.insert("text".to_string(), json!(text));
+    read_bag(
+        args,
+        1,
+        "opts",
+        &[("eventTime", "event_time")],
+        &mut payload,
+        context,
+    )?;
 
-    if let Some(opts) = opt_arg_json(args, 1, context)
-        && let Some(s) = opts.get("eventTime").and_then(Value::as_str)
-    {
-        payload.insert("event_time".to_string(), json!(s));
-    }
-
-    host_call("mem", "remember", &Value::Object(payload), context)
+    let reply = host_call("mem", "remember", &Value::Object(payload))?;
+    JsValue::from_json(&reply, context)
 }
 
 /// `mem.derive(text, evidence?, opts?)` → `{ text, evidence?, method?, confidence? }`.
@@ -174,23 +225,20 @@ fn mem_derive(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRes
     let text = require_str_arg(args, 0, "text")?;
     let mut payload = serde_json::Map::new();
     payload.insert("text".to_string(), json!(text));
-
-    if let Some(evidence) = opt_arg_json(args, 1, context)
-        && evidence.is_array()
-    {
+    if let Some(evidence) = opt_arg(args, 1, "evidence", context)? {
         payload.insert("evidence".to_string(), evidence);
     }
+    read_bag(
+        args,
+        2,
+        "opts",
+        &[("method", "method"), ("confidence", "confidence")],
+        &mut payload,
+        context,
+    )?;
 
-    if let Some(opts) = opt_arg_json(args, 2, context) {
-        if let Some(s) = opts.get("method").and_then(Value::as_str) {
-            payload.insert("method".to_string(), json!(s));
-        }
-        if let Some(n) = opts.get("confidence").and_then(Value::as_f64) {
-            payload.insert("confidence".to_string(), json!(n));
-        }
-    }
-
-    host_call("mem", "derive", &Value::Object(payload), context)
+    let reply = host_call("mem", "derive", &Value::Object(payload))?;
+    JsValue::from_json(&reply, context)
 }
 
 /// `mem.supersede(old, text, reason?, opts?)` → `{ old, text, reason?, confidence? }`.
@@ -200,56 +248,57 @@ fn mem_supersede(_this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
     let mut payload = serde_json::Map::new();
     payload.insert("old".to_string(), json!(old));
     payload.insert("text".to_string(), json!(text));
-
-    if let Some(reason) = args.get(2).and_then(JsValue::as_string) {
-        payload.insert("reason".to_string(), json!(reason.to_std_string_escaped()));
+    if let Some(reason) = opt_arg(args, 2, "reason", context)? {
+        payload.insert("reason".to_string(), reason);
     }
+    read_bag(
+        args,
+        3,
+        "opts",
+        &[("confidence", "confidence")],
+        &mut payload,
+        context,
+    )?;
 
-    // Optional `{ confidence }` — the host's supersede arm reads it, mirroring derive.
-    if let Some(opts) = opt_arg_json(args, 3, context)
-        && let Some(n) = opts.get("confidence").and_then(Value::as_f64)
-    {
-        payload.insert("confidence".to_string(), json!(n));
-    }
-
-    host_call("mem", "supersede", &Value::Object(payload), context)
+    let reply = host_call("mem", "supersede", &Value::Object(payload))?;
+    JsValue::from_json(&reply, context)
 }
 
-/// `mem.contest(claims)` → `{ claims }` (array of id strings; empty if absent).
+/// `mem.contest(claims)` → `{ claims }`. A missing `claims` is sent as missing, and
+/// the host refuses it.
 fn mem_contest(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-    let claims = match opt_arg_json(args, 0, context) {
-        Some(v) if v.is_array() => v,
-        _ => json!([]),
-    };
     let mut payload = serde_json::Map::new();
-    payload.insert("claims".to_string(), claims);
+    if let Some(claims) = opt_arg(args, 0, "claims", context)? {
+        payload.insert("claims".to_string(), claims);
+    }
 
-    host_call("mem", "contest", &Value::Object(payload), context)
+    let reply = host_call("mem", "contest", &Value::Object(payload))?;
+    JsValue::from_json(&reply, context)
 }
 
-/// `gecko.callExtension(ext, func, argsObj)` — the generic host-call surface,
-/// delegating to the shared `host_call` helper.
+/// `gecko.callExtension(ext, func, args?)` — the generic host-call surface. `ext`
+/// and `func` must be strings; an absent, `undefined` or `null` `args` is sent as
+/// `{}`, and any other `args` goes through [`to_wire`].
 fn gecko_call_extension(
     _this: &JsValue,
     args: &[JsValue],
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    let ext_name = args
-        .first()
-        .and_then(JsValue::as_string)
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    let func_name = args
-        .get(1)
-        .and_then(JsValue::as_string)
-        .map(|s| s.to_std_string_escaped())
-        .unwrap_or_default();
-    let args_json = args
-        .get(2)
-        .and_then(|v| v.to_json(context).ok().flatten())
-        .unwrap_or_else(|| json!({}));
+    let name = |idx: usize, what: &str| {
+        args.get(idx)
+            .and_then(JsValue::as_string)
+            .map(|s| s.to_std_string_escaped())
+            .ok_or_else(|| type_error(format!("gecko.callExtension: '{what}' must be a string")))
+    };
+    let ext_name = name(0, "ext")?;
+    let func_name = name(1, "func")?;
+    let args_json = match opt_arg(args, 2, "args", context)? {
+        None | Some(Value::Null) => json!({}),
+        Some(v) => v,
+    };
 
-    host_call(&ext_name, &func_name, &args_json, context)
+    let reply = host_call(&ext_name, &func_name, &args_json)?;
+    JsValue::from_json(&reply, context)
 }
 
 #[allow(clippy::too_many_lines)]
