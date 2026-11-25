@@ -376,27 +376,28 @@ fn check_model(cfg: &GeckoConfig) -> CheckResult {
     }
 }
 
-/// `index`: never FAILs (the index is derived and rebuilt from the graph). WARN
-/// if the semantic index is enabled but the file is absent (rebuilt next run).
+/// `index`: never FAILs (each database's index is reconciled with the graph on its
+/// next run). Checks the index directory without creating it: Ok when present, WARN
+/// when absent, and WARN with the fix when the config would make the next run fail.
 fn check_index(cfg: &GeckoConfig) -> CheckResult {
     if !cfg.semantic_index.enabled {
         return CheckResult::ok("index", "semantic_index disabled — no index expected");
     }
-    match config::index_path(cfg) {
-        Ok(path) if path.exists() => {
-            CheckResult::ok("index", format!("present at {}", path.display()))
+    match config::index_dir(cfg) {
+        Ok(dir) if dir.is_dir() => {
+            CheckResult::ok("index", format!("index directory at {}", dir.display()))
         }
-        Ok(path) => CheckResult::warn(
+        Ok(dir) => CheckResult::warn(
             "index",
             format!(
-                "index file absent at {} — rebuilt from the graph on next run",
-                path.display()
+                "index directory absent at {} — created and filled from the graph on the next run",
+                dir.display()
             ),
             None,
         ),
         Err(e) => CheckResult::warn(
             "index",
-            format!("cannot resolve the index path: {e:#} — rebuilt from the graph on next run"),
+            format!("{e:#} — the next run will fail until this is fixed"),
             None,
         ),
     }
@@ -578,20 +579,36 @@ mod tests {
     }
 
     #[test]
-    fn check_index_ok_when_disabled_and_warn_when_missing() {
+    fn check_index_reports_dir_state_without_side_effects() {
         let cfg = GeckoConfig::default();
         assert_eq!(check_index(&cfg).status, Status::Ok);
 
         let tmp = tempfile::tempdir().unwrap();
-        let cfg = GeckoConfig {
+        let with = |dir: Option<String>, path: Option<toml::Value>| GeckoConfig {
             semantic_index: SemanticIndexConfig {
                 enabled: true,
-                path: Some(tmp.path().join("nope.hnsw").to_string_lossy().into_owned()),
+                dir,
+                path,
                 ..Default::default()
             },
             ..Default::default()
         };
-        assert_eq!(check_index(&cfg).status, Status::Warn);
+        let absent = tmp.path().join("idx");
+        let r = check_index(&with(Some(absent.to_string_lossy().into_owned()), None));
+        assert_eq!(r.status, Status::Warn);
+        assert!(!absent.exists(), "doctor creates nothing");
+
+        let present = tmp.path().to_string_lossy().into_owned();
+        assert_eq!(check_index(&with(Some(present), None)).status, Status::Ok);
+
+        let r = check_index(&with(None, Some(toml::Value::String("x.hnsw".into()))));
+        assert_eq!(r.status, Status::Warn);
+        assert!(r.detail.contains("[semantic_index] dir"), "{}", r.detail);
+
+        let file = tmp.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let r = check_index(&with(Some(file.to_string_lossy().into_owned()), None));
+        assert_eq!(r.status, Status::Warn);
     }
 
     #[test]

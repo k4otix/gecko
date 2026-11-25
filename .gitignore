@@ -30,7 +30,6 @@ models/
 *.weights.bin
 # Persisted HNSW index (derived, rebuildable).
 *.hnsw
-gecko.hnsw
 # Any local cache copies.
 .cache/gecko/
 /cache/
