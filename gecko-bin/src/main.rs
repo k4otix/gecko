@@ -668,8 +668,9 @@ async fn cmd_drop(config: DbConfig, cfg: &GeckoConfig) -> Result<()> {
     Ok(())
 }
 
-/// Deletes a dropped database's index file, best-effort: the next run on a database
-/// of that name reconciles its index anyway, so a failure only warns.
+/// Deletes a dropped database's index file and any temp files a crash left beside
+/// it, best-effort: the next run on a database of that name reconciles its index
+/// anyway, so a failure only warns.
 fn remove_index_file(cfg: &GeckoConfig, database: &str) {
     let path = match config::index_file(cfg, database) {
         Ok(path) => path,
@@ -682,6 +683,23 @@ fn remove_index_file(cfg: &GeckoConfig, database: &str) {
         Ok(()) => println!("✓ Removed index file {}", path.display()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => eprintln!("warning: could not remove {}: {e}", path.display()),
+    }
+    // Temp files are named `<file>.<pid>.<n>.tmp` beside the index file.
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", file.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&prefix)
+            && name.ends_with(".tmp")
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            eprintln!("warning: could not remove {}: {e}", entry.path().display());
+        }
     }
 }
 

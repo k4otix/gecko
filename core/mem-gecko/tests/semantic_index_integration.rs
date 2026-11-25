@@ -644,9 +644,15 @@ async fn a_failed_persist_during_reconcile_keeps_episode_vectors() {
     let index =
         Arc::new(HnswIndex::open(blocker.join("idx.hnsw"), embedder.model_id(), DIM).unwrap());
     let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
-    w.reconcile_index()
+    let report = w
+        .reconcile_index()
         .await
         .expect("index failures never fail startup");
+    assert_eq!(
+        (report.added, report.removed),
+        (1, 0),
+        "the counts report what the index now holds, even when saving it failed"
+    );
     assert!(
         index.ids().unwrap().contains(&ConceptId(e.0.clone())),
         "the episode's vector stays in memory"

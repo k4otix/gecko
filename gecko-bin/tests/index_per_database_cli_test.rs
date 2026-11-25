@@ -163,12 +163,19 @@ async fn drop_removes_only_that_databases_index_file() {
     );
     let sibling = rig.index_file("other");
     std::fs::write(&sibling, b"{}").expect("write sibling");
+    // A temp file a crash left between write and rename.
+    let orphan = rig.index_dir.join(format!("{}.hnsw.4242.0.tmp", db.name));
+    std::fs::write(&orphan, b"partial").expect("write orphan temp");
 
     gecko_ok(&rig, None, &["drop", &db.name]).await;
     let remaining = db.router().list_databases().await.expect("list databases");
     assert!(!remaining.contains(&db.name), "the database was dropped");
     assert!(!rig.index_file(&db.name).exists(), "drop removed the file");
     assert!(sibling.exists(), "another database's file is untouched");
+    assert!(
+        !orphan.exists(),
+        "drop sweeps the database's orphaned temp files"
+    );
 }
 
 #[tokio::test]
@@ -212,6 +219,10 @@ async fn drop_of_the_reserved_database_leaves_its_index_file() {
 
     let (ok, text) = gecko(&rig, None, &["drop", "gecko"]).await;
     assert!(!ok, "dropping the reserved database is refused:\n{text}");
+    assert!(
+        text.contains("refusing to delete the reserved 'gecko' database"),
+        "the engine's guard refused it, before any connection:\n{text}"
+    );
     assert!(file.exists(), "its index file is untouched");
 }
 

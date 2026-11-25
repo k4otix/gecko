@@ -28,9 +28,9 @@ pub enum IndexOutcome {
 /// What a startup reconciliation changed in the index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexReconciliation {
-    /// Vectors embedded and added for graph items the index lacked.
+    /// Ids the index holds afterwards that it did not hold before.
     pub added: usize,
-    /// Vectors removed for ids the graph no longer holds.
+    /// Ids the index held before that it no longer holds.
     pub removed: usize,
     /// Whether the index was rebuilt from scratch (a model change, or an empty
     /// self-managed index).
@@ -77,8 +77,10 @@ impl MemWriter {
     /// Brings the index in step with the graph's current state; call once at startup
     /// before serving recalls. A model change (or an empty self-managed index)
     /// rebuilds from scratch; otherwise stale ids are removed and missing ones
-    /// embedded, so matching id sets embed nothing. Index failures only warn: the
-    /// graph read is the one error this returns. A no-op without embedder and index.
+    /// embedded, so matching id sets embed nothing. The report counts what the index
+    /// holds afterwards, in memory, whether or not saving it succeeded. Index
+    /// failures only warn: the graph read is the one error this returns. A no-op
+    /// without embedder and index.
     pub async fn reconcile_index(&self) -> Result<IndexReconciliation> {
         let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
             return Ok(IndexReconciliation::default());
@@ -91,7 +93,7 @@ impl MemWriter {
         } else {
             None
         };
-        let missing = match held {
+        match held {
             Some(held) => {
                 let current: HashSet<&ConceptId> = graph.iter().map(|(id, _, _)| id).collect();
                 let stale: Vec<ConceptId> = held
@@ -102,34 +104,44 @@ impl MemWriter {
                 // Remove first, so a later embed or upsert failure never leaves
                 // another graph's vectors behind.
                 if !stale.is_empty() {
-                    let n = stale.len();
-                    match idx.remove_many(stale) {
-                        Ok(()) => report.removed = n,
-                        Err(e) => warn!(error = %e, "semantic index: stale-vector removal failed"),
-                    }
+                    let index = idx.clone();
+                    on_blocking_pool("stale-vector removal", move || index.remove_many(stale))
+                        .await;
                 }
-                graph
+                let missing = graph
                     .into_iter()
                     .filter(|(id, _, _)| !held.contains(id))
-                    .collect()
+                    .collect();
+                self.add_embedded(emb, idx, missing).await;
+                let after = idx.ids().unwrap_or_default();
+                report.removed = held.difference(&after).count();
+                report.added = after.difference(&held).count();
             }
             None if idx.model_id() != emb.model_id() || idx.is_empty() => {
+                report.removed = idx.len();
                 idx.reset();
                 report.full_rebuild = true;
-                graph
+                self.add_embedded(emb, idx, graph).await;
+                report.added = idx.len();
             }
-            None => return Ok(report),
-        };
-
-        let items = embed_batch(emb.clone(), missing).await;
-        if !items.is_empty() {
-            let n = items.len();
-            match idx.upsert_many(items) {
-                Ok(()) => report.added = n,
-                Err(e) => warn!(error = %e, "semantic index: batch upsert failed"),
-            }
+            None => {}
         }
         Ok(report)
+    }
+
+    /// Embeds `items` and adds them in one batch, both on the blocking pool.
+    /// Failures only warn.
+    async fn add_embedded(
+        &self,
+        emb: &Arc<dyn Embedder>,
+        idx: &Arc<dyn gecko_extension_api::SemanticIndex>,
+        items: Vec<Embeddable>,
+    ) {
+        let embedded = embed_batch(emb.clone(), items).await;
+        if !embedded.is_empty() {
+            let index = idx.clone();
+            on_blocking_pool("batch upsert", move || index.upsert_many(embedded)).await;
+        }
     }
 
     // ── Best-effort index hooks (post-commit; never fail the graph write) ────
@@ -230,4 +242,14 @@ async fn embed_batch(emb: Arc<dyn Embedder>, items: Vec<Embeddable>) -> Vec<Embe
         warn!(error = %e, "semantic index: embedding task failed");
         Vec::new()
     })
+}
+
+/// Runs one index operation on the blocking pool (it may rebuild the ANN graph and
+/// write the snapshot file). A failure, or a panic in the task, warns.
+async fn on_blocking_pool(what: &'static str, op: impl FnOnce() -> Result<()> + Send + 'static) {
+    match tokio::task::spawn_blocking(op).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!(error = %e, "semantic index: {what} failed"),
+        Err(e) => warn!(error = %e, "semantic index: {what} task failed"),
+    }
 }

@@ -134,8 +134,8 @@ impl HnswIndex {
     /// If a snapshot exists and its header matches `{model_id, dim}`, its live
     /// entries are replayed (a warm start). Otherwise — missing file, unreadable /
     /// corrupt snapshot, dimension change, or a **model-id bump** — the index
-    /// cold-starts **empty** under the new identity, so [`is_empty`](SemanticIndex::is_empty)
-    /// signals the writer to rebuild from the graph. The header is always
+    /// cold-starts **empty** under the new identity, and the writer's startup
+    /// reconciliation refills it from the graph. The header is always
     /// adopted from the caller's `model_id`, so [`model_id`](SemanticIndex::model_id)
     /// matches the embedder after a bump.
     pub fn open(path: impl AsRef<Path>, model_id: &str, dim: usize) -> Result<Self> {
@@ -152,8 +152,7 @@ impl HnswIndex {
                 inner.insert_entry(e.concept_id, e.meta, e.vector);
             }
         }
-        // else: header mismatch ⇒ stay empty ⇒ rebuild-from-graph.
-        // else: corrupt ⇒ stay empty ⇒ rebuild-from-graph.
+        // A header mismatch or a corrupt snapshot opens empty; reconciliation refills it.
 
         Ok(Self {
             inner: RwLock::new(inner),

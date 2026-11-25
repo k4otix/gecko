@@ -533,7 +533,7 @@ pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     .expecting(1)
 }
 
-// ── Rebuild-from-graph reads ──────────────────────────────────────────────────
+// ── Index reconciliation reads ────────────────────────────────────────────────
 
 /// Enumerates current-state **beliefs** (asserted, not superseded/retracted) with
 /// their embeddable title text and denormalized FilterMeta (owner/visibility). The
@@ -738,14 +738,14 @@ pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
      fetch { \"id\": $rid };"
 }
 
-/// `resolve_prediction`: mint a resolving `episode` (run + actor stamped) and attach
-/// it (plus the outcome) to the belief's open `prediction-resolution`. The last op
-/// matches only a prediction with no outcome yet and must affect exactly one row.
 /// The title of the episode that resolves a prediction with `outcome`.
 pub(crate) fn resolution_title(outcome: &str) -> String {
     format!("prediction resolved: {outcome}")
 }
 
+/// `resolve_prediction`: mint a resolving `episode` (run + actor stamped) and attach
+/// it (plus the outcome) to the belief's open `prediction-resolution`. The last op
+/// matches only a prediction with no outcome yet and must affect exactly one row.
 pub(crate) fn resolve_prediction_ops(
     ctx: &RunContext,
     b: &MemId,

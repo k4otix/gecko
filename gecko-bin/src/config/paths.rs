@@ -143,9 +143,15 @@ pub fn index_file(cfg: &GeckoConfig, database: &str) -> Result<PathBuf> {
     Ok(index_dir(cfg)?.join(format!("{}.hnsw", encode_database_name(database)?)))
 }
 
+/// The longest encoded stem kept whole; longer ones are cut and suffixed with a hash
+/// so the filename stays under the common 255-byte limit.
+const MAX_INDEX_STEM: usize = 200;
+
 /// Encodes a database name as a filename stem: `[A-Za-z0-9_-]` are kept and every
 /// other UTF-8 byte becomes `%XX`, so distinct names never share a file and no name
-/// escapes the index directory. An empty name is refused.
+/// escapes the index directory. A stem over [`MAX_INDEX_STEM`] bytes keeps its first
+/// part and ends in `~` plus a SHA-256 prefix of the full name (`~` never appears in
+/// an uncut stem). An empty name is refused.
 fn encode_database_name(name: &str) -> Result<String> {
     if name.is_empty() {
         anyhow::bail!("cannot name an index file for an empty database name");
@@ -157,6 +163,15 @@ fn encode_database_name(name: &str) -> Result<String> {
         } else {
             out.push_str(&format!("%{b:02X}"));
         }
+    }
+    if out.len() > MAX_INDEX_STEM {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(name.as_bytes());
+        let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+        // The stem is ASCII, so any byte offset is a char boundary.
+        out.truncate(MAX_INDEX_STEM - 1 - hex.len());
+        out.push('~');
+        out.push_str(&hex);
     }
     Ok(out)
 }
@@ -318,6 +333,24 @@ mod tests {
         assert_eq!(encode_database_name("a/b").unwrap(), "a%2Fb");
         assert_eq!(encode_database_name("a%2Fb").unwrap(), "a%252Fb");
         assert_eq!(encode_database_name("é").unwrap(), "%C3%A9");
+    }
+
+    #[test]
+    fn long_names_fit_a_filename_and_stay_distinct() {
+        let cfg = with_dir("/x/idx");
+        let a = "é".repeat(120) + "a";
+        let b = "é".repeat(120) + "b";
+        let (fa, fb) = (index_file(&cfg, &a).unwrap(), index_file(&cfg, &b).unwrap());
+        for f in [&fa, &fb] {
+            let name = f.file_name().unwrap().len();
+            assert!(name <= 255, "{name}-byte filename: {f:?}");
+        }
+        assert_ne!(fa, fb, "names that differ past the cut still differ");
+        assert_eq!(
+            encode_database_name("short").unwrap(),
+            "short",
+            "short names are unchanged"
+        );
     }
 
     #[test]
