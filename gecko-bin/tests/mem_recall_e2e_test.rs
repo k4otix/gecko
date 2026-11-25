@@ -325,3 +325,74 @@ async fn unscoped_recall_is_denied_by_s3_gate() {
         "S3 gate should explain the scope denial, got: {err}"
     );
 }
+
+// ── An oversized reply runs the recall once ──────────────────────────────────
+
+/// Recalls every seeded belief and returns a summary, not the >1 MiB chunks.
+const OVERSIZED_RECALL_PROGRAM: &str = r#"
+    const c = mem.recall("filler", { maxChunks: 12 });
+    ({ count: c.length, totalBytes: c.reduce((n, x) => n + x.text.length, 0) })
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oversized_recall_mints_one_retrieval_event() {
+    let fx = Fixture::new().await;
+    let (mem_writer, index_path) = provenance_writer(&fx);
+    let seed_ctx = RunContext::new(
+        ActorId::new("agent-1"),
+        ProvenanceSource::Manual,
+        dt("2026-01-01T00:00:00Z"),
+    );
+    let filler = "filler ".repeat(100 * 1024 / 7);
+    for i in 0..12 {
+        mem_writer
+            .assert_belief(
+                &seed_ctx,
+                belief(&format!("belief {i}: {filler}"), "agent-1", 0.9),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap();
+    }
+
+    let run_ctx = RunContext::new(
+        ActorId::new("agent-1"),
+        ProvenanceSource::ExecutableDoc {
+            concept_id: ConceptId::new("playbooks/oversized-recall"),
+        },
+        dt("2026-01-02T00:00:00Z"),
+    );
+    let writer: Arc<dyn EpistemicWriter> = Arc::new(mem_writer);
+    let result = WasmExecutor::new()
+        .unwrap()
+        .evaluate(
+            OVERSIZED_RECALL_PROGRAM,
+            Uuid::new_v4(),
+            &HostImports::default(),
+            &["mem:recall".to_string()],
+            Some(30_000),
+            Some(run_callback(run_ctx, writer)),
+        )
+        .await;
+
+    assert!(result.success, "guest run failed: {:?}", result.error);
+    assert_eq!(result.output["count"], 12, "{:?}", result.output);
+    let total = result.output["totalBytes"].as_u64().unwrap();
+    assert!(
+        total > 1 << 20,
+        "the reply exceeds 1 MiB, got {total} bytes"
+    );
+
+    let events = fx
+        .raw_fetch(r#"match $re isa retrieval-event, has retrieval-method $m; fetch { "m": $m };"#)
+        .await;
+    assert_eq!(
+        events.len(),
+        1,
+        "exactly one retrieval-event, got {events:?}"
+    );
+
+    std::fs::remove_file(&index_path).ok();
+    fx.drop_db().await;
+}
