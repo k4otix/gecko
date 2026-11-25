@@ -13,7 +13,7 @@
 //!   `>=`, `<=`) with nothing after it, where the shipped `owns A` of `T` (or a
 //!   supertype) carries a `@range`;
 //! - an `undefine @doc from X;`, where a shipped statement declares `X` followed by
-//!   `@doc(`;
+//!   `@doc(`, ignoring an `@abstract` annotation after the label;
 //! - an `undefine T;` or `undefine fun F;`, where the shipped schema declares no `T`
 //!   or `F`;
 //! - a `redefine X;`, where the shipped schema contains `X`.
@@ -65,7 +65,8 @@ fn check_one(
                 .iter()
                 .find_map(|kind| s.strip_prefix(kind))
                 .unwrap_or(s);
-            normalize(declared).starts_with(&format!("{} @doc(", normalize(target)))
+            without_abstract(&normalize(declared))
+                .starts_with(&format!("{} @doc(", normalize(target)))
         });
         if !reinstalled {
             return Err(format!(
@@ -292,6 +293,22 @@ fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A normalized declaration with an `@abstract` annotation (and its trailing `,`)
+/// after the label removed, so `item @abstract, sub root @doc(` reads as
+/// `item sub root @doc(`.
+fn without_abstract(declared: &str) -> String {
+    match declared.split_once(' ') {
+        Some((label, rest)) => match rest.strip_prefix("@abstract") {
+            Some(after) => {
+                let after = after.trim_start().trim_start_matches(',').trim_start();
+                format!("{label} {after}")
+            }
+            None => declared.to_string(),
+        },
+        None => declared.to_string(),
+    }
+}
+
 /// `statement` with every `@doc("…")` annotation removed.
 fn strip_docs(statement: &str) -> String {
     let mut out = String::with_capacity(statement.len());
@@ -467,6 +484,37 @@ mod tests {
 
     fn check(tql: &'static str) -> Result<(), String> {
         check_migrations(&[entry(tql)], SCHEMA)
+    }
+
+    /// Abstract types, with and without a comma after `@abstract`.
+    const ABSTRACT_SCHEMA: &str = r#"define
+  entity root @doc("A root.");
+  entity item @abstract, sub root @doc("An abstract item."),
+    owns name;
+  relation edge @abstract @doc("An abstract edge."),
+    relates end;
+  attribute name value string;
+"#;
+
+    #[test]
+    fn a_doc_undefine_on_an_abstract_type_is_accepted() {
+        for tql in [
+            "undefine @doc from item sub root;",
+            "undefine @doc from edge;",
+        ] {
+            check_migrations(&[entry(tql)], ABSTRACT_SCHEMA)
+                .unwrap_or_else(|e| panic!("{tql}: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_doc_undefine_on_an_abstract_type_still_matches_its_supertype() {
+        let err = check_migrations(
+            &[entry("undefine @doc from item sub other;")],
+            ABSTRACT_SCHEMA,
+        )
+        .unwrap_err();
+        assert!(err.contains("no @doc to replace"), "{err}");
     }
 
     #[test]

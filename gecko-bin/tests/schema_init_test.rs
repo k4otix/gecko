@@ -484,6 +484,7 @@ fn tightened_mem_migrations() -> Vec<gecko_extension_api::SchemaMigration> {
             !matches!(
                 m.id,
                 "mem/belief-required-window-doc"
+                    | "mem/memory-item-doc"
                     | "mem/belief-valid-from-required"
                     | "mem/similarity-score-clamp-high"
                     | "mem/similarity-score-clamp-low"

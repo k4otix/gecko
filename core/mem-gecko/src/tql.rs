@@ -107,6 +107,12 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         applies_when: "@doc(\"A bitemporal proposition the system holds, with a lifecycle state, optional confidence and entrenchment, and an optional validity window.\")",
         tql: "undefine @doc from belief sub memory-item;",
     },
+    // `memory-item`'s `@doc` likewise sits on its `sub` declaration.
+    SchemaMigration {
+        id: "mem/memory-item-doc",
+        applies_when: "@doc(\"Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies.\")",
+        tql: "undefine @doc from memory-item sub okf-concept;",
+    },
     // An upgraded database can hold another relation that prints the same
     // `owns valid-from` line, so the trigger takes belief's next line and the start
     // of its plays too.

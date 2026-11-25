@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_schema_contains_memory_item_hierarchy() {
         let schema: &str = &MEM_SCHEMA;
-        // Four-layer substrate: abstract memory-item + its subtypes.
+        // The abstract memory-item and its subtypes.
         assert!(schema.contains("entity memory-item @abstract, sub okf-concept"));
         assert!(schema.contains("entity belief sub memory-item"));
         assert!(schema.contains("entity episode sub memory-item"));

@@ -25,6 +25,10 @@ const PREVIOUS_MEM_SCHEMA: &str = include_str!("fixtures/mem_schema_95ebac1.tql"
 const NEW_BODY: &str = "          $res isa resolution, has belief-state \"asserted\";";
 const OLD_BODY: &str = "          $res isa resolution;";
 
+/// `memory-item`'s shipped `@doc`, and the one databases initialized before it hold.
+const NEW_MEMORY_ITEM_DOC: &str = "Abstract supertype of the substrate's memory: episodes and beliefs, linked by derivation, supersession, assumption and provenance edges.";
+const OLD_MEMORY_ITEM_DOC: &str = "Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies.";
+
 fn router() -> (TypeDbRouter, String) {
     let name = format!("migtest_{}", Ulid::generate().to_string().to_lowercase());
     let router = TypeDbRouter::new(DbConfig {
@@ -128,6 +132,31 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
     for leftover in ["fun population-members(", "relation population-member"] {
         assert!(schema.contains(leftover), "upgrade dropped `{leftover}`");
     }
+
+    common::drop_db_with_retry(&mut router, &name).await;
+}
+
+#[tokio::test]
+async fn a_database_holding_the_old_memory_item_doc_upgrades() {
+    let (mut router, name) = router();
+    let mem = mem_gecko::MemGecko::new();
+    let shipped = mem.schema().to_string();
+    assert_eq!(
+        shipped.matches(NEW_MEMORY_ITEM_DOC).count(),
+        1,
+        "the shipped doc"
+    );
+    let old = shipped.replace(NEW_MEMORY_ITEM_DOC, OLD_MEMORY_ITEM_DOC);
+    router.apply_schema(CORE_SCHEMA).await.expect("core schema");
+    router.apply_schema(&old).await.expect("the old mem schema");
+
+    router
+        .apply_schema_with_migrations(&shipped, mem.schema_migrations())
+        .await
+        .expect("upgrade to the shipped mem schema");
+    let schema = router.database_schema().await.expect("schema");
+    assert!(schema.contains(NEW_MEMORY_ITEM_DOC), "the new doc landed");
+    assert!(!schema.contains(OLD_MEMORY_ITEM_DOC), "the old doc is gone");
 
     common::drop_db_with_retry(&mut router, &name).await;
 }

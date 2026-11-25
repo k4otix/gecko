@@ -50,10 +50,10 @@ define
   attribute candidate-count value integer;     # sketch said `long`; 3.x has no long -> integer (64-bit)
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.1 Memory-item hierarchy (four-layer substrate)
+  # Memory-item hierarchy
   #   id scheme: concept-id @key inherited from okf-concept (mem/ep|bel/{ulid})
   # ══════════════════════════════════════════════════════════════════
-  entity memory-item @abstract, sub okf-concept @doc("Abstract root of the four-layer epistemic memory substrate; every memory node carries activation and salience for recall and can participate in derivation, evidence, support/attack, supersession, and assumption dependencies."),
+  entity memory-item @abstract, sub okf-concept @doc("Abstract supertype of the substrate's memory: episodes and beliefs, linked by derivation, supersession, assumption and provenance edges."),
       owns salience @card(0..1),
       owns base-activation @card(0..1),
       owns access-count @card(0..1) @range(0..),
