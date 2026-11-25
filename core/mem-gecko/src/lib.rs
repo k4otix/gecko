@@ -22,7 +22,7 @@ pub use consolidation::{
     NoopConsolidationDaemon,
 };
 pub use disposition::{DispKeys, Disposition};
-pub use writer::{DuplicateCandidate, IndexOutcome, MemWriter};
+pub use writer::{DuplicateCandidate, IndexOutcome, IndexReconciliation, MemWriter};
 
 /// The mem-gecko substrate schema, split into two source fragments (invariant 3):
 /// the type ontology (`mem_types.tql`) and the persisted reasoning functions

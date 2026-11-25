@@ -452,7 +452,7 @@ async fn tick_reports_index_outcomes() {
         .await
         .unwrap();
     assert_eq!(report.vectors_removed, 2);
-    assert_eq!(report.vectors_marked_dirty, 0);
+    assert_eq!(report.vectors_failed, 0);
     let removed = index.removed.lock().unwrap().clone();
     assert!(!removed.contains(&ConceptId(ids[0].0.clone())));
     fx.drop_db().await;
@@ -466,7 +466,7 @@ async fn tick_reports_index_outcomes() {
         .unwrap();
     assert_eq!(report.episodes_deduped, 2);
     assert_eq!(report.vectors_removed, 0);
-    assert_eq!(report.vectors_marked_dirty, 0);
+    assert_eq!(report.vectors_failed, 0);
     fx.drop_db().await;
 
     let fx = Fixture::new().await;
@@ -484,7 +484,7 @@ async fn tick_reports_index_outcomes() {
         "an index failure never fails the write"
     );
     assert_eq!(report.vectors_removed, 0);
-    assert_eq!(report.vectors_marked_dirty, 2);
+    assert_eq!(report.vectors_failed, 2);
     fx.drop_db().await;
 }
 

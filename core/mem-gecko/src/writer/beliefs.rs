@@ -212,7 +212,7 @@ impl EpistemicWriter for MemWriter {
             let e = name_missing_evidence(e, derivation, &id, evidence);
             name_missing_provenance(e, &provenance, &id)
         })?;
-        // Best-effort embed + upsert; failure marks dirty, never fails the write.
+        // Best-effort embed + upsert; a failure warns and never fails the write.
         let meta = self.belief_meta(&b, ctx, BeliefState::Asserted);
         self.best_effort_index(&id, &b.text, meta);
         Ok(id)
@@ -367,7 +367,16 @@ impl EpistemicWriter for MemWriter {
                     ))
                 }
                 _ => e,
-            })
+            })?;
+        // Best-effort index after commit, as `observe` indexes its episodes.
+        let meta = FilterMeta {
+            owner: ctx.actor.clone(),
+            visibility: Visibility::Private,
+            belief_state: BeliefState::Asserted,
+            valid_from: ctx.occurred_at,
+        };
+        self.best_effort_index(&ep_id, &tql::resolution_title(oc), meta);
+        Ok(())
     }
 
     /// `MemWriter` is both writer and [`EpistemicReader`], so hand it back as one:

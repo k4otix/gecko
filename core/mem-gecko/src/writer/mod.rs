@@ -5,8 +5,8 @@
 //! writes** through the neutral [`GraphStore`] seam (mem owns its TQL; the engine
 //! owns the driver). The graph write is authoritative and commits *first*;
 //! embedding + index upsert (and remove-on-supersede) is **best-effort after
-//! commit** — any embed/upsert/remove failure calls [`MemWriter::mark_dirty`] and
-//! **never** rolls back or fails the graph write (invariant 8).
+//! commit** — an embed/upsert/remove failure warns and **never** rolls back or fails
+//! the graph write; startup reconciliation repairs it (invariant 8).
 //!
 //! Reads invoke the persisted substrate functions (`is-superseded`, `believed-at`,
 //! `derivation-chain`, `gate`, `retrieval-score`, …) from read transactions and
@@ -15,7 +15,7 @@
 //! *generates candidates*; every candidate is fetched authoritatively and **gated**
 //! so a superseded/out-of-scope id can never leak (invariant 8, the crux).
 //!
-//! The implementation is split by concern: `index` (dirty set, rebuild, index
+//! The implementation is split by concern: `index` (startup reconciliation, index
 //! hooks), `reader` (persisted-function reads and recall), `beliefs` (the writer
 //! trait), `edges` (the per-extension belief-edge writer) and `consolidation`.
 //! Query text lives in the crate's `tql` module.
@@ -32,11 +32,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub use consolidation::DuplicateCandidate;
-pub use index::IndexOutcome;
+pub use index::{IndexOutcome, IndexReconciliation};
 
 use gecko_extension_api::{
-    BeliefEdgeWriter, ConceptId, DateTime, Embedder, EpistemicError, GraphStore, MemId,
-    SemanticIndex,
+    BeliefEdgeWriter, DateTime, Embedder, EpistemicError, GraphStore, MemId, SemanticIndex,
 };
 use serde_json::Value;
 
@@ -53,14 +52,11 @@ fn mint(prefix: &str) -> MemId {
 ///
 /// Holds the [`GraphStore`] (the sole production coupling to a graph backend) plus
 /// an optional [`Embedder`] + [`SemanticIndex`]: when either is `None` the
-/// embed/upsert path is skipped and `recall` uses the non-vector fallback. The
-/// dirty set records concept-ids whose index vector is stale and awaits background
-/// reindex.
+/// embed/upsert path is skipped and `recall` uses the non-vector fallback.
 pub struct MemWriter {
     graph: Arc<dyn GraphStore>,
     embedder: Option<Arc<dyn Embedder>>,
     index: Option<Arc<dyn SemanticIndex>>,
-    dirty: Mutex<HashSet<ConceptId>>,
     /// When on, `recall` stamps a `retrieval-event` + `surfaced` edges and
     /// `assert_belief` links the synthesized belief back to the retrieval(s) whose
     /// gated candidates overlap its evidence. Off ⇒ beliefs simply lack the
@@ -84,7 +80,6 @@ impl MemWriter {
             graph,
             embedder,
             index,
-            dirty: Mutex::new(HashSet::new()),
             record_retrieval_provenance: false,
             belief_edges: BeliefEdgeRegistry::default(),
             checked_relations: Mutex::new(HashSet::new()),

@@ -700,9 +700,9 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
         .with_retrieval_provenance(true)
         .with_belief_edges(registry);
     ref_writer
-        .rebuild_index_from_graph()
+        .reconcile_index()
         .await
-        .expect("rebuild ref index");
+        .expect("reconcile ref index");
     let ref_writer = Arc::new(ref_writer);
     let mut ref_fp = fingerprint(&rig_ref).await;
 

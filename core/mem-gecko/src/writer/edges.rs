@@ -109,7 +109,7 @@ impl BeliefEdgeWriter for BoundEdgeWriter {
             let e = name_missing_provenance(e, &provenance, &id);
             name_failing_edge(e, first_edge, &decls, edges)
         })?;
-        // Best-effort embed + upsert; failure marks dirty, never fails the write.
+        // Best-effort embed + upsert; a failure warns and never fails the write.
         let meta = self.writer.belief_meta(&draft, ctx, BeliefState::Asserted);
         self.writer.best_effort_index(&id, &draft.text, meta);
         Ok(id)

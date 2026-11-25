@@ -1031,7 +1031,7 @@ async fn build_epistemic_writer(
     // Reconstruct the accelerator from the graph (the source of truth) before
     // serving recalls. For the real embedder this stays lazy: an empty/doc-only
     // graph enumerates no embeddables, so the 1.3GB model is never loaded here.
-    writer.rebuild_index_from_graph().await?;
+    writer.reconcile_index().await?;
     info!(
         path = %resolved_index_path.display(),
         embedder = embedder_kind,

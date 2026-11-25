@@ -1,15 +1,16 @@
 //! Semantic index acceptance tests: the real [`HnswIndex`] driven through the
 //! [`MemWriter`] against live TypeDB (`localhost:1729`, admin/password).
 //!
-//! Covers belief upsert/supersede against index state, rebuild-from-graph
-//! determinism, model-id-bump rebuild, gated recall through the real index,
-//! dirty-set repair via `drain_dirty_set`, and the retrieval-provenance write path
+//! Covers belief upsert/supersede against index state, startup reconciliation with
+//! the graph (determinism, model-id bump, another database's file, items written
+//! while the index was off, failed writes), gated recall through the real index,
+//! and the retrieval-provenance write path
 //! (auto-linked; no-drag when off). Each test provisions a throwaway db + a temp
 //! index file and cleans both up. The real `gecko` database is never touched.
 
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
@@ -131,10 +132,6 @@ async fn belief_write_upserts_and_supersede_swaps_the_vector() {
         .await
         .unwrap();
     assert_eq!(index.len(), 1, "belief upserts one vector");
-    assert!(
-        !w.is_dirty(&ConceptId(old.0.clone())),
-        "healthy upsert ⇒ not dirty"
-    );
 
     let new = w
         .supersede(
@@ -214,7 +211,7 @@ async fn rebuild_from_graph_is_deterministic_after_file_deletion() {
         let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
         assert!(index.is_empty(), "deleted file ⇒ empty index ⇒ rebuild due");
         let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
-        w.rebuild_index_from_graph().await.unwrap();
+        w.reconcile_index().await.unwrap();
         assert_eq!(
             index.len(),
             3,
@@ -288,7 +285,7 @@ async fn model_id_change_triggers_full_rebuild() {
         "adopts the new identity"
     );
     let w2 = MemWriter::new(fx.store(), Some(embedder2), Some(index2.clone()));
-    w2.rebuild_index_from_graph().await.unwrap();
+    w2.reconcile_index().await.unwrap();
     assert_eq!(
         index2.len(),
         1,
@@ -297,6 +294,66 @@ async fn model_id_change_triggers_full_rebuild() {
 
     std::fs::remove_file(&path).ok();
     fx.drop_db().await;
+}
+
+/// An index file written for one database does not hide another database's
+/// beliefs: after the rebuild, recall in B finds the belief B already held.
+#[tokio::test]
+async fn an_index_built_for_another_database_does_not_hide_this_ones_beliefs() {
+    let fx_a = Fixture::new().await;
+    let fx_b = Fixture::new().await;
+    let path = tmp_index_path();
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+
+    let held = MemWriter::without_index(fx_b.store())
+        .assert_belief(
+            &ctx,
+            belief("beta claim", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    {
+        let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+        let w = MemWriter::new(fx_a.store(), Some(embedder.clone()), Some(index));
+        w.reconcile_index().await.unwrap();
+        w.assert_belief(
+            &ctx,
+            belief("alpha claim", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    }
+
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx_b.store(), Some(embedder), Some(index));
+    w.reconcile_index().await.unwrap();
+    let ids: Vec<String> = w
+        .recall(&ctx, RecallQuery::now("claim"), budget(10))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id.0)
+        .collect();
+    assert_eq!(
+        ids,
+        vec![held.0.clone()],
+        "B recalls exactly its own belief"
+    );
+    let reopened = HnswIndex::open(&path, StubEmbedder::new(DIM).model_id(), DIM).unwrap();
+    assert_eq!(
+        reopened.ids(),
+        Some(HashSet::from([ConceptId(held.0.clone())])),
+        "the file holds exactly B's items"
+    );
+
+    std::fs::remove_file(&path).ok();
+    fx_a.drop_db().await;
+    fx_b.drop_db().await;
 }
 
 // ── Acceptance: recall through the REAL index returns only gated candidates ──
@@ -355,27 +412,14 @@ async fn recall_through_real_index_gates_superseded() {
     fx.drop_db().await;
 }
 
-/// An index that fails `upsert` while `fail` is set, recording every attempt and
-/// storing the ids that DID land — enough to prove a forced failure marks the id
-/// dirty and a later `drain_dirty_set` repairs it.
-#[derive(Default)]
-struct ToggleFailIndex {
-    fail: AtomicBool,
-    attempts: AtomicUsize,
-    stored: StdMutex<Vec<ConceptId>>,
-}
-impl SemanticIndex for ToggleFailIndex {
-    fn upsert(&self, id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<(), EpistemicError> {
-        self.attempts.fetch_add(1, Ordering::SeqCst);
-        if self.fail.load(Ordering::SeqCst) {
-            return Err(EpistemicError::Index("forced upsert failure".into()));
-        }
-        self.stored.lock().unwrap().push(id);
-        Ok(())
+/// An index whose `upsert` always fails — a live index write that never lands.
+struct FailingIndex;
+impl SemanticIndex for FailingIndex {
+    fn upsert(&self, _id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<(), EpistemicError> {
+        Err(EpistemicError::Index("forced upsert failure".into()))
     }
-    fn remove(&self, id: ConceptId) -> Result<(), EpistemicError> {
-        self.stored.lock().unwrap().retain(|c| c != &id);
-        Ok(())
+    fn remove(&self, _id: ConceptId) -> Result<(), EpistemicError> {
+        Err(EpistemicError::Index("forced remove failure".into()))
     }
     fn query(
         &self,
@@ -388,62 +432,227 @@ impl SemanticIndex for ToggleFailIndex {
     fn model_id(&self) -> &str {
         "stub-hash-v1@64"
     }
-    fn len(&self) -> usize {
-        self.stored.lock().unwrap().len()
+}
+
+/// Counts `embed_document` calls over a [`StubEmbedder`].
+struct CountingEmbedder {
+    inner: StubEmbedder,
+    documents: Arc<AtomicUsize>,
+}
+impl Embedder for CountingEmbedder {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+    fn embed_query(&self, t: &str) -> Result<Vec<f32>, EpistemicError> {
+        self.inner.embed_query(t)
+    }
+    fn embed_document(&self, t: &str) -> Result<Vec<f32>, EpistemicError> {
+        self.documents.fetch_add(1, Ordering::SeqCst);
+        self.inner.embed_document(t)
     }
 }
 
-// ── Acceptance: forced upsert failure ⇒ graph correct + id dirty, later repaired ──
+fn episode(text: &str, at: DateTime) -> EpisodeDraft {
+    EpisodeDraft {
+        text: text.to_string(),
+        event_time: at,
+        ingest_time: at,
+    }
+}
+
+// ── Reconciliation: a failed live upsert is repaired by the next startup ──
 #[tokio::test]
-async fn forced_upsert_failure_is_repaired_by_drain_dirty_set() {
+async fn a_failed_live_upsert_is_repaired_by_the_next_reconcile() {
     let fx = Fixture::new().await;
     let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
-    let index = Arc::new(ToggleFailIndex::default());
-    index.fail.store(true, Ordering::SeqCst);
-    let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
     let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let id = MemWriter::new(
+        fx.store(),
+        Some(embedder.clone()),
+        Some(Arc::new(FailingIndex)),
+    )
+    .assert_belief(
+        &ctx,
+        belief("resilient belief", "agent-1", 0.8),
+        &[],
+        DerivationMethod::HumanAssertion,
+    )
+    .await
+    .expect("belief write must succeed even when the index upsert fails");
 
-    let id = w
-        .assert_belief(
+    let path = tmp_index_path();
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!((report.added, report.removed), (1, 0));
+    let ids: Vec<String> = w
+        .recall(&ctx, RecallQuery::now("resilient belief"), budget(5))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id.0)
+        .collect();
+    assert_eq!(ids, vec![id.0.clone()]);
+
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}
+
+// ── Reconciliation: an empty graph empties a foreign file on disk ──
+#[tokio::test]
+async fn reconcile_with_an_empty_graph_empties_the_file() {
+    let fx_a = Fixture::new().await;
+    let fx_b = Fixture::new().await;
+    let path = tmp_index_path();
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    {
+        let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+        let w = MemWriter::new(fx_a.store(), Some(embedder.clone()), Some(index));
+        w.reconcile_index().await.unwrap();
+        w.assert_belief(
             &ctx,
-            belief("resilient belief", "agent-1", 0.8),
+            belief("alpha claim", "agent-1", 0.9),
             &[],
             DerivationMethod::HumanAssertion,
         )
         .await
-        .expect("belief write must succeed even when the index upsert fails");
-
-    // Graph is correct: the belief is really there.
-    let rows = fx
-        .raw_fetch(&format!(
-            r#"match $b isa belief, has concept-id "{}"; fetch {{ "id": $b.concept-id }};"#,
-            id.0
-        ))
-        .await;
+        .unwrap();
+    }
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx_b.store(), Some(embedder.clone()), Some(index));
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!((report.added, report.removed), (0, 1));
+    let reopened = HnswIndex::open(&path, embedder.model_id(), DIM).unwrap();
     assert_eq!(
-        rows.len(),
-        1,
-        "belief committed to the graph despite index failure"
-    );
-    assert!(
-        w.is_dirty(&ConceptId(id.0.clone())),
-        "failed upsert marked the id dirty"
-    );
-    assert_eq!(index.len(), 0, "nothing landed in the index yet");
-
-    // Repair: flip the index healthy and drain the dirty set.
-    index.fail.store(false, Ordering::SeqCst);
-    w.drain_dirty_set().await.unwrap();
-    assert!(
-        !w.is_dirty(&ConceptId(id.0.clone())),
-        "drain cleared the dirty flag"
-    );
-    assert_eq!(w.dirty_len(), 0);
-    assert!(
-        index.stored.lock().unwrap().iter().any(|c| c.0 == id.0),
-        "drain_dirty_set re-upserted the repaired vector"
+        reopened.ids(),
+        Some(HashSet::new()),
+        "the emptied state persisted"
     );
 
+    std::fs::remove_file(&path).ok();
+    fx_a.drop_db().await;
+    fx_b.drop_db().await;
+}
+
+// ── Reconciliation: items written while the index was off are indexed ──
+#[tokio::test]
+async fn items_written_while_the_index_was_off_are_recalled() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let off = MemWriter::without_index(fx.store());
+    let b = off
+        .assert_belief(
+            &ctx,
+            belief("offline claim", "agent-1", 0.9),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let e = off
+        .observe(
+            &ctx,
+            episode("offline sighting", dt("2026-01-01T00:00:00Z")),
+        )
+        .await
+        .unwrap();
+
+    let path = tmp_index_path();
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!((report.added, report.removed), (2, 0));
+    let ids: Vec<String> = w
+        .recall(&ctx, RecallQuery::now("offline claim"), budget(5))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id.0)
+        .collect();
+    assert!(ids.contains(&b.0), "the belief is recalled: {ids:?}");
+    assert!(index.ids().unwrap().contains(&ConceptId(e.0.clone())));
+
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}
+
+// ── Reconciliation: matching id sets embed nothing ──
+#[tokio::test]
+async fn a_warm_start_with_matching_ids_embeds_nothing() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let path = tmp_index_path();
+    let counting = |documents: Arc<AtomicUsize>| -> Arc<dyn Embedder> {
+        Arc::new(CountingEmbedder {
+            inner: StubEmbedder::new(DIM),
+            documents,
+        })
+    };
+    {
+        let emb = counting(Arc::new(AtomicUsize::new(0)));
+        let index = Arc::new(HnswIndex::open(&path, emb.model_id(), DIM).unwrap());
+        let w = MemWriter::new(fx.store(), Some(emb), Some(index));
+        w.reconcile_index().await.unwrap();
+        let b = w
+            .assert_belief(
+                &ctx,
+                belief("predicted claim", "agent-1", 0.5),
+                &[],
+                DerivationMethod::HumanAssertion,
+            )
+            .await
+            .unwrap();
+        w.observe(&ctx, episode("a sighting", dt("2026-01-01T00:00:00Z")))
+            .await
+            .unwrap();
+        w.record_prediction(&ctx, b.clone(), 0.6).await.unwrap();
+        w.resolve_prediction(&ctx, b, gecko_extension_api::Outcome::Confirmed)
+            .await
+            .unwrap();
+    }
+    let documents = Arc::new(AtomicUsize::new(0));
+    let emb = counting(documents.clone());
+    let index = Arc::new(HnswIndex::open(&path, emb.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx.store(), Some(emb), Some(index));
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!((report.added, report.removed), (0, 0));
+    assert_eq!(documents.load(Ordering::SeqCst), 0, "nothing re-embedded");
+
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}
+
+// ── Reconciliation: a failed persist keeps the in-memory episode vectors ──
+#[tokio::test]
+async fn a_failed_persist_during_reconcile_keeps_episode_vectors() {
+    let fx = Fixture::new().await;
+    let ctx = ctx_at("agent-1", dt("2026-01-01T00:00:00Z"));
+    let e = MemWriter::without_index(fx.store())
+        .observe(&ctx, episode("kept sighting", dt("2026-01-01T00:00:00Z")))
+        .await
+        .unwrap();
+
+    // The index's parent "directory" is a regular file, so every persist fails.
+    let blocker = tmp_index_path();
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    let index =
+        Arc::new(HnswIndex::open(blocker.join("idx.hnsw"), embedder.model_id(), DIM).unwrap());
+    let w = MemWriter::new(fx.store(), Some(embedder), Some(index.clone()));
+    w.reconcile_index()
+        .await
+        .expect("index failures never fail startup");
+    assert!(
+        index.ids().unwrap().contains(&ConceptId(e.0.clone())),
+        "the episode's vector stays in memory"
+    );
+
+    std::fs::remove_file(&blocker).ok();
     fx.drop_db().await;
 }
 
