@@ -1,10 +1,7 @@
 //! # mem-gecko
 //!
-//! Cognitive memory extension for the GECKO framework.
-//!
-//! Transforms temporary execution state into structured, queryable GraphRAG memory.
-//! Generates `execution-episode` nodes linked to involved entities via `contextualizes`
-//! relations for future LLM-powered retrieval (design §4.3).
+//! GECKO's epistemic memory substrate: the bitemporal episode and belief schema, its
+//! persisted functions, and the [`MemWriter`] that writes and recalls through them.
 
 use std::sync::LazyLock;
 

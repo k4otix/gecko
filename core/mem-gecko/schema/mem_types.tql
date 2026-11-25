@@ -4,13 +4,13 @@ define
   # A2 — mem-gecko substrate ontology (additive on core_schema.tql)
   # ══════════════════════════════════════════════════════════════════
 
-  # ── A2.2 State enums ──────────────────────────────────────────────
+  # ── State enums ───────────────────────────────────────────────────
   attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");
   attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "type-db-function", "external-tool", "human-assertion", "llm-synthesis");
   attribute entrenchment value string @values("axiom", "user-stated", "tool-derived", "inferred", "llm");
   attribute visibility value string @values("private", "team", "shared");
 
-  # ── A2.4 Bitemporal + decay attrs ─────────────────────────────────
+  # ── Bitemporal + decay attrs ──────────────────────────────────────
   attribute event-time value datetime;
   attribute ingest-time value datetime;
   attribute valid-from value datetime;
@@ -34,12 +34,12 @@ define
   attribute predicted-probability value double;
   attribute outcome value string;
 
-  # ── A2.10 retrieval-provenance attrs ──────────────────────────────
+  # ── Retrieval-provenance attrs ───────────────────────────────────
   attribute retrieval-method value string @values("semantic", "typed", "hybrid");
   attribute retrieval-provenance value string @values("semantic", "typed", "hybrid", "none");
   attribute similarity-score value double;
   attribute was-used value boolean;
-  attribute candidate-count value integer;     # sketch said `long`; 3.x has no long -> integer (64-bit)
+  attribute candidate-count value integer;     # 64-bit
 
   # ══════════════════════════════════════════════════════════════════
   # Memory-item hierarchy
@@ -58,8 +58,8 @@ define
       plays ownership:owned @card(1),
       plays rests-on:resting,
       plays rests-on:assumption,
-      plays pivot:from-state,            # A2.8 pivot: a memory-item is the state pivoted from
-      plays pivot:to-state,              # A2.8 pivot: ...and the state pivoted to
+      plays pivot:from-state,            # a memory-item is the state pivoted from
+      plays pivot:to-state,              # ...and the state pivoted to
       plays surfaced:item;               # anything surfaced by a retrieval (typically a belief)
 
   entity episode sub memory-item @doc("A time-stamped episodic memory of something that happened, carrying its event-time, ingest-time, and an optional decay half-life."),
@@ -73,7 +73,7 @@ define
       owns confidence @card(0..1) @range(0.0..1.0),
       owns entrenchment @card(0..1),
       owns valid-to @card(0..1),
-      owns retrieval-provenance @card(0..1),   # write-once summary flag (A2.10)
+      owns retrieval-provenance @card(0..1),   # write-once summary flag
       plays contradiction:claim,
       plays prediction-resolution:predicted-belief,
       plays informs-synthesis:synthesized;
@@ -89,7 +89,7 @@ define
       plays informs-synthesis:retrieval;
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.3 Provenance relations (reified)
+  # Provenance relations (reified)
   # ══════════════════════════════════════════════════════════════════
   relation derivation @doc("Records that one memory item was derived from one or more source items by a named derivation method, with optional confidence."),
       relates derived @card(1) @doc("The memory item produced by the derivation."),
@@ -97,7 +97,7 @@ define
       owns derivation-method @card(1),
       owns confidence @card(0..1) @range(0.0..1.0);
 
-  # A2.3 contradiction -> anomaly hub (claims 2..)
+  # contradiction -> anomaly hub (claims 2..)
   entity anomaly sub memory-item @doc("A contradiction hub: a memory node linking a set of claims that cannot all hold, with the condition under which they conflict."),
       owns condition @card(0..1),
       plays contradiction:hub;
@@ -120,12 +120,12 @@ define
       owns origin-kind @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.7 Multi-agent: agent + ownership
+  # Multi-agent: agent + ownership
   # ══════════════════════════════════════════════════════════════════
   entity agent @doc("An actor that owns memory and makes investigative moves; keyed by agent-id and used as the subject of visibility scoping."),
       owns agent-id @key,
       plays ownership:owner,
-      plays pivot:pivoting-agent;         # A2.8 pivot: the agent that made the investigative move
+      plays pivot:pivoting-agent;         # the agent that made the investigative move
 
   relation ownership @doc("Assigns a memory item to its owning agent(s) and carries the visibility scope that gates who can recall it."),
       relates owned @card(1) @doc("The memory item being owned."),
@@ -133,7 +133,7 @@ define
       owns visibility @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.8 Cross-cutting primitives (substrate, invariant 5)
+  # Cross-cutting primitives (substrate, invariant 5)
   # ══════════════════════════════════════════════════════════════════
   relation rests-on @doc("Records the assumptions a memory item depends on; retracting an assumption propagates through this edge to everything resting on it."),
       relates resting @card(1) @doc("The memory item that depends on the assumptions."),
@@ -172,7 +172,7 @@ define
       relates record-b @card(1) @doc("The other record being resolved together.");
 
   # ══════════════════════════════════════════════════════════════════
-  # A2.10 Retrieval provenance (episodic tier, firewalled from derivation)
+  # Retrieval provenance (episodic tier, firewalled from derivation)
   # ══════════════════════════════════════════════════════════════════
   relation surfaced @doc("Reified record of what a retrieval surfaced, and the search signal behind it — similarity score and whether the item was actually used."),                       # reified: what was surfaced + the SEARCH signal
       relates surfacer @card(1) @doc("The retrieval event that surfaced the item."),

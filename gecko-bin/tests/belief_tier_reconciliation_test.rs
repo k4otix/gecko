@@ -494,7 +494,7 @@ impl LabelDisposition {
 }
 
 /// The ledger items that may own a disposition.
-const KNOWN_OWNERS: &[&str] = &["A5", "A7", "A8", "M1", "M2", "M3", "M4", "M5", "M6", "C1"];
+const KNOWN_OWNERS: &[&str] = &["M1", "M2", "M3-r"];
 
 /// Every belief-tier label no production step reaches, with how it is accounted for.
 const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
@@ -512,9 +512,9 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
             owner: "M2",
         },
     ),
-    ("resolution", LabelDisposition::Owed { owner: "M3" }),
-    ("resolves", LabelDisposition::Owed { owner: "M3" }),
-    ("pivot", LabelDisposition::Owed { owner: "M5" }),
+    ("resolution", LabelDisposition::Owed { owner: "M3-r" }),
+    ("resolves", LabelDisposition::Owed { owner: "M3-r" }),
+    ("pivot", LabelDisposition::Owed { owner: "M1" }),
 ];
 
 /// The run context `gecko run` mints for `concept_id`.
