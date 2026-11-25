@@ -398,7 +398,7 @@ fn check_index(cfg: &GeckoConfig) -> CheckResult {
         Err(e) => CheckResult::warn(
             "index",
             format!("{e:#} — the next run will fail until this is fixed"),
-            None,
+            Some("set [semantic_index] dir to a directory (and remove any [semantic_index] path)"),
         ),
     }
 }
@@ -604,6 +604,13 @@ mod tests {
         let r = check_index(&with(None, Some(toml::Value::String("x.hnsw".into()))));
         assert_eq!(r.status, Status::Warn);
         assert!(r.detail.contains("[semantic_index] dir"), "{}", r.detail);
+        assert!(
+            r.fix
+                .as_deref()
+                .is_some_and(|f| f.contains("[semantic_index] dir")),
+            "the warning carries a fix: {:?}",
+            r.fix
+        );
 
         let file = tmp.path().join("f");
         std::fs::write(&file, b"x").unwrap();

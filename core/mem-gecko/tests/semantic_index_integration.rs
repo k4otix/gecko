@@ -285,7 +285,12 @@ async fn model_id_change_triggers_full_rebuild() {
         "adopts the new identity"
     );
     let w2 = MemWriter::new(fx.store(), Some(embedder2), Some(index2.clone()));
-    w2.reconcile_index().await.unwrap();
+    let report = w2.reconcile_index().await.unwrap();
+    assert_eq!(
+        (report.added, report.removed),
+        (1, 0),
+        "the opened-empty index is refilled"
+    );
     assert_eq!(
         index2.len(),
         1,

@@ -1090,3 +1090,111 @@ mod edges {
         }
     }
 }
+
+/// An index with a configurable model id that either lists its ids or manages
+/// itself (`ids() == None`), recording resets — for the reconciliation branches the
+/// real `HnswIndex` never takes.
+struct ScriptedIndex {
+    model: &'static str,
+    self_managed: bool,
+    live: Mutex<std::collections::HashSet<ConceptId>>,
+    resets: AtomicUsize,
+}
+impl ScriptedIndex {
+    fn new(model: &'static str, self_managed: bool, live: &[&str]) -> Self {
+        Self {
+            model,
+            self_managed,
+            live: Mutex::new(live.iter().map(|id| ConceptId((*id).into())).collect()),
+            resets: AtomicUsize::new(0),
+        }
+    }
+}
+impl SemanticIndex for ScriptedIndex {
+    fn upsert(&self, id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<()> {
+        self.live.lock().unwrap().insert(id);
+        Ok(())
+    }
+    fn remove(&self, id: ConceptId) -> Result<()> {
+        self.live.lock().unwrap().remove(&id);
+        Ok(())
+    }
+    fn query(&self, _v: &[f32], _k: usize, _p: &FilterMeta) -> Result<Vec<(ConceptId, f32)>> {
+        Ok(vec![])
+    }
+    fn model_id(&self) -> &str {
+        self.model
+    }
+    fn ids(&self) -> Option<std::collections::HashSet<ConceptId>> {
+        (!self.self_managed).then(|| self.live.lock().unwrap().clone())
+    }
+    fn len(&self) -> usize {
+        self.live.lock().unwrap().len()
+    }
+    fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::SeqCst);
+        self.live.lock().unwrap().clear();
+    }
+}
+
+/// A graph whose enumerate reads return one belief row, `mem/bel/live`.
+fn graph_with_one_item() -> Arc<RecordingGraphStore> {
+    Arc::new(RecordingGraphStore {
+        read_reply: vec![serde_json::json!({
+            "id": "mem/bel/live", "text": "a claim", "owner": "agent-1", "vis": "private"
+        })],
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn reconcile_rebuilds_an_index_built_for_another_model() {
+    let idx = Arc::new(ScriptedIndex::new("another-model", false, &["mem/bel/old"]));
+    let w = MemWriter::new(
+        graph_with_one_item(),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!(
+        idx.resets.load(Ordering::SeqCst),
+        1,
+        "a model change resets"
+    );
+    assert_eq!(
+        idx.ids(),
+        Some([ConceptId("mem/bel/live".into())].into_iter().collect())
+    );
+    assert_eq!((report.added, report.removed), (1, 1));
+}
+
+#[tokio::test]
+async fn reconcile_leaves_a_populated_self_managed_index_alone() {
+    let idx = Arc::new(ScriptedIndex::new(
+        "test-embedder",
+        true,
+        &["mem/bel/other"],
+    ));
+    let w = MemWriter::new(
+        graph_with_one_item(),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!(idx.resets.load(Ordering::SeqCst), 0);
+    assert_eq!(idx.len(), 1, "nothing embedded or removed");
+    assert_eq!((report.added, report.removed), (0, 0));
+}
+
+#[tokio::test]
+async fn reconcile_fills_an_empty_self_managed_index() {
+    let idx = Arc::new(ScriptedIndex::new("test-embedder", true, &[]));
+    let w = MemWriter::new(
+        graph_with_one_item(),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!(idx.len(), 1, "the graph's item was embedded");
+    assert_eq!((report.added, report.removed), (1, 0));
+}

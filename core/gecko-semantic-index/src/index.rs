@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_many_compacts_and_persists_once() {
+    fn remove_many_compacts_and_persists() {
         let path = tmp_path("remove-many");
         let idx = HnswIndex::open(&path, "m@4", 4).unwrap();
         let items = (0..50)

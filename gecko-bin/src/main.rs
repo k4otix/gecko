@@ -697,6 +697,7 @@ fn remove_index_file(cfg: &GeckoConfig, database: &str) {
         if name.starts_with(&prefix)
             && name.ends_with(".tmp")
             && let Err(e) = std::fs::remove_file(entry.path())
+            && e.kind() != std::io::ErrorKind::NotFound
         {
             eprintln!("warning: could not remove {}: {e}", entry.path().display());
         }
@@ -1056,11 +1057,16 @@ async fn build_epistemic_writer(
 
     // This database's own index file, under the cache root or `[semantic_index] dir`.
     let resolved_index_path = config::index_file(cfg, database)?;
-    let index = std::sync::Arc::new(HnswIndex::open(
-        &resolved_index_path,
-        embedder.model_id(),
-        dim,
-    )?);
+    // Reading and replaying the snapshot is file I/O plus an ANN build: off the
+    // async thread.
+    let index = {
+        let (path, model_id) = (resolved_index_path.clone(), embedder.model_id().to_string());
+        std::sync::Arc::new(
+            tokio::task::spawn_blocking(move || HnswIndex::open(&path, &model_id, dim))
+                .await
+                .context("the index-open task failed")??,
+        )
+    };
     let index: std::sync::Arc<dyn SemanticIndex> = index;
 
     let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
@@ -1077,7 +1083,6 @@ async fn build_epistemic_writer(
         record_provenance = sic.record_provenance(),
         added = reconciled.added,
         removed = reconciled.removed,
-        full_rebuild = reconciled.full_rebuild,
         "Semantic index enabled (hnsw); reconciled with the graph"
     );
     Ok(std::sync::Arc::new(writer))

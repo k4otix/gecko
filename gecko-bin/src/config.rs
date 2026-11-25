@@ -471,10 +471,16 @@ mod tests {
             .lines()
             .find(|l| l.trim_start().starts_with("# dir "))
             .expect("the template shows a commented dir line");
+        let enabled_line = text
+            .lines()
+            .skip_while(|l| l.trim() != "[semantic_index]")
+            .find(|l| l.trim_start().starts_with("enabled") && l.contains("false"))
+            .expect("the template's [semantic_index] shows enabled = false");
         let enabled = text
             .replace(line, line.trim_start().trim_start_matches("# "))
-            .replace("enabled = false", "enabled = true");
+            .replace(enabled_line, "enabled = true");
         let cfg: GeckoConfig = toml::from_str(&enabled).unwrap();
+        assert!(cfg.semantic_index.enabled);
         assert!(cfg.semantic_index.dir.is_some());
         index_dir(&cfg).expect("the template's dir resolves");
     }
@@ -644,6 +650,10 @@ mod tests {
                 snippets += 1;
                 let cfg: GeckoConfig = toml::from_str(block)
                     .unwrap_or_else(|e| panic!("{file}: a snippet does not parse: {e}\n{block}"));
+                assert!(
+                    cfg.semantic_index.path.is_none(),
+                    "{file}: `[semantic_index] path` is refused; snippets use `dir`\n{block}"
+                );
                 let embedder = cfg.semantic_index.embedder.as_str();
                 assert!(
                     ["stub", "candle"].contains(&embedder),

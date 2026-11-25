@@ -18,7 +18,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync"] }
 # Live schema-acceptance integration tests reuse the engine's TypeDB router to
 # drive raw parameterized TQL against a throwaway database.
 gecko-engine = { path = "../gecko-engine" }

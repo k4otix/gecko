@@ -32,9 +32,6 @@ pub struct IndexReconciliation {
     pub added: usize,
     /// Ids the index held before that it no longer holds.
     pub removed: usize,
-    /// Whether the index was rebuilt from scratch (a model change, or an empty
-    /// self-managed index).
-    pub full_rebuild: bool,
 }
 
 /// One embeddable graph item: its id, text and pre-filter.
@@ -101,6 +98,13 @@ impl MemWriter {
                     .filter(|id| !current.contains(id))
                     .cloned()
                     .collect();
+                let missing: Vec<Embeddable> = graph
+                    .into_iter()
+                    .filter(|(id, _, _)| !held.contains(id))
+                    .collect();
+                if stale.is_empty() && missing.is_empty() {
+                    return Ok(report);
+                }
                 // Remove first, so a later embed or upsert failure never leaves
                 // another graph's vectors behind.
                 if !stale.is_empty() {
@@ -108,10 +112,6 @@ impl MemWriter {
                     on_blocking_pool("stale-vector removal", move || index.remove_many(stale))
                         .await;
                 }
-                let missing = graph
-                    .into_iter()
-                    .filter(|(id, _, _)| !held.contains(id))
-                    .collect();
                 self.add_embedded(emb, idx, missing).await;
                 let after = idx.ids().unwrap_or_default();
                 report.removed = held.difference(&after).count();
@@ -119,8 +119,12 @@ impl MemWriter {
             }
             None if idx.model_id() != emb.model_id() || idx.is_empty() => {
                 report.removed = idx.len();
-                idx.reset();
-                report.full_rebuild = true;
+                let index = idx.clone();
+                on_blocking_pool("index reset", move || {
+                    index.reset();
+                    Ok(())
+                })
+                .await;
                 self.add_embedded(emb, idx, graph).await;
                 report.added = idx.len();
             }
