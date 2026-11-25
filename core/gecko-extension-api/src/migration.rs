@@ -329,11 +329,13 @@ fn normalize(text: &str) -> String {
 fn without_abstract(declared: &str) -> String {
     match declared.split_once(' ') {
         Some((label, rest)) => match rest.strip_prefix("@abstract") {
-            Some(after) => {
+            // Only a whole `@abstract` token: `declared` is normalized, so a space or
+            // a comma ends it.
+            Some(after) if after.starts_with([' ', ',']) => {
                 let after = after.trim_start().trim_start_matches(',').trim_start();
                 format!("{label} {after}")
             }
-            None => declared.to_string(),
+            _ => declared.to_string(),
         },
         None => declared.to_string(),
     }
@@ -575,10 +577,23 @@ mod tests {
 
     #[test]
     fn only_a_whole_abstract_annotation_is_skipped() {
-        let schema = "define\n  entity root @doc(\"A root.\");\n  entity item @abstractish sub root @doc(\"x\");\n";
-        let err =
-            check_migrations(&[entry("undefine @doc from item sub root;")], schema).unwrap_err();
-        assert!(err.contains("no @doc to replace"), "{err}");
+        for (schema, tql) in [
+            (
+                "define\n  entity root @doc(\"A root.\");\n  entity item @abstractish sub root @doc(\"x\");\n",
+                "undefine @doc from item sub root;",
+            ),
+            (
+                "define\n  entity root @doc(\"A root.\");\n  entity item @abstractsub root @doc(\"x\");\n",
+                "undefine @doc from item sub root;",
+            ),
+            (
+                "define\n  relation edge @abstract@doc(\"x\");\n",
+                "undefine @doc from edge;",
+            ),
+        ] {
+            let err = check_migrations(&[entry(tql)], schema).unwrap_err();
+            assert!(err.contains("no @doc to replace"), "{tql}: {err}");
+        }
     }
 
     #[test]

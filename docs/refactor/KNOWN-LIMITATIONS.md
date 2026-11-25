@@ -81,7 +81,7 @@ proven through the real sandbox against live TypeDB.
 
 - **The schema enforces required roles, ownership and recall fields.** Every relation
   role the design lists is required (the bare roles of `pivot` and
-  `prediction-resolution:predicted-belief` stay optional), a memory item needs one ownership and a
+  `prediction-resolution` stay optional), a memory item needs one ownership and a
   source-link, a belief needs `valid-from`, `salience`, `base-activation` and
   `last-access`, and confidence, predicted probability and similarity scores are ranged.
   `schema-init` (and `sync` / `sync-sensors`, which apply the schema first) deletes each

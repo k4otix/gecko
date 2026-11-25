@@ -350,7 +350,7 @@ async fn composed_schema_is_define_clean_with_cyber() {
 /// relations and the core belief-tier relations, including the `resolves` that
 /// INVARIANTS §8.4's hand-list omits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn p_w5_1_folded_surface_contains_core_and_cyber_relations() {
+async fn p_w5_1_surface_contains_core_and_cyber_relations() {
     let db = TestDb::new("probe_w3");
     apply_composed_schema(&db).await;
 

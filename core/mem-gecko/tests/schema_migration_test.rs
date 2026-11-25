@@ -150,10 +150,13 @@ async fn a_database_holding_the_old_memory_item_doc_upgrades() {
     router.apply_schema(CORE_SCHEMA).await.expect("core schema");
     router.apply_schema(&old).await.expect("the old mem schema");
 
-    router
-        .apply_schema_with_migrations(&shipped, mem.schema_migrations())
-        .await
-        .expect("upgrade to the shipped mem schema");
+    // A second apply finds the old text gone and skips the migration.
+    for _ in 0..2 {
+        router
+            .apply_schema_with_migrations(&shipped, mem.schema_migrations())
+            .await
+            .expect("upgrade to the shipped mem schema");
+    }
     let schema = router.database_schema().await.expect("schema");
     assert!(schema.contains(NEW_MEMORY_ITEM_DOC), "the new doc landed");
     assert!(!schema.contains(OLD_MEMORY_ITEM_DOC), "the old doc is gone");
