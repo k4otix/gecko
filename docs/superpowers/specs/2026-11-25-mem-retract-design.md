@@ -51,6 +51,11 @@ The open question was where the reason goes. The schema has nowhere to put it.
      `doc-run plays retraction:run`. A belief is retracted at most once, because only an asserted
      belief can be retracted and the retraction flips its state. No `@card` on the play is needed.
    - No migration: no existing database holds a retraction.
+   - `memory-item`'s `@doc` is not touched. It sits on the `sub` declaration, and changing it
+     needs an explicit `undefine @doc` migration; `retraction` is played by `belief`, so it does
+     not need to.
+   - Startup index reconciliation will not re-add a retracted belief, because
+     `enumerate_beliefs_read` reads only `belief-state "asserted"`.
 2. **Writer.** `EpistemicWriter::retract(&self, ctx: &RunContext, id: MemId, reason: Option<&str>) -> Result<Vec<MemId>>`.
    - The returned list is the blast radius, as defined in goal 3.
    - **One batch, atomic** (`tql::retraction_ops`):
@@ -98,7 +103,14 @@ The open question was where the reason goes. The schema has nowhere to put it.
      only visible, current beliefs.
    - `extensions/README.md` and `docs/refactor/guest-wasm.md`, wherever the `mem.*` functions are
      listed.
-   - `CLAUDE.md`'s `mem.*` mention, only if it lists the functions.
+   - `KNOWN-LIMITATIONS.md`'s `mem.*` section (`:9`) and the `mem_host.rs` module doc (`:4`) list
+     the functions; both gain `retract`.
+   - `KNOWN-LIMITATIONS.md:170-172` ("No writer does that today, and N4's `retract` will close
+     `valid-to`") becomes greenfield: `supersede` and `retract` both close `valid-to`, so only a
+     raw-written state flip with no `valid-to` stays in as-of reads. The same section notes that
+     `retract` shares `supersede`'s window rules through `close_valid_to_op`: it never extends an
+     earlier end and shortens a later one.
+   - `CLAUDE.md` names only "the `mem.*` namespace", so it is not edited.
    - `KNOWN-LIMITATIONS.md` also notes that `occurred_at` is fixed once per run, so a belief
      asserted and retracted in one run gets the empty window `[t, t)` and no as-of read returns
      it, as with a same-run supersede.
@@ -147,6 +159,18 @@ The open question was where the reason goes. The schema has nowhere to put it.
     transitive one are listed, sorted. Another agent's private dependent and a superseded
     dependent are not.
   - `retract_removes_the_vector_from_the_index`, in `semantic_index_integration.rs`.
+  - The blast-radius test covers both edges and the exclusions: a `derivation` dependent, a
+    `rests-on` dependent (written through `MemWriter::rests_on`) and a transitive one are listed,
+    sorted. Another agent's private dependent, a superseded dependent and an already retracted
+    dependent are not. A `rests-on` cycle back to the retracted belief does not list the
+    retracted belief itself.
+- **Writer unit tests**, in `core/mem-gecko/src/writer/tests.rs`:
+  - `retract_survives_a_failing_remove`, mirroring `supersede_survives_a_failing_remove`, with no
+    remove when the embedder is absent.
+  - `a_failed_blast_radius_read_says_the_retraction_committed`.
+  - `retraction_ops_expectations`: the five ops carry `[None, None, Some(1), Some(1), None]` and
+    every value is a parameter, mirroring
+    `supersession_ops_closes_the_old_window_in_the_same_batch`.
 - **Cyber**, in `gecko-bin/tests/cyber_detect_test.rs`: a claim `blinded` reports is gone from
   it after `retract`, and its technique, absent from `coverage_gaps` while claimed, is listed there
   again.
@@ -166,8 +190,17 @@ The open question was where the reason goes. The schema has nowhere to put it.
     `mem.retract` step with its reference `MemWriter::retract` call, not a `DISPOSITIONS` entry,
     which would be false now that retract has a production path. That step needs the rebuilt
     `quickjs.wasm`, so the guest lands before the rig change.
-  - The label lists in `belief_tier_surface_test.rs`, `belief_tier_monopoly_test.rs` and
-    `no_drag_test.rs` gain `retraction` and `retraction-reason`.
+  - The rig retracts a still-asserted belief (`s` or `b2` in `rig_mem`; `b1` is already
+    superseded) with a non-empty reason, so the census sees `retraction`'s instances, links and
+    attributes (`retraction-reason`, `created-at`) in both `rig_prod` and `rig_ref`.
+  - The label lists:
+    - `no_drag_test.rs`: `BELIEF_ATTRS` gains `"retraction-reason"`, and `BEARER_ROLES`, which
+      holds `relation:role` pairs, gains `"retraction:retracted"`.
+    - `belief_tier_monopoly_test.rs`: the surface check (`:530`) and the `mem_tql` positive
+      control (`:580`) gain `"retraction"`. They hold types only, not attributes.
+    - `belief_tier_surface_test.rs`, wherever it enumerates the surface.
+  - `schema_acceptance_test.rs`'s `missing_role_refused!` matrix gains `retraction` with its
+    three `@card(1)` roles: `retracted`, `retractor` and `run`.
 - Schema guards: re-apply plans nothing, and the shipped-schema label tests pass with the new
   labels.
 - The full candle-free suite passes.
