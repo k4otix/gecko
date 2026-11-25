@@ -15,9 +15,10 @@
 //! - **Present-state only.** The index carries no bitemporal state; as-of-T recall
 //!   never touches it (that gate lives in `mem-gecko`).
 //! - **Best-effort.** An `upsert`/`remove` failure never fails a graph write; the
-//!   writer marks the concept-id dirty for background repair.
-//! - **Fully rebuildable.** The persisted file is derived state; deleting it (or a
-//!   header/model-id mismatch) triggers a full reconstruction from the graph. No
+//!   writer's next startup reconciliation repairs it.
+//! - **Fully rebuildable.** The persisted file is derived state; the writer
+//!   reconciles it with the graph at startup, and deleting it (or a header/model-id
+//!   mismatch) refills it from the graph. No
 //!   vector storage is ever added to the graph schema.
 //!
 //! ## Swap-to-native contract (this crate is the rip-out surface)

@@ -154,7 +154,7 @@ backend  = "hnsw"
 record_retrieval_provenance = true
 ```
 
-The index is a pure, rebuildable accelerator: when `enabled = false` (or absent), recall falls back to a non-vector path with zero drag on writes.
+The index is a pure, rebuildable accelerator: when `enabled = false` (or absent), recall falls back to a non-vector path with zero drag on writes. Each database gets its own index file under `cache_dir/index/` (or `[semantic_index] dir`), reconciled with the graph at the start of every run.
 
 ## Security Model
 

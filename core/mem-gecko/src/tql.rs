@@ -533,7 +533,7 @@ pub(crate) fn record_prediction_op(b: &MemId, p_prob: f64) -> GraphWrite {
     .expecting(1)
 }
 
-// ── Rebuild-from-graph reads ──────────────────────────────────────────────────
+// ── Index reconciliation reads ────────────────────────────────────────────────
 
 /// Enumerates current-state **beliefs** (asserted, not superseded/retracted) with
 /// their embeddable title text and denormalized FilterMeta (owner/visibility). The
@@ -561,22 +561,6 @@ pub(crate) fn enumerate_episodes_read() -> &'static str {
        $own isa ownership, links (owned: $e, owner: $ag);
        $ag has agent-id $aid;
      fetch { \"id\": $eid, \"text\": $ttl, \"owner\": $aid, \"vf\": $et };"
-}
-
-/// Single current-state-belief lookup by concept-id (dirty-set repair).
-pub(crate) fn fetch_belief_embeddable(cid: &ConceptId) -> (String, Vec<String>, Vec<GraphValue>) {
-    let mut p = Params::new();
-    p.s("cid", cid.0.clone());
-    p.read(
-        "match
-           $b isa belief, has concept-id $bc; $bc == $cid;
-           $b has title $ttl, has belief-state $st; $st == \"asserted\";
-           $b has valid-from $vf;
-           $own isa ownership, links (owned: $b, owner: $ag);
-           $own has visibility $vis;
-           $ag has agent-id $aid;
-         fetch { \"id\": $bc, \"text\": $ttl, \"owner\": $aid, \"vis\": $vis, \"vf\": $vf };",
-    )
 }
 
 // ── Retrieval-provenance write path ───────────────────────────────────────────
@@ -754,6 +738,11 @@ pub(crate) fn retrieval_events_safe_to_tombstone_read() -> &'static str {
      fetch { \"id\": $rid };"
 }
 
+/// The title of the episode that resolves a prediction with `outcome`.
+pub(crate) fn resolution_title(outcome: &str) -> String {
+    format!("prediction resolved: {outcome}")
+}
+
 /// `resolve_prediction`: mint a resolving `episode` (run + actor stamped) and attach
 /// it (plus the outcome) to the belief's open `prediction-resolution`. The last op
 /// matches only a prediction with no outcome yet and must affect exactly one row.
@@ -766,7 +755,7 @@ pub(crate) fn resolve_prediction_ops(
     // 1. resolving episode.
     let mut ep = Params::new();
     ep.s("eid", ep_id.0.clone());
-    ep.s("ttl", format!("prediction resolved: {outcome}"));
+    ep.s("ttl", resolution_title(outcome));
     ep.dt("now", ctx.occurred_at);
     ep.s("rid", ctx.run_id.to_string());
     ep.s("aid", ctx.actor.0.clone());

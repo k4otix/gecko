@@ -249,14 +249,14 @@ impl Rig {
         let tmp = tempfile::TempDir::new().expect("temp dir");
         let root = tmp.path();
         let config = root.join("gecko.toml");
-        let index = root.join("prod.hnsw");
+        let index = root.join("idx");
         let index = toml::Value::String(index.to_str().expect("utf-8 temp path").to_string());
         std::fs::write(
             &config,
             format!(
                 "[typedb]\nendpoint = \"localhost:1729\"\nmode = \"external\"\n\n\
                  [extensions]\nenabled = [\"cyber\"]\n\n\
-                 [semantic_index]\nenabled = true\npath = {index}\nembedder = \"stub\"\n\
+                 [semantic_index]\nenabled = true\ndir = {index}\nembedder = \"stub\"\n\
                  backend = \"hnsw\"\nrecord_retrieval_provenance = true\n"
             ),
         )
@@ -700,9 +700,9 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
         .with_retrieval_provenance(true)
         .with_belief_edges(registry);
     ref_writer
-        .rebuild_index_from_graph()
+        .reconcile_index()
         .await
-        .expect("rebuild ref index");
+        .expect("reconcile ref index");
     let ref_writer = Arc::new(ref_writer);
     let mut ref_fp = fingerprint(&rig_ref).await;
 

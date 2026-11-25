@@ -6,7 +6,8 @@
 > Last reconciled 2026-11-24 against `main` @ `e74672d` (after PR #80).
 >
 > - Landed and closed work, with its test inventories and measurements:
->   [`LEDGER-HISTORY.md`](./LEDGER-HISTORY.md).
+>   [`LEDGER-HISTORY.md`](./LEDGER-HISTORY.md) up to the review, and
+>   [Landed since the review](#landed-since-the-review) after it.
 > - TypeDB behaviour observed on the live engine: [`TYPEDB-NOTES.md`](./TYPEDB-NOTES.md).
 > - Ratification provenance: SPEC-W2-W3 decisions @`11d7ab1`; SPEC-W5 as-design @`95f0d6e`;
 >   CONTRACT-W8 as-contract (`fdd1dc6`); INVARIANTS ratified @`0227c2d`. Ratified documents
@@ -22,14 +23,12 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | # | ID | Item | Size |
 |---|---|---|---|
-| 1 | N1 | Docs match the code on first-run paths | S |
-| 2 | N3 | One semantic index per database | S–M |
-| 3 | X1 | Second cut pass (design doc first) | M, mostly deletion |
-| 4 | B1 | Beliefs end: supersede closes `valid-to`, as-of recall reads the window | M |
-| 5 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
-| 6 | S6 | `coverage_gaps` grouped by tactic | S |
-| 7 | N6 | Cyber worked example and `gecko run --args` | M |
-| 8 | N5 | `timeout-ms` reaches the run | S |
+| 1 | X1 | Second cut pass (design doc first) | M, mostly deletion |
+| 2 | B1 | Beliefs end: supersede closes `valid-to`, as-of recall reads the window | M |
+| 3 | N2 + N4 + N6a | One guest rebuild: the boundary refuses bad input, `mem.retract`, `gecko.args` | M |
+| 4 | S6 | `coverage_gaps` grouped by tactic | S |
+| 5 | N6 | Cyber worked example and `gecko run --args` | M |
+| 6 | N5 | `timeout-ms` reaches the run | S |
 
 ## Open work
 
@@ -37,7 +36,6 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
-| **N3** | The index file is keyed by database, and a snapshot built for another database is rebuilt, not reused. Today the path is `cache_dir/index/gecko.hnsw` or one explicit `path` (`gecko-bin/src/config/paths.rs`), and a rebuild runs only when the index is empty or its model id differs, so database B's run reuses A's index and indexed recall misses B's beliefs (found by reading; the first step is a failing test). Also: the dirty set is in-process only, so in a one-shot `gecko run` "marked dirty for repair" repairs nothing | `mem.recall` with the index enabled (the shipped `gecko.toml`); one database per bundle and per ATT&CK domain is the default | Two databases, alternating runs: each recalls its own pre-existing beliefs | — |
 | **B1** | Per D-A: `supersede` sets `valid-to` on the belief it replaces, `retract` (N4) sets it on the belief it withdraws, and `believed-at` reads the half-open window `[valid-from, valid-to)` and drops its `belief-state` gate (the same window `canonical-entity-at` reads). Absorbs B2 | `mem.recall(q, { asOf })` | As-of recall at T returns a belief superseded after T and not its successor; a supersede within one run at a single `occurred_at` gives the old belief an empty window and the new one `[t, ∞)` (one test); the as-of fixtures supersede through the writer. `KNOWN-LIMITATIONS.md` says a database written before B1 holds superseded beliefs with no `valid-to`, which as-of recall then returns | — |
 | **N4** | `retract(ctx, id, reason)`: sets `belief-state "retracted"` and `valid-to`, visible-to gated, exactly one row; removes the belief's vector from the index, as supersede does; the reply lists the `blast-radius` of the retracted belief | `mem.retract`; withdrawing a cyber claim without a dummy replacement | A retracted claim leaves `blinded` and `coverage_gaps`; present-state indexed recall no longer surfaces it; the reply names what rested on it | B1; the guest rebuild (N2) |
 | **N2** | The guest and host refuse malformed arguments instead of defaulting them: `evidence` and `claims` (A11's guest half), `asOf`, `maxChunks`, `maxTokens`, `confidence`, an unparseable `event_time` (today "now"), an unknown `method` (today `llm-synthesis`; cyber's `claim` already refuses), and `callExtension`'s extension and function names (today `""`). A reply over the guest buffer reports the size needed without running the callback twice, so an oversized `mem.recall` mints one `retrieval-event` | every `mem.*` and `callExtension` call | One host test per field; the guest tests are green after `just build-guest`; an oversized recall mints exactly one retrieval-event | One `quickjs.wasm` rebuild, shared with N4 and N6a |
@@ -53,9 +51,15 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
-| **N1** | The README, `docs/INSTALL.md` and the cyber README say what the code accepts: `embedder = "candle"`, `enabled = ["cyber"]`, the `BAAI/` model-id prefix, Tier-3 on manual dispatch, `gecko status` output, `sync-stix` and `sync-sensors` in the command table | first-run users | Every `gecko.toml` snippet in the user docs is accepted by the binary (`documented_config_snippets_are_accepted`) | — |
 | **N5** | `timeout-ms` is persisted and honoured by `gecko run`; `consumes` and `produces` are persisted or no longer parsed | playbook authors | A playbook with `timeout-ms: 500` times out at 500 ms | — |
 | **X1** | **Second cut pass,** with a design doc in the shape of `2026-11-24-populations-cut-design.md`, listing the superseded passages of CONTRACT-W8, SPEC-W2-W3, SPEC-W5 and INVARIANTS. Scope, per decisions U1–U3: **(a) divergence** — `mem_gecko::disposition` (538 lines), `divergence-exception`, `divergence-precedence` and its roles, the `mem/divergence-precedence-required-roles` migration, the W2 halves of `schema_probe_w2w3.rs`, and `DerivationMethod::rank()` if nothing else calls it; **(b) consolidation** — the ten stub jobs, `NoopConsolidationDaemon`, `MemConsolidationDaemon` and its dedup tick, `dedup_episodes`, and the labels left with no writer: `consolidation-step`, `consolidation-action`, `consolidation-state`, the `mem/consolidation-step-required-roles` migration and the `not { … consolidation-state "tombstoned"; }` guards in `tql.rs`; **(c) schema diet** — the twelve mem labels no production path writes and no invariant names (`intention`, `goal-hierarchy`, `working-set`, mem's `playbook`, `execution`, `tool-invocation`, `learned-constraint`, `contextualizes`, `evidence`, `justification`, `support`, `attack`) and cyber's `sighting` and `sighting-of`; **(d)** the uncalled public methods those leave behind, and plan-tag comments in `mem_types.tql` and `mem_functions.tql`. Audit shared attributes and supertypes before deleting: `condition` is owned by `anomaly` (kept) and `learned-constraint` (cut); `execution-episode` stays as the supertype of `retrieval-event` | an introspected schema whose `@doc`s describe only what GECKO holds; a smaller belief-tier surface for the sync fingerprint | A guard test: the shipped schemas name none of the deleted labels; the rig's `DISPOSITIONS` re-derived; the CONTRACT-W8 §3 rows and `daemon tick` drive go with the daemon | — |
+
+## Landed since the review
+
+| ID | What landed | Pinned by |
+|---|---|---|
+| **N1** | The first-run docs say what the code accepts (PR #81) | `documented_config_snippets_are_accepted` |
+| **N3** | One semantic index file per database, `<[semantic_index] dir>/<encoded database>.hnsw` (the old `path` key is refused), reconciled with the graph at startup: stale ids are removed and missing ones embedded, so another database's file, a recreated database, items written while the index was off and failed index writes all heal on the next run. The in-memory dirty set is cut. Design: `docs/superpowers/specs/2026-11-24-index-per-database-design.md` | `semantic_index_integration.rs` (`an_index_built_for_another_database_does_not_hide_this_ones_beliefs`, `reconcile_with_an_empty_graph_empties_the_file`, `items_written_while_the_index_was_off_are_recalled`, `a_warm_start_with_matching_ids_embeds_nothing`, `a_failed_persist_during_reconcile_keeps_episode_vectors`, `a_failed_live_upsert_is_repaired_by_the_next_reconcile`); `index_per_database_cli_test.rs`; the `index_dir`/`index_file` unit tests in `config/paths.rs` |
 
 ## Deferred (reopen on the trigger)
 

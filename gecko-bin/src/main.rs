@@ -466,7 +466,7 @@ async fn run(cli: Cli) -> Result<()> {
             .await
         }
         Commands::Drop { database } => {
-            cmd_drop(make_config(&cli, &address, database.clone())).await
+            cmd_drop(make_config(&cli, &address, database.clone()), &cfg).await
         }
         Commands::Databases => {
             cmd_databases(make_config(&cli, &address, resolve_db(&cli.database, None))).await
@@ -655,14 +655,53 @@ fn cmd_init_config(path: &std::path::Path) -> Result<()> {
 }
 
 /// Delete a database by name.
-async fn cmd_drop(config: DbConfig) -> Result<()> {
+async fn cmd_drop(config: DbConfig, cfg: &GeckoConfig) -> Result<()> {
     let name = config.database.clone();
     let mut db = TypeDbRouter::new(config);
     db.delete_database(&name)
         .await
         .with_context(|| format!("Failed to delete database '{name}'"))?;
     println!("✓ Dropped database '{name}'");
+    if cfg.semantic_index.enabled {
+        remove_index_file(cfg, &name);
+    }
     Ok(())
+}
+
+/// Deletes a dropped database's index file and any temp files a crash left beside
+/// it, best-effort: the next run on a database of that name reconciles its index
+/// anyway, so a failure only warns.
+fn remove_index_file(cfg: &GeckoConfig, database: &str) {
+    let path = match config::index_file(cfg, database) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("warning: could not resolve the index file of '{database}': {e:#}");
+            return;
+        }
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => println!("✓ Removed index file {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("warning: could not remove {}: {e}", path.display()),
+    }
+    // Temp files are named `<file>.<pid>.<n>.tmp` beside the index file.
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.", file.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&prefix)
+            && name.ends_with(".tmp")
+            && let Err(e) = std::fs::remove_file(entry.path())
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("warning: could not remove {}: {e}", entry.path().display());
+        }
+    }
 }
 
 /// List all databases on the server.
@@ -955,14 +994,15 @@ async fn cmd_status(config: DbConfig) -> Result<()> {
 ///
 /// - **Disabled** ⇒ `MemWriter::without_index` (recall falls back to the non-vector
 ///   path; no drag).
-/// - **Enabled** ⇒ concrete `HnswIndex` + configured `Embedder`, rebuilt from the
-///   graph before serving recalls, with retrieval-provenance recording per config.
+/// - **Enabled** ⇒ `database`'s own `HnswIndex` file + configured `Embedder`,
+///   reconciled with the graph before serving recalls, with retrieval-provenance recording per config.
 ///   The `SemanticIndex` trait is the swap seam: a future `typedb-native` backend
 ///   drops in here.
 async fn build_epistemic_writer(
     store: std::sync::Arc<dyn GraphStore>,
     cfg: &GeckoConfig,
     edges: mem_gecko::BeliefEdgeRegistry,
+    database: &str,
 ) -> Result<std::sync::Arc<mem_gecko::MemWriter>> {
     let sic = &cfg.semantic_index;
     if !sic.enabled {
@@ -1015,29 +1055,35 @@ async fn build_epistemic_writer(
     };
     let dim = embedder.dim();
 
-    // Resolve the effective index path: derived under the cache root by default,
-    // or an explicit `[semantic_index] path` override.
-    let resolved_index_path = config::index_path(cfg)?;
-    let index = std::sync::Arc::new(HnswIndex::open(
-        &resolved_index_path,
-        embedder.model_id(),
-        dim,
-    )?);
+    // This database's own index file, under the cache root or `[semantic_index] dir`.
+    let resolved_index_path = config::index_file(cfg, database)?;
+    // Reading and replaying the snapshot is file I/O plus an ANN build: off the
+    // async thread.
+    let index = {
+        let (path, model_id) = (resolved_index_path.clone(), embedder.model_id().to_string());
+        std::sync::Arc::new(
+            tokio::task::spawn_blocking(move || HnswIndex::open(&path, &model_id, dim))
+                .await
+                .context("the index-open task failed")??,
+        )
+    };
     let index: std::sync::Arc<dyn SemanticIndex> = index;
 
     let writer = mem_gecko::MemWriter::new(store, Some(embedder), Some(index))
         .with_retrieval_provenance(sic.record_provenance())
         .with_belief_edges(edges);
-    // Reconstruct the accelerator from the graph (the source of truth) before
-    // serving recalls. For the real embedder this stays lazy: an empty/doc-only
-    // graph enumerates no embeddables, so the 1.3GB model is never loaded here.
-    writer.rebuild_index_from_graph().await?;
+    // Bring the accelerator in step with the graph (the source of truth) before
+    // serving recalls. For the real embedder this stays lazy: when the id sets
+    // match, nothing is embedded, so the 1.3GB model is never loaded here.
+    let reconciled = writer.reconcile_index().await?;
     info!(
         path = %resolved_index_path.display(),
         embedder = embedder_kind,
         dim,
         record_provenance = sic.record_provenance(),
-        "Semantic index enabled (hnsw); rebuilt from graph"
+        added = reconciled.added,
+        removed = reconciled.removed,
+        "Semantic index enabled (hnsw); reconciled with the graph"
     );
     Ok(std::sync::Arc::new(writer))
 }
@@ -1180,13 +1226,14 @@ async fn build_host_bridge(
     writer_config: DbConfig,
     extensions: Vec<Box<dyn GeckoExtension>>,
 ) -> Result<gecko_engine::sandbox::engine::ExtensionCallback> {
+    let database = writer_config.database.clone();
     let store = std::sync::Arc::new(RouterGraphStore::new(std::sync::Arc::new(
         tokio::sync::Mutex::new(TypeDbRouter::new(writer_config)),
     )));
     // Built from the host's own extension list before it moves into the base bridge,
     // so a bad declaration fails the run before anything executes.
     let edges = check_extension_schemas(gecko_engine::db::CORE_SCHEMA, &extensions)?;
-    let mem_writer = build_epistemic_writer(store.clone(), cfg, edges).await?;
+    let mem_writer = build_epistemic_writer(store.clone(), cfg, edges, &database).await?;
     let writer: std::sync::Arc<dyn EpistemicWriter> = mem_writer.clone();
     // mem's writer is also a reader, so the `mem.recall` reader bridge is wired from
     // the same object (shared per-run scratch). See docs/refactor/KNOWN-LIMITATIONS.md.

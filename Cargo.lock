@@ -1694,6 +1694,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tar",
  "tempfile",
  "tokio",
@@ -2667,6 +2668,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
  "typedb-driver",
  "ulid",
 ]

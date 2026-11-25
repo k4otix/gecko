@@ -1,12 +1,15 @@
-//! The semantic-index side of the writer: the dirty set, rebuild-from-graph, and
+//! The semantic-index side of the writer: startup reconciliation with the graph and
 //! the best-effort post-commit index hooks (invariant 8).
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use gecko_extension_api::{
-    ActorId, BeliefDraft, BeliefState, ConceptId, FilterMeta, MemId, RunContext, Visibility,
+    ActorId, BeliefDraft, BeliefState, ConceptId, Embedder, FilterMeta, MemId, RunContext,
+    Visibility,
 };
 use serde_json::Value;
+use tracing::warn;
 
 use super::{MemWriter, Result, dt_field, str_field};
 use crate::tql;
@@ -16,51 +19,32 @@ use crate::tql;
 pub enum IndexOutcome {
     /// The vector was removed from the index.
     Removed,
-    /// The removal failed and the id was marked dirty for background repair.
-    MarkedDirty,
+    /// The removal failed; the next startup reconciliation removes it.
+    Failed,
     /// No embedder or index is configured, so there was nothing to remove.
     NoIndex,
 }
 
+/// What a startup reconciliation changed in the index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexReconciliation {
+    /// Ids the index holds afterwards that it did not hold before.
+    pub added: usize,
+    /// Ids the index held before that it no longer holds.
+    pub removed: usize,
+}
+
+/// One embeddable graph item: its id, text and pre-filter.
+type Embeddable = (ConceptId, String, FilterMeta);
+/// One embedded item, ready for `upsert_many`.
+type Embedded = (ConceptId, Vec<f32>, FilterMeta);
+
 impl MemWriter {
-    // ── Dirty-set (invariant 8: the accelerator can never gate truth) ────────
-
-    /// Records `id` as needing background reindex. Called on any best-effort
-    /// embed/upsert/remove failure — never propagated to the caller.
-    pub fn mark_dirty(&self, id: ConceptId) {
-        self.dirty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id);
-    }
-
-    /// Snapshot of the current dirty set (for the background reindexer / tests).
-    pub fn dirty_snapshot(&self) -> HashSet<ConceptId> {
-        self.dirty.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Whether `id` is currently marked dirty.
-    pub fn is_dirty(&self, id: &ConceptId) -> bool {
-        self.dirty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(id)
-    }
-
-    /// Number of concept-ids awaiting reindex.
-    pub fn dirty_len(&self) -> usize {
-        self.dirty.lock().unwrap_or_else(|e| e.into_inner()).len()
-    }
-
-    // ── Rebuild-from-graph (cold start / version bump / corruption) ──────────
-
     /// Enumerates the graph's current-state embeddables — asserted beliefs and
-    /// (non-retrieval-event) episodes — as `(id, embeddable text, FilterMeta)`,
-    /// sorted by concept-id for deterministic replay. The graph is the SoR; the
-    /// index is fully reconstructible from this (invariant 8).
-    pub async fn enumerate_current_state_embeddables(
-        &self,
-    ) -> Result<Vec<(ConceptId, String, FilterMeta)>> {
+    /// (non-retrieval-event, non-tombstoned) episodes — as `(id, text, FilterMeta)`,
+    /// sorted and de-duplicated by concept-id. The graph is the source of truth; the
+    /// index is reconstructible from this (invariant 8).
+    pub async fn enumerate_current_state_embeddables(&self) -> Result<Vec<Embeddable>> {
         let mut out = Vec::new();
         for d in self
             .graph
@@ -76,126 +60,123 @@ impl MemWriter {
             .read(tql::enumerate_episodes_read(), &[], &[])
             .await?
         {
-            // Episodes have no visibility/belief-state of their own; they were
-            // indexed as private/asserted (see `observe`), so replay them the same.
+            // Episodes have no visibility of their own; `observe` indexes them as
+            // private, so enumerate them the same way.
             if let Some(e) = row_to_embeddable(&d, Visibility::Private) {
                 out.push(e);
             }
         }
         out.sort_by(|a, b| a.0.0.cmp(&b.0.0));
+        out.dedup_by(|a, b| a.0 == b.0);
         Ok(out)
     }
 
-    /// Rebuilds the index from the graph when it is missing/corrupt or its model-id
-    /// differs from the embedder's, then drains the dirty set. A no-op when
-    /// no index/embedder is configured. Call once at startup before serving recalls.
-    pub async fn rebuild_index_from_graph(&self) -> Result<()> {
+    /// Brings the index in step with the graph's current state; call once at startup
+    /// before serving recalls. A model change (or an empty self-managed index)
+    /// rebuilds from scratch; otherwise stale ids are removed and missing ones
+    /// embedded, so matching id sets embed nothing. The report counts what the index
+    /// holds afterwards, in memory, whether or not saving it succeeded. Index
+    /// failures only warn: the graph read is the one error this returns. A no-op
+    /// without embedder and index.
+    pub async fn reconcile_index(&self) -> Result<IndexReconciliation> {
         let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
-            return Ok(());
+            return Ok(IndexReconciliation::default());
         };
-        if idx.model_id() != emb.model_id() || idx.is_empty() {
-            idx.reset();
-            // Embed the whole current-state batch, then persist it in a single
-            // `upsert_many` (one persist for the batch, not one per item).
-            let mut items: Vec<(ConceptId, Vec<f32>, FilterMeta)> = Vec::new();
-            for (id, text, meta) in self.enumerate_current_state_embeddables().await? {
-                match emb.embed_document(&text) {
-                    Ok(v) => items.push((id, v, meta)),
-                    Err(_) => self.mark_dirty(id),
+        let graph = self.enumerate_current_state_embeddables().await?;
+        let mut report = IndexReconciliation::default();
+
+        let held = if idx.model_id() == emb.model_id() {
+            idx.ids()
+        } else {
+            None
+        };
+        match held {
+            Some(held) => {
+                let current: HashSet<&ConceptId> = graph.iter().map(|(id, _, _)| id).collect();
+                let stale: Vec<ConceptId> = held
+                    .iter()
+                    .filter(|id| !current.contains(id))
+                    .cloned()
+                    .collect();
+                let missing: Vec<Embeddable> = graph
+                    .into_iter()
+                    .filter(|(id, _, _)| !held.contains(id))
+                    .collect();
+                if stale.is_empty() && missing.is_empty() {
+                    return Ok(report);
                 }
-            }
-            let queued: Vec<ConceptId> = items.iter().map(|(id, _, _)| id.clone()).collect();
-            if idx.upsert_many(items).is_err() {
-                // Batch persist failed: mark every embedded id dirty for repair.
-                for id in queued {
-                    self.mark_dirty(id);
+                // Remove first, so a later embed or upsert failure never leaves
+                // another graph's vectors behind.
+                if !stale.is_empty() {
+                    let index = idx.clone();
+                    on_blocking_pool("stale-vector removal", move || index.remove_many(stale))
+                        .await;
                 }
+                self.add_embedded(emb, idx, missing).await;
+                let after = idx.ids().unwrap_or_default();
+                report.removed = held.difference(&after).count();
+                report.added = after.difference(&held).count();
             }
+            None if idx.model_id() != emb.model_id() || idx.is_empty() => {
+                report.removed = idx.len();
+                let index = idx.clone();
+                on_blocking_pool("index reset", move || {
+                    index.reset();
+                    Ok(())
+                })
+                .await;
+                self.add_embedded(emb, idx, graph).await;
+                report.added = idx.len();
+            }
+            None => {}
         }
-        self.drain_dirty_set().await?;
-        Ok(())
+        Ok(report)
     }
 
-    /// Repairs the dirty set: for each dirty concept-id, re-fetch its current-state
-    /// text + meta and re-upsert (clearing it on success). An id that has left
-    /// current-state (superseded/removed) is dropped from the index and the set.
-    pub async fn drain_dirty_set(&self) -> Result<()> {
-        let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
-            return Ok(());
-        };
-        // Re-embed each dirty id, batching the successful ones into a single
-        // `upsert_many`. Ids that have left current-state are dropped immediately;
-        // ids that fail to embed stay dirty.
-        let mut items: Vec<(ConceptId, Vec<f32>, FilterMeta)> = Vec::new();
-        let mut queued: Vec<ConceptId> = Vec::new();
-        for cid in self.dirty_snapshot() {
-            let (q, v, r) = tql::fetch_belief_embeddable(&cid);
-            let rows = self.graph.read(&q, &v, &r).await?;
-            match rows
-                .first()
-                .and_then(|d| row_to_embeddable(d, Visibility::Private))
-            {
-                Some((id, text, meta)) => {
-                    if let Ok(vec) = emb.embed_document(&text) {
-                        items.push((id, vec, meta));
-                        queued.push(cid);
-                    }
-                    // Embed failure: leave the id dirty for a later drain.
-                }
-                None => {
-                    // Left current-state: drop from the accelerator and clear.
-                    let _ = idx.remove(cid.clone());
-                    self.clear_dirty(&cid);
-                }
-            }
+    /// Embeds `items` and adds them in one batch, both on the blocking pool.
+    /// Failures only warn.
+    async fn add_embedded(
+        &self,
+        emb: &Arc<dyn Embedder>,
+        idx: &Arc<dyn gecko_extension_api::SemanticIndex>,
+        items: Vec<Embeddable>,
+    ) {
+        let embedded = embed_batch(emb.clone(), items).await;
+        if !embedded.is_empty() {
+            let index = idx.clone();
+            on_blocking_pool("batch upsert", move || index.upsert_many(embedded)).await;
         }
-        if !items.is_empty() && idx.upsert_many(items).is_ok() {
-            // Clear only the ids the batch persisted; on error keep them dirty.
-            for cid in queued {
-                self.clear_dirty(&cid);
-            }
-        }
-        Ok(())
-    }
-
-    /// Removes `id` from the dirty set (a successful repair / drop).
-    fn clear_dirty(&self, id: &ConceptId) {
-        self.dirty
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id);
     }
 
     // ── Best-effort index hooks (post-commit; never fail the graph write) ────
 
+    /// Embeds and upserts one committed item. A failure warns and never fails the
+    /// caller; the next startup reconciliation indexes it.
     pub(super) fn best_effort_index(&self, id: &MemId, text: &str, meta: FilterMeta) {
         let (Some(emb), Some(idx)) = (&self.embedder, &self.index) else {
             return; // index disabled: skip embed/upsert entirely.
         };
-        let cid = ConceptId(id.0.clone());
-        match emb.embed_document(text) {
-            Ok(v) => {
-                if idx.upsert(cid.clone(), &v, meta).is_err() {
-                    self.mark_dirty(cid);
-                }
-            }
-            Err(_) => self.mark_dirty(cid),
+        let result = emb
+            .embed_document(text)
+            .and_then(|v| idx.upsert(ConceptId(id.0.clone()), &v, meta));
+        if let Err(e) = result {
+            warn!(id = %id.0, error = %e, "semantic index: upsert failed");
         }
     }
 
     /// Best-effort vector removal via the [`SemanticIndex::remove`] hook.
     /// Gated on BOTH embedder+index present — a vector is upserted only when both are
     /// (see [`best_effort_index`](Self::best_effort_index)), so a remove is
-    /// attempted exactly when an upsert would have happened. A failure marks the id
-    /// dirty for background repair and **never** fails the caller (invariant 8: the
-    /// graph is the SoR; the index is rebuildable; no new index API).
+    /// attempted exactly when an upsert would have happened. A failure warns and
+    /// **never** fails the caller; the next startup reconciliation removes the id
+    /// (invariant 8: the graph is the source of truth; the index is rebuildable).
     pub(super) fn best_effort_remove(&self, id: ConceptId) -> IndexOutcome {
         let (true, Some(idx)) = (self.embedder.is_some(), &self.index) else {
             return IndexOutcome::NoIndex;
         };
-        if idx.remove(id.clone()).is_err() {
-            self.mark_dirty(id);
-            return IndexOutcome::MarkedDirty;
+        if let Err(e) = idx.remove(id.clone()) {
+            warn!(id = %id.0, error = %e, "semantic index: remove failed");
+            return IndexOutcome::Failed;
         }
         IndexOutcome::Removed
     }
@@ -215,7 +196,7 @@ impl MemWriter {
     }
 }
 
-/// Parses a rebuild/repair fetch row into `(ConceptId, text, FilterMeta)`. The
+/// Parses an enumerate row into `(ConceptId, text, FilterMeta)`. The
 /// `belief-state` is treated as asserted (the enumerate queries already restrict to
 /// current-state), and `visibility` falls back to `default_vis` when absent (e.g.
 /// episodes). Returns `None` when the mandatory id/text are missing.
@@ -240,4 +221,39 @@ fn row_to_embeddable(
         valid_from: dt_field(d, "vf").unwrap_or_else(chrono::Utc::now),
     };
     Some((ConceptId(id), text, meta))
+}
+
+/// Embeds `items` on the blocking pool (embedding is CPU-heavy). An item whose embed
+/// fails is skipped with a warning; reconciliation retries it next startup.
+async fn embed_batch(emb: Arc<dyn Embedder>, items: Vec<Embeddable>) -> Vec<Embedded> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let joined = tokio::task::spawn_blocking(move || {
+        items
+            .into_iter()
+            .filter_map(|(id, text, meta)| match emb.embed_document(&text) {
+                Ok(v) => Some((id, v, meta)),
+                Err(e) => {
+                    warn!(id = %id.0, error = %e, "semantic index: embed failed");
+                    None
+                }
+            })
+            .collect()
+    })
+    .await;
+    joined.unwrap_or_else(|e| {
+        warn!(error = %e, "semantic index: embedding task failed");
+        Vec::new()
+    })
+}
+
+/// Runs one index operation on the blocking pool (it may rebuild the ANN graph and
+/// write the snapshot file). A failure, or a panic in the task, warns.
+async fn on_blocking_pool(what: &'static str, op: impl FnOnce() -> Result<()> + Send + 'static) {
+    match tokio::task::spawn_blocking(op).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!(error = %e, "semantic index: {what} failed"),
+        Err(e) => warn!(error = %e, "semantic index: {what} task failed"),
+    }
 }

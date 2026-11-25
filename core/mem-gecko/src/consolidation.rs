@@ -55,8 +55,9 @@ pub struct ConsolidationReport {
     pub pairs_refused: usize,
     /// Concept-ids whose vector removal the index reported as succeeded.
     pub vectors_removed: usize,
-    /// Concept-ids whose vector removal failed and was marked dirty for repair.
-    pub vectors_marked_dirty: usize,
+    /// Concept-ids whose vector removal failed; the next startup reconciliation
+    /// removes them.
+    pub vectors_failed: usize,
 }
 
 /// The scheduled, whole-graph consolidation ("dreaming") interface.
@@ -271,7 +272,7 @@ impl ConsolidationDaemon for MemConsolidationDaemon {
             episodes_deduped: outcomes.len(),
             pairs_refused,
             vectors_removed: count(IndexOutcome::Removed),
-            vectors_marked_dirty: count(IndexOutcome::MarkedDirty),
+            vectors_failed: count(IndexOutcome::Failed),
             ..Default::default()
         })
     }

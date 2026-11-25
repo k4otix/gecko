@@ -49,13 +49,14 @@ pub struct SemanticIndexConfig {
     /// Whether the semantic index is active. Default `false` (substrate-only).
     #[serde(default)]
     pub enabled: bool,
-    /// Path to the persisted (file-serialized) index. `None` (the default, or an
-    /// absent `path` key) means "derive under `cache_dir/index/gecko.hnsw`"; a
-    /// `Some(path)` is used VERBATIM as an explicit override — including a literal
-    /// relative path like `"gecko.hnsw"` or `"./gecko.hnsw"` in the working dir.
-    /// [`index_path`] resolves the effective location.
+    /// The directory holding one `<database>.hnsw` index file per database. `None`
+    /// (the default) means `cache_dir/index/`; [`index_dir`] resolves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub dir: Option<String>,
+    /// A `path` key from an older config. It is kept only so [`index_dir`] can refuse
+    /// it with guidance instead of serde ignoring it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<toml::Value>,
     /// Which embedder to build: `"stub"` (the deterministic hash embedder) or
     /// `"candle"` (bge-large-en-v1.5, compiled only with the `real-embedder` feature).
     #[serde(default = "default_embedder")]
@@ -114,6 +115,7 @@ impl Default for SemanticIndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            dir: None,
             path: None,
             embedder: default_embedder(),
             backend: default_backend(),
@@ -219,7 +221,7 @@ impl GeckoConfig {
 // bearing rule #1 — the model is a RUNTIME asset resolved to a PATH, never a build
 // dependency — is enforced there and covered by that module's own tests.
 mod paths;
-pub use paths::{cache_dir, index_path};
+pub use paths::{cache_dir, index_dir, index_file};
 // `model_path` is consumed by doctor.rs + `gecko model fetch`, both behind
 // `real-embedder`; under `--no-default-features` it has no caller, matching the
 // `allow(dead_code)` on the underlying fn.
@@ -251,10 +253,8 @@ enabled = []
 # runs with no index: recall falls back to the non-vector path, drag-free.
 [semantic_index]
 enabled  = false
-# The persisted index path. Omitted (the default) derives under
-# cache_dir/index/gecko.hnsw; set an explicit path to override — a relative value
-# like "gecko.hnsw" is taken literally in the working dir.
-# path     = "/explicit/index/path.hnsw"
+# The index directory; one <database>.hnsw file per database. Omitted (the default) uses cache_dir/index/.
+# dir      = "/explicit/index/dir"
 embedder = "stub"          # deterministic hash stub; future: "bge-large-en-v1.5", "api:<provider>"
 backend  = "hnsw"          # future drop-in: "typedb-native"
 # The SINGLE SOURCE OF TRUTH for the model. The model directory is DERIVED as
@@ -435,8 +435,8 @@ mod tests {
         let cfg = GeckoConfig::default();
         assert!(!cfg.semantic_index.enabled);
         assert!(
-            cfg.semantic_index.path.is_none(),
-            "absent path derives under the cache root"
+            cfg.semantic_index.dir.is_none(),
+            "absent dir derives under the cache root"
         );
         assert_eq!(cfg.semantic_index.embedder, "stub");
         assert_eq!(cfg.semantic_index.backend, "hnsw");
@@ -447,13 +447,42 @@ mod tests {
     #[test]
     fn parses_semantic_index_table() {
         let cfg: GeckoConfig = toml::from_str(
-            "[semantic_index]\nenabled = true\npath = \"x.hnsw\"\nembedder = \"stub\"\nbackend = \"hnsw\"\n",
+            "[semantic_index]\nenabled = true\ndir = \"idx\"\nembedder = \"stub\"\nbackend = \"hnsw\"\n",
         )
         .unwrap();
         assert!(cfg.semantic_index.enabled);
-        assert_eq!(cfg.semantic_index.path.as_deref(), Some("x.hnsw"));
+        assert_eq!(cfg.semantic_index.dir.as_deref(), Some("idx"));
         // Unset record flag defaults to `enabled` (true here).
         assert!(cfg.semantic_index.record_provenance());
+    }
+
+    #[test]
+    fn a_config_with_path_still_parses() {
+        // Only the index resolver refuses `path`, so unrelated commands keep working.
+        let cfg: GeckoConfig =
+            toml::from_str("[semantic_index]\nenabled = true\npath = \"gecko.hnsw\"\n").unwrap();
+        assert!(cfg.semantic_index.path.is_some());
+    }
+
+    #[test]
+    fn default_gecko_toml_dir_line_is_accepted_when_uncommented() {
+        let text = default_gecko_toml();
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("# dir "))
+            .expect("the template shows a commented dir line");
+        let enabled_line = text
+            .lines()
+            .skip_while(|l| l.trim() != "[semantic_index]")
+            .find(|l| l.trim_start().starts_with("enabled") && l.contains("false"))
+            .expect("the template's [semantic_index] shows enabled = false");
+        let enabled = text
+            .replace(line, line.trim_start().trim_start_matches("# "))
+            .replace(enabled_line, "enabled = true");
+        let cfg: GeckoConfig = toml::from_str(&enabled).unwrap();
+        assert!(cfg.semantic_index.enabled);
+        assert!(cfg.semantic_index.dir.is_some());
+        index_dir(&cfg).expect("the template's dir resolves");
     }
 
     #[test]
@@ -621,6 +650,10 @@ mod tests {
                 snippets += 1;
                 let cfg: GeckoConfig = toml::from_str(block)
                     .unwrap_or_else(|e| panic!("{file}: a snippet does not parse: {e}\n{block}"));
+                assert!(
+                    cfg.semantic_index.path.is_none(),
+                    "{file}: `[semantic_index] path` is refused; snippets use `dir`\n{block}"
+                );
                 let embedder = cfg.semantic_index.embedder.as_str();
                 assert!(
                     ["stub", "candle"].contains(&embedder),

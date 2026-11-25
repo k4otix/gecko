@@ -4,8 +4,8 @@ use super::*;
 use DerivationMethod::LlmSynthesis;
 use async_trait::async_trait;
 use gecko_extension_api::{
-    ActorId, BeliefDraft, ContextBudget, DerivationMethod, EpistemicReader, EpistemicWriter,
-    FilterMeta, ProvenanceSource, RecallQuery, RunContext, Visibility,
+    ActorId, BeliefDraft, ConceptId, ContextBudget, DerivationMethod, EpistemicReader,
+    EpistemicWriter, FilterMeta, ProvenanceSource, RecallQuery, RunContext, Visibility,
 };
 use gecko_extension_api::{GraphReader, GraphWrite};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -56,7 +56,7 @@ fn belief() -> BeliefDraft {
 }
 
 /// A fake [`GraphStore`] that records committed writes and can be forced to
-/// fail — enough to unit-test the best-effort/dirty wrapper without a live DB.
+/// fail — enough to unit-test the best-effort index wrapper without a live DB.
 #[derive(Default)]
 struct RecordingGraphStore {
     writes: Mutex<Vec<GraphWrite>>,
@@ -236,32 +236,28 @@ async fn a_retrieval_event_mismatch_names_the_event() {
 }
 
 #[tokio::test]
-async fn assert_belief_survives_failing_index_and_marks_dirty() {
+async fn assert_belief_survives_failing_index() {
     let idx = Arc::new(FailingUpsertIndex::default());
     let w = MemWriter::new(
         Arc::new(RecordingGraphStore::default()),
         Some(Arc::new(OkEmbedder)),
         Some(idx.clone()),
     );
-    let id = w
-        .assert_belief(&ctx(), belief(), &[], DerivationMethod::LlmSynthesis)
+    w.assert_belief(&ctx(), belief(), &[], DerivationMethod::LlmSynthesis)
         .await
         .expect("belief write must succeed even when the index fails");
     assert_eq!(idx.upserts.load(Ordering::SeqCst), 1);
-    assert!(w.is_dirty(&ConceptId(id.0.clone())));
-    assert_eq!(w.dirty_len(), 1);
 }
 
 #[tokio::test]
-async fn assert_belief_survives_failing_embed_and_marks_dirty() {
+async fn assert_belief_survives_failing_embed() {
     let idx = Arc::new(FailingUpsertIndex::default());
     let w = MemWriter::new(
         Arc::new(RecordingGraphStore::default()),
         Some(Arc::new(FailingEmbedder)),
         Some(idx.clone()),
     );
-    let id = w
-        .assert_belief(&ctx(), belief(), &[], DerivationMethod::LlmSynthesis)
+    w.assert_belief(&ctx(), belief(), &[], DerivationMethod::LlmSynthesis)
         .await
         .expect("belief write must succeed even when embedding fails");
     assert_eq!(
@@ -269,11 +265,10 @@ async fn assert_belief_survives_failing_embed_and_marks_dirty() {
         0,
         "embed failed ⇒ no upsert attempt"
     );
-    assert!(w.is_dirty(&ConceptId(id.0)));
 }
 
 #[tokio::test]
-async fn assert_belief_with_working_index_is_not_dirty() {
+async fn assert_belief_with_working_index_upserts_its_vector() {
     let idx = Arc::new(OkIndex::default());
     let w = MemWriter::new(
         Arc::new(RecordingGraphStore::default()),
@@ -284,23 +279,21 @@ async fn assert_belief_with_working_index_is_not_dirty() {
         .assert_belief(&ctx(), belief(), &[], DerivationMethod::TypeJoin)
         .await
         .unwrap();
-    assert_eq!(w.dirty_len(), 0);
     assert_eq!(idx.upserts.lock().unwrap().as_slice(), &[ConceptId(id.0)]);
 }
 
 #[tokio::test]
-async fn no_index_configured_skips_embed_and_never_dirties() {
+async fn no_index_configured_skips_embed() {
     let w = MemWriter::without_index(Arc::new(RecordingGraphStore::default()));
     let id = w
         .assert_belief(&ctx(), belief(), &[], DerivationMethod::TypeJoin)
         .await
         .unwrap();
     assert!(id.0.starts_with("mem/bel/"));
-    assert_eq!(w.dirty_len(), 0);
 }
 
 #[tokio::test]
-async fn authoritative_commit_failure_fails_the_write_and_dirties_nothing() {
+async fn authoritative_commit_failure_fails_the_write_and_indexes_nothing() {
     let idx = Arc::new(OkIndex::default());
     let w = MemWriter::new(
         Arc::new(RecordingGraphStore::failing()),
@@ -313,11 +306,10 @@ async fn authoritative_commit_failure_fails_the_write_and_dirties_nothing() {
         .expect_err("a failed graph commit must fail the write");
     assert!(matches!(err, EpistemicError::Storage(_)));
     assert_eq!(idx.upserts.lock().unwrap().len(), 0);
-    assert_eq!(w.dirty_len(), 0);
 }
 
 #[tokio::test]
-async fn supersede_marks_old_dirty_when_remove_fails() {
+async fn supersede_survives_a_failing_remove() {
     let idx = Arc::new(FailingUpsertIndex::default());
     let w = MemWriter::new(
         Arc::new(RecordingGraphStore::default()),
@@ -325,18 +317,28 @@ async fn supersede_marks_old_dirty_when_remove_fails() {
         Some(idx.clone()),
     );
     let old = MemId::new("mem/bel/OLD");
-    let new_id = w
-        .supersede(
-            &ctx(),
-            old.clone(),
-            belief(),
-            "found contradicting evidence",
-        )
-        .await
-        .expect("supersede must succeed even when the index errors");
+    w.supersede(
+        &ctx(),
+        old.clone(),
+        belief(),
+        "found contradicting evidence",
+    )
+    .await
+    .expect("supersede must succeed even when the index errors");
     assert_eq!(idx.removes.load(Ordering::SeqCst), 1);
-    assert!(w.is_dirty(&ConceptId(old.0)));
-    assert!(w.is_dirty(&ConceptId(new_id.0)));
+}
+
+#[test]
+fn supersede_with_failing_remove_reports_failed() {
+    let w = MemWriter::new(
+        Arc::new(RecordingGraphStore::default()),
+        Some(Arc::new(OkEmbedder)),
+        Some(Arc::new(FailingUpsertIndex::default())),
+    );
+    assert_eq!(
+        w.best_effort_remove(ConceptId("mem/bel/OLD".into())),
+        IndexOutcome::Failed
+    );
 }
 
 #[tokio::test]
@@ -356,7 +358,6 @@ async fn supersede_without_embedder_never_removes() {
         0,
         "no embedder ⇒ no remove attempt (matches upsert gating)"
     );
-    assert_eq!(w.dirty_len(), 0);
 }
 
 #[tokio::test]
@@ -1088,4 +1089,112 @@ mod edges {
             );
         }
     }
+}
+
+/// An index with a configurable model id that either lists its ids or manages
+/// itself (`ids() == None`), recording resets — for the reconciliation branches the
+/// real `HnswIndex` never takes.
+struct ScriptedIndex {
+    model: &'static str,
+    self_managed: bool,
+    live: Mutex<std::collections::HashSet<ConceptId>>,
+    resets: AtomicUsize,
+}
+impl ScriptedIndex {
+    fn new(model: &'static str, self_managed: bool, live: &[&str]) -> Self {
+        Self {
+            model,
+            self_managed,
+            live: Mutex::new(live.iter().map(|id| ConceptId((*id).into())).collect()),
+            resets: AtomicUsize::new(0),
+        }
+    }
+}
+impl SemanticIndex for ScriptedIndex {
+    fn upsert(&self, id: ConceptId, _v: &[f32], _m: FilterMeta) -> Result<()> {
+        self.live.lock().unwrap().insert(id);
+        Ok(())
+    }
+    fn remove(&self, id: ConceptId) -> Result<()> {
+        self.live.lock().unwrap().remove(&id);
+        Ok(())
+    }
+    fn query(&self, _v: &[f32], _k: usize, _p: &FilterMeta) -> Result<Vec<(ConceptId, f32)>> {
+        Ok(vec![])
+    }
+    fn model_id(&self) -> &str {
+        self.model
+    }
+    fn ids(&self) -> Option<std::collections::HashSet<ConceptId>> {
+        (!self.self_managed).then(|| self.live.lock().unwrap().clone())
+    }
+    fn len(&self) -> usize {
+        self.live.lock().unwrap().len()
+    }
+    fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::SeqCst);
+        self.live.lock().unwrap().clear();
+    }
+}
+
+/// A graph whose enumerate reads return one belief row, `mem/bel/live`.
+fn graph_with_one_item() -> Arc<RecordingGraphStore> {
+    Arc::new(RecordingGraphStore {
+        read_reply: vec![serde_json::json!({
+            "id": "mem/bel/live", "text": "a claim", "owner": "agent-1", "vis": "private"
+        })],
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn reconcile_rebuilds_an_index_built_for_another_model() {
+    let idx = Arc::new(ScriptedIndex::new("another-model", false, &["mem/bel/old"]));
+    let w = MemWriter::new(
+        graph_with_one_item(),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!(
+        idx.resets.load(Ordering::SeqCst),
+        1,
+        "a model change resets"
+    );
+    assert_eq!(
+        idx.ids(),
+        Some([ConceptId("mem/bel/live".into())].into_iter().collect())
+    );
+    assert_eq!((report.added, report.removed), (1, 1));
+}
+
+#[tokio::test]
+async fn reconcile_leaves_a_populated_self_managed_index_alone() {
+    let idx = Arc::new(ScriptedIndex::new(
+        "test-embedder",
+        true,
+        &["mem/bel/other"],
+    ));
+    let w = MemWriter::new(
+        graph_with_one_item(),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!(idx.resets.load(Ordering::SeqCst), 0);
+    assert_eq!(idx.len(), 1, "nothing embedded or removed");
+    assert_eq!((report.added, report.removed), (0, 0));
+}
+
+#[tokio::test]
+async fn reconcile_fills_an_empty_self_managed_index() {
+    let idx = Arc::new(ScriptedIndex::new("test-embedder", true, &[]));
+    let w = MemWriter::new(
+        graph_with_one_item(),
+        Some(Arc::new(OkEmbedder)),
+        Some(idx.clone()),
+    );
+    let report = w.reconcile_index().await.unwrap();
+    assert_eq!(idx.len(), 1, "the graph's item was embedded");
+    assert_eq!((report.added, report.removed), (1, 0));
 }

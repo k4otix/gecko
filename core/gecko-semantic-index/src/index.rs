@@ -6,20 +6,20 @@
 //! pre-filtering, and persists a file-serialized snapshot (a header `{model_id,
 //! dim}` + the live entries) so a warm start skips the rebuild. It is a **pure,
 //! rebuildable accelerator** (invariant 8): a missing/corrupt file or a model-id
-//! bump surfaces as `is_empty()`, which the writer treats as "reconstruct from the
-//! graph".
+//! bump opens empty, and the writer's startup reconciliation refills it from the
+//! graph.
 //!
 //! `hnsw_rs` has no in-place update or delete, so this wraps it with a live-id map:
 //! an `upsert` of an existing concept inserts a fresh internal id and drops the old
 //! one from the live set (the stale graph node becomes an inert tombstone), and
 //! `remove` drops the concept from the live set. Stale internal ids surfaced by the
-//! ANN search are filtered out at query time; a `reset` (or the next full rebuild)
-//! reclaims them by building a clean graph.
+//! ANN search are filtered out at query time; `reset` and `remove_many` reclaim them
+//! by building a clean graph.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use gecko_extension_api::{ConceptId, EpistemicError, FilterMeta, SemanticIndex, Visibility};
 use hnsw_rs::prelude::{DistCosine, Hnsw, Neighbour};
@@ -28,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use crate::params;
 
 type Result<T> = std::result::Result<T, EpistemicError>;
+
+/// Distinguishes the temp files of successive persists within one process.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// One live vector + its denormalized pre-filter.
 struct LiveEntry {
@@ -131,8 +134,8 @@ impl HnswIndex {
     /// If a snapshot exists and its header matches `{model_id, dim}`, its live
     /// entries are replayed (a warm start). Otherwise — missing file, unreadable /
     /// corrupt snapshot, dimension change, or a **model-id bump** — the index
-    /// cold-starts **empty** under the new identity, so [`is_empty`](SemanticIndex::is_empty)
-    /// signals the writer to rebuild from the graph. The header is always
+    /// cold-starts **empty** under the new identity, and the writer's startup
+    /// reconciliation refills it from the graph. The header is always
     /// adopted from the caller's `model_id`, so [`model_id`](SemanticIndex::model_id)
     /// matches the embedder after a bump.
     pub fn open(path: impl AsRef<Path>, model_id: &str, dim: usize) -> Result<Self> {
@@ -149,8 +152,7 @@ impl HnswIndex {
                 inner.insert_entry(e.concept_id, e.meta, e.vector);
             }
         }
-        // else: header mismatch ⇒ stay empty ⇒ rebuild-from-graph.
-        // else: corrupt ⇒ stay empty ⇒ rebuild-from-graph.
+        // A header mismatch or a corrupt snapshot opens empty; reconciliation refills it.
 
         Ok(Self {
             inner: RwLock::new(inner),
@@ -161,8 +163,8 @@ impl HnswIndex {
     }
 
     /// Serializes the current live state to the configured path (atomic rename via a
-    /// sibling temp file). A persist failure surfaces as [`EpistemicError::Index`] so
-    /// the writer can mark the id dirty; the in-memory index stays correct.
+    /// sibling temp file). A persist failure surfaces as [`EpistemicError::Index`]; the
+    /// in-memory index stays correct, and the next startup reconciliation rewrites it.
     fn persist(&self, inner: &Inner) -> Result<()> {
         let mut entries: Vec<SnapEntry> = inner
             .entries
@@ -187,11 +189,26 @@ impl HnswIndex {
             std::fs::create_dir_all(parent)
                 .map_err(|e| EpistemicError::Index(format!("mkdir index dir: {e}")))?;
         }
-        let tmp = self.path.with_extension("hnsw.tmp");
-        std::fs::write(&tmp, &bytes)
-            .map_err(|e| EpistemicError::Index(format!("write index tmp: {e}")))?;
-        std::fs::rename(&tmp, &self.path)
-            .map_err(|e| EpistemicError::Index(format!("rename index: {e}")))?;
+        // A temp name unique to this process and call, so two writers of one file
+        // never share a temp file.
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let file_name = self
+            .path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tmp = self
+            .path
+            .with_file_name(format!("{file_name}.{}.{n}.tmp", std::process::id()));
+        std::fs::write(&tmp, &bytes).map_err(|e| {
+            // A partial temp file is useless; leave nothing behind.
+            let _ = std::fs::remove_file(&tmp);
+            EpistemicError::Index(format!("write index tmp: {e}"))
+        })?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            EpistemicError::Index(format!("rename index: {e}"))
+        })?;
         Ok(())
     }
 
@@ -254,6 +271,40 @@ impl SemanticIndex for HnswIndex {
             self.persist(&inner)?;
         }
         Ok(())
+    }
+
+    fn remove_many(&self, ids: Vec<ConceptId>) -> Result<()> {
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| EpistemicError::Index("index lock poisoned".into()))?;
+        let doomed: HashSet<ConceptId> = ids
+            .into_iter()
+            .filter(|id| inner.active.contains_key(id))
+            .collect();
+        if doomed.is_empty() {
+            return Ok(());
+        }
+        // Compact: rebuild the ANN graph from the retained entries' stored vectors,
+        // in concept-id order, so no tombstone outlives the call.
+        let mut kept: Vec<LiveEntry> = std::mem::take(&mut inner.entries)
+            .into_values()
+            .filter(|e| !doomed.contains(&e.concept))
+            .collect();
+        kept.sort_by(|a, b| a.concept.0.cmp(&b.concept.0));
+        let mut fresh = Inner::empty(inner.dim);
+        for e in kept {
+            fresh.insert_entry(e.concept, e.meta, e.vector);
+        }
+        *inner = fresh;
+        // The fresh `Hnsw` starts with searching mode unset again.
+        self.searching_mode_set.store(false, Ordering::Release);
+        self.persist(&inner)
+    }
+
+    fn ids(&self) -> Option<HashSet<ConceptId>> {
+        let inner = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        Some(inner.active.keys().cloned().collect())
     }
 
     fn query(&self, v: &[f32], k: usize, pre: &FilterMeta) -> Result<Vec<(ConceptId, f32)>> {
@@ -553,5 +604,122 @@ mod tests {
             n.query(&[1.0], 5, &meta("u", Visibility::Private)).unwrap(),
             vec![]
         );
+    }
+
+    /// A distinct unit-ish 4-D vector per index `i`.
+    fn v_i(i: usize) -> Vec<f32> {
+        let t = i as f32 * 0.1;
+        vec![t.cos(), t.sin(), 0.1 * (i % 3) as f32, 0.05]
+    }
+
+    fn cid(i: usize) -> ConceptId {
+        ConceptId::new(format!("mem/bel/{i:03}"))
+    }
+
+    #[test]
+    fn ids_lists_the_live_ids() {
+        let path = tmp_path("ids");
+        let idx = HnswIndex::open(&path, "m@4", 4).unwrap();
+        for i in 0..3 {
+            idx.upsert(cid(i), &v_i(i), meta("u", Visibility::Private))
+                .unwrap();
+        }
+        idx.remove(cid(1)).unwrap();
+        assert_eq!(idx.ids(), Some(HashSet::from([cid(0), cid(2)])));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn remove_many_compacts_and_persists() {
+        let path = tmp_path("remove-many");
+        let idx = HnswIndex::open(&path, "m@4", 4).unwrap();
+        let items = (0..50)
+            .map(|i| (cid(i), v_i(i), meta("u", Visibility::Private)))
+            .collect();
+        idx.upsert_many(items).unwrap();
+        idx.query(&v_i(0), 3, &meta("u", Visibility::Private))
+            .unwrap();
+        // Remove the cluster around the query point: without compaction, the
+        // over-search would surface only tombstones and miss the retained ids.
+        idx.remove_many((5..50).map(cid).collect()).unwrap();
+        assert_eq!(idx.len(), 5);
+        let kept: HashSet<ConceptId> = (0..5).map(cid).collect();
+        let hits: HashSet<ConceptId> = idx
+            .query(&v_i(47), 5, &meta("u", Visibility::Private))
+            .unwrap()
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
+        assert_eq!(
+            hits, kept,
+            "every retained id is reachable after compaction"
+        );
+        let reopened = HnswIndex::open(&path, "m@4", 4).unwrap();
+        assert_eq!(reopened.ids(), Some(kept));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn remove_many_to_empty_persists_the_empty_state() {
+        let path = tmp_path("remove-all");
+        let idx = HnswIndex::open(&path, "m@4", 4).unwrap();
+        for i in 0..3 {
+            idx.upsert(cid(i), &v_i(i), meta("u", Visibility::Private))
+                .unwrap();
+        }
+        idx.remove_many((0..3).map(cid).collect()).unwrap();
+        let reopened = HnswIndex::open(&path, "m@4", 4).unwrap();
+        assert_eq!(reopened.ids(), Some(HashSet::new()));
+        assert!(reopened.is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn remove_many_of_unknown_ids_is_a_no_op() {
+        let path = tmp_path("remove-unknown");
+        let idx = HnswIndex::open(&path, "m@4", 4).unwrap();
+        idx.upsert(cid(0), &v_i(0), meta("u", Visibility::Private))
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        idx.remove_many(vec![cid(9)]).unwrap();
+        assert!(!path.exists(), "removing unknown ids writes nothing");
+        assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn two_handles_on_one_path_persist_valid_json() {
+        let path = tmp_path("two-handles");
+        let a = std::sync::Arc::new(HnswIndex::open(&path, "m@4", 4).unwrap());
+        let b = std::sync::Arc::new(HnswIndex::open(&path, "m@4", 4).unwrap());
+        let spawn = |idx: std::sync::Arc<HnswIndex>, base: usize| {
+            std::thread::spawn(move || {
+                (0..50)
+                    .map(|i| idx.upsert(cid(base + i), &v_i(i), meta("u", Visibility::Private)))
+                    .filter(|r| r.is_err())
+                    .count()
+            })
+        };
+        let (ta, tb) = (spawn(a, 0), spawn(b, 100));
+        let failures = ta.join().unwrap() + tb.join().unwrap();
+        assert_eq!(failures, 0, "every upsert persisted");
+        let bytes = std::fs::read(&path).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("valid snapshot JSON");
+        let dir = path.parent().unwrap();
+        let stem = path.file_name().unwrap().to_string_lossy().into_owned();
+        let leftovers = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.starts_with(&stem) && n.ends_with(".tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0, "no temp file is left behind");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn noop_index_ids_is_none() {
+        assert_eq!(NoopIndex.ids(), None);
     }
 }

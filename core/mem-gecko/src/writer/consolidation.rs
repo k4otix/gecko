@@ -78,7 +78,7 @@ impl MemWriter {
     /// `consolidation-state` becomes "tombstoned"; the row stays queryable), records
     /// a `consolidation-step` stamped with `ctx`'s run and actor, then removes the
     /// loser's vector from the index on a best-effort basis (invariant 8: an index
-    /// failure marks the id dirty and never fails the graph write).
+    /// failure warns and never fails the graph write).
     ///
     /// The duplicate rule is enforced inside the one guarded write: both are exactly
     /// `episode`s with the same title, event-time and owner set, neither resolves a

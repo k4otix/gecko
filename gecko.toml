@@ -15,7 +15,6 @@ enabled = ["cyber"]
 # runs with no index: recall falls back to the non-vector path, drag-free.
 [semantic_index]
 enabled  = true
-path     = "gecko.hnsw"
 embedder = "stub"          # deterministic hash stub; "candle" = bge-large-en-v1.5 (real-embedder builds)
 backend  = "hnsw"          # future drop-in: "typedb-native"
 record_retrieval_provenance = true   # defaults to `enabled` when omitted
