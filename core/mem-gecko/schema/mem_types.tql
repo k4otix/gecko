@@ -8,9 +8,7 @@ define
   attribute belief-state value string @values("asserted", "retracted", "superseded", "contested");
   attribute derivation-method value string @values("type-join", "cardinality", "functional-dependency", "type-db-function", "external-tool", "human-assertion", "llm-synthesis");
   attribute entrenchment value string @values("axiom", "user-stated", "tool-derived", "inferred", "llm");
-  attribute stability-tier value string @values("volatile", "provisional", "stable", "canonical");
   attribute visibility value string @values("private", "team", "shared");
-  attribute justification-status value string @values("in", "out");
 
   # ── A2.4 Bitemporal + decay attrs ─────────────────────────────────
   attribute event-time value datetime;
@@ -25,16 +23,12 @@ define
 
   # ── misc scalar attrs ─────────────────────────────────────────────
   attribute confidence value double;
-  attribute corroboration-count value integer;
   attribute supersession-reason value string;
   attribute created-at value datetime;
   attribute condition value string;
-  attribute execution-status value string @values("pending", "active", "suspended", "completed", "failed");
-  attribute deadline value datetime;
   attribute agent-id value string;
   attribute origin-kind value string;          # OPEN, adapter-extensible set (invariant 9) — NOT @values
   attribute run-id value string;
-  attribute tool-name value string;
   attribute pivot-method value string;
   attribute calibration-score value double;
   attribute predicted-probability value double;
@@ -58,14 +52,6 @@ define
       owns last-access @card(0..1),
       plays derivation:derived,
       plays derivation:source,
-      plays evidence:evidenced,
-      plays evidence:evidence-item,
-      plays justification:consequent,
-      plays justification:antecedent,
-      plays support:supporter,
-      plays support:supported,
-      plays attack:attacker,
-      plays attack:attacked,
       plays supersession:superseded,
       plays supersession:superseding,
       plays source-link:memory @card(1..),
@@ -80,9 +66,7 @@ define
       owns event-time @card(1),
       owns ingest-time @card(1),
       owns half-life-hours @card(0..1),
-      plays prediction-resolution:resolving-episode,
-      plays execution:episode-step,
-      plays tool-invocation:invocation-episode;
+      plays prediction-resolution:resolving-episode;
 
   entity belief sub memory-item @doc("A bitemporal proposition the system holds, with a lifecycle state, a validity window that opens at valid-from and may close at valid-to, optional confidence and entrenchment, and the salience, activation and last access recall ranks it by."),
       owns belief-state @card(1),
@@ -100,12 +84,6 @@ define
   belief owns base-activation @card(1);
   belief owns last-access @card(1);
 
-  entity playbook sub memory-item @doc("A reusable procedure held in memory, with a stability tier and a count of how many times it has been corroborated."),
-      owns stability-tier @card(0..1),
-      owns corroboration-count @card(0..1) @range(0..);
-
-  entity working-set sub memory-item @doc("A transient grouping of memory items held together for the duration of a task.");
-
   # episode domain subtype used by retrieval provenance
   entity execution-episode sub episode @doc("An episode representing a step of an execution run; the episodic tier from which retrievals inform belief synthesis."),
       plays informs-synthesis:retrieval;
@@ -118,23 +96,6 @@ define
       relates source @card(1..) @doc("A memory item the derivation drew on."),
       owns derivation-method @card(1),
       owns confidence @card(0..1) @range(0.0..1.0);
-
-  relation evidence @doc("Ties a memory item to the one or more evidence items that support it."),                       # n-ary
-      relates evidenced @card(1) @doc("The memory item being evidenced."),
-      relates evidence-item @card(1..) @doc("A memory item serving as evidence.");
-
-  relation justification @doc("A JTMS justification: a consequent held IN or OUT depending on the status of its antecedents."),                  # JTMS IN/OUT
-      relates consequent @card(1) @doc("The memory item justified by the antecedents."),
-      relates antecedent @card(0..) @doc("A memory item the justification depends on; zero antecedents is an unconditional premise."),
-      owns justification-status @card(0..1);
-
-  relation support @doc("One memory item lends support to another."),
-      relates supporter @card(1) @doc("The memory item offering support."),
-      relates supported @card(1) @doc("The memory item being supported.");
-
-  relation attack @doc("One memory item argues against another."),
-      relates attacker @card(1) @doc("The memory item making the attack."),
-      relates attacked @card(1) @doc("The memory item being attacked.");
 
   # A2.3 contradiction -> anomaly hub (claims 2..)
   entity anomaly sub memory-item @doc("A contradiction hub: a memory node linking a set of claims that cannot all hold, with the condition under which they conflict."),
@@ -157,30 +118,6 @@ define
       relates memory @card(1) @doc("The memory item that was produced."),
       relates origin @card(1..) @doc("A source the memory item came from (a concept, external resource, or doc-run)."),
       owns origin-kind @card(0..1);
-
-  # ══════════════════════════════════════════════════════════════════
-  # A2.5 Prospective: intention + goal-hierarchy
-  # ══════════════════════════════════════════════════════════════════
-  entity intention sub memory-item @doc("A prospective goal the system holds, with an execution status, optional deadline, and a place in a goal hierarchy."),
-      owns execution-status @card(1),
-      owns deadline @card(0..1),
-      plays goal-hierarchy:parent-goal,
-      plays goal-hierarchy:child-goal;
-
-  relation goal-hierarchy @doc("Parent/child decomposition of an intention into sub-goals."),                 # self-referential on intention
-      relates parent-goal @doc("The enclosing goal."),
-      relates child-goal @doc("A sub-goal of the parent.");
-
-  # ══════════════════════════════════════════════════════════════════
-  # A2.6 Anti-context: learned-constraint + contextualizes
-  # ══════════════════════════════════════════════════════════════════
-  entity learned-constraint sub memory-item @doc("A learned anti-context rule: a condition under which some concept does not apply, used to suppress out-of-context recall."),
-      owns condition @card(0..1),
-      plays contextualizes:constraint;
-
-  relation contextualizes @doc("Applies a learned constraint to the concept whose context it narrows."),                 # constraint -> any concept
-      relates constraint @doc("The learned constraint being applied."),
-      relates context-target @doc("The concept the constraint contextualizes.");
 
   # ══════════════════════════════════════════════════════════════════
   # A2.7 Multi-agent: agent + ownership
@@ -219,16 +156,7 @@ define
   entity doc-run @doc("A single execution run of a playbook code block; the provenance origin stamped onto memory produced during the run, keyed by run-id."),
       owns run-id @key,
       owns event-time @card(0..1),
-      plays execution:run,
       plays source-link:origin;
-
-  relation execution @doc("Groups the episode steps that make up a doc-run."),
-      relates run @card(1) @doc("The doc-run being executed."),
-      relates episode-step @card(1) @doc("An episode recorded as a step of the run.");
-
-  relation tool-invocation @doc("An episode recording a call to an external tool, identified by tool name."),
-      relates invocation-episode @doc("The episode in which the tool was invoked."),
-      owns tool-name @card(0..1);
 
   # ══════════════════════════════════════════════════════════════════
   # Cross-source resolution
@@ -273,7 +201,6 @@ define
   # `concept` and `external-resource` are DEFINED in core_schema.tql; mem only ADDS plays roles
   # (additive `<type> plays <role>;` form — never a root re-declaration of `entity concept`).
   concept plays source-link:origin,
-      plays contextualizes:context-target,
       plays resolves:record-a,
       plays resolves:record-b;
 

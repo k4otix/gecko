@@ -125,10 +125,6 @@ const BEARER_ROLES: &[&str] = &[
     "contradiction:claim",
     "supersession:superseded",
     "supersession:superseding",
-    "evidence:evidenced",
-    "evidence:evidence-item",
-    "justification:consequent",
-    "justification:antecedent",
     "rests-on:resting",
     "rests-on:assumption",
 ];

@@ -114,8 +114,7 @@ define
   entity observable sub cyber-object @doc("A STIX cyber-observable (SCO): a concrete artifact such as an IP, domain, URL, file hash, or email, normalized as a typed IOC value."),
       owns ioc-value @card(1),
       owns ioc-type @card(1),
-      plays observed-as:observable-value,
-      plays sighting-of:sighted-observable;
+      plays observed-as:observable-value;
 
   relation indicates @doc("A STIX 'indicates' relationship: an indicator points to the adversary object it signals."),
       relates indicator-source @card(1) @doc("The indicator doing the signalling."),
@@ -196,14 +195,6 @@ define
       owns log-source-key @card(0..),
       owns covered-component-name @card(0..),
       owns covered-component-key @card(0..);
-
-  entity sighting sub execution-episode @doc("An episodic observation that a given IOC was seen; a concrete sighting of an observable."),
-      owns ioc-value @card(0..1),
-      plays sighting-of:sighting-instance;
-
-  relation sighting-of @doc("Ties a sighting episode to the observable that was sighted."),
-      relates sighting-instance @doc("The sighting episode."),
-      relates sighted-observable @doc("The observable that was sighted.");
 
   relation technique-detection @doc("Asserts, via a mem belief, that a piece of detecting logic covers an ATT&CK technique; the join the coverage-gap functions read."),
       relates detecting-logic @card(1) @doc("The concept holding the detection logic."),

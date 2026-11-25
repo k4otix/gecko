@@ -26,26 +26,6 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         tql: "match $r isa derivation; not { $r links (derived: $x); }; delete $r;",
     },
     SchemaMigration {
-        id: "mem/evidence-required-roles",
-        applies_when: "relates evidenced @doc(\"The memory item being evidenced.\")",
-        tql: "match $r isa evidence; not { $r links (evidenced: $x); }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/justification-required-roles",
-        applies_when: "relates consequent @doc(\"The memory item justified by the antecedents.\")",
-        tql: "match $r isa justification; not { $r links (consequent: $x); }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/support-required-roles",
-        applies_when: "relates supported @doc(\"The memory item being supported.\")",
-        tql: "match $r isa support; { not { $r links (supporter: $p0); }; } or { not { $r links (supported: $p1); }; }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/attack-required-roles",
-        applies_when: "relates attacked @doc(\"The memory item being attacked.\")",
-        tql: "match $r isa attack; { not { $r links (attacker: $p0); }; } or { not { $r links (attacked: $p1); }; }; delete $r;",
-    },
-    SchemaMigration {
         id: "mem/contradiction-required-roles",
         applies_when: "relates hub @doc(\"The anomaly node collecting the conflicting claims.\")",
         tql: "match $r isa contradiction; not { $r links (hub: $x); }; delete $r;",
@@ -69,11 +49,6 @@ pub const MEM_MIGRATIONS: &[SchemaMigration] = &[
         id: "mem/rests-on-required-roles",
         applies_when: "relates resting @doc(\"The memory item that depends on the assumptions.\")",
         tql: "match $r isa rests-on; not { $r links (resting: $x); }; delete $r;",
-    },
-    SchemaMigration {
-        id: "mem/execution-required-roles",
-        applies_when: "relates run @doc(\"The doc-run being executed.\")",
-        tql: "match $r isa execution; { not { $r links (run: $p0); }; } or { not { $r links (episode-step: $p1); }; }; delete $r;",
     },
     SchemaMigration {
         id: "mem/resolves-required-roles",

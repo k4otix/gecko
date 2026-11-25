@@ -512,23 +512,9 @@ const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
             owner: "M2",
         },
     ),
-    ("sighting", LabelDisposition::Owed { owner: "A8" }),
-    ("sighting-of", LabelDisposition::Owed { owner: "A8" }),
     ("resolution", LabelDisposition::Owed { owner: "M3" }),
     ("resolves", LabelDisposition::Owed { owner: "M3" }),
-    ("playbook", LabelDisposition::Owed { owner: "M5" }),
-    ("working-set", LabelDisposition::Owed { owner: "M4" }),
-    ("intention", LabelDisposition::Owed { owner: "M4" }),
-    ("learned-constraint", LabelDisposition::Owed { owner: "M6" }),
-    ("evidence", LabelDisposition::Owed { owner: "M1" }),
-    ("justification", LabelDisposition::Owed { owner: "M1" }),
-    ("support", LabelDisposition::Owed { owner: "M1" }),
-    ("attack", LabelDisposition::Owed { owner: "M1" }),
-    ("goal-hierarchy", LabelDisposition::Owed { owner: "M4" }),
-    ("contextualizes", LabelDisposition::Owed { owner: "M6" }),
     ("pivot", LabelDisposition::Owed { owner: "M5" }),
-    ("execution", LabelDisposition::Owed { owner: "M5" }),
-    ("tool-invocation", LabelDisposition::Owed { owner: "M5" }),
 ];
 
 /// The run context `gecko run` mints for `concept_id`.
@@ -1039,15 +1025,15 @@ async fn hostile_extension_raw_belief_write_is_flagged() {
     // An importer concept typed as a belief-tier entity.
     let mut imported = manifest.clone();
     let mut hostile = imported.concepts[0].clone();
-    hostile.concept_id = "hostile/working-set".to_string();
-    hostile.type_hint = Some("working-set".into());
+    hostile.concept_id = "hostile/anomaly".to_string();
+    hostile.type_hint = Some("anomaly".into());
     hostile.typed_attributes = Vec::new();
-    hostile.file_hash = "hostile-working-set".to_string();
+    hostile.file_hash = "hostile-anomaly".to_string();
     imported.concepts.push(hostile);
     match sync_bundle(&mut db.router(), &imported, &[], BELIEF_TIER_ROOT).await {
         Err(DbError::Schema(m)) => assert!(
-            m.contains("working-set"),
-            "importer type_hint: error does not name working-set: {m}"
+            m.contains("anomaly"),
+            "importer type_hint: error does not name anomaly: {m}"
         ),
         other => panic!("importer type_hint: expected a schema error, got {other:?}"),
     }

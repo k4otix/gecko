@@ -164,6 +164,47 @@ mod tests {
     }
 
     #[test]
+    fn shipped_mem_schema_declares_no_diet_labels() {
+        let found = deleted_labels_absent(
+            &MEM_SCHEMA,
+            &[
+                "entity intention",
+                "entity working-set",
+                "entity playbook",
+                "entity learned-constraint",
+                "relation goal-hierarchy",
+                "relation execution",
+                "relation tool-invocation",
+                "relation contextualizes",
+                "relation evidence",
+                "relation justification",
+                "relation support",
+                "relation attack",
+                "goal-hierarchy:",
+                "execution:",
+                "tool-invocation:",
+                "contextualizes:",
+                "evidence:",
+                "justification:",
+                "support:",
+                "attack:",
+                "execution-status",
+                "stability-tier",
+                "corroboration-count",
+                "justification-status",
+                "tool-name",
+                "attribute deadline",
+                "owns deadline",
+                "has deadline",
+            ],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped mem schema still declares {found:?}"
+        );
+    }
+
+    #[test]
     fn shipped_queries_use_current_relation_syntax() {
         use gecko_extension_api::relation_syntax::deprecated_relation_lines;
         for (file, text) in [
@@ -251,8 +292,6 @@ mod tests {
         assert!(schema.contains("entity memory-item @abstract, sub okf-concept"));
         assert!(schema.contains("entity belief sub memory-item"));
         assert!(schema.contains("entity episode sub memory-item"));
-        assert!(schema.contains("entity playbook sub memory-item"));
-        assert!(schema.contains("entity working-set sub memory-item"));
         // Cross-source identity: resolution IS a belief.
         assert!(schema.contains("entity resolution sub belief"));
     }

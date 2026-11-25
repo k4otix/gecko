@@ -146,6 +146,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shipped_cyber_schema_declares_no_cut_labels() {
+        use gecko_extension_api::migration::deleted_labels_absent;
+        let schema = format!("{CYBER_SCHEMA}\n{CYBER_FUNCTIONS}");
+        let found = deleted_labels_absent(
+            &schema,
+            &["entity sighting", "relation sighting-of", "sighting-of:"],
+        );
+        assert!(
+            found.is_empty(),
+            "the shipped cyber schema still declares {found:?}"
+        );
+    }
+
+    #[test]
     fn shipped_queries_use_current_relation_syntax() {
         use gecko_extension_api::relation_syntax::deprecated_relation_lines;
         for (file, text) in [
