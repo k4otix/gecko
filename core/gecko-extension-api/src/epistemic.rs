@@ -194,7 +194,8 @@ pub trait EpistemicWriter: Send + Sync {
         method: DerivationMethod,
     ) -> Result<MemId>;
 
-    /// Supersedes `old` with a new belief, recording the lineage + `reason`.
+    /// Supersedes `old` with a new belief, recording the lineage + `reason` and closing
+    /// `old`'s validity window at the instant the new belief's opens.
     async fn supersede(
         &self,
         ctx: &RunContext,
@@ -241,8 +242,9 @@ pub trait EpistemicReader: Send + Sync {
     /// Walks the derivation chain backing belief `b`.
     async fn derivation_chain(&self, b: MemId) -> Result<Vec<MemId>>;
 
-    /// The beliefs visible to `ctx.actor` as-of `at`, newest `valid-from` first —
-    /// routes through TypeDB's temporal path, never the index (invariant 8).
+    /// The beliefs visible to `ctx.actor` that held at `at` (their validity window
+    /// contains it, across supersessions), newest `valid-from` first — routes through
+    /// TypeDB's temporal path, never the index (invariant 8).
     async fn believed_at(&self, ctx: &RunContext, at: DateTime) -> Result<Vec<MemId>>;
 
     /// The memory items undermined by retracting memory item `retracted`: everything

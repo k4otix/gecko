@@ -1185,3 +1185,27 @@ async fn reconcile_fills_an_empty_self_managed_index() {
     assert_eq!(idx.len(), 1, "the graph's item was embedded");
     assert_eq!((report.added, report.removed), (1, 0));
 }
+
+#[test]
+fn supersession_ops_closes_the_old_window_in_the_same_batch() {
+    let at = chrono::DateTime::parse_from_rfc3339("2026-03-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let ops = crate::tql::supersession_ops(
+        &ActorId::new("agent-1"),
+        &MemId::new("mem/bel/old"),
+        &MemId::new("mem/bel/new"),
+        "revised",
+        at,
+    );
+    let expectations: Vec<Option<usize>> = ops.iter().map(|o| o.expect_rows).collect();
+    assert_eq!(expectations, vec![Some(1), Some(1), None]);
+    let close = &ops[2];
+    assert!(close.query.contains("valid-to"), "{}", close.query);
+    assert!(!close.query.contains("2026-03-01"), "{}", close.query);
+    assert!(
+        close.rows[0].contains(&gecko_extension_api::GraphValue::Datetime(at)),
+        "the close time travels as a parameter: {:?}",
+        close.rows
+    );
+}

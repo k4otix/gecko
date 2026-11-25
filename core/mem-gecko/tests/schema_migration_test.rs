@@ -129,6 +129,14 @@ async fn previous_release_upgrades_to_the_shipped_schema() {
     ] {
         assert!(schema.contains(shipped), "upgrade lacks `{shipped}`");
     }
+    // `believed-at` reads validity windows and supersessions, not belief-state.
+    let stored = schema_apply::stored_functions(&schema).expect("stored functions");
+    let believed_at = &stored["believed-at"].text;
+    assert!(
+        believed_at.contains("supersession (superseded: $b), has created-at $ca"),
+        "{believed_at}"
+    );
+    assert!(!believed_at.contains("has belief-state"), "{believed_at}");
     for leftover in ["fun population-members(", "relation population-member"] {
         assert!(schema.contains(leftover), "upgrade dropped `{leftover}`");
     }

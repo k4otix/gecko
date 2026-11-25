@@ -246,7 +246,8 @@ impl EpistemicWriter for MemWriter {
             )));
         }
         let new_id = mint("mem/bel");
-        // AUTHORITATIVE: new belief + supersession lineage + old→superseded commit first.
+        // AUTHORITATIVE: new belief + supersession lineage + old→superseded, with old's
+        // window closed, commit first.
         let mut ops = tql::insert_belief_ops(ctx, &new, &new_id, new_entrenchment);
         let first_supersession = ops.len();
         ops.extend(tql::supersession_ops(
