@@ -86,8 +86,8 @@ fn require_str_arg(args: &[JsValue], idx: usize, name: &str) -> JsResult<String>
 /// Converts a guest value to its JSON wire form: `undefined` is absent (`None`),
 /// and a non-finite number, a function, or a value `to_json` cannot convert or
 /// gives no JSON for (a `Symbol`, a cyclic object, a `BigInt`) is a `TypeError`
-/// naming `name`. Anything
-/// else is forwarded as JSON unchanged; the host judges its type.
+/// naming `name`. Anything else is forwarded as JSON unchanged; the host judges
+/// its type.
 fn to_wire(v: &JsValue, name: &str, context: &mut Context) -> JsResult<Option<Value>> {
     if v.is_undefined() {
         return Ok(None);

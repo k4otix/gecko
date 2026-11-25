@@ -61,6 +61,9 @@ const MAX_REPLY_LEN: usize = 16 * 1024 * 1024;
 /// The message stashed for a reply over [`MAX_REPLY_LEN`].
 const REPLY_TOO_LARGE: &str = "host response exceeded 16 MiB";
 
+/// The message stashed for an extension reply that was empty.
+const EMPTY_REPLY: &str = "the extension returned an empty reply";
+
 /// The message stashed for an extension error that carried none.
 const EMPTY_ERROR: &str = "the extension call failed with an empty error";
 
@@ -101,9 +104,11 @@ fn read_error(what: &str, limit: &str, e: ReadError) -> String {
 /// Turns a host-call outcome into the bytes the guest will read and the length it
 /// is told: `+len` for a reply, `-len` for an error message. A reply over
 /// [`MAX_REPLY_LEN`] becomes an error, an error over it is truncated on a UTF-8
-/// boundary, and an empty error gets a message, so the length is never 0.
+/// boundary, and an empty reply or error becomes an error with a message, so the
+/// length is never 0.
 fn stash_outcome(res: Result<String, String>) -> (Vec<u8>, i32) {
     let message = match res {
+        Ok(reply) if reply.is_empty() => EMPTY_REPLY.to_string(),
         Ok(reply) if reply.len() <= MAX_REPLY_LEN => {
             let len = reply.len() as i32;
             return (reply.into_bytes(), len);
@@ -441,6 +446,13 @@ mod tests {
         let (bytes, ret) = stash_outcome(Ok("{}".to_string()));
         assert_eq!(bytes, b"{}");
         assert_eq!(ret, 2);
+    }
+
+    #[test]
+    fn stash_outcome_refuses_an_empty_reply() {
+        let (bytes, ret) = stash_outcome(Ok(String::new()));
+        assert!(ret < 0, "an empty reply is an error, never length 0");
+        assert_eq!(bytes, EMPTY_REPLY.as_bytes());
     }
 
     #[test]
