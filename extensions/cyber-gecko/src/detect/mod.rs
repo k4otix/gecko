@@ -276,9 +276,8 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         graph,
         &format!(
             "match technique-tactic (technique: $t, tactic: $tac); {} {} \
-             fetch {{ \"tech_cid\": $t.concept-id, \"tech_aid\": $t.attack-id, \
-                      \"tac_cid\": $tac.concept-id, \"tac_aid\": $tac.attack-id, \
-                      \"shortname\": $tac.tactic-shortname, \"name\": $tac.title }};",
+             fetch {{ \"tech_cid\": $t.concept-id, \"tac_cid\": $tac.concept-id, \
+                      \"tac_aid\": $tac.attack-id, \"shortname\": $tac.tactic-shortname, \"name\": $tac.title }};",
             live("t"),
             live("tac")
         ),
@@ -1378,8 +1377,8 @@ async fn live_replacements(
 mod tests {
     use super::*;
 
-    fn tactic_pair(tech: &str, tech_aid: Option<&str>, tac: &str, tac_aid: Option<&str>) -> Value {
-        json!({ "tech_cid": tech, "tech_aid": tech_aid, "tac_cid": tac, "tac_aid": tac_aid,
+    fn tactic_pair(tech: &str, tac: &str, tac_aid: Option<&str>) -> Value {
+        json!({ "tech_cid": tech, "tac_cid": tac, "tac_aid": tac_aid,
                 "shortname": format!("{tac}-short"), "name": format!("{tac} name") })
     }
 
@@ -1408,9 +1407,9 @@ mod tests {
     #[test]
     fn group_by_tactic_counts_live_and_undetected() {
         let pairs = [
-            tactic_pair("c/t2", Some("T2"), "c/ta2", Some("TA2")),
-            tactic_pair("c/t1", Some("T1"), "c/ta2", Some("TA2")),
-            tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1")),
+            tactic_pair("c/t2", "c/ta2", Some("TA2")),
+            tactic_pair("c/t1", "c/ta2", Some("TA2")),
+            tactic_pair("c/t1", "c/ta1", Some("TA1")),
         ];
         let (tactics, by_tactic) = group_by_tactic(&pairs, &gaps(&[("c/t1", Some("T1"))])).unwrap();
         assert_eq!(
@@ -1431,7 +1430,7 @@ mod tests {
 
     #[test]
     fn group_by_tactic_counts_a_duplicate_pair_once() {
-        let p = tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1"));
+        let p = tactic_pair("c/t1", "c/ta1", Some("TA1"));
         let (tactics, by_tactic) =
             group_by_tactic(&[p.clone(), p], &gaps(&[("c/t1", Some("T1"))])).unwrap();
         assert_eq!(by_tactic[0]["live"], 1);
@@ -1442,11 +1441,8 @@ mod tests {
 
     #[test]
     fn group_by_tactic_keeps_a_fully_covered_tactic() {
-        let (_, by_tactic) = group_by_tactic(
-            &[tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1"))],
-            &gaps(&[]),
-        )
-        .unwrap();
+        let (_, by_tactic) =
+            group_by_tactic(&[tactic_pair("c/t1", "c/ta1", Some("TA1"))], &gaps(&[])).unwrap();
         assert_eq!(by_tactic[0]["live"], 1);
         assert_eq!(by_tactic[0]["undetected"], 0);
         assert_eq!(by_tactic[0]["techniques"], json!([]));
@@ -1454,7 +1450,7 @@ mod tests {
 
     #[test]
     fn group_by_tactic_gives_a_titleless_tactic_a_null_name() {
-        let mut p = tactic_pair("c/t1", Some("T1"), "c/ta1", Some("TA1"));
+        let mut p = tactic_pair("c/t1", "c/ta1", Some("TA1"));
         p.as_object_mut().unwrap().remove("name");
         let (_, by_tactic) = group_by_tactic(&[p], &gaps(&[])).unwrap();
         assert_eq!(by_tactic[0]["name"], Value::Null);
@@ -1462,18 +1458,14 @@ mod tests {
 
     #[test]
     fn group_by_tactic_refuses_a_tactic_without_an_attack_id() {
-        let err = group_by_tactic(
-            &[tactic_pair("c/t1", Some("T1"), "c/ta-x", None)],
-            &gaps(&[]),
-        )
-        .unwrap_err();
+        let err = group_by_tactic(&[tactic_pair("c/t1", "c/ta-x", None)], &gaps(&[])).unwrap_err();
         assert!(err.contains("c/ta-x"), "{err}");
     }
 
     #[test]
     fn group_by_tactic_lists_an_id_less_gap_technique_by_concept_id() {
         let (_, by_tactic) = group_by_tactic(
-            &[tactic_pair("c/t-x", None, "c/ta1", Some("TA1"))],
+            &[tactic_pair("c/t-x", "c/ta1", Some("TA1"))],
             &gaps(&[("c/t-x", None)]),
         )
         .unwrap();

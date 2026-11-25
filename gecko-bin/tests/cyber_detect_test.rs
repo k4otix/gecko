@@ -1727,10 +1727,48 @@ async fn a_retired_technique_counts_in_no_tactic() {
     let test_db = TestDb::new("gecko_test_detect_gaps_tactic_retired");
     let cb = structure_bridge(&test_db).await;
     let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    let execution = tactic_row(&gaps, structure::EXECUTION_ATTACK_ID).unwrap();
+    assert_eq!(execution["live"], 2, "{gaps}");
     assert_eq!(
-        tactic_row(&gaps, structure::EXECUTION_ATTACK_ID).unwrap()["live"],
-        2,
-        "{gaps}"
+        execution["techniques"],
+        json!([structure::PARENT_ATTACK_ID, structure::SUB1_ATTACK_ID]),
+        "the retired sub-technique is no gap: {gaps}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_titleless_tactic_is_grouped_with_a_null_name() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_tactic_titleless");
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        object_mut(objects, structure::PERSISTENCE_STIX_ID)
+            .as_object_mut()
+            .unwrap()
+            .remove("name");
+    })
+    .await;
+    let gaps = call(&cb, "coverage_gaps", json!({})).expect("coverage_gaps");
+    let persistence = tactic_row(&gaps, structure::PERSISTENCE_ATTACK_ID).expect("grouped");
+    assert_eq!(persistence["name"], Value::Null, "{gaps}");
+    assert_eq!(persistence["shortname"], "persistence");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tactic_without_an_attack_id_fails_coverage_gaps() {
+    let test_db = TestDb::new("gecko_test_detect_gaps_tactic_no_attack_id");
+    let cb = edited_structure_bridge(&test_db, |objects| {
+        object_mut(objects, structure::PERSISTENCE_STIX_ID)
+            .as_object_mut()
+            .unwrap()
+            .remove("external_references");
+    })
+    .await;
+    let err = call(&cb, "coverage_gaps", json!({})).expect_err("an id-less tactic");
+    let uuid = structure::PERSISTENCE_STIX_ID
+        .strip_prefix("x-mitre-tactic--")
+        .unwrap();
+    assert!(
+        err.contains(&format!("stix/x-mitre-tactic/{uuid}")),
+        "the error names the tactic: {err}"
     );
 }
 
