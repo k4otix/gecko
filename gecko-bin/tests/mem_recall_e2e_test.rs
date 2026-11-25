@@ -396,3 +396,67 @@ async fn an_oversized_recall_mints_one_retrieval_event() {
     std::fs::remove_file(&index_path).ok();
     fx.drop_db().await;
 }
+
+// ── A playbook retracts a root belief and learns what rested on it ───────────
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_playbook_retracts_a_root_and_learns_what_rested_on_it() {
+    let fx = Fixture::new().await;
+    let path = tmp_index_path();
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let writer: Arc<dyn EpistemicWriter> =
+        Arc::new(MemWriter::new(fx.store(), Some(embedder), Some(index)));
+    let run_ctx = RunContext::new(
+        ActorId::new("agent-1"),
+        ProvenanceSource::ExecutableDoc {
+            concept_id: ConceptId::new("playbooks/mem-retract-demo"),
+        },
+        dt("2026-01-02T00:00:00Z"),
+    );
+    let cb = run_callback(run_ctx, writer);
+    let program = r#"
+        const root = mem.derive("smb lateral movement observed", []);
+        const kid = mem.derive("the file server is compromised", [root.id]);
+        const r = mem.retract(root.id, "wrong host");
+        const after = mem.recall("smb lateral movement observed", { maxChunks: 5 });
+        ({ root: root.id, kid: kid.id, radius: r.blast_radius, after: after.map(c => c.id) })
+    "#;
+    let scopes = vec![
+        "mem:derive".to_string(),
+        "mem:retract".to_string(),
+        "mem:recall".to_string(),
+    ];
+    let result = WasmExecutor::new()
+        .unwrap()
+        .evaluate(
+            program,
+            Uuid::new_v4(),
+            &HostImports::default(),
+            &scopes,
+            Some(30_000),
+            Some(cb),
+        )
+        .await;
+    assert!(result.success, "guest run failed: {:?}", result.error);
+    let out = &result.output;
+    assert_eq!(
+        out["radius"],
+        serde_json::json!([out["kid"].clone()]),
+        "{out}"
+    );
+    let after = out["after"].as_array().expect("recall ids");
+    assert!(!after.contains(&out["root"]), "{out}");
+    let reasons = fx
+        .raw_fetch(&format!(
+            r#"match $b isa belief, has concept-id "{}";
+                 $r isa retraction, links (retracted: $b), has retraction-reason $why;
+               fetch {{ "why": $why }};"#,
+            out["root"].as_str().unwrap()
+        ))
+        .await;
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(reasons[0]["why"], "wrong host");
+
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}

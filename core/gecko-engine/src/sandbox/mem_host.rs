@@ -1,7 +1,7 @@
 //! Sandbox → mem host-function surface and run-id binding.
 //!
 //! Exec-docs call a small set of mem host functions —
-//! `remember`/`recall`/`derive`/`supersede`/`contest` — which the host delegates
+//! `remember`/`recall`/`derive`/`supersede`/`contest`/`retract` — which the host delegates
 //! to the injected [`EpistemicWriter`]/[`EpistemicReader`]. The security spine
 //! (invariant 2) is that the **host** binds the run's [`RunContext`]: sandbox code
 //! supplies only the payload args and **cannot** supply or override the
@@ -56,6 +56,8 @@ pub enum MemHostFn {
     Supersede,
     /// `mem.contest(...)` → `EpistemicWriter::contest`.
     Contest,
+    /// `mem.retract(...)` → `EpistemicWriter::retract`.
+    Retract,
 }
 
 impl MemHostFn {
@@ -67,6 +69,7 @@ impl MemHostFn {
             Self::Derive => "derive",
             Self::Supersede => "supersede",
             Self::Contest => "contest",
+            Self::Retract => "retract",
         }
     }
 
@@ -78,18 +81,20 @@ impl MemHostFn {
             "derive" => Self::Derive,
             "supersede" => Self::Supersede,
             "contest" => Self::Contest,
+            "retract" => Self::Retract,
             _ => return None,
         })
     }
 
     /// The full mem host-fn set (used by the name round-trip test, its only caller).
-    pub fn all() -> [MemHostFn; 5] {
+    pub fn all() -> [MemHostFn; 6] {
         [
             Self::Remember,
             Self::Recall,
             Self::Derive,
             Self::Supersede,
             Self::Contest,
+            Self::Retract,
         ]
     }
 }
@@ -174,6 +179,7 @@ fn allowed_keys(func: MemHostFn) -> &'static [&'static str] {
         MemHostFn::Derive => &["text", "evidence", "method", "confidence"],
         MemHostFn::Supersede => &["old", "text", "reason", "confidence"],
         MemHostFn::Contest => &["claims"],
+        MemHostFn::Retract => &["id", "reason"],
         MemHostFn::Recall => &["text", "max_chunks", "as_of"],
     }
 }
@@ -393,6 +399,16 @@ pub async fn dispatch_mem_call(
             let claims = required_mem_ids(p, "claims")?;
             let anomaly = writer.contest(ctx, &claims).await.map_err(err)?;
             Ok(json!({ "anomaly": anomaly.0 }))
+        }
+        MemHostFn::Retract => {
+            let id = req_str(p, "id")?;
+            let reason = opt_str(p, "reason")?;
+            let radius = writer
+                .retract(ctx, MemId::new(id.clone()), reason)
+                .await
+                .map_err(err)?;
+            let radius: Vec<String> = radius.into_iter().map(|m| m.0).collect();
+            Ok(json!({ "id": id, "blast_radius": radius }))
         }
         // `mem.recall` is a *reader* op: it is dispatched through the separate
         // reader bridge ([`dispatch_mem_recall`]), which the callback routes to when
@@ -989,6 +1005,12 @@ mod tests {
             "extra",
         )
         .await;
+        assert_refused(
+            MemHostFn::Retract,
+            json!({"id": "mem/bel/1", "why": "r"}),
+            "why",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1080,6 +1102,56 @@ mod tests {
             "reason",
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn retract_requires_an_id() {
+        assert_refused(MemHostFn::Retract, json!({}), "id").await;
+        assert_refused(MemHostFn::Retract, json!({"id": 5}), "id").await;
+    }
+
+    #[tokio::test]
+    async fn retract_refuses_a_non_string_reason() {
+        for bad in [json!(5), json!({})] {
+            assert_refused(
+                MemHostFn::Retract,
+                json!({"id": "mem/bel/x", "reason": bad}),
+                "reason",
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn retract_forwards_id_and_reason_and_replies_with_the_blast_radius() {
+        let (out, probe) = write_call(
+            MemHostFn::Retract,
+            json!({"id": "mem/bel/x", "reason": "r"}),
+        )
+        .await;
+        assert_eq!(out.unwrap(), json!({"id": "mem/bel/x", "blast_radius": []}));
+        assert_eq!(
+            probe.probed(),
+            Some(Probed::Retract {
+                id: MemId::new("mem/bel/x"),
+                reason: Some("r".to_string()),
+            })
+        );
+        for absent in [
+            json!({"id": "mem/bel/x"}),
+            json!({"id": "mem/bel/x", "reason": null}),
+        ] {
+            let (out, probe) = write_call(MemHostFn::Retract, absent.clone()).await;
+            out.unwrap();
+            assert_eq!(
+                probe.probed(),
+                Some(Probed::Retract {
+                    id: MemId::new("mem/bel/x"),
+                    reason: None,
+                }),
+                "{absent}"
+            );
+        }
     }
 
     #[tokio::test]

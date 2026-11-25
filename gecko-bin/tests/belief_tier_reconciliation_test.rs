@@ -185,7 +185,7 @@ fn mem_playbook() -> String {
 type: playbook
 title: Rig mem
 engine: quickjs
-scopes: [mem:remember, mem:recall, mem:derive, mem:supersede, mem:contest]
+scopes: [mem:remember, mem:recall, mem:derive, mem:supersede, mem:contest, mem:retract]
 ---
 
 # Rig mem
@@ -197,7 +197,8 @@ const chunks = mem.recall({q}, {{ maxChunks: 5 }});
 const b1 = mem.derive({b1}, chunks.map(c => c.id), {{ confidence: 0.6 }});
 const s = mem.supersede(b1.id, {s}, "revised");
 const a = mem.contest([s.id, b2.id]);
-({{ episode: e.id, recalled: chunks.length, b1: b1.id, b2: b2.id, s: s.id, anomaly: a.anomaly }})
+const r = mem.retract(b2.id, "rig retraction");
+({{ episode: e.id, recalled: chunks.length, b1: b1.id, b2: b2.id, s: s.id, anomaly: a.anomaly, retracted: r.id }})
 ```
 "#,
         ep = js(T_EP),
@@ -736,6 +737,10 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
         .contest(&ctx, &[s.clone(), b2.clone()])
         .await
         .expect("ref contest");
+    ref_writer
+        .retract(&ctx, b2.clone(), Some("rig retraction"))
+        .await
+        .expect("ref retract");
     let after = fingerprint(&rig_ref).await;
     let r5 = delta(&ref_fp, &after);
     ref_fp = after;
