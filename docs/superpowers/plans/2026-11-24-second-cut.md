@@ -94,9 +94,9 @@ It is unverified: grep before deleting.
       (or the probed form) pass `check_migrations`.
     - The existing refusal of a target with no shipped `@doc` still refuses.
   - **In `schema_migration_test.rs`:** `a_database_holding_the_old_memory_item_doc_upgrades`.
-    - Apply `main`'s mem schema, from a new frozen fixture `core/mem-gecko/tests/fixtures/mem_schema_892ee06.tql`
-      copied from `git show 892ee06:core/mem-gecko/schema/mem_types.tql`. Then apply the shipped
-      schema.
+    - No new frozen fixture. Build the old schema in memory as `shipped.replace(NEW_DOC, OLD_DOC)`,
+      the pattern `changed_function_body_reaches_an_initialized_database` already uses.
+    - Apply it, then apply the shipped schema.
     - Assert that it succeeds, and that the exported schema carries the new `@doc` text.
   - The existing `previous_release_upgrades_to_the_shipped_schema` and the pre-tightening upgrades
     also hold the old `@doc`. After Step 4 they are the red tests until the migration lands.
@@ -110,9 +110,14 @@ It is unverified: grep before deleting.
   - After the Step 4 `@doc` edit and before the migration, the upgrade tests fail with TypeDB's
     changed-`@doc` refusal. Watch that happen too.
 - [ ] **Step 4: Implement.**
-  - In the checker's reinstalled check, skip annotations (`@abstract`, then optional `,`) after the
-    label. For the bare-label form (`undefine @doc from memory-item;`), also skip the `sub …`
-    clause. Cover whichever form the probe picked.
+  - In the checker's reinstalled check, skip annotations (`@abstract`, with or without a following
+    `,`) after the label.
+    - For the bare-label form (`undefine @doc from memory-item;`), skip the shipped `sub …` clause
+      **only when the target itself has no `sub` clause**. A target with `sub X` must still match `X`
+      exactly, so `an_undefine_doc_the_shipped_schema_does_not_replace_is_rejected` keeps refusing.
+    - Unit tests cover `@abstract,` (as in `mem_types.tql:56`) and `@abstract` without a comma (as
+      in `migration.rs:446`).
+    - Cover whichever form the probe picked.
   - Fix the "Four-layer substrate" comment at `core/mem-gecko/src/lib.rs:284`.
   - Write the new `@doc`, one sentence:
     `"Abstract supertype of the substrate's memory: episodes and beliefs, linked by derivation, supersession, assumption and provenance edges."`
@@ -155,9 +160,11 @@ It is unverified: grep before deleting.
 - Modify: `core/gecko-extension-api/src/error.rs:6-18` (`NotYetImplemented`) and
   `epistemic.rs:7`.
 - Modify tests:
-  - `core/mem-gecko/tests/writer_reader_integration.rs`: the dedup, tombstone and `IndexOutcome`
-    tests and helpers at about `:2232-2722` and `:2932-2996`, keeping `recalling_writer` and
-    `recall_once`;
+  - `core/mem-gecko/tests/writer_reader_integration.rs`:
+    - the dedup, tombstone and `IndexOutcome` tests at about `:2232-2722` and `:2932-2996`;
+    - the helpers left unused: `RecordingIndex` (`:214-239`), `seed_episode` and `by_id`;
+    - the `IndexOutcome` import (`:26`);
+    - `recalling_writer` and `recall_once` stay;
   - `core/mem-gecko/tests/schema_acceptance_test.rs:281-327` and the `CONSOLIDATION_STEP` case and
     rows;
   - `gecko-bin/tests/no_drag_test.rs:188-203`;
@@ -172,9 +179,9 @@ It is unverified: grep before deleting.
     with its unit tests. The populations guard keeps passing.
   - Add a test `shipped_mem_schema_declares_no_consolidation_labels` in the mem lib tests, with these
     needles:
-    - `attribute consolidation-state`, `attribute consolidation-action`, `relation consolidation-step`;
-    - `consolidation-step:`;
-    - `owns consolidation-state`.
+    - the bare attribute names `consolidation-state` and `consolidation-action`, which also catch
+      `has` and `owns`;
+    - `relation consolidation-step` and the role reference `consolidation-step:`.
   - Run it. It must **fail** against the working tree.
 - [ ] **Step 1: Delete in one commit's worth of edits.** The attribute and the `:560` guard must go
   together.
@@ -203,7 +210,10 @@ It is unverified: grep before deleting.
 - Modify: `core/mem-gecko/schema/mem_types.tql:259-276`, the whole block.
 - Modify: `core/mem-gecko/src/tql.rs`, the migration `mem/divergence-precedence-required-roles`.
 - Rename: `gecko-bin/tests/schema_probe_w2w3.rs` → `gecko-bin/tests/schema_probe_w3.rs`.
-  - Delete the W2 tests and helpers (P-PREC-1…5, P-DISP-1…3, `DispKeys`, `apply_delta` if unused).
+  - Delete the W2 tests (P-PREC-1…5, P-DISP-1…3) and the items they leave dead:
+    - `W2_DISPOSITION` (`:81`) and `use chrono::NaiveDateTime;` (`:34`);
+    - `DispKeys`, `method_rank`, `entrenchment_rank`, `host_disposition` and `read_disp_keys`.
+  - `apply_delta` and `DbError` stay, because P-REDEF uses them (`:1002`).
   - Trim P-COMP to the define-clean composition with cyber, with no divergence inserts.
   - Trim P-W5-1 to its core and cyber relation checks, under a name without "divergence".
   - Keep the W3 test and P-REDEF, and fix P-REDEF's banner.
@@ -247,24 +257,32 @@ It is unverified: grep before deleting.
 - Modify tests:
   - `core/mem-gecko/src/lib.rs:289-290`;
   - `core/mem-gecko/tests/schema_acceptance_test.rs`:
-    - `:119-185`, trimmed to `rests-on` and supersession;
+    - `belief_evidence_restson_supersession_roundtrip` (`:118-197`), trimmed to `rests-on` and
+      supersession and renamed `belief_restson_supersession_roundtrip`;
     - the `EVIDENCE`, `JUSTIFICATION`, `SUPPORT`, `ATTACK` and `EXECUTION` cases and macro rows;
-    - `:1014-1023`, the `corroboration-count` range test;
+    - `a_negative_corroboration_count_is_refused` (`:1015-1024`);
   - the 14 rig rows (12 mem and 2 cyber);
+  - `hostile_extension_raw_belief_write_is_flagged` (`belief_tier_reconciliation_test.rs:1136-1151`):
+    its `type_hint` `"working-set"` becomes `"anomaly"`. A surviving concrete `memory-item`
+    subtype keeps the test proving a belief-tier type is refused, not merely an unknown one;
   - `gecko-bin/tests/no_drag_test.rs:128-131`: the `evidence:*` and `justification:*` entries in
     `BEARER_ROLES`;
   - `schema_init_test`'s `("mem", N)` (minus 5) and `CUT_LEFTOVERS`.
 
 - [ ] **Step 0: Add the needles,** and watch them fail.
-  - **The mem test** `shipped_mem_schema_declares_no_diet_labels` matches every deleted type and
-    attribute as `entity X`, `relation X` or `attribute X`, and every deleted role as a scoped
-    `X:` reference, for example `evidence:`, `execution:` and `goal-hierarchy:`.
+  - **The mem test** `shipped_mem_schema_declares_no_diet_labels` matches:
+    - every deleted type as `entity X` or `relation X`;
+    - every deleted relation's roles as `X:` (`evidence:`, `execution:`, `goal-hierarchy:`, …),
+      the populations guard's form;
+    - the unambiguous attribute names bare: `execution-status`, `stability-tier`,
+      `corroboration-count`, `justification-status` and `tool-name`;
+    - `deadline` as `attribute deadline`, `owns deadline` and `has deadline`.
   - **The cyber test** `shipped_cyber_schema_declares_no_cut_labels`, in
     `extensions/cyber-gecko/src/lib.rs` tests, matches `entity sighting`, `relation sighting-of`
     and `sighting-of:`.
   - `sighting` and `evidence` are matched only in those forms.
-- [ ] **Step 1: Delete.** Include the plays on `agent`, `intention` and `learned-constraint` (spec
-  goal 3).
+- [ ] **Step 1: Delete.** Include the plays on `intention` and `learned-constraint` (spec goal 3).
+  `agent`'s one cut play went in Task 2.
 - [ ] **Step 2: Compile,** as in Task 2 Step 2.
 - [ ] **Step 3: Re-derive** `("mem", N)` and `CUT_LEFTOVERS` from a live `schema_init_test` run,
   and run the rig.
@@ -304,25 +322,39 @@ It is unverified: grep before deleting.
 **Files:**
 - Modify: `docs/refactor/KNOWN-LIMITATIONS.md`:
   - `:82-86`, the optional-roles list;
-  - `:166-186`, the daemon section and its actor paragraph;
+  - `:171-186`, the daemon actor paragraph and section. Lines `:165-170` are live caveats and
+    stay;
   - `:101-117`, the leftover note, extended to the X1 types and stating the Task 1 outcome;
   - one line on test-made `tombstoned` episodes re-indexing.
 - Modify: `docs/refactor/OWED-WORK-LEDGER.md`:
   - X1 moves to "Landed since the review";
   - M1's text names `pivot`;
-  - the cut rows A8, M4, M5 and M6 (`:100-103`) point here;
+  - the cut rows A8, M4, M5 and M6 (`:100-104`) point here;
+  - the U1 and U2 cut bullets (`:93-99`) point at `2026-11-24-second-cut-design.md`, as the
+    populations bullet does (`:91-92`);
   - "Next up" is renumbered;
   - "Superseded and stale passages" points to the design.
 
 - [ ] **Step 1: Edit.**
-- [ ] **Step 2: Final search, in two passes.** Each pass filters out `target/`, `tests/fixtures/`,
-  `docs/superpowers/`, the ratified, locked and historical docs, and HNSW-internal "tombstone".
-  - **Identifiers,** substring match with no `-w`:
+- [ ] **Step 2: Final search, in two passes.**
+  - **What both passes filter out:**
+    - `target/`, `tests/fixtures/` and `docs/superpowers/`;
+    - the ratified and locked docs (INVARIANTS, SPEC-W2-W3, SPEC-W5, CONTRACT-W8, CONFLICT-REPORT);
+    - the historical docs: `docs/refactor/LEDGER-HISTORY.md`, `docs/refactor/REVIEW-2026-11.md`,
+      `g1-g2-validated.md` and `docs/refactor/probes/W2-W3-PROBE-LOG.md`;
+    - HNSW-internal "tombstone".
+  - **Pass 1, identifiers and hyphenated labels,** substring match:
     `grep -rnE "ConsolidationDaemon|NotYetImplemented|IndexOutcome|dedup_episodes|DuplicateCandidate|retrieval_events_safe_to_tombstone|disposition::|\.rank\(\)|consolidation-state|consolidation-step|consolidation-action|tombstoned|divergence-|exception-scope|exception-belief|four-layer|goal-hierarchy|working-set|tool-invocation|learned-constraint|contextualizes|sighting-of|execution-status|stability-tier|corroboration-count|justification-status|tool-name" --include='*.rs' --include='*.tql' --include='*.md' --include='*.toml' .`
-  - **Ambiguous labels,** anchored:
-    `grep -rnE "(entity|relation|attribute|isa|plays|owns) +(intention|playbook|execution|evidence|justification|support|attack|sighting|deadline)\b|\b(evidence|justification|support|attack|execution|playbook|sighting|intention):" --include='*.rs' --include='*.tql' .`
-  - Expected: only intended hits, such as the synthetic `belief_edge` labels and the
-    `attack`/`attack-pattern` boundary test in `belief_tier_monopoly_test.rs`.
+  - **Pass 2, ambiguous labels.**
+    - It runs on schema text only: the `.tql` files, plus the TQL string literals in `.rs` found by
+      searching for the keyword forms.
+    - macOS `grep -E` has no `\b`, so word ends use `[[:<:]]` and `[[:>:]]`.
+    - Command: `grep -rnE "(entity|relation|attribute|isa|plays|owns) +(intention|playbook|execution|evidence|justification|support|attack|sighting|deadline)[[:>:]]|(plays|links \() *(evidence|justification|support|attack|execution|playbook|sighting|intention):" --include='*.tql' --include='*.rs' .`
+  - **Expected hits:**
+    - the synthetic `belief_edge` labels;
+    - the `attack`/`attack-pattern` boundary test in `belief_tier_monopoly_test.rs`;
+    - `schema_init_test.rs:468-469`, the `"  entity playbook sub memory-item"` anchor into the
+      frozen pre-tightening schema, which is correct as it is.
   - Classify every hit in the ledger.
 - [ ] **Step 3: Run the guard snippet test.**
   Run: `cargo test -p gecko-bin --no-default-features --bin gecko documented_config_snippets_are_accepted`.

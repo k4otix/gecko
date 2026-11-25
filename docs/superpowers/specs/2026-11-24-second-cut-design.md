@@ -154,9 +154,10 @@ Rust, migrations, tests and probes. Git keeps all of it if a real consumer appea
      unit test checks `sighting` and `sighting-of`.
    - The needles are:
      - every type deleted in goals 1–3, as a declaration (`entity X`, `relation X`, `attribute X`);
-     - every deleted role as a scoped reference (`execution:run`, `consolidation-step:run`, …), not
-       a bare `R:`;
-     - each attribute name.
+     - every deleted relation as a role-reference prefix `X:` (`execution:`, `evidence:`, …), the
+       populations guard's form;
+     - each unambiguous attribute name bare, which also catches `has` and `owns`, with `deadline`
+       matched only as `attribute`, `owns` and `has deadline`.
 
      `sighting` and `evidence` are matched only as declarations and role references, because
      `belief_edge` tests use `sighting` as a synthetic label and prose uses "evidence".
