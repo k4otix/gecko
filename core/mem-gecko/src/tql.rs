@@ -387,9 +387,11 @@ pub(crate) fn derivation_op(
     Some(p.write(&body).expecting(1))
 }
 
-/// `supersede`: link old → new and flip old's belief-state to "superseded". The
+/// `supersede`: link old → new, flip old's belief-state to "superseded" and close
+/// old's validity window at `created_at`, the instant the successor's opens. The
 /// link matches only a currently asserted `old` that is `visible-to` `actor`, so
-/// superseding a superseded, retracted or out-of-scope belief matches no row.
+/// superseding a superseded, retracted or out-of-scope belief matches no row and
+/// rolls the whole batch back.
 pub(crate) fn supersession_ops(
     actor: &ActorId,
     old: &MemId,
@@ -424,7 +426,21 @@ pub(crate) fn supersession_ops(
         )
         .expecting(1);
 
-    vec![link_op, flip_op]
+    vec![link_op, flip_op, close_valid_to_op(old, created_at)]
+}
+
+/// Closes belief `id`'s validity window at `at`: sets `valid-to` to `at` unless the
+/// window already ended at or before `at`, so it never extends one. It carries no
+/// row expectation, because an already-ended window matches nothing.
+pub(crate) fn close_valid_to_op(id: &MemId, at: DateTime) -> GraphWrite {
+    let mut p = Params::new();
+    p.s("id", id.0.clone());
+    p.dt("t", at);
+    p.write(
+        "match $b isa belief, has concept-id $bc; $bc == $id;
+           not { $b has valid-to $vt; $vt <= $t; };
+         update $b has valid-to == $t;",
+    )
 }
 
 /// `contest`: a `contradiction` → `anomaly` hub over `claims` (2..), run + actor
