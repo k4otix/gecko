@@ -709,10 +709,7 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
                 text: T_Q.to_string(),
                 as_of: None,
             },
-            ContextBudget {
-                max_chunks: 5,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 5 },
         )
         .await
         .expect("ref recall");

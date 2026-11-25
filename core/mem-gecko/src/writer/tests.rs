@@ -222,10 +222,7 @@ async fn a_retrieval_event_mismatch_names_the_event() {
                 text: "q".into(),
                 as_of: None,
             },
-            ContextBudget {
-                max_chunks: 1,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 1 },
         )
         .await
         .expect_err("a vanished candidate fails the retrieval-event write"),

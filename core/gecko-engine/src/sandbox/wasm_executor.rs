@@ -55,23 +55,120 @@ const MAX_IMPORT_NAME_LEN: usize = 256;
 /// the same reason as [`MAX_IMPORT_NAME_LEN`].
 const MAX_ARGS_JSON_LEN: usize = 8 * 1024 * 1024;
 
-/// Reads a guest-supplied UTF-8 string from linear memory, rejecting any `len`
+/// Cap on a host reply or error message held for the guest to read (bytes).
+const MAX_REPLY_LEN: usize = 16 * 1024 * 1024;
+
+/// The message stashed for a reply over [`MAX_REPLY_LEN`].
+const REPLY_TOO_LARGE: &str = "host response exceeded 16 MiB";
+
+/// The message stashed for an extension reply that was empty.
+const EMPTY_REPLY: &str = "the extension returned an empty reply";
+
+/// The message stashed for an extension error that carried none.
+const EMPTY_ERROR: &str = "the extension call failed with an empty error";
+
+/// Why a guest-supplied string could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadError {
+    /// Its length is over the cap.
+    TooLong,
+    /// `ptr..ptr + len` lies outside guest memory.
+    OutOfBounds,
+    /// Its bytes are not UTF-8.
+    NotUtf8,
+}
+
+/// Reads `len` bytes at `ptr` from guest memory `mem` as UTF-8, rejecting a `len`
 /// above `max` before allocating (untrusted-boundary DoS guard).
-fn read_string<T>(
-    memory: &wasmtime::Memory,
-    caller: &Caller<'_, T>,
-    ptr: u32,
-    len: u32,
-    max: usize,
-) -> Result<String, ()> {
+fn read_guest_str(mem: &[u8], ptr: u32, len: u32, max: usize) -> Result<String, ReadError> {
     if len as usize > max {
-        return Err(());
+        return Err(ReadError::TooLong);
     }
-    let mut buf = vec![0u8; len as usize];
-    memory
-        .read(caller, ptr as usize, &mut buf)
-        .map_err(|_| ())?;
-    String::from_utf8(buf).map_err(|_| ())
+    let start = ptr as usize;
+    let bytes = start
+        .checked_add(len as usize)
+        .and_then(|end| mem.get(start..end))
+        .ok_or(ReadError::OutOfBounds)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| ReadError::NotUtf8)
+}
+
+/// The message for a guest string `what` that failed `e`, `limit` being its cap.
+fn read_error(what: &str, limit: &str, e: ReadError) -> String {
+    match e {
+        ReadError::TooLong => format!("{what} is over {limit}"),
+        ReadError::OutOfBounds => format!("{what} lies outside guest memory"),
+        ReadError::NotUtf8 => format!("{what} is not UTF-8"),
+    }
+}
+
+/// Turns a host-call outcome into the bytes the guest will read and the length it
+/// is told: `+len` for a reply, `-len` for an error message. A reply over
+/// [`MAX_REPLY_LEN`] becomes an error, an error over it is truncated on a UTF-8
+/// boundary, and an empty reply or error becomes an error with a message, so the
+/// length is never 0.
+fn stash_outcome(res: Result<String, String>) -> (Vec<u8>, i32) {
+    let message = match res {
+        Ok(reply) if reply.is_empty() => EMPTY_REPLY.to_string(),
+        Ok(reply) if reply.len() <= MAX_REPLY_LEN => {
+            let len = reply.len() as i32;
+            return (reply.into_bytes(), len);
+        }
+        Ok(_) => REPLY_TOO_LARGE.to_string(),
+        Err(e) if e.is_empty() => EMPTY_ERROR.to_string(),
+        Err(mut e) => {
+            if e.len() > MAX_REPLY_LEN {
+                let mut cut = MAX_REPLY_LEN;
+                while !e.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                e.truncate(cut);
+            }
+            e
+        }
+    };
+    let len = message.len() as i32;
+    (message.into_bytes(), -len)
+}
+
+/// Takes the pending reply for a guest buffer of `out_cap` bytes. The reply is
+/// taken before any check, so it can be read at most once: `-1` when none is
+/// pending, `-2` when the buffer is too small (the reply is discarded).
+fn take_reply(pending: &mut Option<Vec<u8>>, out_cap: u32) -> Result<Vec<u8>, i32> {
+    let bytes = pending.take().ok_or(-1)?;
+    if (out_cap as usize) < bytes.len() {
+        return Err(-2);
+    }
+    Ok(bytes)
+}
+
+/// Takes the pending reply and copies it into guest memory `mem` at `out_ptr`,
+/// returning its length, or `-1` none pending, `-2` buffer too small, `-3` buffer
+/// outside guest memory. The reply is cleared in every case.
+fn copy_reply(pending: &mut Option<Vec<u8>>, mem: &mut [u8], out_ptr: u32, out_cap: u32) -> i32 {
+    let bytes = match take_reply(pending, out_cap) {
+        Ok(bytes) => bytes,
+        Err(code) => return code,
+    };
+    let start = out_ptr as usize;
+    match start
+        .checked_add(bytes.len())
+        .and_then(|end| mem.get_mut(start..end))
+    {
+        Some(dest) => {
+            dest.copy_from_slice(&bytes);
+            bytes.len() as i32
+        }
+        None => -3,
+    }
+}
+
+/// The guest's exported linear memory, or a trap: neither import can answer a guest
+/// without one.
+fn guest_memory<T>(caller: &mut Caller<'_, T>) -> wasmtime::Result<wasmtime::Memory> {
+    match caller.get_export("memory") {
+        Some(wasmtime::Extern::Memory(m)) => Ok(m),
+        _ => Err(wasmtime::Error::msg("guest exports no linear memory")),
+    }
 }
 
 /// Store data threaded into each execution: the WASI context, the S1 resource
@@ -81,6 +178,8 @@ struct ExecutorCtx {
     limits: StoreLimits,
     allowed_scopes: Vec<String>,
     extension_callback: Option<ExtensionCallback>,
+    /// The outcome of the last `host_call_extension`, until `host_read_reply` takes it.
+    pending_reply: Option<Vec<u8>>,
 }
 
 pub struct WasmExecutor {
@@ -180,6 +279,7 @@ impl WasmExecutor {
                 .build(),
             allowed_scopes: scopes.to_vec(),
             extension_callback,
+            pending_reply: None,
         };
         let mut store = Store::new(&self.engine, ctx);
         store.limiter(|ctx| &mut ctx.limits);
@@ -194,7 +294,10 @@ impl WasmExecutor {
             return fail(format!("Failed to link WASI: {e}"));
         }
 
-        // 4. Link the async host-capability bridge (S5: propagate link errors).
+        // 4. Link the host-call bridge (S5: propagate link errors). A call runs the
+        //    extension callback at most once and stashes its outcome; the guest
+        //    sizes a buffer from the returned length and reads it with
+        //    `host_read_reply`.
         if let Err(e) = linker.func_wrap_async(
             "env",
             "host_call_extension",
@@ -206,105 +309,78 @@ impl WasmExecutor {
                 func_name_len,
                 args_json_ptr,
                 args_json_len,
-                out_buf_ptr,
-                out_buf_capacity,
-            ): (u32, u32, u32, u32, u32, u32, u32, u32)|
-             -> Box<dyn Future<Output = i32> + Send + '_> {
+            ): (u32, u32, u32, u32, u32, u32)|
+             -> Box<dyn Future<Output = wasmtime::Result<i32>> + Send + '_> {
                 Box::new(async move {
-                    let memory = match caller.get_export("memory") {
-                        Some(wasmtime::Extern::Memory(m)) => m,
-                        _ => return -1,
-                    };
+                    // A reply is read at most once, and never by a later call.
+                    caller.data_mut().pending_reply = None;
+                    let memory = guest_memory(&mut caller)?;
 
-                    let ext_name = match read_string(
-                        &memory,
-                        &caller,
-                        ext_name_ptr,
-                        ext_name_len,
-                        MAX_IMPORT_NAME_LEN,
-                    ) {
-                        Ok(s) => s,
-                        Err(()) => return -2,
-                    };
-                    let func_name = match read_string(
-                        &memory,
-                        &caller,
-                        func_name_ptr,
-                        func_name_len,
-                        MAX_IMPORT_NAME_LEN,
-                    ) {
-                        Ok(s) => s,
-                        Err(()) => return -3,
-                    };
-                    let args_json_str = match read_string(
-                        &memory,
-                        &caller,
-                        args_json_ptr,
-                        args_json_len,
-                        MAX_ARGS_JSON_LEN,
-                    ) {
-                        Ok(s) => s,
-                        Err(()) => return -4,
-                    };
-                    // Malformed guest JSON is a real error surfaced back to the guest,
-                    // not a silent coercion to Null (which would mask as a confusing
-                    // downstream "missing field").
-                    let args_json = serde_json::from_str::<serde_json::Value>(&args_json_str);
+                    let res: Result<String, String> = (|| {
+                        let mem = memory.data(&caller);
+                        let ext_name =
+                            read_guest_str(mem, ext_name_ptr, ext_name_len, MAX_IMPORT_NAME_LEN)
+                                .map_err(|e| read_error("the extension name", "256 bytes", e))?;
+                        let func_name =
+                            read_guest_str(mem, func_name_ptr, func_name_len, MAX_IMPORT_NAME_LEN)
+                                .map_err(|e| read_error("the function name", "256 bytes", e))?;
 
-                    // S3: default-deny. Only permit the call if the concept was
-                    // granted the matching "ext:func" scope in its frontmatter.
-                    let required_scope = format!("{ext_name}:{func_name}");
-                    let granted = caller
-                        .data()
-                        .allowed_scopes
-                        .iter()
-                        .any(|s| s == &required_scope);
-
-                    let res: Result<String, String> = if !granted {
-                        Err(format!(
-                            "scope '{required_scope}' not granted to this concept"
-                        ))
-                    } else {
-                        match args_json {
-                            // The callback is synchronous; awaiting here keeps the
-                            // bridge ready for I/O-bound capabilities.
-                            Ok(args) => match caller.data().extension_callback.clone() {
-                                Some(callback) => {
-                                    callback(&ext_name, &func_name, args).map(|v| v.to_string())
-                                }
-                                None => Err("No extensions loaded".to_string()),
-                            },
-                            Err(e) => Err(format!("invalid args JSON: {e}")),
+                        // S3: default-deny, checked before the args are read, so an
+                        // ungranted call learns nothing about its payload.
+                        let required_scope = format!("{ext_name}:{func_name}");
+                        if !caller
+                            .data()
+                            .allowed_scopes
+                            .iter()
+                            .any(|s| s == &required_scope)
+                        {
+                            return Err(format!(
+                                "scope '{required_scope}' not granted to this concept"
+                            ));
                         }
-                    };
 
-                    // Write result/error into the guest buffer. Positive length =>
-                    // success payload; negative length => error (magnitude = len).
-                    match res {
-                        Ok(s) => {
-                            let bytes = s.as_bytes();
-                            if bytes.len() as u32 > out_buf_capacity {
-                                return -5;
-                            }
-                            if memory
-                                .write(&mut caller, out_buf_ptr as usize, bytes)
-                                .is_err()
-                            {
-                                return -6;
-                            }
-                            bytes.len() as i32
-                        }
-                        Err(e) => {
-                            let bytes = e.as_bytes();
-                            let len = (bytes.len() as u32).min(out_buf_capacity) as usize;
-                            let _ = memory.write(&mut caller, out_buf_ptr as usize, &bytes[..len]);
-                            -(len as i32)
-                        }
-                    }
+                        let args_json_str = read_guest_str(
+                            memory.data(&caller),
+                            args_json_ptr,
+                            args_json_len,
+                            MAX_ARGS_JSON_LEN,
+                        )
+                        .map_err(|e| read_error("the args JSON", "8 MiB", e))?;
+                        let args = serde_json::from_str::<serde_json::Value>(&args_json_str)
+                            .map_err(|e| format!("invalid args JSON: {e}"))?;
+                        let callback = caller
+                            .data()
+                            .extension_callback
+                            .clone()
+                            .ok_or_else(|| "No extensions loaded".to_string())?;
+                        callback(&ext_name, &func_name, args).map(|v| v.to_string())
+                    })();
+
+                    let (bytes, ret) = stash_outcome(res);
+                    caller.data_mut().pending_reply = Some(bytes);
+                    Ok(ret)
                 })
             },
         ) {
             return fail(format!("Failed to link host_call_extension: {e}"));
+        }
+
+        // The guest reads the stashed outcome into a buffer it sized from the
+        // returned length: `len` on success, `-1` none pending, `-2` buffer too
+        // small, `-3` out-of-bounds write. The reply is cleared either way.
+        if let Err(e) = linker.func_wrap(
+            "env",
+            "host_read_reply",
+            |mut caller: Caller<'_, ExecutorCtx>,
+             out_ptr: u32,
+             out_cap: u32|
+             -> wasmtime::Result<i32> {
+                let memory = guest_memory(&mut caller)?;
+                let (mem, ctx) = memory.data_and_store_mut(&mut caller);
+                Ok(copy_reply(&mut ctx.pending_reply, mem, out_ptr, out_cap))
+            },
+        ) {
+            return fail(format!("Failed to link host_read_reply: {e}"));
         }
 
         // 5. Instantiate and run `_start` on the async path.
@@ -351,5 +427,105 @@ impl WasmExecutor {
 impl Drop for WasmExecutor {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stash_outcome_caps_an_oversized_reply() {
+        let (bytes, ret) = stash_outcome(Ok("x".repeat(MAX_REPLY_LEN + 1)));
+        assert_eq!(bytes, b"host response exceeded 16 MiB");
+        assert_eq!(ret, -29);
+    }
+
+    #[test]
+    fn stash_outcome_returns_a_reply_with_its_length() {
+        let (bytes, ret) = stash_outcome(Ok("{}".to_string()));
+        assert_eq!(bytes, b"{}");
+        assert_eq!(ret, 2);
+    }
+
+    #[test]
+    fn stash_outcome_refuses_an_empty_reply() {
+        let (bytes, ret) = stash_outcome(Ok(String::new()));
+        assert!(ret < 0, "an empty reply is an error, never length 0");
+        assert_eq!(bytes, EMPTY_REPLY.as_bytes());
+    }
+
+    #[test]
+    fn stash_outcome_gives_an_empty_error_a_message() {
+        let (bytes, ret) = stash_outcome(Err(String::new()));
+        assert!(ret < 0);
+        assert_eq!(bytes.len(), ret.unsigned_abs() as usize);
+    }
+
+    #[test]
+    fn stash_outcome_truncates_an_oversized_error_on_a_char_boundary() {
+        let (bytes, ret) = stash_outcome(Err("é".repeat(MAX_REPLY_LEN)));
+        assert!(bytes.len() <= MAX_REPLY_LEN);
+        assert!(String::from_utf8(bytes.clone()).is_ok(), "valid UTF-8");
+        assert_eq!(ret, -(bytes.len() as i32));
+    }
+
+    #[test]
+    fn take_reply_reads_once() {
+        let mut pending = Some(b"{}".to_vec());
+        assert_eq!(take_reply(&mut pending, 2), Ok(b"{}".to_vec()));
+        assert_eq!(take_reply(&mut pending, 2), Err(-1));
+    }
+
+    #[test]
+    fn read_guest_str_names_each_failure() {
+        let mem = b"ok\xff\xfe".to_vec();
+        assert_eq!(read_guest_str(&mem, 0, 2, 8), Ok("ok".to_string()));
+        assert_eq!(read_guest_str(&mem, 0, 9, 8), Err(ReadError::TooLong));
+        assert_eq!(read_guest_str(&mem, 3, 2, 8), Err(ReadError::OutOfBounds));
+        assert_eq!(
+            read_guest_str(&mem, u32::MAX, 2, 8),
+            Err(ReadError::OutOfBounds)
+        );
+        assert_eq!(read_guest_str(&mem, 2, 2, 8), Err(ReadError::NotUtf8));
+    }
+
+    #[test]
+    fn boundary_messages_name_the_failed_check() {
+        assert_eq!(
+            read_error("the args JSON", "8 MiB", ReadError::TooLong),
+            "the args JSON is over 8 MiB"
+        );
+        assert_eq!(
+            read_error("the extension name", "256 bytes", ReadError::OutOfBounds),
+            "the extension name lies outside guest memory"
+        );
+        assert_eq!(
+            read_error("the function name", "256 bytes", ReadError::NotUtf8),
+            "the function name is not UTF-8"
+        );
+    }
+
+    #[test]
+    fn copy_reply_refuses_an_out_of_bounds_buffer_and_clears() {
+        let mut mem = vec![0u8; 16];
+        let mut pending = Some(b"{}".to_vec());
+        assert_eq!(copy_reply(&mut pending, &mut mem, 15, 2), -3);
+        assert_eq!(
+            copy_reply(&mut pending, &mut mem, 0, 2),
+            -1,
+            "the reply was cleared"
+        );
+
+        let mut pending = Some(b"{}".to_vec());
+        assert_eq!(copy_reply(&mut pending, &mut mem, 4, 2), 2);
+        assert_eq!(&mem[4..6], b"{}");
+    }
+
+    #[test]
+    fn take_reply_clears_on_a_short_buffer() {
+        let mut pending = Some(b"{}".to_vec());
+        assert_eq!(take_reply(&mut pending, 1), Err(-2));
+        assert_eq!(take_reply(&mut pending, 2), Err(-1));
     }
 }

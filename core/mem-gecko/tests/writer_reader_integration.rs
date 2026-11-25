@@ -2128,10 +2128,7 @@ async fn recall_never_leaks_an_ann_surfaced_superseded_candidate() {
         .recall(
             &ctx,
             RecallQuery::now("anything"),
-            ContextBudget {
-                max_chunks: 10,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 10 },
         )
         .await
         .unwrap();
@@ -2174,10 +2171,7 @@ async fn recall_as_of_t_skips_the_index_entirely() {
         .recall(
             &ctx_at("agent-1", dt("2026-06-01T00:00:00Z")),
             q,
-            ContextBudget {
-                max_chunks: 5,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 5 },
         )
         .await
         .unwrap();
@@ -2222,10 +2216,7 @@ async fn recall_as_of(
             text: String::new(),
             as_of: Some(as_of),
         },
-        ContextBudget {
-            max_chunks,
-            max_tokens: None,
-        },
+        ContextBudget { max_chunks },
     )
     .await
     .expect("as-of recall")
@@ -2459,10 +2450,7 @@ async fn recall_falls_back_when_no_index() {
         .recall(
             &ctx_at("agent-1", now),
             RecallQuery::now("x"),
-            ContextBudget {
-                max_chunks: 5,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 5 },
         )
         .await
         .unwrap();
@@ -2698,10 +2686,7 @@ async fn recall_once(w: &MemWriter, ctx: &RunContext) {
         .recall(
             ctx,
             RecallQuery::now("anything"),
-            ContextBudget {
-                max_chunks: 10,
-                max_tokens: None,
-            },
+            ContextBudget { max_chunks: 10 },
         )
         .await
         .unwrap();
@@ -2793,10 +2778,7 @@ async fn store_reads_run_concurrently_and_writes_are_gated() {
                 r.recall(
                     &c,
                     RecallQuery::now("seed"),
-                    ContextBudget {
-                        max_chunks: 10,
-                        max_tokens: None,
-                    },
+                    ContextBudget { max_chunks: 10 },
                 )
                 .await
             })

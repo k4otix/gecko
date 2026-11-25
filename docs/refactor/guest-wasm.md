@@ -6,6 +6,32 @@ The exec-doc sandbox runs a **Boa** JavaScript engine compiled to
 single `include_bytes!` (`core/gecko-engine/src/sandbox/wasm_executor.rs`). Its
 source is `core/js-sandbox/src/main.rs`.
 
+## The host-call ABI
+
+The guest imports two functions from module `env`. Only the guest calls them.
+
+- **`host_call_extension(ext_ptr, ext_len, func_ptr, func_len, args_ptr, args_len) -> i32`**
+  clears any reply left from an earlier call, then works in this order:
+  1. It reads the extension and function names (at most 256 bytes each).
+  2. It checks the S3 scope `"ext:func"`.
+  3. It reads and parses the args JSON (at most 8 MiB).
+  4. It runs the extension callback **at most once**.
+
+  An ungranted call is refused as "not granted" whatever its args are. The outcome is held
+  host-side, and the return value is its length: `+len` for a JSON reply, `-len` for a UTF-8
+  error message. It is never 0, because an empty error gets a message. A reply over 16 MiB
+  becomes the error `host response exceeded 16 MiB`, and an error over 16 MiB is truncated.
+- **`host_read_reply(out_ptr, out_cap) -> i32`** takes the held outcome, so it can be read once.
+  It writes the outcome into the guest buffer and returns its length, or returns:
+  - `-1`: nothing is held;
+  - `-2`: `out_cap` is too small;
+  - `-3`: the write is out of bounds.
+
+  The outcome is cleared in every case.
+
+Both imports trap if the guest exports no linear memory. The guest allocates exactly
+`|len|` bytes for each call.
+
 ## Why it is prebuilt and out of CI
 
 CI never rebuilds the guest (`--exclude js-sandbox` everywhere) — it consumes the
