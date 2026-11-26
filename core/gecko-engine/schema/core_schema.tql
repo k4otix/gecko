@@ -60,6 +60,7 @@ define
 
   attribute engine value string;           # execution engine for code-blocks
   attribute scope value string;            # granted host-capability scope, e.g. "cyber-gecko:isolate"
+  attribute timeout-ms @doc("The longest a concept's code block may run, in milliseconds; gecko run refuses a value over its ceiling."), value integer @range(1..);
 
   entity concept sub okf-concept @doc("An ingested OKF document node: its markdown body, extracted code blocks, tags, and the engine and host-capability scopes that gate code-block execution."),
     owns concept-type @card(0..1),
@@ -74,6 +75,7 @@ define
     owns synced-at @card(0..1),
     owns file-hash @card(0..1),
     owns retired-at @card(0..1),
+    owns timeout-ms @card(0..1),
     plays containment:member,
     plays hierarchy:parent,
     plays hierarchy:child,
