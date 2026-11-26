@@ -1295,8 +1295,6 @@ mod tests {
             typed_attributes: vec![],
             file_hash: hash.to_string(),
             source_path: format!("{id}.md"),
-            consumes: vec![],
-            produces: vec![],
             engine: None,
             scopes: vec![],
             timeout_ms: None,

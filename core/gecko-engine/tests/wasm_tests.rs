@@ -1,5 +1,7 @@
 use gecko_engine::sandbox::engine::{ExecutionResult, ExtensionCallback, HostImports};
-use gecko_engine::sandbox::wasm_executor::{MAX_RUN_ARGS_LEN, SandboxRun, WasmExecutor};
+use gecko_engine::sandbox::wasm_executor::{
+    MAX_RUN_ARGS_LEN, MAX_TIMEOUT_MS, SandboxRun, WasmExecutor,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
@@ -120,6 +122,66 @@ async fn test_wasm_epoch_timeout() {
         !result.success,
         "Infinite loop should have timed out and failed"
     );
+    assert_eq!(
+        result.error.as_deref(),
+        Some("execution timed out after 50 ms")
+    );
+}
+
+/// Evaluates `code` with the timeout `timeout_ms`, recording whether a granted host
+/// call ran.
+async fn eval_with_timeout(code: &str, timeout_ms: Option<u64>) -> (ExecutionResult, bool) {
+    let ran = Arc::new(AtomicBool::new(false));
+    let flag = ran.clone();
+    let cb: ExtensionCallback = Arc::new(move |_, _, _| {
+        flag.store(true, Ordering::SeqCst);
+        Ok(serde_json::Value::Null)
+    });
+    let result = WasmExecutor::new()
+        .unwrap()
+        .evaluate(
+            SandboxRun {
+                code,
+                scopes: &["t:hit".to_string()],
+                timeout_ms,
+                args: None,
+            },
+            Uuid::new_v4(),
+            &HostImports::default(),
+            Some(cb),
+        )
+        .await;
+    (result, ran.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn a_zero_timeout_is_refused() {
+    let (result, ran) =
+        eval_with_timeout(r#"gecko.callExtension("t", "hit", {}); 1"#, Some(0)).await;
+    assert!(!result.success);
+    let err = result.error.expect("an error");
+    assert!(err.contains("timeout") && err.contains("600000"), "{err}");
+    assert!(!ran, "the guest must never run");
+}
+
+#[tokio::test]
+async fn a_timeout_over_the_ceiling_is_refused() {
+    let (result, ran) = eval_with_timeout(
+        r#"gecko.callExtension("t", "hit", {}); 1"#,
+        Some(MAX_TIMEOUT_MS + 1),
+    )
+    .await;
+    assert!(!result.success);
+    let err = result.error.expect("an error");
+    assert!(err.contains("timeout") && err.contains("600000"), "{err}");
+    assert!(!ran, "the guest must never run");
+}
+
+#[tokio::test]
+async fn the_ceiling_itself_is_accepted() {
+    let (result, _) = eval_with_timeout("1 + 1", Some(MAX_TIMEOUT_MS)).await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(result.output, serde_json::json!(2));
 }
 
 // ── The host-call boundary ───────────────────────────────────────────────────

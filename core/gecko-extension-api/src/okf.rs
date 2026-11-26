@@ -1,7 +1,7 @@
 //! The OKF data structures extensions and the engine share.
 //!
 //! Data models for Open Knowledge Format (OKF) concepts, bundles, and relations, including
-//! GECKO-specific frontmatter fields (consumes, produces, engine, scopes, timeout_ms).
+//! GECKO-specific frontmatter fields (engine, scopes, timeout_ms).
 //! An extension that imports content (such as a STIX bundle) builds these types
 //! directly; the engine parses, syncs and executes them.
 
@@ -87,19 +87,14 @@ pub struct OkfConcept {
     pub source_path: String,
 
     // -- GECKO-specific extension fields (design §3.1) --
-    /// Data types this concept consumes (from frontmatter `consumes`).
-    pub consumes: Vec<String>,
-
-    /// Data types this concept produces (from frontmatter `produces`).
-    pub produces: Vec<String>,
-
     /// Scripting engine to use for execution (from frontmatter `engine`).
     pub engine: Option<ScriptEngine>,
 
     /// Required permission scopes for host API access (from frontmatter `scopes`).
     pub scopes: Vec<String>,
 
-    /// Maximum execution time in milliseconds (from frontmatter `timeout-ms`).
+    /// Maximum execution time in milliseconds (from frontmatter `timeout-ms`), from 1 to
+    /// the engine's ceiling (`MAX_TIMEOUT_MS`, 600000).
     pub timeout_ms: Option<u64>,
 }
 

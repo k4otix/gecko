@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use super::linker::{extract_links, extract_program};
 use super::types::{HierarchyEdge, OkfBundle, OkfConcept, ScriptEngine};
+use crate::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
@@ -26,6 +27,12 @@ pub enum ParseError {
 
     #[error("Concept file '{path}' has an empty 'type' frontmatter field")]
     EmptyType { path: String },
+
+    #[error(
+        "Concept file '{path}' has an invalid 'timeout-ms' ({value}); it must be an integer from 1 to {max}",
+        max = MAX_TIMEOUT_MS
+    )]
+    InvalidTimeout { path: String, value: String },
 
     #[error("YAML parsing error in '{path}': {source}")]
     Yaml {
@@ -172,11 +179,20 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     let timestamp = extract_timestamp(&mut metadata, "timestamp");
 
     // GECKO-specific extension fields
-    let consumes = extract_string_list(&mut metadata, "consumes");
-    let produces = extract_string_list(&mut metadata, "produces");
     let engine = extract_string(&mut metadata, "engine").and_then(|s| ScriptEngine::from_lang(&s));
     let scopes = extract_string_list(&mut metadata, "scopes");
-    let timeout_ms = metadata.remove("timeout-ms").and_then(|v| v.as_u64());
+    let timeout_ms = match metadata.remove("timeout-ms") {
+        None => None,
+        Some(v) => match v.as_u64() {
+            Some(t) if (1..=MAX_TIMEOUT_MS).contains(&t) => Some(t),
+            _ => {
+                return Err(ParseError::InvalidTimeout {
+                    path: file_path.display().to_string(),
+                    value: serde_json::to_string(&v).unwrap_or_default(),
+                });
+            }
+        },
+    };
 
     // Remaining keys become extra_metadata
     let extra_metadata: HashMap<String, String> = metadata
@@ -212,8 +228,6 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
         typed_attributes: Vec::new(),
         file_hash,
         source_path,
-        consumes,
-        produces,
         engine,
         scopes,
         timeout_ms,
@@ -679,10 +693,63 @@ Playbook body.
         let concept = parse_concept(&dir.path().join("playbook.md"), dir.path()).unwrap();
 
         assert_eq!(concept.engine, Some(ScriptEngine::QuickJs));
-        assert_eq!(concept.consumes, vec!["alert", "asset"]);
-        assert_eq!(concept.produces, vec!["containment-result"]);
+        assert_eq!(concept.extra_metadata["consumes"], r#"["alert","asset"]"#);
+        assert_eq!(
+            concept.extra_metadata["produces"],
+            r#"["containment-result"]"#
+        );
         assert_eq!(concept.scopes, vec!["mde:isolate"]);
         assert_eq!(concept.timeout_ms, Some(5000));
+    }
+
+    /// Parses a playbook whose frontmatter ends with `timeout_line` (none when empty).
+    fn parse_timeout(timeout_line: &str) -> Result<OkfConcept, ParseError> {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("playbook.md"),
+            format!("---\ntype: playbook\nengine: quickjs\n{timeout_line}\n---\n\nBody.\n"),
+        )
+        .unwrap();
+        parse_concept(&dir.path().join("playbook.md"), dir.path())
+    }
+
+    #[test]
+    fn timeout_ms_accepts_an_integer_in_range() {
+        assert_eq!(
+            parse_timeout("timeout-ms: 500").unwrap().timeout_ms,
+            Some(500)
+        );
+        assert_eq!(
+            parse_timeout(&format!("timeout-ms: {MAX_TIMEOUT_MS}"))
+                .unwrap()
+                .timeout_ms,
+            Some(MAX_TIMEOUT_MS)
+        );
+        assert_eq!(parse_timeout("").unwrap().timeout_ms, None);
+    }
+
+    #[test]
+    fn timeout_ms_refuses_anything_else() {
+        for line in [
+            "timeout-ms: 0",
+            "timeout-ms: -1",
+            "timeout-ms: 5.0",
+            "timeout-ms: \"500ms\"",
+            "timeout-ms: null",
+            "timeout-ms:",
+            "timeout-ms: 600001",
+        ] {
+            let err = parse_timeout(line).unwrap_err();
+            assert!(
+                matches!(err, ParseError::InvalidTimeout { .. }),
+                "{line}: {err}"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("playbook.md") && msg.contains("600000"),
+                "{line}: {msg}"
+            );
+        }
     }
 
     #[test]
