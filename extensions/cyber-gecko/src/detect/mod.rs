@@ -246,12 +246,19 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    // A live sub-technique is claimed exactly when it is not in the gap list,
-    // which applies the same liveness.
-    let unclaimed: BTreeSet<String> = rows
+    // Gap technique concept id -> its ATT&CK id. A live sub-technique is claimed
+    // exactly when it is not in the gap list, which applies the same liveness.
+    let gap_ids: BTreeMap<String, Option<String>> = rows
         .iter()
-        .map(|row| row_str(row, "concept_id"))
-        .collect::<Result<_, _>>()?;
+        .map(|row| {
+            Ok((
+                row_str(row, "concept_id")?,
+                row.get("attack_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ))
+        })
+        .collect::<Result<_, String>>()?;
     let sub_rows = read(
         graph,
         &format!(
@@ -268,7 +275,7 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
     for row in &sub_rows {
         let entry = counts.entry(row_str(row, "parent")?).or_default();
         entry.1 += 1;
-        if !unclaimed.contains(&row_str(row, "sub")?) {
+        if !gap_ids.contains_key(&row_str(row, "sub")?) {
             entry.0 += 1;
         }
     }
@@ -277,7 +284,8 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         &format!(
             "match technique-tactic (technique: $t, tactic: $tac); {} {} \
              fetch {{ \"tech_cid\": $t.concept-id, \"tac_cid\": $tac.concept-id, \
-                      \"tac_aid\": $tac.attack-id, \"shortname\": $tac.tactic-shortname, \"name\": $tac.title }};",
+                      \"tac_aid\": $tac.attack-id, \"shortname\": $tac.tactic-shortname, \
+                      \"name\": $tac.title }};",
             live("t"),
             live("tac")
         ),
@@ -285,17 +293,6 @@ async fn coverage_gaps(graph: &Arc<dyn GraphReader>) -> Result<Value, String> {
         &[],
     )
     .await?;
-    let gap_ids: BTreeMap<String, Option<String>> = rows
-        .iter()
-        .map(|row| {
-            Ok((
-                row_str(row, "concept_id")?,
-                row.get("attack_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            ))
-        })
-        .collect::<Result<_, String>>()?;
     let (tactics, by_tactic) = group_by_tactic(&pairs, &gap_ids)?;
     for row in &mut rows {
         let concept_id = row_str(row, "concept_id")?;
