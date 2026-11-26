@@ -1124,7 +1124,7 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
     } else {
         ""
     };
-    // A database whose schema predates `timeout-ms` stores no timeout, so the
+    // A database whose schema lacks `timeout-ms` stores no timeout, so the
     // projection is omitted there too.
     let timeout_projection = if defines_attribute(&schema, "timeout-ms") {
         r#","timeout": [ $c.timeout-ms ]"#
@@ -1442,7 +1442,40 @@ mod tests {
     use super::*;
     use crate::config::BadExt;
 
-    use gecko_engine::sandbox::wasm_executor::MAX_RUN_ARGS_LEN;
+    use gecko_engine::sandbox::wasm_executor::{MAX_RUN_ARGS_LEN, MAX_TIMEOUT_MS};
+    use serde_json::json;
+
+    #[test]
+    fn stored_timeout_reads_none_or_one_value_in_range() {
+        assert_eq!(stored_timeout("p", None).unwrap(), None);
+        assert_eq!(stored_timeout("p", Some(&json!([]))).unwrap(), None);
+        assert_eq!(stored_timeout("p", Some(&json!([500]))).unwrap(), Some(500));
+        assert_eq!(
+            stored_timeout("p", Some(&json!([MAX_TIMEOUT_MS]))).unwrap(),
+            Some(MAX_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn stored_timeout_refuses_anything_else() {
+        for bad in [
+            json!([0]),
+            json!([MAX_TIMEOUT_MS + 1]),
+            json!([-5]),
+            json!([5.5]),
+            json!(["500"]),
+            json!([500, 600]),
+            json!(500),
+        ] {
+            let err = stored_timeout("playbooks/p", Some(&bad))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("playbooks/p") && err.contains("timeout-ms"),
+                "{bad}: {err}"
+            );
+        }
+    }
 
     #[test]
     fn run_args_parse_an_object() {

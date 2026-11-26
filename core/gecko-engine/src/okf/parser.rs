@@ -188,7 +188,10 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
             _ => {
                 return Err(ParseError::InvalidTimeout {
                     path: file_path.display().to_string(),
-                    value: serde_json::to_string(&v).unwrap_or_default(),
+                    // Shown as YAML, as the author wrote it (`.nan`, `null`, `[1, 2]`).
+                    value: serde_yaml::to_string(&v)
+                        .map(|s| s.trim().replace('\n', " "))
+                        .unwrap_or_else(|_| format!("{v:?}")),
                 });
             }
         },
@@ -726,6 +729,14 @@ Playbook body.
             Some(MAX_TIMEOUT_MS)
         );
         assert_eq!(parse_timeout("").unwrap().timeout_ms, None);
+    }
+
+    #[test]
+    fn an_invalid_timeout_is_shown_as_written() {
+        let msg = parse_timeout("timeout-ms: .nan").unwrap_err().to_string();
+        assert!(msg.to_lowercase().contains("nan"), "{msg}");
+        let msg = parse_timeout("timeout-ms: [1, 2]").unwrap_err().to_string();
+        assert!(msg.contains('1') && msg.contains('2'), "{msg}");
     }
 
     #[test]

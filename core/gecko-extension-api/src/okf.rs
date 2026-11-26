@@ -1,7 +1,7 @@
 //! The OKF data structures extensions and the engine share.
 //!
 //! Data models for Open Knowledge Format (OKF) concepts, bundles, and relations, including
-//! GECKO-specific frontmatter fields (engine, scopes, timeout_ms).
+//! GECKO-specific frontmatter keys (`engine`, `scopes`, `timeout-ms`).
 //! An extension that imports content (such as a STIX bundle) builds these types
 //! directly; the engine parses, syncs and executes them.
 
@@ -94,7 +94,7 @@ pub struct OkfConcept {
     pub scopes: Vec<String>,
 
     /// Maximum execution time in milliseconds (from frontmatter `timeout-ms`), from 1 to
-    /// the engine's ceiling (`MAX_TIMEOUT_MS`, 600000).
+    /// the engine's ceiling (`gecko_engine::sandbox::wasm_executor::MAX_TIMEOUT_MS`).
     pub timeout_ms: Option<u64>,
 }
 

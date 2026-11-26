@@ -1112,8 +1112,9 @@ async fn attach_datetime(
 }
 
 /// Attaches the integer attribute `attr` to each concept `value` gives one. A concept
-/// with none is skipped, and no query runs when none has one, so a database whose
-/// schema predates `attr` still syncs.
+/// with none is skipped, and no query runs when none has one: a sync into a database
+/// whose schema lacks `attr` succeeds only while no concept carries it (`gecko sync`
+/// applies the schemas first, so it always has `attr`).
 async fn attach_integer(
     tx: &Transaction,
     concepts: &[&OkfConcept],
