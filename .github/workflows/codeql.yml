@@ -8,6 +8,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # A PR that changes only docs has no source to scan; main's push scan and
+    # the weekly scan still cover every commit.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   schedule:
     # Weekly, so newly published query updates catch latent issues even with no
     # code change. Static day/time (cron has no notion of "random").
