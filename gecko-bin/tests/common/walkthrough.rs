@@ -8,6 +8,12 @@
 //!   log sources 20.1's analytics read. Both read `WinEventLog:Sysmon`; only
 //!   `T1053.005`'s also reads `WinEventLog:Security`, which the sample sensor file
 //!   leaves out.
+//!
+//! It is a subset of 20.1, chosen to keep the covered and blind split. 20.1 also puts
+//! `T1053` and `T1053.005` in privilege-escalation (`TA0004`), runs `T1059.001` on
+//! Linux and macOS too, has the analytics read more data components (Process Metadata;
+//! Scheduled Job Modification and Windows Registry Key Modification), and names more
+//! PowerShell channels (`EventCode=4103, 4104, 4105, 4106`).
 
 use serde_json::{Value, json};
 

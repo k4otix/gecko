@@ -12,10 +12,13 @@ mod common;
 mod walkthrough;
 
 use common::TestDb;
-use futures_util::StreamExt;
+use gecko_engine::db::graph_store::RouterGraphStore;
+use gecko_extension_api::{GraphReader, GraphValue};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
 const SENSORS: &str = "extensions/cyber-gecko/sample-sensors.yaml";
@@ -153,21 +156,28 @@ impl Cli {
 
 /// The belief-state of the belief `id`, read straight from the graph.
 async fn belief_state(db: &TestDb, id: &str) -> Vec<Value> {
-    let mut router = db.router();
-    let tx = router.begin_read().await.expect("read tx");
-    let answer = tx
-        .query(format!(
-            r#"match $b isa belief, has concept-id "{id}", has belief-state $s; fetch {{ "s": $s }};"#
-        ))
+    RouterGraphStore::new(Arc::new(Mutex::new(db.router())))
+        .read(
+            "given $id: string; \
+             match $b isa belief, has concept-id $cid, has belief-state $s; $cid == $id; \
+             fetch { \"s\": $s };",
+            &["id".to_string()],
+            &[GraphValue::from(id)],
+        )
         .await
-        .expect("read query");
-    let mut out = Vec::new();
-    let mut stream = answer.into_documents();
-    while let Some(doc) = stream.next().await {
-        let doc = doc.expect("a document");
-        out.push(serde_json::from_str(&doc.into_json().to_string()).unwrap());
-    }
-    out
+        .expect("read the belief state")
+}
+
+/// The sorted key names of the reply `value`.
+fn keys(value: &Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap_or_else(|| panic!("an object: {value}"))
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
 }
 
 fn ids(report: &Value, field: &str) -> Vec<String> {
@@ -238,6 +248,7 @@ async fn the_readme_walkthrough_runs() {
         .run(&commands[0].concept_id, commands[0].args.as_deref())
         .await;
     assert!(powershell["belief_id"].is_string(), "{powershell}");
+    assert_eq!(keys(&powershell), ["belief_id", "logic_id", "technique_id"]);
     let task = cli
         .run(&commands[1].concept_id, commands[1].args.as_deref())
         .await;
@@ -255,21 +266,36 @@ async fn the_readme_walkthrough_runs() {
         ids(&report, "blind"),
         ["detections/scheduled_task_persistence"]
     );
-    assert!(
-        ids(&report, "recommended").contains(&"WinEventLog:Security".to_string()),
-        "{report}"
+    assert_eq!(ids(&report, "recommended"), ["WinEventLog:Security"]);
+    assert_eq!(
+        keys(&report),
+        ["blind", "by_tactic", "recommended", "undetected"]
     );
 
     let verdict = cli
         .run(&commands[3].concept_id, commands[3].args.as_deref())
         .await;
     assert_eq!(verdict["logic_id"], "detections/encoded_powershell");
+    assert_eq!(verdict["verdict"], "true-positive");
+    assert!(verdict["belief_id"].is_string(), "{verdict}");
+    assert_eq!(keys(&verdict), ["belief_id", "logic_id", "verdict"]);
 
     let precision = cli
         .run(&commands[4].concept_id, commands[4].args.as_deref())
         .await;
     assert_eq!(precision["precision"].as_f64(), Some(1.0), "{precision}");
     assert_eq!(precision["true_positives"], 1);
+    assert_eq!(precision["false_positives"], 0);
+    assert_eq!(
+        keys(&precision),
+        [
+            "false_positives",
+            "logic_id",
+            "precision",
+            "true_positives",
+            "window_seconds"
+        ]
+    );
 
     let withdraw_args = commands[5]
         .args
@@ -278,6 +304,7 @@ async fn the_readme_walkthrough_runs() {
         .replace("<belief_id>", &task_belief);
     let withdrawn = cli.run(&commands[5].concept_id, Some(&withdraw_args)).await;
     assert_eq!(withdrawn["id"], json!(task_belief));
+    assert_eq!(keys(&withdrawn), ["blast_radius", "id"]);
 
     let report = cli.run("playbooks/coverage_report", None).await;
     assert_eq!(

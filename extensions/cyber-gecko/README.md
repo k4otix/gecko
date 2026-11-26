@@ -95,13 +95,19 @@ that take their inputs from `gecko run --args`. It runs against the ATT&CK datab
 - [`sample-sensors.yaml`](sample-sensors.yaml) declares one Windows sensor that collects Sysmon
   and PowerShell logging, but not the Security log.
 
-**Before you start:** use a `gecko` built with `--features cyber` (the release binaries are),
-with `enabled = ["cyber"]` under `[extensions]` in `gecko.toml`. Without it, the first
-`gecko run` fails because the `cyber-gecko` import isn't found. Every command passes
-`--database attack`: without it, `gecko run` targets the reserved `gecko` database.
+**Before you start:**
 
-The outputs below are from ATT&CK Enterprise **20.1**, shortened. The counts differ on other
-releases.
+- Use a `gecko` built with `--features cyber` (the release binaries are), with
+  `enabled = ["cyber"]` under `[extensions]` in `gecko.toml`. Without the feature,
+  `sync-stix` and `sync-sensors` aren't commands. Without `enabled`, the cyber schema and
+  host imports aren't loaded, so the walkthrough fails at its first step.
+- Run the commands from a checkout of this repository, at its root: the sample paths are
+  relative to it.
+- Every command passes `--database attack`. Without it, `gecko run` targets the reserved
+  `gecko` database.
+
+The outputs below are from ATT&CK Enterprise **20.1**, shortened with `…`; keys print in sorted
+order. The counts differ on other releases.
 
 **1–3. Import ATT&CK, the sensors and the bundle.**
 
@@ -133,14 +139,15 @@ gecko run playbooks/coverage_report --database attack
 
 ```json
 {
-  "undetected": ["T1001", "T1001.001", "…704 in all"],
+  "blind": ["detections/scheduled_task_persistence"],
   "by_tactic": [
+    "…",
     { "attack_id": "TA0002", "live": 66, "undetected": 64 },
     { "attack_id": "TA0003", "live": 113, "undetected": 112 },
     "…"
   ],
-  "blind": ["detections/scheduled_task_persistence"],
-  "recommended": ["WinEventLog:Security"]
+  "recommended": ["WinEventLog:Security"],
+  "undetected": ["T1001", "T1001.001", "…704 in all"]
 }
 ```
 
@@ -161,7 +168,7 @@ gecko run playbooks/detection_precision --database attack --args '{"logic_id":"d
 ```
 
 ```json
-{"logic_id":"detections/encoded_powershell","window_seconds":86400,"true_positives":1,"false_positives":0,"precision":1.0}
+{"false_positives":0,"logic_id":"detections/encoded_powershell","precision":1.0,"true_positives":1,"window_seconds":86400}
 ```
 
 **8. Withdraw the scheduled-task claim**, using the `belief_id` its claim returned in step 4 (the
@@ -172,7 +179,7 @@ gecko run playbooks/withdraw_claim --database attack --args '{"belief_id":"<beli
 ```
 
 ```json
-{"id":"mem/bel/01M8AZG5ERZ2PBWGRPSZ8YM5G0","blast_radius":[]}
+{"blast_radius":[],"id":"mem/bel/01M8AZG5ERZ2PBWGRPSZ8YM5G0"}
 ```
 
 ## `claim`
@@ -350,9 +357,13 @@ detection over a trailing window.
 | `window` | integer | The window in seconds, greater than 0. `3600.0` is refused: it must be an integer. |
 
 ```json
-{ "logic_id": "detections/encoded_powershell", "window_seconds": 86400,
-  "true_positives": 1, "false_positives": 0, "precision": 1.0 }
+{ "false_positives": 0, "logic_id": "detections/encoded_powershell", "precision": 1.0,
+  "true_positives": 1, "window_seconds": 86400 }
 ```
 
 `precision` is true positives over true plus false positives. `benign-true` verdicts count as
 neither, and `precision` is `null` when both counts are 0.
+
+It errors when `logic_id` is missing or not a string, and when `window` is missing, not an
+integer, or 0. It does not check that `logic_id` names a detection in the graph: an unknown or
+misspelled id has no verdicts, so it returns zero counts and `precision: null`.
