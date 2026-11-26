@@ -617,6 +617,7 @@ async fn run_args_are_deep_frozen_in_sloppy_mode() {
         gecko.args.a.b = 9;
         gecko.args.extra = 1;
         try { gecko.args.list.push(3); } catch (e) {}
+        delete gecko.args;
         ({ n: gecko.args.n, b: gecko.args.a.b, len: gecko.args.list.length,
            extra: "extra" in gecko.args, same: typeof gecko.args })
     "#;

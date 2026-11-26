@@ -341,12 +341,13 @@ fn deep_freeze(obj: &JsObject, context: &mut Context) -> JsResult<()> {
     }
 }
 
-/// The run arguments as a deep-frozen guest value.
+/// The run arguments as a deep-frozen guest object.
 fn frozen_run_args(args: &Value, context: &mut Context) -> JsResult<JsValue> {
     let value = JsValue::from_json(args, context)?;
-    if let Some(obj) = value.as_object() {
-        deep_freeze(&obj, context)?;
-    }
+    let Some(obj) = value.as_object() else {
+        return Err(type_error("gecko.args must be an object".to_string()));
+    };
+    deep_freeze(&obj, context)?;
     Ok(value)
 }
 
@@ -399,8 +400,9 @@ fn main() {
         .register_global_property(js_string!("console"), console, Attribute::all())
         .expect("Failed to register console");
 
-    // Register the `gecko` global: the generic host-call surface and the run's
-    // arguments, which a program can neither replace nor change.
+    // Register the `gecko` global: the generic host-call surface, and the run's
+    // arguments as `gecko.args`, a non-writable, non-configurable, deep-frozen
+    // property.
     let args = match frozen_run_args(&run_args, &mut context) {
         Ok(args) => args,
         Err(e) => {

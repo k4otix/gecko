@@ -57,6 +57,16 @@ const MAX_ARGS_JSON_LEN: usize = 8 * 1024 * 1024;
 
 /// Cap on a host reply or error message held for the guest to read (bytes).
 const MAX_REPLY_LEN: usize = 16 * 1024 * 1024;
+
+/// The message stashed for a reply over [`MAX_REPLY_LEN`].
+const REPLY_TOO_LARGE: &str = "host response exceeded 16 MiB";
+
+/// The message stashed for an extension reply that was empty.
+const EMPTY_REPLY: &str = "the extension returned an empty reply";
+
+/// The message stashed for an extension error that carried none.
+const EMPTY_ERROR: &str = "the extension call failed with an empty error";
+
 /// Largest serialized run-arguments object (`GECKO_ARGS`) the guest is given, in bytes.
 pub const MAX_RUN_ARGS_LEN: usize = 1024 * 1024;
 
@@ -73,15 +83,6 @@ pub struct SandboxRun<'a> {
     /// The run arguments the guest reads as `gecko.args`; `None` gives it `{}`.
     pub args: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
-
-/// The message stashed for a reply over [`MAX_REPLY_LEN`].
-const REPLY_TOO_LARGE: &str = "host response exceeded 16 MiB";
-
-/// The message stashed for an extension reply that was empty.
-const EMPTY_REPLY: &str = "the extension returned an empty reply";
-
-/// The message stashed for an extension error that carried none.
-const EMPTY_ERROR: &str = "the extension call failed with an empty error";
 
 /// Why a guest-supplied string could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
