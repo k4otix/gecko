@@ -1,6 +1,7 @@
-use gecko_engine::sandbox::engine::{ExtensionCallback, HostImports};
-use gecko_engine::sandbox::wasm_executor::WasmExecutor;
+use gecko_engine::sandbox::engine::{ExecutionResult, ExtensionCallback, HostImports};
+use gecko_engine::sandbox::wasm_executor::{MAX_RUN_ARGS_LEN, SandboxRun, WasmExecutor};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -10,11 +11,14 @@ async fn test_wasm_simple_execution() {
 
     let result = executor
         .evaluate(
-            code,
+            SandboxRun {
+                code,
+                scopes: &[],
+                timeout_ms: None,
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &[],
-            None,
             None,
         )
         .await;
@@ -43,11 +47,14 @@ async fn test_wasm_host_bindings() {
     // The concept must be granted the "test-ext:echo" scope for the call (S3).
     let result = executor
         .evaluate(
-            code,
+            SandboxRun {
+                code,
+                scopes: &["test-ext:echo".to_string()],
+                timeout_ms: None,
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &["test-ext:echo".to_string()],
-            None,
             Some(cb),
         )
         .await;
@@ -69,11 +76,14 @@ async fn test_wasm_scope_denied() {
 
     let result = executor
         .evaluate(
-            code,
+            SandboxRun {
+                code,
+                scopes: &[], // no scopes granted
+                timeout_ms: None,
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &[], // no scopes granted
-            None,
             Some(cb),
         )
         .await;
@@ -94,11 +104,14 @@ async fn test_wasm_epoch_timeout() {
     // Set a very short timeout (50ms).
     let result = executor
         .evaluate(
-            code,
+            SandboxRun {
+                code,
+                scopes: &[],
+                timeout_ms: Some(50),
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &[],
-            Some(50),
             None,
         )
         .await;
@@ -113,7 +126,7 @@ async fn test_wasm_epoch_timeout() {
 
 use serde_json::{Value, json};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 /// The `(ext, func, args)` of every call a recording callback received.
 type Calls = Arc<Mutex<Vec<(String, String, Value)>>>;
@@ -147,11 +160,14 @@ async fn run(code: &str, scopes: &[&str], cb: ExtensionCallback) -> (bool, Value
     let result = WasmExecutor::new()
         .unwrap()
         .evaluate(
-            code,
+            SandboxRun {
+                code,
+                scopes: &scopes,
+                timeout_ms: Some(30_000),
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &scopes,
-            Some(30_000),
             Some(cb),
         )
         .await;
@@ -544,4 +560,139 @@ async fn mem_contest_without_claims_throws_end_to_end() {
         assert!(!ok, "{code} must throw");
         assert!(err.contains("claims"), "{code}: {err}");
     }
+}
+
+/// Evaluates `code` with the run arguments `args` and no host calls.
+async fn eval_with_args(code: &str, args: Option<&serde_json::Value>) -> ExecutionResult {
+    WasmExecutor::new()
+        .unwrap()
+        .evaluate(
+            SandboxRun {
+                code,
+                scopes: &[],
+                timeout_ms: None,
+                args: args.map(|a| a.as_object().expect("an object")),
+            },
+            Uuid::new_v4(),
+            &HostImports::default(),
+            None,
+        )
+        .await
+}
+
+fn sample_args() -> serde_json::Value {
+    serde_json::json!({"logic_id": "detections/x", "n": 3, "a": {"b": 1}, "list": [1, 2]})
+}
+
+#[tokio::test]
+async fn run_args_reach_the_guest() {
+    let result = eval_with_args(
+        "({ id: gecko.args.logic_id, n: gecko.args.n, b: gecko.args.a.b, len: gecko.args.list.length })",
+        Some(&sample_args()),
+    )
+    .await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        result.output,
+        serde_json::json!({"id": "detections/x", "n": 3, "b": 1, "len": 2})
+    );
+}
+
+#[tokio::test]
+async fn absent_run_args_are_an_empty_object() {
+    let result = eval_with_args(
+        "(() => { const { x } = gecko.args; return { keys: Object.keys(gecko.args).length, x: x === undefined }; })()",
+        None,
+    )
+    .await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(result.output, serde_json::json!({"keys": 0, "x": true}));
+}
+
+#[tokio::test]
+async fn run_args_are_deep_frozen_in_sloppy_mode() {
+    let code = r#"
+        gecko.args = 1;
+        gecko.args.n = 9;
+        gecko.args.a.b = 9;
+        gecko.args.extra = 1;
+        try { gecko.args.list.push(3); } catch (e) {}
+        ({ n: gecko.args.n, b: gecko.args.a.b, len: gecko.args.list.length,
+           extra: "extra" in gecko.args, same: typeof gecko.args })
+    "#;
+    let result = eval_with_args(code, Some(&sample_args())).await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        result.output,
+        serde_json::json!({"n": 3, "b": 1, "len": 2, "extra": false, "same": "object"})
+    );
+}
+
+#[tokio::test]
+async fn run_args_are_deep_frozen_in_strict_mode() {
+    let code = r#"
+        "use strict";
+        const throws = (f) => { try { f(); return false; } catch (e) { return e instanceof TypeError; } };
+        [
+            throws(() => { gecko.args.n = 9; }),
+            throws(() => { gecko.args.extra = 1; }),
+            throws(() => { gecko.args.a.b = 9; }),
+            throws(() => { gecko.args.list.push(3); }),
+            throws(() => { gecko.args = 1; }),
+            throws(() => { delete gecko.args; }),
+        ]
+    "#;
+    let result = eval_with_args(code, Some(&sample_args())).await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(
+        result.output,
+        serde_json::json!([true, true, true, true, true, true])
+    );
+}
+
+#[tokio::test]
+async fn oversized_run_args_are_refused() {
+    let args = serde_json::json!({ "s": "x".repeat(MAX_RUN_ARGS_LEN) });
+    let ran = Arc::new(AtomicBool::new(false));
+    let flag = ran.clone();
+    let cb: ExtensionCallback = Arc::new(move |_, _, _| {
+        flag.store(true, Ordering::SeqCst);
+        Ok(serde_json::Value::Null)
+    });
+    let result = WasmExecutor::new()
+        .unwrap()
+        .evaluate(
+            SandboxRun {
+                code: r#"gecko.callExtension("t", "hit", {}); 1"#,
+                scopes: &["t:hit".to_string()],
+                timeout_ms: None,
+                args: args.as_object(),
+            },
+            Uuid::new_v4(),
+            &HostImports::default(),
+            Some(cb),
+        )
+        .await;
+    assert!(!result.success);
+    assert_eq!(result.output, serde_json::Value::Null);
+    let err = result.error.expect("an error");
+    assert!(
+        err.contains("GECKO_ARGS") && err.contains("1048576"),
+        "{err}"
+    );
+    assert!(!ran.load(Ordering::SeqCst), "the guest must never run");
+}
+
+#[tokio::test]
+async fn run_args_just_under_the_cap_reach_the_guest() {
+    // `{"s":"…"}` adds 8 bytes around the string.
+    let len = MAX_RUN_ARGS_LEN - 16 - 8;
+    let args = serde_json::json!({ "s": "x".repeat(len) });
+    assert_eq!(
+        serde_json::to_string(&args).unwrap().len(),
+        MAX_RUN_ARGS_LEN - 16
+    );
+    let result = eval_with_args("gecko.args.s.length", Some(&args)).await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(result.output, serde_json::json!(len));
 }

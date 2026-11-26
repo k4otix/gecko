@@ -35,6 +35,7 @@ async fn test_pipeline_executes_program() {
         program: "({ answer: 40 + 2 })",
         scopes: &[],
         timeout_ms: None,
+        args: None,
     };
 
     let result = execute_playbook(
@@ -74,6 +75,7 @@ async fn test_pipeline_enforces_scopes() {
         program: r#"gecko.callExtension("cyber-gecko", "mde_isolate", { machine_id: "h1" });"#,
         scopes: &[],
         timeout_ms: None,
+        args: None,
     };
 
     let result = execute_playbook(

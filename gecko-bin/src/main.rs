@@ -1350,6 +1350,7 @@ async fn cmd_run(
         program: &playbook.code_block,
         scopes: &playbook.scopes,
         timeout_ms: None,
+        args: None,
     };
 
     let pipeline_result = gecko_engine::pipeline::execute_playbook(

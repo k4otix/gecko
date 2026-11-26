@@ -7,7 +7,7 @@ use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::ScriptEngine;
 use gecko_engine::sandbox::engine::HostImports;
-use gecko_engine::sandbox::wasm_executor::WasmExecutor;
+use gecko_engine::sandbox::wasm_executor::{SandboxRun, WasmExecutor};
 use gecko_engine::syncer::bundle::sync_bundle;
 use mem_gecko::MemGecko;
 
@@ -129,11 +129,14 @@ const y = 2;
     let executor = WasmExecutor::new().expect("Failed to initialize Wasm engine");
     let result = executor
         .evaluate(
-            &code_block,
+            SandboxRun {
+                code: &code_block,
+                scopes: &[],
+                timeout_ms: None,
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &[],
-            None,
             None,
         )
         .await;
