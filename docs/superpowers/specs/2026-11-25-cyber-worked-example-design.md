@@ -44,8 +44,12 @@ with a `quickjs.wasm` rebuild, and reviews best without sample markdown mixed in
   - its length must be at most **1 MiB**, checked before parsing.
 
   Each failure is a CLI error that names the problem. Nothing is defaulted.
-- **The run.** The parsed object travels on `PlaybookRun` (a new `args` field), through
-  `execute_playbook` to the executor.
+- **The run.** The parsed object travels on `PlaybookRun` as
+  `args: Option<&'a serde_json::Map<String, Value>>`, through `execute_playbook` to the
+  executor. `PlaybookRun` stays `Copy`, and a non-object is unrepresentable at the engine
+  boundary.
+- **The executor checks the cap too.** `WasmExecutor` checks the 1 MiB limit on the
+  serialized string, so a library caller gets the same guarantee as the CLI.
 - **The environment variable.** The executor always sets `GECKO_ARGS`:
   - to the re-serialized object (`serde_json::to_string`), so the value is canonical JSON
     with no NUL bytes;
@@ -58,8 +62,9 @@ with a `quickjs.wasm` rebuild, and reviews best without sample markdown mixed in
 - **Refusals.** A missing variable, invalid JSON or a non-object fails the run with an
   error result before any program code runs. The host always sets a valid object, so any
   of these means the host and guest disagree, and the guest must not invent `{}`.
-- **The property.** `gecko.args` is the parsed value, **deep-frozen**: every nested object
-  and array is frozen too. The property is registered on `gecko` as non-writable and
+- **The property.** `gecko.args` is the parsed value, **deep-frozen** by a recursive Rust
+  walk over the `JsObject` that freezes nested objects and arrays bottom-up. No JS helper
+  is evaluated before the program, so nothing leaks into global scope. The property is registered on `gecko` as non-writable and
   non-configurable (`Attribute::READONLY | Attribute::ENUMERABLE`). A playbook can
   destructure it without a null check.
 - **The rebuild.** Run `just build-guest` and commit `quickjs.wasm` with the guest change.
@@ -82,6 +87,7 @@ with a `quickjs.wasm` rebuild, and reviews best without sample markdown mixed in
   - with no `--args`, it sees `{}`;
   - assigning to `gecko.args`, to `gecko.args.x`, or to a nested `gecko.args.a.b` leaves
     the values unchanged (sloppy mode) or throws (strict);
+  - `gecko.args.list.push(..)` on a nested array fails, and the length is unchanged;
   - `delete gecko.args` fails.
 - **End to end**: `gecko run <id> --args '{"k":"v"}'` returns output that echoes `v`. Use
   the existing CLI end-to-end test pattern.
@@ -127,7 +133,10 @@ All technique ids are real ATT&CK Enterprise ids.
 
 ### The walkthrough (`extensions/cyber-gecko/README.md`)
 
-A new `## Worked example` section runs in order:
+A new `## Worked example` section. It first states the prerequisite: a `gecko` built with
+`--features cyber` (the release binaries are), and `enabled = ["cyber"]` under
+`[extensions]` in `gecko.toml`. Without it, step 4 fails because the `cyber-gecko` import
+isn't found. Then it runs in order:
 
 1. `sync-stix` (Enterprise v18 or later) into `--database attack`.
 2. `sync-sensors` with `sample-sensors.yaml`.
@@ -167,6 +176,14 @@ S4 check, a throwaway database on the local TypeDB, and never the database named
     `human-assertion`, and so on);
   - `verdict` is one of `true-positive`, `false-positive` or `benign-true`;
   - `window` is an integer number of seconds; `3600.0` is refused (ledger N8).
+- **`claim` specifics:**
+  - `evidence` is optional;
+  - `confidence` is in `[0.0, 1.0]`, and must be below `1.0` for `llm-synthesis`;
+  - both `logic_id` and `technique_id` must already exist in the graph.
+- **`precision` specifics:**
+  - `window` must be greater than 0;
+  - `benign-true` counts as neither a true nor a false positive;
+  - `precision` is `null` when both counts are 0.
 - **Withdrawing a claim.** A short note: `mem.retract(belief_id, reason)` retracts the
   belief and closes its validity.
 - **The import list** in the README's intro links each name to its section.
@@ -190,7 +207,8 @@ database:
   - `coverage_report` reflects the claim;
   - the verdict records;
   - `precision` counts it;
-  - `withdraw_claim` retracts the claim, and its technique returns to `coverage_gaps`.
+  - `withdraw_claim` retracts the claim: its technique returns to `coverage_gaps`, and the
+    claim leaves `blinded`.
 - **The README stays in sync.** The test reads each `--args` value it passes from the
   README's code blocks, so the two can't drift. The one exception is
   `withdraw_claim`'s `belief_id`, which exists only at run time: the README shows a
@@ -224,9 +242,7 @@ database:
 
 ## Left to the builder
 
-- The exact `PlaybookRun` field type: `Option<&Map>` or an owned `Map`.
-- How the guest deep-freezes: a recursive Rust walk calling `Object.freeze`, or a small JS
-  helper evaluated before the program.
 - The sample's detection prose, and the coverage summary's exact fields.
-- My call: arguments are not persisted on the doc-run. If the builder finds a provenance
-  invariant this breaks, raise it.
+- Arguments are not persisted on the doc-run (confirmed with the user). Invariant 2 needs
+  only `run_id`, `actor`, `source` and `occurred_at`, and not storing raw arguments avoids
+  leaking any secrets they carry.
