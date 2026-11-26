@@ -164,8 +164,8 @@ gecko run playbooks/detection_precision --database attack --args '{"logic_id":"d
 {"logic_id":"detections/encoded_powershell","window_seconds":86400,"true_positives":1,"false_positives":0,"precision":1.0}
 ```
 
-**8. Withdraw a claim** with the `belief_id` from step 4. `T1053.005` is undetected again (705),
-and nothing is blind:
+**8. Withdraw the scheduled-task claim**, using the `belief_id` its claim returned in step 4 (the
+second one). `T1053.005` is undetected again (705), and nothing is blind:
 
 ```bash
 gecko run playbooks/withdraw_claim --database attack --args '{"belief_id":"<belief_id>","reason":"superseded by vendor rule"}'

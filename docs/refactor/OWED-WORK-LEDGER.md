@@ -32,6 +32,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
 | **N8** | `precision.window` accepts a whole-number float (`5.0`), which `Math.floor` returns, reusing the mem bridge's integer rule (`as_u64` or a whole float up to `Number.MAX_SAFE_INTEGER`) | playbooks computing a window | `precision.window: 5.0` is read as 5 and `1e20` is refused | — |
+| **N9** | `precision` bounds `window`: today a large integer (`1e14` seconds) reaches `ctx.occurred_at - chrono::Duration::seconds(window as i64)` unchecked, which panics on overflow (`Duration::seconds` past about 9.2e15, and the subtraction well before that), and a value over `i64::MAX` wraps negative. Refuse a window past the representable range with an error naming the limit | playbooks taking `window` from `gecko.args` (the sample's `detection_precision`) | `precision.window: 100000000000000` is an error, not a panic | — |
 
 ### Engine and CLI
 

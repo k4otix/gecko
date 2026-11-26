@@ -41,26 +41,34 @@ fn walkthrough_section() -> String {
 }
 
 /// Every `gecko run <concept-id> --database attack [--args '<json>']` line, in order.
+/// A line with any other shape (an extra flag, another database, a split line) fails.
 fn run_commands(section: &str) -> Vec<RunCommand> {
     section
         .lines()
         .filter_map(|line| line.trim().strip_prefix("gecko run "))
         .map(|rest| {
-            let concept_id = rest
-                .split_whitespace()
-                .next()
-                .expect("a concept id")
-                .to_string();
-            assert!(
-                rest.contains("--database attack"),
-                "a walkthrough command must name --database attack: {rest}"
-            );
-            let args = rest.split_once("--args '").map(|(_, tail)| {
-                tail.strip_suffix('\'')
-                    .unwrap_or_else(|| panic!("--args is not single-quoted to the end: {rest}"))
-                    .to_string()
-            });
-            RunCommand { concept_id, args }
+            let (concept_id, tail) = rest
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("a walkthrough command names no database: {rest}"));
+            let args = match tail.strip_prefix("--database attack") {
+                Some("") => None,
+                Some(more) => Some(
+                    more.strip_prefix(" --args '")
+                        .and_then(|a| a.strip_suffix('\''))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "expected `--database attack` then an optional \
+                                 single-quoted --args: {rest}"
+                            )
+                        })
+                        .to_string(),
+                ),
+                None => panic!("a walkthrough command must be `--database attack`: {rest}"),
+            };
+            RunCommand {
+                concept_id: concept_id.to_string(),
+                args,
+            }
         })
         .collect()
 }
@@ -184,6 +192,10 @@ fn tactic<'a>(report: &'a Value, attack_id: &str) -> &'a Value {
 async fn the_readme_walkthrough_runs() {
     let db = TestDb::new("gecko_test_cyber_walkthrough");
     let section = walkthrough_section();
+    assert!(
+        section.contains("gecko sync-stix enterprise-attack.json --database attack"),
+        "the README imports ATT&CK into the attack database"
+    );
     assert!(
         section.contains(&format!("gecko sync-sensors {SENSORS} --database attack")),
         "the README syncs {SENSORS}"
