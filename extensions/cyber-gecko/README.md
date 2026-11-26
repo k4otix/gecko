@@ -2,9 +2,11 @@
 
 A GECKO domain extension for detection engineering. It imports STIX 2.1 / MITRE
 ATT&CK bundles into typed cyber entities, loads a sensor file describing what you
-monitor, and gives playbooks the `cyber-gecko` host imports `claim`, `disposition`,
-`coverage_gaps`, `blinded`, `recommend_sources` and `precision`. It compiles in under the `cyber` feature
-and is activated with `"cyber"` in `gecko.toml`'s `[extensions] enabled`. The
+monitor, and gives playbooks the `cyber-gecko` host imports [`claim`](#claim),
+[`disposition`](#disposition), [`coverage_gaps`](#coverage_gaps), [`blinded`](#blinded),
+[`recommend_sources`](#recommend_sources) and [`precision`](#precision). It compiles in under
+the `cyber` feature and is activated with `"cyber"` in `gecko.toml`'s `[extensions] enabled`.
+The [worked example](#worked-example) walks through all of them. The
 extension contract it follows is [`extensions/README.md`](../README.md); its caveats
 are in [`docs/refactor/KNOWN-LIMITATIONS.md`](../../docs/refactor/KNOWN-LIMITATIONS.md).
 
@@ -82,6 +84,134 @@ After the sync it prints a notice for each log source no live analytic reads, ea
 sensor platform outside the file's `platforms`, and each declared platform no live
 analytic runs on. A re-sync under the same bundle name replaces the previous file. Two
 sensor files can share a database under two bundle names; `blinded` reads their union.
+
+## Worked example
+
+The sample bundle [`sample-bundle/`](sample-bundle/) holds two detections and five playbooks
+that take their inputs from `gecko run --args`. It runs against the ATT&CK database:
+
+- `detections/encoded_powershell` detects `T1059.001` (PowerShell);
+- `detections/scheduled_task_persistence` detects `T1053.005` (Scheduled Task);
+- [`sample-sensors.yaml`](sample-sensors.yaml) declares one Windows sensor that collects Sysmon
+  and PowerShell logging, but not the Security log.
+
+**Before you start:** use a `gecko` built with `--features cyber` (the release binaries are),
+with `enabled = ["cyber"]` under `[extensions]` in `gecko.toml`. Without it, the first
+`gecko run` fails because the `cyber-gecko` import isn't found. Every command passes
+`--database attack`: without it, `gecko run` targets the reserved `gecko` database.
+
+The outputs below are from ATT&CK Enterprise **20.1**, shortened. The counts differ on other
+releases.
+
+**1–3. Import ATT&CK, the sensors and the bundle.**
+
+```bash
+gecko sync-stix enterprise-attack.json --database attack
+gecko sync-sensors extensions/cyber-gecko/sample-sensors.yaml --database attack
+gecko sync extensions/cyber-gecko/sample-bundle --database attack
+```
+
+**4. Claim both detections.** Each claim is a belief; keep its `belief_id`.
+
+```bash
+gecko run playbooks/claim_detection --database attack --args '{"logic_id":"detections/encoded_powershell","technique_id":"T1059.001","method":"human-assertion","confidence":0.8}'
+gecko run playbooks/claim_detection --database attack --args '{"logic_id":"detections/scheduled_task_persistence","technique_id":"T1053.005","method":"human-assertion","confidence":0.8}'
+```
+
+```json
+{"belief_id":"mem/bel/01M8AZG4N109YGHA1M9GBQB8GZ","logic_id":"detections/encoded_powershell","technique_id":"T1059.001"}
+{"belief_id":"mem/bel/01M8AZG5ERZ2PBWGRPSZ8YM5G0","logic_id":"detections/scheduled_task_persistence","technique_id":"T1053.005"}
+```
+
+**5. Read the coverage.** Both techniques leave `undetected` (706 before the claims, 704
+after). The scheduled-task detection is blind, because its analytic reads the Security log
+that no sensor collects, so `WinEventLog:Security` is the source to add.
+
+```bash
+gecko run playbooks/coverage_report --database attack
+```
+
+```json
+{
+  "undetected": ["T1001", "T1001.001", "…704 in all"],
+  "by_tactic": [
+    { "attack_id": "TA0002", "live": 66, "undetected": 64 },
+    { "attack_id": "TA0003", "live": 113, "undetected": 112 },
+    "…"
+  ],
+  "blind": ["detections/scheduled_task_persistence"],
+  "recommended": ["WinEventLog:Security"]
+}
+```
+
+**6. Record a verdict** on an alert from the PowerShell detection, without editing a playbook:
+
+```bash
+gecko run playbooks/record_verdict --database attack --args '{"logic_id":"detections/encoded_powershell","verdict":"true-positive"}'
+```
+
+```json
+{"belief_id":"mem/bel/01M8AZG74BF7V660F8XDJ39Q5Z","logic_id":"detections/encoded_powershell","verdict":"true-positive"}
+```
+
+**7. Measure its precision** over the last day:
+
+```bash
+gecko run playbooks/detection_precision --database attack --args '{"logic_id":"detections/encoded_powershell","window":86400}'
+```
+
+```json
+{"logic_id":"detections/encoded_powershell","window_seconds":86400,"true_positives":1,"false_positives":0,"precision":1.0}
+```
+
+**8. Withdraw a claim** with the `belief_id` from step 4. `T1053.005` is undetected again (705),
+and nothing is blind:
+
+```bash
+gecko run playbooks/withdraw_claim --database attack --args '{"belief_id":"<belief_id>","reason":"superseded by vendor rule"}'
+```
+
+```json
+{"id":"mem/bel/01M8AZG5ERZ2PBWGRPSZ8YM5G0","blast_radius":[]}
+```
+
+## `claim`
+
+A playbook granted the `cyber-gecko:claim` scope calls
+`gecko.callExtension("cyber-gecko", "claim", args)`. It asserts that a detection detects a
+technique, as a private belief with a `technique-detection` edge. `coverage_gaps`, `blinded`
+and `recommend_sources` read the current claims.
+
+| Argument | Type | |
+| --- | --- | --- |
+| `logic_id` | string | The detection's concept id, such as `detections/encoded_powershell`. |
+| `technique_id` | string | An ATT&CK id such as `T1059.001`, not a concept id. |
+| `method` | string | How it is known, in kebab case: `type-join`, `cardinality`, `functional-dependency`, `type-db-function`, `external-tool`, `human-assertion` or `llm-synthesis`. |
+| `confidence` | number | In `[0.0, 1.0]`, and below `1.0` for `llm-synthesis`. |
+| `evidence` | string array | Optional memory ids that back the claim. |
+
+Both `logic_id` and `technique_id` must already exist in the graph. A retired technique id is
+refused, naming its live replacement if it has one. The reply is
+`{ "belief_id", "logic_id", "technique_id" }`.
+
+To withdraw a claim, retract its belief from a playbook granted `mem:retract`:
+`mem.retract(belief_id, reason)`. The belief stays in the graph as `retracted`, and the claim
+stops counting.
+
+## `disposition`
+
+A playbook granted the `cyber-gecko:disposition` scope calls
+`gecko.callExtension("cyber-gecko", "disposition", args)`. It records an analyst's verdict on
+an alert from a detection, as a belief with an `alert-disposition` edge that `precision`
+counts.
+
+| Argument | Type | |
+| --- | --- | --- |
+| `logic_id` | string | The detection's concept id; it must exist in the graph. |
+| `verdict` | string | `true-positive`, `false-positive` or `benign-true`. |
+| `evidence` | string array | Optional memory ids, such as alert references, that back the verdict. |
+
+The reply is `{ "belief_id", "logic_id", "verdict" }`.
 
 ## `coverage_gaps`
 
@@ -207,3 +337,22 @@ deprecated).
 across all blind claims, since each source is recommended once, in the first step that
 needs it. The list recommends log sources only, never a fallback data component, and
 errors on the same graphs as `blinded`.
+
+## `precision`
+
+A playbook granted the `cyber-gecko:precision` scope calls
+`gecko.callExtension("cyber-gecko", "precision", args)`. It counts the verdicts recorded on a
+detection over a trailing window.
+
+| Argument | Type | |
+| --- | --- | --- |
+| `logic_id` | string | The detection's concept id. |
+| `window` | integer | The window in seconds, greater than 0. `3600.0` is refused: it must be an integer. |
+
+```json
+{ "logic_id": "detections/encoded_powershell", "window_seconds": 86400,
+  "true_positives": 1, "false_positives": 0, "precision": 1.0 }
+```
+
+`precision` is true positives over true plus false positives. `benign-true` verdicts count as
+neither, and `precision` is `null` when both counts are 0.

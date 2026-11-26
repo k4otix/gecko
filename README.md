@@ -116,12 +116,11 @@ gecko sync sample-bundle       # ingest the sample OKF bundle
 # Execute a JavaScript playbook in the WASM sandbox
 gecko run playbooks/hello_js
 
-# Pass a playbook its inputs; it reads them as gecko.args
-gecko run playbooks/x --database db --args '{"k":"v"}'
-
 # Inspect the graph
 gecko query 'match $c isa concept, has concept-id $id; fetch {"id": $id};'
 ```
+
+A playbook takes its inputs from `gecko run <concept-id> --args '<json object>'` and reads them as `gecko.args`. The [cyber worked example](extensions/cyber-gecko/README.md#worked-example) uses it to claim detections, record verdicts and withdraw a claim against a synced ATT&CK database.
 
 Concept IDs are plain bundle-relative OKF paths, e.g. `playbooks/hello_js`. One bundle per database by default (`sync` picks the database from `bundle.json`'s name); bundles may share a database with `--database`, and a sync whose concept IDs collide with another bundle's is refused.
 
