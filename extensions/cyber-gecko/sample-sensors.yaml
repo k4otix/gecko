@@ -1,0 +1,8 @@
+# The sensor file for the cyber worked example (extensions/cyber-gecko/README.md).
+# One Windows sensor collects Sysmon and PowerShell logging but not the Security log,
+# so the PowerShell detection can run and the scheduled-task detection is blind.
+platforms: [Windows]
+sensors:
+  - name: windows-sysmon
+    platforms: [Windows]
+    log_sources: [WinEventLog:Sysmon, WinEventLog:PowerShell]
