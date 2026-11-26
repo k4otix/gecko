@@ -55,6 +55,14 @@ pub enum DbError {
     #[error("{}", type_change_referenced_message(.ids))]
     TypeChangeReferenced { ids: Vec<(String, String, String)> },
 
+    /// A sync shipped a concept whose `timeout-ms` is outside `1..=MAX_TIMEOUT_MS`.
+    /// Nothing was written.
+    #[error(
+        "concept '{concept_id}' has timeout-ms {value}; it must be from 1 to {max}",
+        max = crate::sandbox::wasm_executor::MAX_TIMEOUT_MS
+    )]
+    InvalidTimeout { concept_id: String, value: u64 },
+
     /// A sync changed the `type_hint` of concepts another bundle also contains, and
     /// replacing such a concept would drop that bundle's containment. `ids` lists
     /// every such concept, sorted, as (concept id, stored type, new type). Nothing

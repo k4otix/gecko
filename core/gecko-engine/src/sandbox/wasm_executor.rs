@@ -42,9 +42,20 @@ const MAX_TABLE_ELEMENTS: usize = 100_000;
 /// Default execution timeout applied when a concept sets no `timeout-ms` (S1).
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// How often the background ticker advances the epoch. One epoch == one tick, so
-/// the timeout in epochs is `timeout_ms / EPOCH_TICK_MS`.
+/// The longest execution timeout a run may ask for, in milliseconds (10 minutes). A
+/// `timeout-ms` must be in `1..=MAX_TIMEOUT_MS`.
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
+
+/// How often the background ticker advances the epoch. One epoch == one tick.
 const EPOCH_TICK_MS: u64 = 10;
+
+/// The epoch deadline for a `timeout_ms` run. The ticker's phase is independent of the
+/// run, so a deadline of N epochs fires after N - 1 to N ticks: rounding up and adding
+/// one tick means a run is never stopped early, and less than two ticks late (rounding
+/// adds under one tick, the ticker's phase up to one more).
+fn timeout_epochs(timeout_ms: u64) -> u64 {
+    timeout_ms.div_ceil(EPOCH_TICK_MS) + 1
+}
 
 /// Cap on a guest-supplied extension/function name length (bytes). The guest hands
 /// the host a `len`; reject an oversized one before allocating so a bogus length
@@ -78,7 +89,8 @@ pub struct SandboxRun<'a> {
     /// The granted capability scopes; a `callExtension(ext, func)` is permitted only if
     /// `"ext:func"` is present (S3, default-deny).
     pub scopes: &'a [String],
-    /// Execution timeout; defaults to [`DEFAULT_TIMEOUT_MS`].
+    /// Execution timeout in `1..=MAX_TIMEOUT_MS` milliseconds; defaults to
+    /// [`DEFAULT_TIMEOUT_MS`].
     pub timeout_ms: Option<u64>,
     /// The run arguments the guest reads as `gecko.args`; `None` gives it `{}`.
     pub args: Option<&'a serde_json::Map<String, serde_json::Value>>,
@@ -275,6 +287,15 @@ impl WasmExecutor {
             error: Some(msg),
         };
 
+        if let Some(t) = timeout_ms
+            && !(1..=MAX_TIMEOUT_MS).contains(&t)
+        {
+            return fail(format!(
+                "timeout-ms {t} is out of range; it must be from 1 to {MAX_TIMEOUT_MS}"
+            ));
+        }
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+
         // The run arguments travel in the guest's otherwise empty environment.
         let args_json = match args {
             Some(map) => match serde_json::to_string(map) {
@@ -319,8 +340,7 @@ impl WasmExecutor {
         store.limiter(|ctx| &mut ctx.limits);
 
         // Execution timeout via epoch deadline (1 epoch == EPOCH_TICK_MS).
-        let timeout_epochs = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS) / EPOCH_TICK_MS;
-        store.set_epoch_deadline(timeout_epochs.max(1));
+        store.set_epoch_deadline(timeout_epochs(timeout_ms));
 
         // 3. Link WASI Preview 1 (async) imports.
         let mut linker: Linker<ExecutorCtx> = Linker::new(&self.engine);
@@ -427,6 +447,9 @@ impl WasmExecutor {
             Err(e) => return fail(format!("Failed to find _start: {e}")),
         };
         if let Err(e) = start_func.call_async(&mut store, ()).await {
+            if e.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::Interrupt) {
+                return fail(format!("execution timed out after {timeout_ms} ms"));
+            }
             return fail(format!("JS Execution trap: {e}"));
         }
 
@@ -466,6 +489,23 @@ impl Drop for WasmExecutor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_timeout_never_fires_before_its_time() {
+        // The ticker's phase is independent of the run, so a deadline of N epochs
+        // fires after (N - 1) to N ticks; N must cover the whole timeout.
+        for ms in [1, 9, 10, 15, 500, 600_000] {
+            let epochs = timeout_epochs(ms);
+            assert!(
+                (epochs - 1) * EPOCH_TICK_MS >= ms,
+                "{ms} ms gives {epochs} epochs, which can fire early"
+            );
+            assert!(
+                (epochs - 1) * EPOCH_TICK_MS < ms + EPOCH_TICK_MS,
+                "{ms} ms gives {epochs} epochs, a deadline two or more ticks late"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

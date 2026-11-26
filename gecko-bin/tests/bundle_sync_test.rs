@@ -14,6 +14,7 @@ use gecko_engine::db::router::{DbError, TypeDbRouter};
 use gecko_engine::extension::GeckoExtension;
 use gecko_engine::okf::parser::parse_bundle;
 use gecko_engine::okf::types::{HierarchyEdge, OkfBundle, OkfLink, TypedAttrValue, TypedAttribute};
+use gecko_engine::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 use gecko_engine::syncer::bundle::sync_bundle;
 use gecko_extension_api::GraphWrite;
 use mem_gecko::{BELIEF_TIER_ROOT, MemGecko};
@@ -1245,4 +1246,103 @@ async fn garbage_collecting_a_linked_concept_commits() {
     assert_eq!(count(&mut db, "match $c isa citation;").await, 0);
     assert_eq!(count(&mut db, "match $c isa containment;").await, 0);
     assert_eq!(count(&mut db, "match $e isa external-resource;").await, 1);
+}
+
+/// Writes a one-playbook bundle into `dir`, with `timeout_line` in its frontmatter.
+fn write_timeout_bundle(dir: &Path, timeout_line: &str) {
+    let playbooks = dir.join("playbooks");
+    fs::create_dir_all(&playbooks).unwrap();
+    fs::write(
+        playbooks.join("bounded.md"),
+        format!(
+            "---\ntype: playbook\nengine: quickjs\n{timeout_line}\n---\n\n# Bounded\n\n```javascript\n1\n```\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Every stored `timeout-ms` value, in no particular order.
+async fn stored_timeouts(db: &mut TypeDbRouter) -> Vec<i64> {
+    let tx = db.begin_read().await.expect("Failed to begin read");
+    let rows: Vec<_> = tx
+        .query("match $c isa concept, has timeout-ms $t; select $t;")
+        .await
+        .expect("timeout-ms query failed")
+        .into_rows()
+        .collect::<Vec<_>>()
+        .await;
+    rows.into_iter()
+        .map(|row| {
+            row.expect("timeout row")
+                .get("t")
+                .expect("column t")
+                .expect("t bound")
+                .try_get_integer()
+                .expect("t is an integer")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn timeout_ms_round_trips() {
+    let test_db = TestDb::new("gecko_test_sync_timeout");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+
+    write_timeout_bundle(dir.path(), "timeout-ms: 500");
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync");
+    assert_eq!(stored_timeouts(&mut db).await, [500]);
+
+    write_timeout_bundle(dir.path(), "timeout-ms: 750");
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync");
+    assert_eq!(
+        stored_timeouts(&mut db).await,
+        [750],
+        "the edit replaces it"
+    );
+
+    write_timeout_bundle(dir.path(), "");
+    let bundle = parse_bundle(dir.path()).expect("parse");
+    sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync");
+    assert!(
+        stored_timeouts(&mut db).await.is_empty(),
+        "removing timeout-ms leaves no stored value"
+    );
+}
+
+#[tokio::test]
+async fn an_out_of_range_timeout_is_refused_before_writing() {
+    let test_db = TestDb::new("gecko_test_sync_timeout_range");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_timeout_bundle(dir.path(), "timeout-ms: 500");
+    let mut bundle = parse_bundle(dir.path()).expect("parse");
+    bundle.concepts[0].timeout_ms = Some(MAX_TIMEOUT_MS + 1);
+
+    let err = sync_bundle(&mut db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect_err("an out-of-range timeout");
+    assert!(
+        matches!(
+            &err,
+            DbError::InvalidTimeout { concept_id, value }
+                if concept_id == "playbooks/bounded" && *value == MAX_TIMEOUT_MS + 1
+        ),
+        "{err}"
+    );
+    assert_eq!(
+        count(&mut db, "match $c isa concept;").await,
+        0,
+        "nothing was written"
+    );
 }

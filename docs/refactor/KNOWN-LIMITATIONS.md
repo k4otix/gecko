@@ -130,6 +130,18 @@ proven through the real sandbox against live TypeDB.
   (`garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays`). A
   concept a belief edge references is retired instead.
 
+## Playbook `timeout-ms`
+
+- **A playbook synced before `timeout-ms` was stored keeps the 30 s default** until its
+  content changes. Change detection hashes the file's content, so a re-sync skips an
+  unchanged file and never writes its `timeout-ms`. Editing the file's content fixes it;
+  touching it doesn't. `consumes` and `produces` behave the same way: an unchanged,
+  already-synced file doesn't gain them in `metadata-json` until it is edited.
+- **A bad `timeout-ms` fails the whole sync.** The parser refuses any value that isn't an
+  integer from 1 to 600000 (`MAX_TIMEOUT_MS`), including `0`, `"5s"`, `null` and a blank
+  value, and names the file. A bundle that synced while the old parser ignored such a value
+  no longer syncs until it is fixed.
+
 ## Semantic index files
 
 The index is one file per database, `<dir>/<database>.hnsw`, where `dir` is

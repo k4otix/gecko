@@ -1094,14 +1094,18 @@ async fn build_epistemic_writer(
 }
 
 /// A concept's executable program plus the metadata `gecko run` needs to execute
-/// it: the (informational) engine token and the capability scopes it grants.
+/// it: the (informational) engine token, the capability scopes it grants, and its
+/// stored timeout.
 struct FetchedPlaybook {
     code_block: String,
     engine_type: String,
     scopes: Vec<String>,
+    timeout_ms: Option<u64>,
 }
 
-/// Fetches a concept's single code-block, engine, and granted scopes from the graph.
+/// Fetches a concept's single code-block, engine, granted scopes and timeout from the
+/// graph. A stored `timeout-ms` outside `1..=MAX_TIMEOUT_MS` is an error, not a
+/// fallback to the default.
 ///
 /// Concept IDs are exact bundle-relative paths (unique across the bundles of one
 /// database), and each concept has exactly one executable program (its
@@ -1120,6 +1124,13 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
     } else {
         ""
     };
+    // A database whose schema lacks `timeout-ms` stores no timeout, so the
+    // projection is omitted there too.
+    let timeout_projection = if defines_attribute(&schema, "timeout-ms") {
+        r#","timeout": [ $c.timeout-ms ]"#
+    } else {
+        ""
+    };
     let tx = db
         .begin_read()
         .await
@@ -1132,7 +1143,7 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         fetch {{
             "engine": $c.engine,
             "code": [ $c.code-block ],
-            "scopes": [ $c.scope ]{retired_projection}
+            "scopes": [ $c.scope ]{retired_projection}{timeout_projection}
         }};
     "#
     );
@@ -1212,11 +1223,42 @@ async fn fetch_playbook(db: &mut TypeDbRouter, concept_id: &str) -> Result<Fetch
         })
         .unwrap_or_default();
 
+    let timeout_ms = stored_timeout(concept_id, json.get("timeout"))?;
+
     Ok(FetchedPlaybook {
         code_block,
         engine_type,
         scopes,
+        timeout_ms,
     })
+}
+
+/// Reads a playbook's stored `timeout-ms` from its list projection: none is `None`,
+/// and one integer in `1..=MAX_TIMEOUT_MS` is the timeout. Anything else is an error.
+fn stored_timeout(concept_id: &str, projected: Option<&serde_json::Value>) -> Result<Option<u64>> {
+    use gecko_engine::sandbox::wasm_executor::MAX_TIMEOUT_MS;
+    let values: &[serde_json::Value] = match projected {
+        None => &[],
+        Some(v) => v
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| anyhow::anyhow!("concept '{concept_id}' has a malformed timeout-ms"))?,
+    };
+    match values {
+        [] => Ok(None),
+        [v] => match v.as_u64() {
+            Some(t) if (1..=MAX_TIMEOUT_MS).contains(&t) => Ok(Some(t)),
+            _ => anyhow::bail!(
+                "concept '{concept_id}' has an invalid stored timeout-ms ({v}); \
+                 it must be from 1 to {MAX_TIMEOUT_MS}; edit the playbook (a re-sync \
+                 skips an unchanged file) and re-sync its bundle"
+            ),
+        },
+        _ => anyhow::bail!(
+            "concept '{concept_id}' has more than one stored timeout-ms; edit the playbook \
+             (a re-sync skips an unchanged file) and re-sync its bundle"
+        ),
+    }
 }
 
 /// Builds the sandbox host-call bridge for a run. Constructs mem's epistemic writer
@@ -1367,8 +1409,7 @@ async fn cmd_run(
 
     // Execute through the pipeline: it owns the state-handle lifecycle (RAII), the
     // shared sandbox pool, and the execution record — no execution logic is
-    // duplicated here. (timeout-ms is not persisted, so the sandbox default applies;
-    // the pipeline honors an explicit timeout when given.)
+    // duplicated here. The playbook's stored timeout bounds the run.
     let state_registry = gecko_engine::state::registry::StateRegistry::new();
     let sandbox_pool = gecko_engine::sandbox::wasm_pool::SandboxPool::new();
     let host_imports = HostImports::default();
@@ -1377,7 +1418,7 @@ async fn cmd_run(
         concept_id,
         program: &playbook.code_block,
         scopes: &playbook.scopes,
-        timeout_ms: None,
+        timeout_ms: playbook.timeout_ms,
         args,
     };
 
@@ -1401,7 +1442,40 @@ mod tests {
     use super::*;
     use crate::config::BadExt;
 
-    use gecko_engine::sandbox::wasm_executor::MAX_RUN_ARGS_LEN;
+    use gecko_engine::sandbox::wasm_executor::{MAX_RUN_ARGS_LEN, MAX_TIMEOUT_MS};
+    use serde_json::json;
+
+    #[test]
+    fn stored_timeout_reads_none_or_one_value_in_range() {
+        assert_eq!(stored_timeout("p", None).unwrap(), None);
+        assert_eq!(stored_timeout("p", Some(&json!([]))).unwrap(), None);
+        assert_eq!(stored_timeout("p", Some(&json!([500]))).unwrap(), Some(500));
+        assert_eq!(
+            stored_timeout("p", Some(&json!([MAX_TIMEOUT_MS]))).unwrap(),
+            Some(MAX_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn stored_timeout_refuses_anything_else() {
+        for bad in [
+            json!([0]),
+            json!([MAX_TIMEOUT_MS + 1]),
+            json!([-5]),
+            json!([5.5]),
+            json!(["500"]),
+            json!([500, 600]),
+            json!(500),
+        ] {
+            let err = stored_timeout("playbooks/p", Some(&bad))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("playbooks/p") && err.contains("timeout-ms"),
+                "{bad}: {err}"
+            );
+        }
+    }
 
     #[test]
     fn run_args_parse_an_object() {

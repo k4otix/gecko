@@ -260,8 +260,6 @@ fn concept(
         timestamp: None,
         program: None,
         source_path: String::new(),
-        consumes: Vec::new(),
-        produces: Vec::new(),
         engine: None,
         scopes: Vec::new(),
         timeout_ms: None,

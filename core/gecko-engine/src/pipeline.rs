@@ -32,7 +32,8 @@ pub struct PlaybookRun<'a> {
     pub program: &'a str,
     /// Granted host-capability scopes; the sandbox default-denies ungranted calls (S3).
     pub scopes: &'a [String],
-    /// Optional execution timeout; the sandbox applies its default when `None`.
+    /// Optional execution timeout in `1..=MAX_TIMEOUT_MS` milliseconds; the sandbox
+    /// applies its default when `None`.
     pub timeout_ms: Option<u64>,
     /// The run arguments the program reads as `gecko.args`; `None` gives it `{}`.
     pub args: Option<&'a serde_json::Map<String, serde_json::Value>>,

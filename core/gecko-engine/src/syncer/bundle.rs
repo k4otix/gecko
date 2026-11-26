@@ -51,6 +51,7 @@ use crate::db::router::{DbError, TypeDbRouter};
 use crate::db::surface::{BeliefTierSurface, belief_tier_fingerprint, belief_tier_surface};
 use crate::db::validate_schema_label;
 use crate::okf::types::{OkfBundle, OkfConcept, TypedAttrValue};
+use crate::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 
 /// Results of a bundle sync operation.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -218,6 +219,14 @@ pub async fn sync_bundle(
     extension_writes: &[GraphWrite],
     belief_tier_root: &str,
 ) -> Result<SyncResult, DbError> {
+    // Refuse an out-of-range timeout before opening the transaction.
+    if let Some((concept_id, value)) = manifest.concepts.iter().find_map(|c| {
+        c.timeout_ms
+            .filter(|t| !(1..=MAX_TIMEOUT_MS).contains(t))
+            .map(|t| (c.concept_id.clone(), t))
+    }) {
+        return Err(DbError::InvalidTimeout { concept_id, value });
+    }
     let tx = db.begin_write().await?;
     let name = manifest.bundle_name.as_str();
 
@@ -993,8 +1002,9 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     })
     .await?;
 
-    // Timestamp (datetime-typed).
+    // Timestamp (datetime-typed) and execution timeout (integer-typed).
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
+    attach_integer(tx, concepts, "timeout-ms", |c| c.timeout_ms).await?;
 
     // Extension-declared typed attributes (e.g. cyber-gecko's stix-id, ioc-value).
     attach_typed_attributes(tx, concepts).await?;
@@ -1095,6 +1105,39 @@ async fn attach_datetime(
         .collect();
     let query = format!(
         "given $id: string, $val: datetime; \
+         match $c isa concept, has concept-id $cid; $cid == $id; \
+         insert $c has {attr} == $val;"
+    );
+    run_rows(tx, &query, &["id", "val"], rows).await
+}
+
+/// Attaches the integer attribute `attr` to each concept `value` gives one. A concept
+/// with none is skipped, and no query runs when none has one: a sync into a database
+/// whose schema lacks `attr` succeeds only while no concept carries it (`gecko sync`
+/// applies the schemas first, so it always has `attr`).
+async fn attach_integer(
+    tx: &Transaction,
+    concepts: &[&OkfConcept],
+    attr: &str,
+    value: impl Fn(&OkfConcept) -> Option<u64>,
+) -> Result<(), DbError> {
+    let mut rows = Vec::new();
+    for c in concepts {
+        if let Some(v) = value(c) {
+            let v = i64::try_from(v).map_err(|_| {
+                DbError::Query(format!(
+                    "{attr} {v} of '{}' exceeds an integer",
+                    c.concept_id
+                ))
+            })?;
+            rows.push(vec![
+                str_entry(&c.concept_id),
+                GivenRowEntry::Value(Value::Integer(v)),
+            ]);
+        }
+    }
+    let query = format!(
+        "given $id: string, $val: integer; \
          match $c isa concept, has concept-id $cid; $cid == $id; \
          insert $c has {attr} == $val;"
     );
@@ -1295,8 +1338,6 @@ mod tests {
             typed_attributes: vec![],
             file_hash: hash.to_string(),
             source_path: format!("{id}.md"),
-            consumes: vec![],
-            produces: vec![],
             engine: None,
             scopes: vec![],
             timeout_ms: None,

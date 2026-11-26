@@ -23,7 +23,9 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | # | ID | Item | Size |
 |---|---|---|---|
-| 1 | N5 | `timeout-ms` reaches the run | S |
+| 1 | N9 | `precision` bounds its `window` instead of panicking | S |
+| 2 | N7 | A guest whose stdout is not JSON fails the run | S |
+| 3 | N8 | `precision.window` accepts a whole-number float | S |
 
 ## Open work
 
@@ -39,7 +41,6 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | ID | Item | Consumer | Done when | Needs |
 |---|---|---|---|---|
 | **N7** | A guest whose stdout is not JSON is reported as a failure, not as `success: true` with `raw_output` (`WasmExecutor::evaluate`'s result parsing) | `gecko run` callers | A guest printing non-JSON fails the run with the raw text in the error | — |
-| **N5** | `timeout-ms` is persisted and honoured by `gecko run`; `consumes` and `produces` are persisted or no longer parsed | playbook authors | A playbook with `timeout-ms: 500` times out at 500 ms | — |
 
 ## Landed since the review
 
@@ -53,6 +54,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | **N4** | `mem.retract(id, reason?)` withdraws a belief with no replacement. One `visible-to`-gated batch records a `retraction` (the belief, the retracting agent, the run, an optional `retraction-reason`, `created-at`), flips the state to `"retracted"` and closes `valid-to` through `tql::close_valid_to_op`; the vector is removed. The reply is `{ id, blast_radius }`: the beliefs that rested on it that the caller can see and that are still current, read after the commit. No entrenchment guard and no cascade. A retracted claim leaves `blinded`, and its technique returns to `coverage_gaps`. Design: `docs/superpowers/specs/2026-11-25-mem-retract-design.md` | `writer_reader_integration.rs` (`retract_flips_state_closes_the_window_and_records_who_and_why`, `retracting_another_agents_private_belief_is_refused_and_commits_nothing`, `retract_reports_the_visible_current_beliefs_that_rested_on_it`, `as_of_recall_ends_a_retracted_belief_at_its_retraction`, …); `retract_removes_the_vector_from_the_index`; `retracting_a_claim_removes_it_from_blinded_and_reopens_its_gap`; the `mem_retract_*` guest tests; `a_playbook_retracts_a_root_and_learns_what_rested_on_it`; the rig's `mem.retract` step in `memwriter_is_the_sole_belief_tier_writer` |
 | **S6** | `coverage_gaps` groups its gaps by tactic: each gap row carries its live `tactics`, and `by_tactic` gives each live tactic its `live` technique count, `undetected` count and gap `techniques`, sorted by ATT&CK id. Dead techniques and dead tactics are excluded from the `technique-tactic` read (retired techniques keep their edges). The parent roll-up of `blinded` was cut: it changes presentation only. Design: `docs/superpowers/specs/2026-11-25-coverage-gaps-by-tactic-design.md` | `coverage_gaps_groups_gaps_by_tactic`, `a_fully_covered_tactic_stays_with_no_gaps`, `a_retired_technique_counts_in_no_tactic`, `a_dead_tactic_is_not_grouped`; the `group_by_tactic_*` unit tests |
 | **N6** | A cyber worked example. `extensions/cyber-gecko/sample-bundle/` holds two detections (`T1059.001`, `T1053.005`) and five playbooks that read their inputs from `gecko.args`: claim, verdict, coverage report, precision and withdraw. `sample-sensors.yaml` is written from ATT&CK 20.1's analytics, so one claim is blind and `WinEventLog:Security` is recommended. The cyber README gains the walkthrough, with outputs from a real Enterprise 20.1 run, and `claim`, `disposition` and `precision` reference sections. **N6a:** `gecko run <id> --args <json>` gives a playbook a deep-frozen, non-writable `gecko.args`, delivered as the WASI variable `GECKO_ARGS` and capped at 1 MiB on the host and in the executor. Design: `docs/superpowers/specs/2026-11-25-cyber-worked-example-design.md` | `the_readme_walkthrough_runs` (runs the README's own `gecko run` commands); `run_args_reach_the_playbook`, `non_object_args_fail_before_connecting`; the `run_args_*` guest and `parse_run_args` unit tests |
+| **N5** | A playbook's `timeout-ms` bounds its run. `MAX_TIMEOUT_MS` (600000 ms) is enforced by the parser (refusing `0`, negatives, floats, strings, `null` and a blank value, naming the file), by `sync_bundle`, by `gecko run`'s read of the stored value, and by the executor before the guest starts. The core schema's `timeout-ms` attribute (`value integer @range(1..)`) is written by sync and read by `gecko run` only where the schema defines it, so an older database still runs. A timed-out run reports `execution timed out after <ms> ms`. `consumes` and `produces` are no longer special fields; they land in `metadata-json`. Design: `docs/superpowers/specs/2026-11-26-timeout-ms-design.md` | `a_playbook_times_out_at_its_timeout_ms`, `a_stored_timeout_out_of_range_fails_the_run`, `a_playbook_runs_on_a_schema_without_timeout_ms`, `timeout_ms_round_trips`, `an_out_of_range_timeout_is_refused_before_writing`; the `timeout_ms_*` parser tests; `a_zero_timeout_is_refused`, `a_timeout_over_the_ceiling_is_refused`, `the_ceiling_itself_is_accepted` |
 
 ## Deferred (reopen on the trigger)
 
