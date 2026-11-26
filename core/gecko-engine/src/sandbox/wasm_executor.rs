@@ -51,7 +51,8 @@ const EPOCH_TICK_MS: u64 = 10;
 
 /// The epoch deadline for a `timeout_ms` run. The ticker's phase is independent of the
 /// run, so a deadline of N epochs fires after N - 1 to N ticks: rounding up and adding
-/// one tick means a run is never stopped early, and at most one tick late.
+/// one tick means a run is never stopped early, and less than two ticks late (rounding
+/// adds under one tick, the ticker's phase up to one more).
 fn timeout_epochs(timeout_ms: u64) -> u64 {
     timeout_ms.div_ceil(EPOCH_TICK_MS) + 1
 }
@@ -500,7 +501,7 @@ mod tests {
             );
             assert!(
                 (epochs - 1) * EPOCH_TICK_MS < ms + EPOCH_TICK_MS,
-                "{ms} ms gives {epochs} epochs, more than one tick over"
+                "{ms} ms gives {epochs} epochs, a deadline two or more ticks late"
             );
         }
     }
