@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::db::router::{DbError, TypeDbRouter};
 use crate::okf::types::OkfConcept;
 use crate::sandbox::engine::{ExecutionResult, ExtensionCallback, HostImports};
+use crate::sandbox::wasm_executor::SandboxRun;
 use crate::sandbox::wasm_pool::SandboxPool;
 use crate::state::registry::StateRegistry;
 
@@ -33,6 +34,8 @@ pub struct PlaybookRun<'a> {
     pub scopes: &'a [String],
     /// Optional execution timeout; the sandbox applies its default when `None`.
     pub timeout_ms: Option<u64>,
+    /// The run arguments the program reads as `gecko.args`; `None` gives it `{}`.
+    pub args: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
 
 impl<'a> PlaybookRun<'a> {
@@ -44,6 +47,7 @@ impl<'a> PlaybookRun<'a> {
             program: concept.program.as_deref()?,
             scopes: &concept.scopes,
             timeout_ms: concept.timeout_ms,
+            args: None,
         })
     }
 }
@@ -102,11 +106,14 @@ pub async fn execute_playbook(
     // capability calls; the sandbox enforces the run's scopes (S3).
     let execution = sandbox_pool
         .execute(
-            run.program,
+            SandboxRun {
+                code: run.program,
+                scopes: run.scopes,
+                timeout_ms: run.timeout_ms,
+                args: run.args,
+            },
             handle_id,
             host_imports,
-            run.scopes,
-            run.timeout_ms,
             extension_callback,
         )
         .await;

@@ -1,6 +1,6 @@
 use boa_engine::{
-    Context, JsNativeError, JsResult, JsValue, NativeFunction, Source, js_string,
-    object::ObjectInitializer,
+    Context, JsNativeError, JsObject, JsResult, JsValue, NativeFunction, Source, js_string,
+    object::{IntegrityLevel, ObjectInitializer},
     property::{Attribute, PropertyKey},
 };
 use serde_json::{Value, json};
@@ -315,6 +315,42 @@ fn gecko_call_extension(
     JsValue::from_json(&reply, context)
 }
 
+/// Reads the run arguments from `GECKO_ARGS`, which the host always sets to a JSON
+/// object.
+fn read_run_args() -> Result<Value, String> {
+    let raw = std::env::var("GECKO_ARGS").map_err(|e| format!("GECKO_ARGS is unreadable: {e}"))?;
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(args @ Value::Object(_)) => Ok(args),
+        Ok(_) => Err("GECKO_ARGS is not a JSON object".to_string()),
+        Err(e) => Err(format!("GECKO_ARGS is not valid JSON: {e}")),
+    }
+}
+
+/// Freezes `obj` and every object reachable through its own property values,
+/// innermost first.
+fn deep_freeze(obj: &JsObject, context: &mut Context) -> JsResult<()> {
+    for key in obj.own_property_keys(context)? {
+        if let Some(child) = obj.get(key, context)?.as_object() {
+            deep_freeze(&child, context)?;
+        }
+    }
+    if obj.set_integrity_level(IntegrityLevel::Frozen, context)? {
+        Ok(())
+    } else {
+        Err(type_error("gecko.args could not be frozen".to_string()))
+    }
+}
+
+/// The run arguments as a deep-frozen guest object.
+fn frozen_run_args(args: &Value, context: &mut Context) -> JsResult<JsValue> {
+    let value = JsValue::from_json(args, context)?;
+    let Some(obj) = value.as_object() else {
+        return Err(type_error("gecko.args must be an object".to_string()));
+    };
+    deep_freeze(&obj, context)?;
+    Ok(value)
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() {
     // Read the JavaScript code from standard input
@@ -328,6 +364,14 @@ fn main() {
         print_json_result(false, "No code provided".to_string());
         return;
     }
+
+    let run_args = match read_run_args() {
+        Ok(args) => args,
+        Err(e) => {
+            print_json_result(false, e);
+            return;
+        }
+    };
 
     // Initialize the Boa JavaScript context
     let mut context = Context::default();
@@ -356,8 +400,22 @@ fn main() {
         .register_global_property(js_string!("console"), console, Attribute::all())
         .expect("Failed to register console");
 
-    // Register the `gecko` global (generic host-call surface).
+    // Register the `gecko` global: the generic host-call surface, and the run's
+    // arguments as `gecko.args`, a non-writable, non-configurable, deep-frozen
+    // property.
+    let args = match frozen_run_args(&run_args, &mut context) {
+        Ok(args) => args,
+        Err(e) => {
+            print_json_result(false, format!("Failed to expose gecko.args: {e}"));
+            return;
+        }
+    };
     let gecko = ObjectInitializer::new(&mut context)
+        .property(
+            js_string!("args"),
+            args,
+            Attribute::READONLY | Attribute::ENUMERABLE,
+        )
         .function(
             NativeFunction::from_fn_ptr(gecko_call_extension),
             js_string!("callExtension"),
@@ -418,9 +476,7 @@ fn main() {
                     // It returns an Option<serde_json::Value>
                     let result_str =
                         serde_json::to_string(&json_val).unwrap_or_else(|_| "null".to_string());
-                    // Print JSON directly, gecko engine parses this as the output object
-                    // but we should wrap it so it matches ExecutionResult format if needed,
-                    // or just return the raw evaluation
+                    // The host parses this line as the run's output.
                     println!("{result_str}");
                 }
                 Err(e) => {

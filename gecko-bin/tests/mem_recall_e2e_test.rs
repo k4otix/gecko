@@ -26,7 +26,7 @@ use gecko_engine::db::RouterGraphStore;
 use gecko_engine::db::router::{DbConfig, TlsMode, TypeDbRouter};
 use gecko_engine::sandbox::engine::{ExtensionCallback, HostImports};
 use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
-use gecko_engine::sandbox::wasm_executor::WasmExecutor;
+use gecko_engine::sandbox::wasm_executor::{SandboxRun, WasmExecutor};
 use gecko_extension_api::{
     ActorId, BeliefDraft, ConceptId, DateTime, DerivationMethod, Embedder, EpistemicWriter,
     GeckoExtension, ProvenanceSource, RunContext, Visibility,
@@ -220,11 +220,14 @@ async fn recall_then_derive_records_correlation() {
     let scopes = vec!["mem:recall".to_string(), "mem:derive".to_string()];
     let result = executor
         .evaluate(
-            RECALL_DERIVE_PROGRAM,
+            SandboxRun {
+                code: RECALL_DERIVE_PROGRAM,
+                scopes: &scopes,
+                timeout_ms: Some(30_000),
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &scopes,
-            Some(30_000),
             Some(cb),
         )
         .await;
@@ -305,11 +308,14 @@ async fn unscoped_recall_is_denied_by_s3_gate() {
     let scopes = vec!["mem:derive".to_string()];
     let result = executor
         .evaluate(
-            RECALL_DERIVE_PROGRAM,
+            SandboxRun {
+                code: RECALL_DERIVE_PROGRAM,
+                scopes: &scopes,
+                timeout_ms: Some(30_000),
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &scopes,
-            Some(30_000),
             Some(cb),
         )
         .await;
@@ -367,11 +373,14 @@ async fn an_oversized_recall_mints_one_retrieval_event() {
     let result = WasmExecutor::new()
         .unwrap()
         .evaluate(
-            OVERSIZED_RECALL_PROGRAM,
+            SandboxRun {
+                code: OVERSIZED_RECALL_PROGRAM,
+                scopes: &["mem:recall".to_string()],
+                timeout_ms: Some(30_000),
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &["mem:recall".to_string()],
-            Some(30_000),
             Some(run_callback(run_ctx, writer)),
         )
         .await;
@@ -429,11 +438,14 @@ async fn a_playbook_retracts_a_root_and_learns_what_rested_on_it() {
     let result = WasmExecutor::new()
         .unwrap()
         .evaluate(
-            program,
+            SandboxRun {
+                code: program,
+                scopes: &scopes,
+                timeout_ms: Some(30_000),
+                args: None,
+            },
             Uuid::new_v4(),
             &HostImports::default(),
-            &scopes,
-            Some(30_000),
             Some(cb),
         )
         .await;

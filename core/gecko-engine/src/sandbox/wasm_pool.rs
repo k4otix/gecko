@@ -11,7 +11,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::engine::{ExecutionResult, ExtensionCallback, HostImports};
-use super::wasm_executor::WasmExecutor;
+use super::wasm_executor::{SandboxRun, WasmExecutor};
 use crate::okf::types::ScriptEngine;
 
 /// Pool wrapping the lazily-initialized [`WasmExecutor`].
@@ -37,28 +37,19 @@ impl SandboxPool {
             .map_err(std::clone::Clone::clone)
     }
 
-    /// Execute a program in the WASM sandbox. `scopes` are the concept's granted
-    /// capability scopes, enforced by the host bridge (S3).
+    /// Execute a program in the WASM sandbox. The run's scopes are enforced by the
+    /// host bridge (S3).
     pub async fn execute(
         &self,
-        code: &str,
+        run: SandboxRun<'_>,
         handle_id: Uuid,
         host_imports: &HostImports,
-        scopes: &[String],
-        timeout_ms: Option<u64>,
         extension_callback: Option<ExtensionCallback>,
     ) -> ExecutionResult {
         match self.wasm_executor() {
             Ok(wasm) => {
-                wasm.evaluate(
-                    code,
-                    handle_id,
-                    host_imports,
-                    scopes,
-                    timeout_ms,
-                    extension_callback,
-                )
-                .await
+                wasm.evaluate(run, handle_id, host_imports, extension_callback)
+                    .await
             }
             Err(e) => ExecutionResult {
                 output: serde_json::Value::Null,

@@ -97,7 +97,7 @@ The `gecko` CLI manages the full lifecycle of the knowledge graph and playbook e
 | `gecko up` / `gecko down` | Start/stop TypeDB (orchestrated pinned child, `compose`, or `external` mode). |
 | `gecko schema-init` | Apply the core schema plus every activated extension's schema. |
 | `gecko sync <bundle>` | Parse an OKF bundle directory and sync its concepts, hierarchy, and code blocks. |
-| `gecko run <concept-id>` | Execute a synced playbook's code block in the sandbox. |
+| `gecko run <concept-id> [--args <json>]` | Execute a synced playbook's code block in the sandbox, with an optional JSON object it reads as the frozen `gecko.args`. |
 | `gecko query '<TypeQL>'` | Run an ad-hoc TypeQL read query. |
 | `gecko status` | List the synced bundles (name and path). |
 | `gecko sync-stix <file>` | Import a STIX 2.1 / ATT&CK bundle (`cyber` builds). |
@@ -115,6 +115,9 @@ gecko sync sample-bundle       # ingest the sample OKF bundle
 
 # Execute a JavaScript playbook in the WASM sandbox
 gecko run playbooks/hello_js
+
+# Pass a playbook its inputs; it reads them as gecko.args
+gecko run playbooks/x --database db --args '{"k":"v"}'
 
 # Inspect the graph
 gecko query 'match $c isa concept, has concept-id $id; fetch {"id": $id};'

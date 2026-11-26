@@ -67,6 +67,23 @@ const EMPTY_REPLY: &str = "the extension returned an empty reply";
 /// The message stashed for an extension error that carried none.
 const EMPTY_ERROR: &str = "the extension call failed with an empty error";
 
+/// Largest serialized run-arguments object (`GECKO_ARGS`) the guest is given, in bytes.
+pub const MAX_RUN_ARGS_LEN: usize = 1024 * 1024;
+
+/// One program to evaluate, with what the sandbox grants it.
+#[derive(Debug, Clone, Copy)]
+pub struct SandboxRun<'a> {
+    /// The program source, fed to the guest via stdin.
+    pub code: &'a str,
+    /// The granted capability scopes; a `callExtension(ext, func)` is permitted only if
+    /// `"ext:func"` is present (S3, default-deny).
+    pub scopes: &'a [String],
+    /// Execution timeout; defaults to [`DEFAULT_TIMEOUT_MS`].
+    pub timeout_ms: Option<u64>,
+    /// The run arguments the guest reads as `gecko.args`; `None` gives it `{}`.
+    pub args: Option<&'a serde_json::Map<String, serde_json::Value>>,
+}
+
 /// Why a guest-supplied string could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReadError {
@@ -232,22 +249,23 @@ impl WasmExecutor {
 
     /// Evaluate a JavaScript program in the sandbox.
     ///
-    /// - `code`: the program source (fed to the guest via stdin).
+    /// - `run`: the program, its scopes, timeout and run arguments.
     /// - `handle_id`: opaque handle for host state access (reserved for host imports).
     /// - `host_imports`: available host-import descriptors (reserved).
-    /// - `scopes`: the concept's granted capability scopes; a `callExtension(ext, func)`
-    ///   is permitted only if `"ext:func"` is present (S3, default-deny).
-    /// - `timeout_ms`: execution timeout; defaults to [`DEFAULT_TIMEOUT_MS`].
     /// - `extension_callback`: bridge invoked for permitted host-capability calls.
     pub async fn evaluate(
         &self,
-        code: &str,
+        run: SandboxRun<'_>,
         _handle_id: Uuid,
         _host_imports: &HostImports,
-        scopes: &[String],
-        timeout_ms: Option<u64>,
         extension_callback: Option<ExtensionCallback>,
     ) -> ExecutionResult {
+        let SandboxRun {
+            code,
+            scopes,
+            timeout_ms,
+            args,
+        } = run;
         let start_time = std::time::Instant::now();
         let fail = |msg: String| ExecutionResult {
             output: serde_json::Value::Null,
@@ -257,6 +275,21 @@ impl WasmExecutor {
             error: Some(msg),
         };
 
+        // The run arguments travel in the guest's otherwise empty environment.
+        let args_json = match args {
+            Some(map) => match serde_json::to_string(map) {
+                Ok(json) => json,
+                Err(e) => return fail(format!("Failed to serialize run args: {e}")),
+            },
+            None => "{}".to_string(),
+        };
+        if args_json.len() > MAX_RUN_ARGS_LEN {
+            return fail(format!(
+                "run args (GECKO_ARGS) are {} bytes; the limit is {MAX_RUN_ARGS_LEN}",
+                args_json.len()
+            ));
+        }
+
         // 1. Virtual stdin (program) / stdout (JSON result). No fs or network.
         let stdin = MemoryInputPipe::new(code.to_string());
         let stdout = MemoryOutputPipe::new(10 * 1024 * 1024); // 10 MiB output cap
@@ -264,6 +297,7 @@ impl WasmExecutor {
         let mut wasi_builder = WasiCtxBuilder::new();
         wasi_builder.stdin(stdin);
         wasi_builder.stdout(stdout.clone());
+        wasi_builder.env("GECKO_ARGS", &args_json);
         let wasi_ctx = wasi_builder.build_p1();
 
         // 2. Store data: WASI, S1 limits, S3 scopes, extension bridge.
