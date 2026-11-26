@@ -46,9 +46,15 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// `timeout-ms` must be in `1..=MAX_TIMEOUT_MS`.
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 
-/// How often the background ticker advances the epoch. One epoch == one tick, so
-/// the timeout in epochs is `timeout_ms / EPOCH_TICK_MS`.
+/// How often the background ticker advances the epoch. One epoch == one tick.
 const EPOCH_TICK_MS: u64 = 10;
+
+/// The epoch deadline for a `timeout_ms` run. The ticker's phase is independent of the
+/// run, so a deadline of N epochs fires after N - 1 to N ticks: rounding up and adding
+/// one tick means a run is never stopped early, and at most one tick late.
+fn timeout_epochs(timeout_ms: u64) -> u64 {
+    timeout_ms.div_ceil(EPOCH_TICK_MS) + 1
+}
 
 /// Cap on a guest-supplied extension/function name length (bytes). The guest hands
 /// the host a `len`; reject an oversized one before allocating so a bogus length
@@ -333,8 +339,7 @@ impl WasmExecutor {
         store.limiter(|ctx| &mut ctx.limits);
 
         // Execution timeout via epoch deadline (1 epoch == EPOCH_TICK_MS).
-        let timeout_epochs = timeout_ms / EPOCH_TICK_MS;
-        store.set_epoch_deadline(timeout_epochs.max(1));
+        store.set_epoch_deadline(timeout_epochs(timeout_ms));
 
         // 3. Link WASI Preview 1 (async) imports.
         let mut linker: Linker<ExecutorCtx> = Linker::new(&self.engine);
@@ -483,6 +488,23 @@ impl Drop for WasmExecutor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_timeout_never_fires_before_its_time() {
+        // The ticker's phase is independent of the run, so a deadline of N epochs
+        // fires after (N - 1) to N ticks; N must cover the whole timeout.
+        for ms in [1, 9, 10, 15, 500, 600_000] {
+            let epochs = timeout_epochs(ms);
+            assert!(
+                (epochs - 1) * EPOCH_TICK_MS >= ms,
+                "{ms} ms gives {epochs} epochs, which can fire early"
+            );
+            assert!(
+                (epochs - 1) * EPOCH_TICK_MS < ms + EPOCH_TICK_MS,
+                "{ms} ms gives {epochs} epochs, more than one tick over"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

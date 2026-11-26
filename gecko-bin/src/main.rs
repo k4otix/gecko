@@ -1250,11 +1250,13 @@ fn stored_timeout(concept_id: &str, projected: Option<&serde_json::Value>) -> Re
             Some(t) if (1..=MAX_TIMEOUT_MS).contains(&t) => Ok(Some(t)),
             _ => anyhow::bail!(
                 "concept '{concept_id}' has an invalid stored timeout-ms ({v}); \
-                 it must be from 1 to {MAX_TIMEOUT_MS}; re-sync its bundle"
+                 it must be from 1 to {MAX_TIMEOUT_MS}; edit the playbook (a re-sync \
+                 skips an unchanged file) and re-sync its bundle"
             ),
         },
         _ => anyhow::bail!(
-            "concept '{concept_id}' has more than one stored timeout-ms; re-sync its bundle"
+            "concept '{concept_id}' has more than one stored timeout-ms; edit the playbook \
+             (a re-sync skips an unchanged file) and re-sync its bundle"
         ),
     }
 }

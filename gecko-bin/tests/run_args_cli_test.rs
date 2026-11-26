@@ -213,7 +213,9 @@ async fn a_stored_timeout_out_of_range_fails_the_run() {
         "the run accepted a bad stored timeout\n{output}"
     );
     assert!(
-        output.contains("timeout-ms") && output.contains("playbooks/echo"),
+        output.contains("timeout-ms")
+            && output.contains("playbooks/echo")
+            && output.contains("edit the playbook"),
         "{output}"
     );
 }
