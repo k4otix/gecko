@@ -1093,6 +1093,7 @@ fn structure_pairs(relation: &str) -> BTreeSet<(String, String)> {
             (PARENT_STIX_ID, PERSISTENCE_STIX_ID),
             (SUB1_STIX_ID, EXECUTION_STIX_ID),
             (SUB2_STIX_ID, PERSISTENCE_STIX_ID),
+            (RETIRED_SUB_STIX_ID, EXECUTION_STIX_ID),
         ],
         other => panic!("{other} is not a structure relation"),
     };
