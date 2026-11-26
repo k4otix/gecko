@@ -364,6 +364,6 @@ detection over a trailing window.
 `precision` is true positives over true plus false positives. `benign-true` verdicts count as
 neither, and `precision` is `null` when both counts are 0.
 
-It errors when `logic_id` is missing or not a string, and when `window` is missing, not an
-integer, or 0. It does not check that `logic_id` names a detection in the graph: an unknown or
+It errors when `logic_id` is missing or not a string, and when `window` is missing or not a
+positive integer. It does not check that `logic_id` names a detection in the graph: an unknown or
 misspelled id has no verdicts, so it returns zero counts and `precision: null`.

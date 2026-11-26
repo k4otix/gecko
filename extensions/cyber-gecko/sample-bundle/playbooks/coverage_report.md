@@ -16,7 +16,7 @@ Combines three reads into one summary:
 - `by_tactic`: how many live techniques serve each tactic, and how many of those are
   undetected;
 - `blind`: the claimed detections that cannot run on some platform you declared,
-  because no sensor there collects what they need (`blinded`), sorted;
+  because no sensor there collects what they need (`blinded`), each listed once, sorted;
 - `recommended`: the log sources to start collecting, most useful first
   (`recommend_sources`). A source recommended on several platforms is listed once, where
   it first appears.
@@ -35,9 +35,11 @@ const sorted = (ids) => [...ids].sort();
         undetected,
     })),
     blind: sorted(
-        blinded.blinded_detections
-            .filter((d) => d.blind_platforms.length > 0)
-            .map((d) => d.concept_id),
+        new Set(
+            blinded.blinded_detections
+                .filter((d) => d.blind_platforms.length > 0)
+                .map((d) => d.concept_id),
+        ),
     ),
     recommended: [...new Set(plan.steps.flatMap((s) => s.add.map((a) => a.log_source)))],
 });
