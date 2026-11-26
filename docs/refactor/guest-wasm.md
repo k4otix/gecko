@@ -32,6 +32,21 @@ The guest imports two functions from module `env`. Only the guest calls them.
 Both imports trap if the guest exports no linear memory. The guest allocates exactly
 `|len|` bytes for each call.
 
+## Run arguments
+
+The guest's program arrives on stdin. Its run arguments arrive in its environment, which
+is otherwise empty, as **`GECKO_ARGS`**:
+
+- **Always set** to a JSON object. It is `{}` when `gecko run` is given no `--args`.
+- **At most 1 MiB** serialized. The executor refuses a larger value before the guest
+  starts.
+- **Read once at startup.** A missing, invalid or non-object value fails the run before
+  any program code runs.
+- **Exposed as `gecko.args`.** It is deep-frozen: every nested object and array is frozen
+  too. The property is non-writable and non-configurable.
+- **Not gated by an S3 scope.** The arguments come from the operator, not from a host
+  capability.
+
 ## Why it is prebuilt and out of CI
 
 CI never rebuilds the guest (`--exclude js-sandbox` everywhere) — it consumes the

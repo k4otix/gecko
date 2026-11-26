@@ -158,6 +158,9 @@ enum Commands {
     Run {
         /// Concept ID of the playbook to execute
         concept_id: String,
+        /// A JSON object the playbook reads as the frozen `gecko.args`
+        #[arg(long)]
+        args: Option<String>,
     },
 
     /// Delete a TypeDB database by name
@@ -455,12 +458,14 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Status => {
             cmd_status(make_config(&cli, &address, resolve_db(&cli.database, None))).await
         }
-        Commands::Run { concept_id } => {
+        Commands::Run { concept_id, args } => {
+            let args = args.as_deref().map(parse_run_args).transpose()?;
             let extensions = build_extensions(&cfg)?;
             cmd_run(
                 make_config(&cli, &address, resolve_db(&cli.database, None)),
                 &cfg,
                 concept_id,
+                args.as_ref(),
                 extensions,
             )
             .await
@@ -1311,11 +1316,34 @@ fn render_execution_result(result: &gecko_engine::sandbox::engine::ExecutionResu
     }
 }
 
-/// Execute a playbook concept in the sandbox.
+/// Parses `gecko run --args`: a JSON object of at most
+/// [`MAX_RUN_ARGS_LEN`](gecko_engine::sandbox::wasm_executor::MAX_RUN_ARGS_LEN) bytes,
+/// both as given and as re-serialized for the guest.
+fn parse_run_args(raw: &str) -> Result<serde_json::Map<String, serde_json::Value>> {
+    use gecko_engine::sandbox::wasm_executor::MAX_RUN_ARGS_LEN;
+    let too_long =
+        |len: usize| anyhow::anyhow!("--args is {len} bytes; the limit is {MAX_RUN_ARGS_LEN}");
+    if raw.len() > MAX_RUN_ARGS_LEN {
+        return Err(too_long(raw.len()));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("--args is not valid JSON: {e}"))?;
+    let serde_json::Value::Object(map) = value else {
+        anyhow::bail!("--args must be a JSON object, such as '{{\"logic_id\": \"detections/x\"}}'");
+    };
+    let serialized = serde_json::to_string(&map)?.len();
+    if serialized > MAX_RUN_ARGS_LEN {
+        return Err(too_long(serialized));
+    }
+    Ok(map)
+}
+
+/// Execute a playbook concept in the sandbox, with `args` as its `gecko.args`.
 async fn cmd_run(
     config: DbConfig,
     cfg: &GeckoConfig,
     concept_id: &str,
+    args: Option<&serde_json::Map<String, serde_json::Value>>,
     extensions: Vec<Box<dyn GeckoExtension>>,
 ) -> Result<()> {
     println!("Executing playbook: {concept_id}");
@@ -1350,7 +1378,7 @@ async fn cmd_run(
         program: &playbook.code_block,
         scopes: &playbook.scopes,
         timeout_ms: None,
-        args: None,
+        args,
     };
 
     let pipeline_result = gecko_engine::pipeline::execute_playbook(
@@ -1372,6 +1400,49 @@ async fn cmd_run(
 mod tests {
     use super::*;
     use crate::config::BadExt;
+
+    use gecko_engine::sandbox::wasm_executor::MAX_RUN_ARGS_LEN;
+
+    #[test]
+    fn run_args_parse_an_object() {
+        let args = parse_run_args(r#"{"a":1}"#).unwrap();
+        assert_eq!(args.len(), 1);
+        assert_eq!(args["a"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn run_args_refuse_a_non_object() {
+        for raw in ["[]", "\"x\"", "null", "3"] {
+            let err = parse_run_args(raw).unwrap_err().to_string();
+            assert!(err.contains("must be a JSON object"), "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn run_args_refuse_invalid_json() {
+        let err = parse_run_args(r#"{"a":"#).unwrap_err().to_string();
+        assert!(err.contains("not valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn run_args_refuse_an_oversized_value_before_parsing() {
+        let raw = "x".repeat(MAX_RUN_ARGS_LEN + 1);
+        let err = parse_run_args(&raw).unwrap_err().to_string();
+        assert!(err.contains("1048576"), "{err}");
+    }
+
+    #[test]
+    fn run_args_refuse_a_value_that_reserializes_over_the_cap() {
+        // `1e15` re-serializes as `1000000000000000.0`, so the object grows.
+        let items = vec!["1e15"; MAX_RUN_ARGS_LEN / 6];
+        let raw = format!(r#"{{"n":[{}]}}"#, items.join(","));
+        assert!(
+            raw.len() <= MAX_RUN_ARGS_LEN,
+            "the raw text is under the cap"
+        );
+        let err = parse_run_args(&raw).unwrap_err().to_string();
+        assert!(err.contains("1048576"), "{err}");
+    }
 
     #[tokio::test]
     async fn apply_all_schemas_refuses_before_touching_the_database() {
