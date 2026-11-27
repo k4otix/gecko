@@ -32,6 +32,7 @@ pub mod belief_edge;
 pub mod epistemic;
 pub mod error;
 pub mod graph;
+pub mod guest_value;
 pub mod ids;
 pub mod migration;
 pub mod okf;
@@ -50,6 +51,7 @@ pub use error::EpistemicError;
 pub use graph::{
     GraphReader, GraphStore, GraphValue, GraphWrite, RowCountMismatch, validate_read_rows,
 };
+pub use guest_value::{MAX_SAFE_INTEGER, shown, whole_number};
 pub use ids::{ActorId, AnomalyId, ConceptId, DateTime, MemId, RunId};
 pub use provenance::{ProvenanceSource, RunContext, RunScratch, SharedScratch};
 pub use semantic::{BeliefState, Embedder, Entrenchment, FilterMeta, SemanticIndex, Visibility};

@@ -33,7 +33,8 @@ use std::sync::Arc;
 
 use gecko_extension_api::{
     ActorId, BeliefDraft, ContextBudget, DateTime, DerivationMethod, EpisodeDraft, EpistemicReader,
-    EpistemicWriter, MemId, ProvenanceSource, RecallQuery, RunContext, RunId, Visibility,
+    EpistemicWriter, MemId, ProvenanceSource, RecallQuery, RunContext, RunId, Visibility, shown,
+    whole_number,
 };
 use serde_json::{Value, json};
 
@@ -148,28 +149,6 @@ pub fn bind_mem_call(ctx: &RunContext, func: MemHostFn, mut args: Value) -> Stam
 
 // ── Async writer dispatch + the async→sync sandbox bridge ────────────────────
 
-/// The largest integer a JS number represents exactly (`Number.MAX_SAFE_INTEGER`).
-const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-
-/// The longest serialized value a refusal quotes; a longer one is named by type.
-const MAX_SHOWN_VALUE_LEN: usize = 64;
-
-/// A guest value as a refusal shows it: the JSON text when short, otherwise its type
-/// and size, so an error never echoes a large payload back.
-fn shown(v: &Value) -> String {
-    let text = v.to_string();
-    if text.len() <= MAX_SHOWN_VALUE_LEN {
-        return text;
-    }
-    let kind = match v {
-        Value::String(_) => "a string",
-        Value::Array(_) => "an array",
-        Value::Object(_) => "an object",
-        _ => "a value",
-    };
-    format!("{kind} of {} bytes", text.len())
-}
-
 /// The payload keys each mem function accepts, after the reserved provenance keys
 /// are stripped. `gecko.callExtension("mem", …)` reaches the dispatchers without the
 /// guest's own checks, so the host refuses anything else itself.
@@ -254,15 +233,7 @@ fn opt_positive_int(p: &Value, key: &str) -> Result<Option<usize>, String> {
     let Some(v) = present(p, key) else {
         return Ok(None);
     };
-    let n = match (v.as_u64(), v.as_f64()) {
-        (Some(n), _) => usize::try_from(n).ok(),
-        (None, Some(f))
-            if f.is_finite() && f.fract() == 0.0 && (0.0..=MAX_SAFE_INTEGER).contains(&f) =>
-        {
-            usize::try_from(f as u64).ok()
-        }
-        _ => None,
-    };
+    let n = whole_number(v).and_then(|n| usize::try_from(n).ok());
     match n {
         Some(n) if n >= 1 => Ok(Some(n)),
         _ => Err(format!(
