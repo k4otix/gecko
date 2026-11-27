@@ -8,7 +8,7 @@
 //! here; the pipeline owns the state-handle lifecycle, the shared sandbox pool, and
 //! the record hook.
 
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::router::{DbError, TypeDbRouter};
@@ -132,9 +132,9 @@ pub async fn execute_playbook(
             }
         }
     } else {
-        error!(
+        warn!(
             concept_id = %run.concept_id,
-            error = execution.error.as_deref().unwrap_or("unknown"),
+            error = ?execution.error,
             "Pipeline: execution failed, not recording"
         );
         false

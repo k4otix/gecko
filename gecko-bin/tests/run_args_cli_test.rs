@@ -38,8 +38,8 @@ fn text(out: &Output) -> String {
     )
 }
 
-/// The JSON output of a successful `gecko run`. A failed playbook still exits 0,
-/// so success is read from the printed result, not the exit status.
+/// The JSON output of a successful `gecko run`: it exited 0 and printed
+/// "Execution successful!".
 fn run_output(out: &Output) -> serde_json::Value {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -163,6 +163,47 @@ while (true) {}
 ```
 "#;
 
+const THROWING_PLAYBOOK: &str = r#"---
+type: playbook
+title: Throw
+engine: quickjs
+---
+
+# Throw
+
+```javascript
+throw new Error("boom");
+```
+"#;
+
+#[tokio::test]
+async fn a_failed_playbook_exits_non_zero() {
+    let db = TestDb::new("run_failed_exit");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    sync_playbook(&db, tmp.path(), "throw", THROWING_PLAYBOOK).await;
+
+    let out = run(&db, tmp.path(), "playbooks/throw").await;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a failed run exited 0\n{}",
+        text(&out)
+    );
+    assert!(
+        stdout.contains("Execution failed!")
+            && stdout.contains("Error: JS Execution Error:")
+            && stdout.contains("boom"),
+        "the failure was not printed\n{}",
+        text(&out)
+    );
+    assert!(
+        !stderr.contains(" ERROR ") && !stderr.contains("the playbook failed"),
+        "a failed playbook was logged as a host error\n{}",
+        text(&out)
+    );
+}
+
 #[tokio::test]
 async fn a_playbook_times_out_at_its_timeout_ms() {
     let db = TestDb::new("run_timeout");
@@ -176,6 +217,11 @@ async fn a_playbook_times_out_at_its_timeout_ms() {
     assert!(
         stdout.contains("Execution failed!") && stdout.contains("execution timed out after 500 ms"),
         "the run did not time out at 500 ms\n{}",
+        text(&out)
+    );
+    assert!(
+        !out.status.success(),
+        "a timed-out run exited 0\n{}",
         text(&out)
     );
     assert!(

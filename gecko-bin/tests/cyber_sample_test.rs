@@ -84,8 +84,8 @@ fn text(out: &Output) -> String {
     )
 }
 
-/// The JSON output of a successful `gecko run`. A failed playbook still exits 0,
-/// so success is read from the printed result, not the exit status.
+/// The JSON output of a successful `gecko run`: it exited 0 and printed
+/// "Execution successful!".
 fn run_output(out: &Output) -> Value {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(

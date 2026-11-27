@@ -21,17 +21,11 @@ so references in specs and commit messages still resolve in the history file. Ne
 
 The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
-| # | ID | Item | Size |
-|---|---|---|---|
-| 1 | N7 | A guest whose stdout is not JSON fails the run | S |
+Nothing queued.
 
 ## Open work
 
-### Engine and CLI
-
-| ID | Item | Consumer | Done when | Needs |
-|---|---|---|---|---|
-| **N7** | A guest whose stdout is not JSON is reported as a failure, not as `success: true` with `raw_output` (`WasmExecutor::evaluate`'s result parsing) | `gecko run` callers | A guest printing non-JSON fails the run with the raw text in the error | — |
+Nothing open.
 
 ## Landed since the review
 
@@ -47,6 +41,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | **N6** | A cyber worked example. `extensions/cyber-gecko/sample-bundle/` holds two detections (`T1059.001`, `T1053.005`) and five playbooks that read their inputs from `gecko.args`: claim, verdict, coverage report, precision and withdraw. `sample-sensors.yaml` is written from ATT&CK 20.1's analytics, so one claim is blind and `WinEventLog:Security` is recommended. The cyber README gains the walkthrough, with outputs from a real Enterprise 20.1 run, and `claim`, `disposition` and `precision` reference sections. **N6a:** `gecko run <id> --args <json>` gives a playbook a deep-frozen, non-writable `gecko.args`, delivered as the WASI variable `GECKO_ARGS` and capped at 1 MiB on the host and in the executor. Design: `docs/superpowers/specs/2026-11-25-cyber-worked-example-design.md` | `the_readme_walkthrough_runs` (runs the README's own `gecko run` commands); `run_args_reach_the_playbook`, `non_object_args_fail_before_connecting`; the `run_args_*` guest and `parse_run_args` unit tests |
 | **N5** | A playbook's `timeout-ms` bounds its run. `MAX_TIMEOUT_MS` (600000 ms) is enforced by the parser (refusing `0`, negatives, floats, strings, `null` and a blank value, naming the file), by `sync_bundle`, by `gecko run`'s read of the stored value, and by the executor before the guest starts. The core schema's `timeout-ms` attribute (`value integer @range(1..)`) is written by sync and read by `gecko run` only where the schema defines it, so an older database still runs. A timed-out run reports `execution timed out after <ms> ms`. `consumes` and `produces` are no longer special fields; they land in `metadata-json`. Design: `docs/superpowers/specs/2026-11-26-timeout-ms-design.md` | `a_playbook_times_out_at_its_timeout_ms`, `a_stored_timeout_out_of_range_fails_the_run`, `a_playbook_runs_on_a_schema_without_timeout_ms`, `timeout_ms_round_trips`, `an_out_of_range_timeout_is_refused_before_writing`; the `timeout_ms_*` parser tests; `a_zero_timeout_is_refused`, `a_timeout_over_the_ceiling_is_refused`, `the_ceiling_itself_is_accepted` |
 | **N8, N9** | `precision` reads `window` through the bridges' shared whole-number rule (`gecko_extension_api::whole_number`: a JSON integer, or a whole float up to `Number.MAX_SAFE_INTEGER`), so `5.0` is read as 5. It refuses anything outside `1..=MAX_WINDOW_SECONDS` (3155760000 s, 100 Julian years) with an error naming the limit, and computes its cutoff with checked chrono math, so a huge window is an error, not a panic. Design: `docs/superpowers/specs/2026-11-27-precision-window-design.md` | `precision_reads_a_whole_float_window_and_refuses_one_past_the_ceiling`; `a_whole_float_window_is_read_as_an_integer`, `a_window_outside_the_range_is_refused_naming_the_limit`, `a_refused_window_is_shown_without_echoing_a_large_value`, `window_cutoff_at_the_ceiling_is_100_julian_years_earlier`, `window_cutoff_chrono_cannot_represent_is_an_error`; the `guest_value` tests |
+| **N7** | A run fails, never reports a fabricated success. The executor reads guest stdout through `read_guest_output`: empty output fails with `guest wrote no output`, non-JSON output with `guest output is not JSON: <text>` (at most 1 KiB quoted), and a top-level `"success": false` always carries a message. A failed `gecko run` exits non-zero with the same stdout, and the pipeline logs the failure at `warn`, not `error`. Design: `docs/superpowers/specs/2026-11-27-guest-output-fails-run-design.md` | `a_failed_playbook_exits_non_zero`, `a_playbook_times_out_at_its_timeout_ms`, `a_guest_failure_without_a_message_is_reported`; the `read_guest_output` unit tests (`empty_stdout_is_no_output`, `non_json_stdout_fails_with_a_quote`, `a_long_non_json_quote_is_cut_on_a_char_boundary`, `a_quote_of_exactly_the_limit_is_not_marked_cut`, `a_failure_without_a_message_gets_one`, `a_failure_keeps_its_message_and_output`, `json_that_is_not_a_failure_succeeds`) |
 
 ## Deferred (reopen on the trigger)
 
