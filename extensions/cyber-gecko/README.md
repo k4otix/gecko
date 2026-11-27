@@ -365,5 +365,6 @@ detection over a trailing window.
 neither, and `precision` is `null` when both counts are 0.
 
 It errors when `logic_id` is missing or not a string, and when `window` is missing or not a
-whole number from 1 to 3155760000. It does not check that `logic_id` names a detection in the graph: an unknown or
-misspelled id has no verdicts, so it returns zero counts and `precision: null`.
+whole number from 1 to 3155760000. It does not check that `logic_id` names a detection in the
+graph: an unknown or misspelled id has no verdicts, so it returns zero counts and
+`precision: null`.

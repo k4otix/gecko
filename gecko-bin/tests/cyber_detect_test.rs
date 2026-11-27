@@ -2027,4 +2027,8 @@ async fn precision_reads_a_whole_float_window_and_refuses_one_past_the_ceiling()
     )
     .expect_err("a window past the ceiling is refused");
     assert!(err.contains("3155760000"), "{err}");
+
+    // `logic_id` is checked before `window`, so a call missing both names `logic_id`.
+    let err = call(&cb, "precision", json!({ "window": 0 })).expect_err("no logic_id");
+    assert!(err.contains("logic_id"), "{err}");
 }

@@ -226,9 +226,7 @@ fn opt_rfc3339(p: &Value, key: &str) -> Result<Option<DateTime>, String> {
         .transpose()
 }
 
-/// An optional integer field that must be at least 1. A whole number serialized as
-/// a float (`5.0`) counts, up to `Number.MAX_SAFE_INTEGER`, so a huge float never
-/// saturates.
+/// An optional whole number (see [`whole_number`]) that must be at least 1.
 fn opt_positive_int(p: &Value, key: &str) -> Result<Option<usize>, String> {
     let Some(v) = present(p, key) else {
         return Ok(None);
