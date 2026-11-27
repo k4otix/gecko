@@ -354,7 +354,7 @@ detection over a trailing window.
 | Argument | Type | |
 | --- | --- | --- |
 | `logic_id` | string | The detection's concept id. |
-| `window` | integer | The window in seconds, greater than 0. `3600.0` is refused: it must be an integer. |
+| `window` | integer | The window in seconds: an integer from 1 to 3155760000 (100 years). A whole number written as a float, such as `3600.0`, counts. |
 
 ```json
 { "false_positives": 0, "logic_id": "detections/encoded_powershell", "precision": 1.0,
@@ -365,5 +365,6 @@ detection over a trailing window.
 neither, and `precision` is `null` when both counts are 0.
 
 It errors when `logic_id` is missing or not a string, and when `window` is missing or not a
-positive integer. It does not check that `logic_id` names a detection in the graph: an unknown or
-misspelled id has no verdicts, so it returns zero counts and `precision: null`.
+whole number from 1 to 3155760000. It does not check that `logic_id` names a detection in the
+graph: an unknown or misspelled id has no verdicts, so it returns zero counts and
+`precision: null`.
