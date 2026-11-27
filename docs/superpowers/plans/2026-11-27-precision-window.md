@@ -60,7 +60,7 @@
     - `json!(u64::MAX)` → `Some(u64::MAX)`.
   - `whole_number_refuses_everything_else`. Each of these → `None`:
     - `json!(5.5)`, `json!(-1)`, `json!(-5.0)`, `json!(1e20)`;
-    - `json!(9_007_199_254_740_993.0_f64)`;
+    - `json!(MAX_SAFE_INTEGER + 2.0)`;
     - `json!("5")`, `json!(null)`, `json!(true)`, `json!([5])`.
   - `shown_quotes_a_short_value`: `shown(&json!("0.5")) == "\"0.5\""`.
   - `shown_names_a_long_value_by_type_and_size`: `shown(&json!("x".repeat(100)))` is `"a string of 102 bytes"`.
@@ -68,10 +68,12 @@
   - Run: `cargo nextest run -p gecko-extension-api guest_value`
   - Expected: a compile failure, because the functions aren't defined.
 - [ ] **Step 3: Implement the module.**
-  - `whole_number` is mem_host's existing match, `(v.as_u64(), v.as_f64())`, returning `u64`.
+  - `whole_number` is mem_host's existing match, `(v.as_u64(), v.as_f64())`, returning `u64`. Its doc says:
+    - a JSON integer is accepted at any `u64` value;
+    - a float is accepted only when whole and within `0..=MAX_SAFE_INTEGER`, so a huge float never saturates.
   - `shown` is moved verbatim, with `MAX_SHOWN_VALUE_LEN` kept private to the module.
   - Then rewire `mem_host`:
-    - `opt_positive_int` becomes `whole_number(v).and_then(|n| usize::try_from(n).ok())` and keeps its own error text;
+    - in `opt_positive_int`, only the `match (v.as_u64(), v.as_f64())` is replaced, by `whole_number(v).and_then(|n| usize::try_from(n).ok())`. The `present()` check, the `n >= 1` check and the error text stay;
     - every `shown(` call uses the import.
 - [ ] **Step 4: Run the tests.**
   - Run: `cargo nextest run -p gecko-extension-api guest_value && cargo nextest run -p gecko-engine --no-default-features mem_host`
@@ -97,7 +99,8 @@
 - [ ] **Step 1: Write the failing unit tests** in `detect/mod.rs` `mod tests`:
   - `a_whole_float_window_is_read_as_an_integer`:
     - `window_seconds(&json!({"window": 5.0})) == Ok(5)`;
-    - `window_seconds(&json!({"window": MAX_WINDOW_SECONDS})) == Ok(MAX_WINDOW_SECONDS)`.
+    - `window_seconds(&json!({"window": MAX_WINDOW_SECONDS})) == Ok(MAX_WINDOW_SECONDS)`;
+    - `window_seconds(&json!({"window": 3155760000.0})) == Ok(MAX_WINDOW_SECONDS)`.
   - `a_window_outside_the_range_is_refused_naming_the_limit`. Each of these is `Err`, and the error contains `"3155760000"` and `"window"`:
     - `{"window": 3155760001}` and `{"window": 3155760001.0}`;
     - `{"window": 0}`, `{"window": 0.0}`, `{"window": -0.0}`, `{"window": -5}`, `{"window": 5.5}`;
@@ -105,38 +108,44 @@
     - `{"window": "60"}`;
     - `{"window": 1e20}` and `{"window": 100000000000000u64}`.
   - `a_refused_window_is_shown_without_echoing_a_large_value`: `{"window": "x".repeat(10_000)}` errors in under 300 bytes.
-  - `the_ceiling_subtracts_from_a_real_time`: `window_cutoff(t, MAX_WINDOW_SECONDS) == Ok(t - Duration::try_seconds(3_155_760_000).unwrap())`, for `t = 2026-11-27T00:00:00Z`.
-  - `a_cutoff_chrono_cannot_represent_is_an_error`: `window_cutoff(DateTime::<Utc>::MIN_UTC, MAX_WINDOW_SECONDS).is_err()`.
+  - `window_cutoff_at_the_ceiling_is_100_julian_years_earlier`: for `t = 2026-11-27T00:00:00Z`, `window_cutoff(t, MAX_WINDOW_SECONDS) == Ok(1926-11-27T00:00:00Z)`. That is exactly 36,525 days earlier.
+  - `window_cutoff_chrono_cannot_represent_is_an_error`. Each of these is `Err` containing `"precision 'window' of"`:
+    - `window_cutoff(DateTime::<Utc>::MIN_UTC, MAX_WINDOW_SECONDS)`, where the subtraction fails;
+    - `window_cutoff(t, 100_000_000_000_000)`, the literal N9 panic;
+    - `window_cutoff(t, u64::MAX)`, where the `i64` conversion fails.
 - [ ] **Step 2: Run them.**
-  - Run: `cargo nextest run -p cyber-gecko window`
+  - Run: `cargo nextest run -p cyber-gecko window`. Every new unit test's name contains `window`.
   - Expected: a compile failure, because the functions aren't defined.
+- [ ] **Step 2b: Write the failing integration test** `precision_reads_a_whole_float_window_and_refuses_one_past_the_ceiling` in `cyber_detect_test.rs`. Reuse `seed_detection_graph`, `detect_handles`, `run_ctx` and `call`.
+  - `call(&cb, "precision", json!({"logic_id": LOGIC_ID, "window": 5.0}))` is `Ok`, and `["window_seconds"] == 5`.
+  - `call(... "window": 100000000000000u64 ...)` is `Err` containing `"3155760000"`.
+
+  Run: `cargo nextest run -p gecko-bin --no-default-features --features cyber --test cyber_detect_test -j 1 precision_reads_a_whole_float`
+  Expected: FAIL. The `5.0` call is refused with "precision requires an integer 'window'".
 - [ ] **Step 3: Implement.**
   - **`window_seconds`:**
     - `args.get("window")`, `whole_number`, then a filter on `(1..=MAX_WINDOW_SECONDS).contains`;
     - the error is `precision 'window' must be an integer number of seconds from 1 to 3155760000 (100 years), got <shown>`;
     - missing reads as `null` for display.
-  - **`window_cutoff`:** `i64::try_from(window)`, then `Duration::try_seconds`, then `occurred_at.checked_sub_signed`. Any `None` gives an error naming the window.
-  - **`precision`:** uses both helpers, and `window_seconds` keeps returning the parsed `u64`.
+  - **`window_cutoff`:** `i64::try_from(window)`, then `Duration::try_seconds`, then `occurred_at.checked_sub_signed`. Any failure gives exactly `precision 'window' of {window} seconds reaches before the earliest representable time`.
+  - **`precision`:** uses both helpers. The reply's `"window_seconds"` field is the `u64` that `fn window_seconds` returned.
   - **The constant:** `MAX_WINDOW_SECONDS` carries the Julian-years comment.
 - [ ] **Step 4: Run the unit tests.**
   - Run: `cargo nextest run -p cyber-gecko`
   - Expected: PASS.
-- [ ] **Step 5: Write the failing integration test** `precision_reads_a_whole_float_window_and_refuses_one_past_the_ceiling` in `cyber_detect_test.rs`. Reuse `seed_detection_graph`, `detect_handles`, `run_ctx` and `call`.
-  - `call(&cb, "precision", json!({"logic_id": LOGIC_ID, "window": 5.0}))` is `Ok`, and `["window_seconds"] == 5`.
-  - `call(... "window": 100000000000000u64 ...)` is `Err` containing `"3155760000"`.
-
-  It passes against Step 3's code. To see it fail first, stash the Step 3 change (`git stash`), run the test, and watch the `5.0` assert fail. Then `git stash pop`.
-- [ ] **Step 6: Run the integration test.**
+- [ ] **Step 5: Run the integration test.**
   - Run: `cargo nextest run -p gecko-bin --no-default-features --features cyber --test cyber_detect_test -j 1`
   - Expected: PASS, including the three existing `precision_*` tests.
-- [ ] **Step 7: Update the docs.**
+- [ ] **Step 6: Update the docs.**
   - **`extensions/cyber-gecko/README.md`, the `## precision` table row** for `window`:
     - "The window in seconds: an integer from 1 to 3155760000 (100 years).";
     - "A whole number written as a float, such as `3600.0`, counts."
+    - The Type cell stays `integer`.
+  - **The prose under the table** (`:366-367`): "missing or not a positive integer" becomes "missing or not a whole number from 1 to 3155760000".
   - **`docs/refactor/OWED-WORK-LEDGER.md`:**
     - move N8 and N9 to Landed, naming their tests;
     - "Next up" becomes 1 N7.
-- [ ] **Step 8: Commit** with the message `precision reads window through the shared integer rule, bounded at 100 years (N8, N9)`.
+- [ ] **Step 7: Commit** with the message `precision reads window through the shared integer rule, bounded at 100 years (N8, N9)`.
 
 ## Verification
 
