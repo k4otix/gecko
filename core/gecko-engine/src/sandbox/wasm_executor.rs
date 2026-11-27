@@ -130,6 +130,55 @@ fn read_error(what: &str, limit: &str, e: ReadError) -> String {
     }
 }
 
+/// The longest piece of non-JSON guest output an error quotes.
+const MAX_QUOTED_OUTPUT_LEN: usize = 1024;
+
+/// What a run's stdout says: the output, and the failure when there is one.
+#[derive(Debug, PartialEq)]
+struct GuestOutput {
+    output: serde_json::Value,
+    error: Option<String>,
+}
+
+/// Reads the one JSON line the guest writes to stdout. Empty or non-JSON output is a
+/// failure, and so is a top-level `"success": false`, which always carries a message:
+/// its `error` string, or one saying the guest gave none.
+fn read_guest_output(stdout: &str) -> GuestOutput {
+    let text = stdout.trim();
+    if text.is_empty() {
+        return GuestOutput {
+            output: serde_json::Value::Null,
+            error: Some("guest wrote no output".to_string()),
+        };
+    }
+    let output: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => {
+            let mut cut = text.len().min(MAX_QUOTED_OUTPUT_LEN);
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let marker = if cut < text.len() { "…" } else { "" };
+            return GuestOutput {
+                output: serde_json::Value::Null,
+                error: Some(format!(
+                    "guest output is not JSON: {}{marker}",
+                    &text[..cut]
+                )),
+            };
+        }
+    };
+    let error = (output.get("success") == Some(&serde_json::Value::Bool(false))).then(|| {
+        output
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .filter(|e| !e.trim().is_empty())
+            .unwrap_or("guest reported failure without an error message")
+            .to_string()
+    });
+    GuestOutput { output, error }
+}
+
 /// Turns a host-call outcome into the bytes the guest will read and the length it
 /// is told: `+len` for a reply, `-len` for an error message. A reply over
 /// [`MAX_REPLY_LEN`] becomes an error, an error over it is truncated on a UTF-8
@@ -456,26 +505,13 @@ impl WasmExecutor {
         // 6. Parse the JSON the guest wrote to stdout.
         let output_bytes = stdout.contents();
         let output_str = String::from_utf8_lossy(&output_bytes);
-        let output_json = serde_json::from_str(&output_str)
-            .unwrap_or_else(|_| serde_json::json!({ "raw_output": output_str.trim() }));
-
-        // The guest signals failure by emitting {"success": false, "error": ...}.
-        let mut success = true;
-        let mut error = None;
-        if let Some(obj) = output_json.as_object() {
-            if let Some(succ) = obj.get("success").and_then(serde_json::Value::as_bool) {
-                success = succ;
-            }
-            if let Some(err) = obj.get("error").and_then(serde_json::Value::as_str) {
-                error = Some(err.to_string());
-            }
-        }
+        let GuestOutput { output, error } = read_guest_output(&output_str);
 
         ExecutionResult {
-            output: output_json,
+            output,
             duration_ms: u64::try_from(start_time.elapsed().as_millis()).unwrap_or(0),
             engine: ScriptEngine::QuickJs,
-            success,
+            success: error.is_none(),
             error,
         }
     }
@@ -507,6 +543,102 @@ mod tests {
     }
 
     use super::*;
+
+    fn failed(output: serde_json::Value, error: &str) -> GuestOutput {
+        GuestOutput {
+            output,
+            error: Some(error.to_string()),
+        }
+    }
+
+    fn succeeded(output: serde_json::Value) -> GuestOutput {
+        GuestOutput {
+            output,
+            error: None,
+        }
+    }
+
+    fn quote_of(stdout: &str) -> String {
+        let err = read_guest_output(stdout).error.expect("a failure");
+        err.strip_prefix("guest output is not JSON: ")
+            .expect("a non-JSON error")
+            .to_string()
+    }
+
+    #[test]
+    fn empty_stdout_is_no_output() {
+        for stdout in ["", "  \n"] {
+            assert_eq!(
+                read_guest_output(stdout),
+                failed(serde_json::Value::Null, "guest wrote no output"),
+                "{stdout:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_json_stdout_fails_with_a_quote() {
+        assert_eq!(
+            read_guest_output("hello\n"),
+            failed(serde_json::Value::Null, "guest output is not JSON: hello")
+        );
+        assert_eq!(quote_of("{\"a\":1}x"), "{\"a\":1}x");
+    }
+
+    #[test]
+    fn a_long_non_json_quote_is_cut_on_a_char_boundary() {
+        let stdout = format!("{}é{}", "a".repeat(1023), "b".repeat(10));
+        assert_eq!(quote_of(&stdout), format!("{}…", "a".repeat(1023)));
+    }
+
+    #[test]
+    fn a_quote_of_exactly_the_limit_is_not_marked_cut() {
+        assert_eq!(quote_of(&"a".repeat(1024)), "a".repeat(1024));
+    }
+
+    #[test]
+    fn a_failure_without_a_message_gets_one() {
+        for output in [
+            serde_json::json!({ "success": false }),
+            serde_json::json!({ "success": false, "error": 7 }),
+            serde_json::json!({ "success": false, "error": "  " }),
+        ] {
+            assert_eq!(
+                read_guest_output(&output.to_string()),
+                failed(
+                    output.clone(),
+                    "guest reported failure without an error message"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_keeps_its_message_and_output() {
+        let output = serde_json::json!({ "success": false, "error": "boom" });
+        assert_eq!(
+            read_guest_output(&output.to_string()),
+            failed(output, "boom")
+        );
+    }
+
+    #[test]
+    fn json_that_is_not_a_failure_succeeds() {
+        for output in [
+            serde_json::json!({ "error": "x" }),
+            serde_json::json!({ "result": 42 }),
+            serde_json::Value::Null,
+        ] {
+            assert_eq!(
+                read_guest_output(&output.to_string()),
+                succeeded(output.clone())
+            );
+        }
+        assert_eq!(
+            read_guest_output("  {\"result\": 1}\n"),
+            succeeded(serde_json::json!({ "result": 1 }))
+        );
+    }
 
     #[test]
     fn stash_outcome_caps_an_oversized_reply() {

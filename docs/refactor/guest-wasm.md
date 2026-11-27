@@ -47,6 +47,20 @@ is otherwise empty, as **`GECKO_ARGS`**:
 - **Not gated by an S3 scope.** The arguments come from the operator, not from a host
   capability.
 
+## Run output
+
+The guest writes exactly one JSON line to stdout: the value of the program's last
+expression, or `{"success": false, "error": …}` when the program throws. `console.log`
+writes to stderr, so it never mixes into that line. The host reads the line as follows:
+
+- **A top-level `"success": false`** fails the run with the value's `error` string. When
+  `error` is missing, not a string or blank, the error is
+  `guest reported failure without an error message`.
+- **Empty or whitespace-only output** fails the run with `guest wrote no output`.
+- **Output that is not JSON** fails the run with `guest output is not JSON: <text>`,
+  quoting at most the first 1 KiB.
+- **Any other JSON** is the run's successful output, even when it has an `error` field.
+
 ## Why it is prebuilt and out of CI
 
 CI never rebuilds the guest (`--exclude js-sandbox` everywhere) — it consumes the
