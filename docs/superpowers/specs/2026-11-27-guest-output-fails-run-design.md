@@ -15,7 +15,9 @@ Today a failed run can still be reported as a success, in three ways:
   falls back to `success: true` with `{"raw_output": …}` when stdout isn't JSON. Normal
   JavaScript can't cause this; it happens when the guest breaks:
   - it crashes before printing, so stdout is empty;
-  - its output is cut off at the 10 MiB cap;
+  - its output passes the 10 MiB cap: the full pipe refuses the write and the guest aborts,
+    which `evaluate` reports as `guest output exceeded the 10 MiB limit`, not as a wasm
+    backtrace;
   - the prebuilt `quickjs.wasm` doesn't match the host's output format.
 - **Gap 1.** `{"success": false}` with no string `error` fails silently, and `gecko run`
   prints just "Execution failed!". The same code also fills `error` from a successful

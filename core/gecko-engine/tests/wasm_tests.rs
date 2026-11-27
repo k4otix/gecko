@@ -783,3 +783,27 @@ async fn a_guest_failure_without_a_message_is_reported() {
         Some("guest reported failure without an error message")
     );
 }
+
+#[tokio::test]
+async fn output_over_the_cap_names_the_cap() {
+    let executor = WasmExecutor::new().unwrap();
+    let result = executor
+        .evaluate(
+            SandboxRun {
+                code: "'x'.repeat(11 * 1024 * 1024)",
+                scopes: &[],
+                timeout_ms: None,
+                args: None,
+            },
+            Uuid::new_v4(),
+            &HostImports::default(),
+            None,
+        )
+        .await;
+
+    assert!(!result.success);
+    assert_eq!(
+        result.error.as_deref(),
+        Some("guest output exceeded the 10 MiB limit")
+    );
+}

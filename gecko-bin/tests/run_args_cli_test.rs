@@ -198,7 +198,7 @@ async fn a_failed_playbook_exits_non_zero() {
         text(&out)
     );
     assert!(
-        !stderr.contains(" ERROR ") && !stderr.contains("the playbook failed"),
+        !stderr.contains("ERROR") && !stderr.contains("the playbook failed"),
         "a failed playbook was logged as a host error\n{}",
         text(&out)
     );

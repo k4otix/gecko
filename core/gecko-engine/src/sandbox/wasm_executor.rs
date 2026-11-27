@@ -130,6 +130,9 @@ fn read_error(what: &str, limit: &str, e: ReadError) -> String {
     }
 }
 
+/// The most a guest may write to stdout (10 MiB).
+const MAX_OUTPUT_LEN: usize = 10 * 1024 * 1024;
+
 /// The longest piece of non-JSON guest output an error quotes.
 const MAX_QUOTED_OUTPUT_LEN: usize = 1024;
 
@@ -362,7 +365,7 @@ impl WasmExecutor {
 
         // 1. Virtual stdin (program) / stdout (JSON result). No fs or network.
         let stdin = MemoryInputPipe::new(code.to_string());
-        let stdout = MemoryOutputPipe::new(10 * 1024 * 1024); // 10 MiB output cap
+        let stdout = MemoryOutputPipe::new(MAX_OUTPUT_LEN);
 
         let mut wasi_builder = WasiCtxBuilder::new();
         wasi_builder.stdin(stdin);
@@ -498,6 +501,10 @@ impl WasmExecutor {
         if let Err(e) = start_func.call_async(&mut store, ()).await {
             if e.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::Interrupt) {
                 return fail(format!("execution timed out after {timeout_ms} ms"));
+            }
+            // A full pipe refuses the guest's write, and the guest aborts on it.
+            if stdout.contents().len() >= MAX_OUTPUT_LEN {
+                return fail("guest output exceeded the 10 MiB limit".to_string());
             }
             return fail(format!("JS Execution trap: {e}"));
         }
