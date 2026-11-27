@@ -35,7 +35,7 @@ Done when:
   - `cmd_run` signals a failed playbook with a marker error, which `main` maps to
     `ExitCode::FAILURE` without logging it.
 - **Rejected: `cmd_run` returns a plain `anyhow` error.** `main` logs every error to
-  stderr, so the failure message would print twice, once on stdout and once on stderr.
+  stderr at `ERROR`, so a failed playbook would also show up as a host error there.
 - **Rejected: `run()` returns an `ExitCode`.** That works, but it touches every command arm
   to carry one command's exit status. The marker error keeps the change inside `Run`.
 
@@ -68,6 +68,13 @@ Done when:
   - In `main`, the `Err(e)` arm returns `ExitCode::FAILURE` without calling `error!` when
     `e.downcast_ref::<PlaybookFailed>()` is `Some`. Every other error is logged as today.
   - stdout is unchanged: "Execution failed!" followed by "Error: …".
+- **The pipeline's failure log** (`core/gecko-engine/src/pipeline.rs:135-139`) moves from
+  `error!` to `warn!`. A failed playbook is the playbook's outcome, not a host error, so
+  stderr carries no `ERROR` line for it. The log keeps the message, and its
+  `unwrap_or("unknown")` default goes: every failure now carries a message, so it logs
+  `error = ?execution.error`.
+- **Quotes can span lines.** A non-JSON quote keeps its newlines. The error is shown as
+  written and is not collapsed onto one line.
 - **Stale comments.** The doc on `run_output` in `gecko-bin/tests/run_args_cli_test.rs:41`
   and `gecko-bin/tests/cyber_sample_test.rs:87` says a failed playbook still exits 0. It is
   rewritten to say what the helper checks now.
@@ -93,8 +100,8 @@ Done when:
 - **The CLI:**
   - `a_failed_playbook_exits_non_zero` in `gecko-bin/tests/run_args_cli_test.rs` syncs a
     playbook that throws `new Error("boom")` and runs it. The run exits non-zero, stdout
-    holds "Execution failed!" and "Error: JS Execution Error: …boom", and stderr has no
-    `ERROR` line.
+    holds "Execution failed!" and "Error: JS Execution Error: …boom", and stderr holds
+    neither an `ERROR`-level line nor "the playbook failed".
   - `a_playbook_times_out_at_its_timeout_ms` also asserts `!out.status.success()`.
 
 ## Non-goals

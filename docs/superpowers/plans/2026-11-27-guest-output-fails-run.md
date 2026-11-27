@@ -81,9 +81,11 @@
   - Run: `cargo nextest run -p gecko-engine --no-default-features --lib`
     - Expected: a compile failure, because `read_guest_output` isn't defined.
 - [ ] **Step 4: Implement** `read_guest_output` as the spec's Design states.
+  - `GuestOutput` derives `Debug, PartialEq`, so the tests compare whole values.
   - Trim with `str::trim`.
   - The cut reuses `stash_outcome`'s `is_char_boundary` loop.
-  - `evaluate`'s step 6 builds `ExecutionResult { output, success: error.is_none(), error, .. }` from it.
+  - `evaluate` keeps `String::from_utf8_lossy` and passes the `&str`.
+  - Step 6 builds `ExecutionResult` field by field: `output`, `success: error.is_none()` and `error` from it, with `duration_ms` and `engine` as they are written today.
 - [ ] **Step 5: Run the tests.**
   - Run: `cargo nextest run -p gecko-engine --no-default-features`
   - Expected: PASS, including every existing guest test.
@@ -96,6 +98,7 @@
 ### Task 2: a failed `gecko run` exits non-zero
 
 **Files:**
+- Modify: `core/gecko-engine/src/pipeline.rs:135-139`. The failure log becomes `warn!(concept_id = %run.concept_id, error = ?execution.error, "Pipeline: execution failed, not recording")`.
 - Modify: `gecko-bin/src/main.rs`:
   - the `match run(cli)` in `main` at `:246-252`;
   - `cmd_run` at `:1384`, whose last lines (`:1436-1437`) render the result and return `Ok(())`;
@@ -113,7 +116,7 @@
   - It asserts:
     - `!out.status.success()`;
     - stdout contains `Execution failed!`, `Error: JS Execution Error:` and `boom`;
-    - stderr does not contain `ERROR`.
+    - stderr contains neither `" ERROR "` (tracing's level field) nor `the playbook failed`.
   - Also add `assert!(!out.status.success(), …)` to `a_playbook_times_out_at_its_timeout_ms`.
 - [ ] **Step 2: Run the tests.**
   - Run: `cargo nextest run -p gecko-bin --no-default-features --test run_args_cli_test -j 1`
@@ -131,7 +134,9 @@
   - Expected: PASS, including `a_stored_timeout_out_of_range_fails_the_run`, which goes through the logging path.
 - [ ] **Step 5: Fix the stale comments and the ledger.**
   - The `run_output` doc in both test files becomes `The JSON output of a successful gecko run: it exited 0 and printed "Execution successful!".`
-  - The ledger moves N7 to Landed, naming the tests, and removes its Open row and the "Engine and CLI" heading if it is then empty. "Next up" says the queue is empty.
+  - The ledger moves N7 to Landed and names the tests.
+    - Under `## Open work`, the "Engine and CLI" table is removed and replaced with the line `Nothing open.`
+    - The "Next up" table is replaced with the line `Nothing queued.`
 - [ ] **Step 6: Commit** with the message `A failed gecko run exits non-zero`.
 
 ## Verification
