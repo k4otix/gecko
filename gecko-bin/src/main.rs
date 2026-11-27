@@ -245,6 +245,7 @@ async fn main() -> ExitCode {
 
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.downcast_ref::<PlaybookFailed>().is_some() => ExitCode::FAILURE,
         Err(e) => {
             error!("{:#}", e);
             ExitCode::FAILURE
@@ -1344,6 +1345,19 @@ fn cyber_bridge_handles(
         .context("wiring the cyber-gecko detect bridge")
 }
 
+/// A playbook run that failed. Its result is already printed, so `main` exits
+/// non-zero without logging it again.
+#[derive(Debug)]
+struct PlaybookFailed;
+
+impl std::fmt::Display for PlaybookFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the playbook failed")
+    }
+}
+
+impl std::error::Error for PlaybookFailed {}
+
 /// Prints the outcome of a pipeline execution.
 fn render_execution_result(result: &gecko_engine::sandbox::engine::ExecutionResult) {
     if result.success {
@@ -1434,6 +1448,9 @@ async fn cmd_run(
     .context("Pipeline execution failed")?;
 
     render_execution_result(&pipeline_result.execution);
+    if !pipeline_result.execution.success {
+        return Err(PlaybookFailed.into());
+    }
     Ok(())
 }
 
