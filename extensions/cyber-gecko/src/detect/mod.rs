@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use gecko_extension_api::{
     BeliefDraft, BeliefEdge, BeliefEdgeWriter, DerivationMethod, ExtensionCallback, GraphReader,
-    GraphValue, MemId, RunContext, Visibility,
+    GraphValue, MemId, RunContext, Visibility, shown, whole_number,
 };
 use serde_json::{Value, json};
 
@@ -1112,6 +1112,42 @@ async fn stale_sensor_components(graph: &Arc<dyn GraphReader>) -> Result<Vec<Val
         .collect())
 }
 
+/// The longest `precision` window: 100 Julian years (`100 * 365.25 * 86_400` seconds).
+const MAX_WINDOW_SECONDS: u64 = 3_155_760_000;
+
+/// Reads `precision`'s `window` as a whole number of seconds in
+/// `1..=MAX_WINDOW_SECONDS`; anything else is refused with the value as written.
+fn window_seconds(args: &Value) -> Result<u64, String> {
+    let v = args.get("window").unwrap_or(&Value::Null);
+    whole_number(v)
+        .filter(|w| (1..=MAX_WINDOW_SECONDS).contains(w))
+        .ok_or_else(|| {
+            format!(
+                "precision 'window' must be an integer number of seconds from 1 to \
+                 {MAX_WINDOW_SECONDS} (100 years), got {}",
+                shown(v)
+            )
+        })
+}
+
+/// The start of a trailing `window` ending at `occurred_at`, refused rather than
+/// panicking when chrono cannot represent it.
+fn window_cutoff(
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    window: u64,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    i64::try_from(window)
+        .ok()
+        .and_then(chrono::Duration::try_seconds)
+        .and_then(|d| occurred_at.checked_sub_signed(d))
+        .ok_or_else(|| {
+            format!(
+                "precision 'window' of {window} seconds reaches before the earliest \
+                 representable time"
+            )
+        })
+}
+
 /// True-positive precision of a detection over a trailing time window, computed
 /// host-side from the dispositions recorded against it.
 async fn precision(
@@ -1120,14 +1156,8 @@ async fn precision(
     args: &Value,
 ) -> Result<Value, String> {
     let logic_id = req_str(args, "logic_id")?;
-    let window = args
-        .get("window")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "precision requires an integer 'window' (seconds)".to_string())?;
-    if window == 0 {
-        return Err("precision 'window' must be greater than zero seconds".to_string());
-    }
-    let cutoff = ctx.occurred_at - chrono::Duration::seconds(window as i64);
+    let window = window_seconds(args)?;
+    let cutoff = window_cutoff(ctx.occurred_at, window)?;
 
     let rows = graph
         .read(
@@ -1373,6 +1403,76 @@ async fn live_replacements(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ts(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn a_whole_float_window_is_read_as_an_integer() {
+        assert_eq!(window_seconds(&json!({ "window": 5.0 })), Ok(5));
+        assert_eq!(
+            window_seconds(&json!({ "window": MAX_WINDOW_SECONDS })),
+            Ok(MAX_WINDOW_SECONDS)
+        );
+        assert_eq!(
+            window_seconds(&json!({ "window": 3155760000.0 })),
+            Ok(MAX_WINDOW_SECONDS)
+        );
+    }
+
+    #[test]
+    fn a_window_outside_the_range_is_refused_naming_the_limit() {
+        for args in [
+            json!({ "window": 3155760001u64 }),
+            json!({ "window": 3155760001.0 }),
+            json!({ "window": 0 }),
+            json!({ "window": 0.0 }),
+            json!({ "window": -0.0 }),
+            json!({ "window": -5 }),
+            json!({ "window": 5.5 }),
+            json!({}),
+            json!({ "window": null }),
+            json!({ "window": "60" }),
+            json!({ "window": 1e20 }),
+            json!({ "window": 100_000_000_000_000u64 }),
+        ] {
+            let err = window_seconds(&args).expect_err(&args.to_string());
+            assert!(
+                err.contains("3155760000") && err.contains("window"),
+                "{args}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_window_is_shown_without_echoing_a_large_value() {
+        let err = window_seconds(&json!({ "window": "x".repeat(10_000) })).unwrap_err();
+        assert!(err.len() < 300, "a {}-byte error", err.len());
+    }
+
+    #[test]
+    fn window_cutoff_at_the_ceiling_is_100_julian_years_earlier() {
+        assert_eq!(
+            window_cutoff(ts("2026-11-27T00:00:00Z"), MAX_WINDOW_SECONDS),
+            Ok(ts("1926-11-27T00:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn window_cutoff_chrono_cannot_represent_is_an_error() {
+        let t = ts("2026-11-27T00:00:00Z");
+        for (at, window) in [
+            (chrono::DateTime::<chrono::Utc>::MIN_UTC, MAX_WINDOW_SECONDS),
+            (t, 100_000_000_000_000),
+            (t, u64::MAX),
+        ] {
+            let err = window_cutoff(at, window).expect_err(&window.to_string());
+            assert!(err.contains("precision 'window' of"), "{err}");
+        }
+    }
 
     fn tactic_pair(tech: &str, tac: &str, tac_aid: Option<&str>) -> Value {
         json!({ "tech_cid": tech, "tac_cid": tac, "tac_aid": tac_aid,

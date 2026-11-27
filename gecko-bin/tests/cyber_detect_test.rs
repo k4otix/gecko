@@ -2003,3 +2003,28 @@ async fn blinded_on_a_deprecated_claimed_technique_has_no_replacement() {
     .await;
     assert_eq!(report, retired_sub2_report(Value::Null));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn precision_reads_a_whole_float_window_and_refuses_one_past_the_ceiling() {
+    let test_db = TestDb::new("gecko_test_detect_window");
+    seed_detection_graph(&test_db).await;
+
+    let (graph, edges) = detect_handles(&test_db);
+    let cb = cyber_extension_callback(graph, edges, run_ctx(LOGIC_ID), base());
+
+    let prec = call(
+        &cb,
+        "precision",
+        json!({ "logic_id": LOGIC_ID, "window": 5.0 }),
+    )
+    .expect("a whole float window is read");
+    assert_eq!(prec["window_seconds"], 5);
+
+    let err = call(
+        &cb,
+        "precision",
+        json!({ "logic_id": LOGIC_ID, "window": 100_000_000_000_000u64 }),
+    )
+    .expect_err("a window past the ceiling is refused");
+    assert!(err.contains("3155760000"), "{err}");
+}

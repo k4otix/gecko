@@ -23,18 +23,9 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | # | ID | Item | Size |
 |---|---|---|---|
-| 1 | N9 | `precision` bounds its `window` instead of panicking | S |
-| 2 | N7 | A guest whose stdout is not JSON fails the run | S |
-| 3 | N8 | `precision.window` accepts a whole-number float | S |
+| 1 | N7 | A guest whose stdout is not JSON fails the run | S |
 
 ## Open work
-
-### Cyber
-
-| ID | Item | Consumer | Done when | Needs |
-|---|---|---|---|---|
-| **N8** | `precision.window` accepts a whole-number float (`5.0`), which `Math.floor` returns, reusing the mem bridge's integer rule (`as_u64` or a whole float up to `Number.MAX_SAFE_INTEGER`) | playbooks computing a window | `precision.window: 5.0` is read as 5 and `1e20` is refused | — |
-| **N9** | `precision` bounds `window`: today a large integer (`1e14` seconds) reaches `ctx.occurred_at - chrono::Duration::seconds(window as i64)` unchecked, which panics on overflow (`Duration::seconds` past about 9.2e15, and the subtraction well before that), and a value over `i64::MAX` wraps negative. Refuse a window past the representable range with an error naming the limit | playbooks taking `window` from `gecko.args` (the sample's `detection_precision`) | `precision.window: 100000000000000` is an error, not a panic | — |
 
 ### Engine and CLI
 
@@ -55,6 +46,7 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 | **S6** | `coverage_gaps` groups its gaps by tactic: each gap row carries its live `tactics`, and `by_tactic` gives each live tactic its `live` technique count, `undetected` count and gap `techniques`, sorted by ATT&CK id. Dead techniques and dead tactics are excluded from the `technique-tactic` read (retired techniques keep their edges). The parent roll-up of `blinded` was cut: it changes presentation only. Design: `docs/superpowers/specs/2026-11-25-coverage-gaps-by-tactic-design.md` | `coverage_gaps_groups_gaps_by_tactic`, `a_fully_covered_tactic_stays_with_no_gaps`, `a_retired_technique_counts_in_no_tactic`, `a_dead_tactic_is_not_grouped`; the `group_by_tactic_*` unit tests |
 | **N6** | A cyber worked example. `extensions/cyber-gecko/sample-bundle/` holds two detections (`T1059.001`, `T1053.005`) and five playbooks that read their inputs from `gecko.args`: claim, verdict, coverage report, precision and withdraw. `sample-sensors.yaml` is written from ATT&CK 20.1's analytics, so one claim is blind and `WinEventLog:Security` is recommended. The cyber README gains the walkthrough, with outputs from a real Enterprise 20.1 run, and `claim`, `disposition` and `precision` reference sections. **N6a:** `gecko run <id> --args <json>` gives a playbook a deep-frozen, non-writable `gecko.args`, delivered as the WASI variable `GECKO_ARGS` and capped at 1 MiB on the host and in the executor. Design: `docs/superpowers/specs/2026-11-25-cyber-worked-example-design.md` | `the_readme_walkthrough_runs` (runs the README's own `gecko run` commands); `run_args_reach_the_playbook`, `non_object_args_fail_before_connecting`; the `run_args_*` guest and `parse_run_args` unit tests |
 | **N5** | A playbook's `timeout-ms` bounds its run. `MAX_TIMEOUT_MS` (600000 ms) is enforced by the parser (refusing `0`, negatives, floats, strings, `null` and a blank value, naming the file), by `sync_bundle`, by `gecko run`'s read of the stored value, and by the executor before the guest starts. The core schema's `timeout-ms` attribute (`value integer @range(1..)`) is written by sync and read by `gecko run` only where the schema defines it, so an older database still runs. A timed-out run reports `execution timed out after <ms> ms`. `consumes` and `produces` are no longer special fields; they land in `metadata-json`. Design: `docs/superpowers/specs/2026-11-26-timeout-ms-design.md` | `a_playbook_times_out_at_its_timeout_ms`, `a_stored_timeout_out_of_range_fails_the_run`, `a_playbook_runs_on_a_schema_without_timeout_ms`, `timeout_ms_round_trips`, `an_out_of_range_timeout_is_refused_before_writing`; the `timeout_ms_*` parser tests; `a_zero_timeout_is_refused`, `a_timeout_over_the_ceiling_is_refused`, `the_ceiling_itself_is_accepted` |
+| **N8, N9** | `precision` reads `window` through the bridges' shared whole-number rule (`gecko_extension_api::whole_number`: a JSON integer, or a whole float up to `Number.MAX_SAFE_INTEGER`), so `5.0` is read as 5. It refuses anything outside `1..=MAX_WINDOW_SECONDS` (3155760000 s, 100 Julian years) with an error naming the limit, and computes its cutoff with checked chrono math, so a huge window is an error, not a panic. Design: `docs/superpowers/specs/2026-11-27-precision-window-design.md` | `precision_reads_a_whole_float_window_and_refuses_one_past_the_ceiling`; `a_whole_float_window_is_read_as_an_integer`, `a_window_outside_the_range_is_refused_naming_the_limit`, `a_refused_window_is_shown_without_echoing_a_large_value`, `window_cutoff_at_the_ceiling_is_100_julian_years_earlier`, `window_cutoff_chrono_cannot_represent_is_an_error`; the `guest_value` tests |
 
 ## Deferred (reopen on the trigger)
 
