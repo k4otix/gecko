@@ -472,3 +472,74 @@ async fn a_playbook_retracts_a_root_and_learns_what_rested_on_it() {
     std::fs::remove_file(&path).ok();
     fx.drop_db().await;
 }
+
+// ── A playbook declares an assumption and learns what rested on it ───────────
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_playbook_declares_an_assumption_and_learns_what_rested_on_it() {
+    let fx = Fixture::new().await;
+    let path = tmp_index_path();
+    let embedder: Arc<dyn Embedder> = Arc::new(StubEmbedder::new(DIM));
+    let index = Arc::new(HnswIndex::open(&path, embedder.model_id(), DIM).unwrap());
+    let writer: Arc<dyn EpistemicWriter> =
+        Arc::new(MemWriter::new(fx.store(), Some(embedder), Some(index)));
+    let run_ctx = RunContext::new(
+        ActorId::new("agent-1"),
+        ProvenanceSource::ExecutableDoc {
+            concept_id: ConceptId::new("playbooks/mem-rests-on-demo"),
+        },
+        dt("2026-01-02T00:00:00Z"),
+    );
+    let cb = run_callback(run_ctx, writer);
+    // Neither belief is derived from the other; only the declared assumption links them.
+    let program = r#"
+        const root = mem.derive("the detection logic is sound", []);
+        const kid = mem.derive("the alert was a true positive", []);
+        const declared = mem.restsOn(kid.id, [root.id]);
+        const r = mem.retract(root.id, "the logic was wrong");
+        ({ root: root.id, kid: kid.id, declared, radius: r.blast_radius })
+    "#;
+    let scopes = vec![
+        "mem:derive".to_string(),
+        "mem:rests_on".to_string(),
+        "mem:retract".to_string(),
+    ];
+    let result = WasmExecutor::new()
+        .unwrap()
+        .evaluate(
+            SandboxRun {
+                code: program,
+                scopes: &scopes,
+                timeout_ms: Some(30_000),
+                args: None,
+            },
+            Uuid::new_v4(),
+            &HostImports::default(),
+            Some(cb),
+        )
+        .await;
+    assert!(result.success, "guest run failed: {:?}", result.error);
+    let out = &result.output;
+    assert_eq!(
+        out["declared"],
+        serde_json::json!({ "resting": out["kid"].clone(), "assumptions": [out["root"].clone()] }),
+        "{out}"
+    );
+    assert_eq!(
+        out["radius"],
+        serde_json::json!([out["kid"].clone()]),
+        "{out}"
+    );
+    let declarers = fx
+        .raw_fetch(&format!(
+            r#"match $k isa belief, has concept-id "{}";
+                 $e isa rests-on, links (resting: $k, declarer: $ag); $ag has agent-id $aid;
+               fetch {{ "aid": $aid }};"#,
+            out["kid"].as_str().unwrap()
+        ))
+        .await;
+    assert_eq!(declarers.len(), 1, "{declarers:?}");
+    assert_eq!(declarers[0]["aid"], "agent-1");
+
+    std::fs::remove_file(&path).ok();
+    fx.drop_db().await;
+}

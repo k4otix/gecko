@@ -240,13 +240,14 @@ async fn run(code: &str, scopes: &[&str], cb: ExtensionCallback) -> (bool, Value
     )
 }
 
-const MEM_SCOPES: [&str; 6] = [
+const MEM_SCOPES: [&str; 7] = [
     "mem:recall",
     "mem:remember",
     "mem:derive",
     "mem:supersede",
     "mem:contest",
     "mem:retract",
+    "mem:rests_on",
 ];
 
 /// A mem callback's canned reply: `{ chunks: [] }` for recall, `{ id }` otherwise.
@@ -508,6 +509,68 @@ async fn mem_retract_needs_its_scope() {
     assert!(!ok);
     assert!(err.contains("not granted"), "{err}");
     assert!(calls.lock().unwrap().is_empty(), "the callback never ran");
+}
+
+fn rests_on_reply(_: &str) -> Result<Value, String> {
+    Ok(json!({ "resting": "mem/bel/a", "assumptions": ["mem/bel/b"] }))
+}
+
+#[tokio::test]
+async fn mem_rests_on_reaches_the_host_and_returns_its_reply() {
+    let (cb, calls) = recording(rests_on_reply);
+    let code = r#"const r = mem.restsOn("mem/bel/a", ["mem/bel/b"]); ({ resting: r.resting, first: r.assumptions[0] })"#;
+    let (ok, out, err) = run(code, &MEM_SCOPES, cb).await;
+    assert!(ok, "{err}");
+    assert_eq!(out, json!({ "resting": "mem/bel/a", "first": "mem/bel/b" }));
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        (calls[0].0.as_str(), calls[0].1.as_str()),
+        ("mem", "rests_on")
+    );
+    assert_eq!(
+        calls[0].2,
+        json!({ "resting": "mem/bel/a", "assumptions": ["mem/bel/b"] })
+    );
+}
+
+#[tokio::test]
+async fn mem_rests_on_needs_its_scope() {
+    let (cb, calls) = recording(rests_on_reply);
+    let scopes: Vec<&str> = MEM_SCOPES
+        .iter()
+        .copied()
+        .filter(|s| *s != "mem:rests_on")
+        .collect();
+    let (ok, _, err) = run(r#"mem.restsOn("mem/bel/a", ["mem/bel/b"])"#, &scopes, cb).await;
+    assert!(!ok);
+    assert!(err.contains("not granted"), "{err}");
+    assert!(calls.lock().unwrap().is_empty(), "the callback never ran");
+}
+
+#[tokio::test]
+async fn mem_rests_on_without_a_resting_id_throws_type_error() {
+    assert_type_error(&["mem.restsOn()", "mem.restsOn(5, [])"], "resting").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mem_rests_on_without_assumptions_is_refused_by_the_host() {
+    use gecko_engine::sandbox::mem_host::epistemic_extension_callback;
+    use gecko_extension_api::{ActorId, ProvenanceSource, RunContext};
+    for code in [
+        r#"mem.restsOn("mem/bel/a")"#,
+        r#"mem.restsOn("mem/bel/a", null)"#,
+    ] {
+        let ctx = RunContext::new(
+            ActorId::new("agent-1"),
+            ProvenanceSource::Manual,
+            chrono::Utc::now(),
+        );
+        let base: ExtensionCallback = Arc::new(|_, _, _| Err("base".to_string()));
+        let cb = epistemic_extension_callback(ctx, Arc::new(UnreachableWriter), None, base);
+        let (ok, _, err) = run(code, &MEM_SCOPES, cb).await;
+        assert!(!ok, "{code} must fail");
+        assert!(err.contains("assumptions"), "{code}: {err}");
+    }
 }
 
 #[tokio::test]

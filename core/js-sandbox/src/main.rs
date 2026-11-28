@@ -278,6 +278,19 @@ fn mem_retract(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsRe
     JsValue::from_json(&reply, context)
 }
 
+/// `mem.restsOn(resting, assumptions)` → `{ resting, assumptions }`, and the reply
+/// echoes both. A missing `assumptions` is sent as missing, and the host refuses it.
+fn mem_rests_on(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let resting = require_str_arg(args, 0, "resting")?;
+    let mut payload = serde_json::Map::new();
+    payload.insert("resting".to_string(), json!(resting));
+    if let Some(assumptions) = opt_arg(args, 1, "assumptions", context)? {
+        payload.insert("assumptions".to_string(), assumptions);
+    }
+    let reply = host_call("mem", "rests_on", &Value::Object(payload))?;
+    JsValue::from_json(&reply, context)
+}
+
 /// `mem.contest(claims)` → `{ claims }`. A missing `claims` is sent as missing, and
 /// the host refuses it.
 fn mem_contest(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
@@ -457,6 +470,11 @@ fn main() {
         .function(
             NativeFunction::from_fn_ptr(mem_retract),
             js_string!("retract"),
+            2,
+        )
+        .function(
+            NativeFunction::from_fn_ptr(mem_rests_on),
+            js_string!("restsOn"),
             2,
         )
         .build();

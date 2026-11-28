@@ -185,7 +185,7 @@ fn mem_playbook() -> String {
 type: playbook
 title: Rig mem
 engine: quickjs
-scopes: [mem:remember, mem:recall, mem:derive, mem:supersede, mem:contest, mem:retract]
+scopes: [mem:remember, mem:recall, mem:derive, mem:supersede, mem:contest, mem:rests_on, mem:retract]
 ---
 
 # Rig mem
@@ -197,6 +197,7 @@ const chunks = mem.recall({q}, {{ maxChunks: 5 }});
 const b1 = mem.derive({b1}, chunks.map(c => c.id), {{ confidence: 0.6 }});
 const s = mem.supersede(b1.id, {s}, "revised");
 const a = mem.contest([s.id, b2.id]);
+mem.restsOn(s.id, [b2.id]);
 const r = mem.retract(b2.id, "rig retraction");
 ({{ episode: e.id, recalled: chunks.length, b1: b1.id, b2: b2.id, s: s.id, anomaly: a.anomaly, retracted: r.id }})
 ```
@@ -500,13 +501,6 @@ const KNOWN_OWNERS: &[&str] = &["M1", "M2", "M3-r"];
 /// Every belief-tier label no production step reaches, with how it is accounted for.
 const DISPOSITIONS: &[(&str, LabelDisposition)] = &[
     (
-        "rests-on",
-        LabelDisposition::WriterOnly {
-            methods: &["rests_on"],
-            owner: "M1",
-        },
-    ),
-    (
         "prediction-resolution",
         LabelDisposition::WriterOnly {
             methods: &["record_prediction", "resolve_prediction"],
@@ -738,6 +732,10 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
         .await
         .expect("ref contest");
     ref_writer
+        .rests_on(&ctx, s.clone(), std::slice::from_ref(&b2))
+        .await
+        .expect("ref rests_on");
+    ref_writer
         .retract(&ctx, b2.clone(), Some("rig retraction"))
         .await
         .expect("ref retract");
@@ -842,13 +840,6 @@ async fn memwriter_is_the_sole_belief_tier_writer() {
             });
         }};
     }
-    drive!(
-        "rests_on",
-        ref_writer
-            .rests_on(&cyber_ctx, b2.clone(), std::slice::from_ref(&s))
-            .await
-            .expect("rests_on")
-    );
     drive!(
         "record_prediction",
         ref_writer
