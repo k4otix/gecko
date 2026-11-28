@@ -1341,6 +1341,7 @@ mod tests {
             engine: None,
             scopes: vec![],
             timeout_ms: None,
+            provenance: Default::default(),
         }
     }
 

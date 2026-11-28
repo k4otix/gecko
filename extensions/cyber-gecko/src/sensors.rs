@@ -263,6 +263,7 @@ fn concept(
         engine: None,
         scopes: Vec::new(),
         timeout_ms: None,
+        provenance: Default::default(),
         file_hash,
         extra_metadata: HashMap::new(),
         typed_attributes,
@@ -321,6 +322,8 @@ pub fn to_okf(file: &SensorFile, bundle_name: &str) -> OkfBundle {
         links: Vec::new(),
         citations: Vec::new(),
         hierarchy: Vec::new(),
+        okf_version: None,
+        warnings: Vec::new(),
     }
 }
 

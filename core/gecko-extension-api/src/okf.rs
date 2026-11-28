@@ -102,6 +102,54 @@ pub struct OkfConcept {
     /// Maximum execution time in milliseconds (from frontmatter `timeout-ms`), from 1 to
     /// the engine's ceiling (`gecko_engine::sandbox::wasm_executor::MAX_TIMEOUT_MS`).
     pub timeout_ms: Option<u64>,
+
+    /// The OKF v0.2 provenance, trust and lifecycle facts the file states (`generated.by`,
+    /// `verified`, `status`, `stale_after`); `generated.at` fills [`Self::timestamp`].
+    #[serde(default)]
+    pub provenance: OkfProvenance,
+}
+
+/// A concept's OKF v0.2 trust tier, derived from its `verified` actors (OKF §5.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrustTier {
+    Unverified,
+    MachineConfirmed,
+    HumanReviewed,
+}
+
+impl TrustTier {
+    /// The tier's OKF name, as stored in the graph.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TrustTier::Unverified => "unverified",
+            TrustTier::MachineConfirmed => "machine-confirmed",
+            TrustTier::HumanReviewed => "human-reviewed",
+        }
+    }
+}
+
+/// One OKF v0.2 `verified` event: who confirmed the concept, and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Verification {
+    pub by: String,
+    pub at: DateTime<Utc>,
+}
+
+/// The OKF v0.2 provenance, trust and lifecycle facts of a concept. Every field is
+/// empty for a concept that states none of them, including every extension-built one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OkfProvenance {
+    /// The `generated.by` actor, as written.
+    pub generated_by: Option<String>,
+    /// The tier derived from `verified`; `None` when `verified` is absent or holds no
+    /// valid event.
+    pub trust_tier: Option<TrustTier>,
+    /// The `status`, as written; absence means `stable`.
+    pub status: Option<String>,
+    /// The instant from which the concept is stale.
+    pub stale_after: Option<DateTime<Utc>>,
+    /// The valid `verified` events, without exact duplicates, in file order.
+    pub verifications: Vec<Verification>,
 }
 
 /// A single schema-typed attribute an extension attaches to a concept. The
@@ -167,4 +215,9 @@ pub struct OkfBundle {
     pub links: Vec<OkfLink>,
     pub citations: Vec<OkfCitation>,
     pub hierarchy: Vec<HierarchyEdge>,
+    /// The `okf_version` the bundle-root `index.md` declares, as written.
+    pub okf_version: Option<String>,
+    /// Warnings about OKF v0.2 values the parser could not read, one per value, in
+    /// file order; each value is kept in its concept's `metadata-json`.
+    pub warnings: Vec<String>,
 }
