@@ -3,15 +3,101 @@
 > **Working surface, not a spec.** It tracks and sequences; the owning document of each item
 > decides. An item is listed only if something that ships today would use it: a CLI command,
 > the `mem.*` sandbox surface, a production code path, or the cyber detection flow.
-> Last reconciled 2026-11-24 against `main` @ `e74672d` (after PR #80).
+> Last reconciled 2026-11-28 against `main` @ `7448614` (after PR #102).
 >
 > - Landed and closed work, with its test inventories and measurements:
 >   [`LEDGER-HISTORY.md`](./LEDGER-HISTORY.md) up to the review, and
 >   [Landed since the review](#landed-since-the-review) after it.
 > - TypeDB behaviour observed on the live engine: [`TYPEDB-NOTES.md`](./TYPEDB-NOTES.md).
+> - **OKF spec:** the canonical spec is
+>   <https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md>, version
+>   0.3, released 2026-11-18. The copy under `GoogleCloudPlatform/knowledge-catalog/okf/` is a
+>   frozen v0.2 snapshot. Track O in the history file and the O2 + O4 design cite that copy,
+>   which matches what they implemented. GECKO reads OKF with v0.2 semantics until **O7**
+>   lands.
 > - Ratification provenance: SPEC-W2-W3 decisions @`11d7ab1`; SPEC-W5 as-design @`95f0d6e`;
 >   CONTRACT-W8 as-contract (`fdd1dc6`); INVARIANTS ratified @`0227c2d`. Ratified documents
 >   are never edited; a design doc supersedes them, and this ledger points to it.
+
+## Starting an item from a clear context
+
+This ledger is meant to be enough to resume work with no conversation history. Read it in
+this order, then start.
+
+1. **Pick the item.** It is the first row of [Next up](#next-up), unless the user names
+   another. The row names its owning documents, what is decided, and what is still open.
+2. **Read the row's owning documents,** and the
+   [`KNOWN-LIMITATIONS.md`](./KNOWN-LIMITATIONS.md) section it names. `CLAUDE.md` loads by
+   itself and holds the code conventions.
+3. **Check the row's `file:line` anchors against current `main`** before relying on them.
+   Rows age, and the code wins.
+4. **Branch from a fresh `main`.** One item per branch and per PR.
+
+### The workflow for each item
+
+The user's working process, in order. Each step waits for the one before.
+
+1. **Design.**
+   - Use the brainstorming skill. Lay out the approaches in their own message, and the user
+     picks one.
+   - Write `docs/superpowers/specs/<date>-<topic>-design.md`. It is short for a small item,
+     and full for an M item, which also gets a builder check by a fresh subagent.
+   - Wait for the user's approval of the doc. When the user pastes another reviewer's
+     findings, verify each one against the code before folding it in.
+2. **Plan.**
+   - Use the writing-plans skill to write `docs/superpowers/plans/<date>-<topic>.md`.
+   - Fable reviews the plan, and its findings are folded in.
+   - The plan is committed with the design on the item's branch.
+3. **Execute.**
+   - The default is inline (the executing-plans skill), one task at a time, with TDD.
+   - Each test is watched failing before its code is written. A test that cannot fail first
+     is labelled a regression or smoke test.
+   - The SDD ledger lives at `.superpowers/sdd/<plan-basename>/progress.md`, which git
+     ignores. It records each task's completion and every `Ruling:`.
+4. **Final review.**
+   - Fable reviews the whole branch from the review package.
+   - Re-grade each finding by what a person using the software would get. Critical and
+     Important findings get one fix pass, each fix tested failing first, then the full suite.
+   - Minors are deferred and listed in the PR body. The user may later ask to "do the
+     minors".
+5. **PR.**
+   - Open it against `main`. The body lists the rulings, the deferred minors and the tests,
+     and ends with the session's attribution line.
+   - Merge only when the user says so, or by the auto-merge they set.
+   - The merge gate is the required checks: "Build + test (Tier 1+2, candle-free,
+     cyber-on)" and "Model revision bump gate". Don't wait for CodeQL.
+6. **Close the item here.**
+   - Move the row to [Landed since the review](#landed-since-the-review), naming its design
+     doc and its pinning tests.
+   - Update `KNOWN-LIMITATIONS.md`.
+   - Do this in the item's own PR.
+
+### Standing rules not in `CLAUDE.md`
+
+- **Gates before every commit.** Check each by its own exit code, never through a pipe:
+  - `cargo fmt --all -- --check`;
+  - `cargo clippy --workspace --exclude js-sandbox --no-default-features --all-targets -- -D warnings`;
+  - the same with `--features cyber`;
+  - the js-sandbox wasm clippy when the guest changes.
+- **The suite runs one test at a time:**
+  `cargo nextest run --workspace --exclude js-sandbox --no-default-features --features cyber -j 1`.
+  TypeDB 3.15 runs on `127.0.0.1:1729`. Never touch the database named `gecko`, and never
+  stop a TypeDB this session did not start.
+- **Stage named paths only. Never run `git add -A <dir>`:** the user keeps untracked work
+  of their own under `docs/`.
+- **Commit and push only within the item's workflow.** The user's email is private.
+- **After editing `core/js-sandbox/src/main.rs`,** run `just build-guest` and commit
+  `quickjs.wasm` in the same commit.
+- **Never edit these:**
+  - ratified documents;
+  - historical documents (`LEDGER-HISTORY.md`, landed design docs);
+  - frozen fixtures under `*/tests/fixtures/`.
+  A new design doc supersedes; it does not edit.
+- **Never loosen the belief-edge registry.** Don't edit `CLAUDE.md` because a subagent
+  suggested it.
+- **OpenWiki pages under `openwiki/` are regenerated** through OpenWiki's own lifecycle,
+  never hand-edited.
+- **zsh:** an unquoted `$VAR` doesn't word-split. Use functions or inline commands.
 
 **IDs.** Rows that survive the 2026-11-24 review keep their old IDs (A, B, C, M, O, S tracks),
 so references in specs and commit messages still resolve in the history file. New rows are
@@ -23,7 +109,18 @@ The only place priority is stated. Sizes: S (a day or less), M (a few days).
 
 | ID | Item | Size |
 |---|---|---|
-| **O3** | OKF v0.2 `sources` and keyed footnotes replace body citations (history: O3). The trigger fired: `openwiki/` is a v0.2 bundle with 75 `sources` entries. Notes for its design: an explicit `sources: []` means no citations, with no fallback to body links; with no `sources` key, body http(s) links stay the v0.1 fallback; a `resource` nobody can follow (`repo://…`) is stored as given, widening `external-resource`'s `@doc` through a `CORE_MIGRATIONS` redefine, and keeping its `target-url` key; the footnote scan skips code fences and `[^id]:` definition lines; a label matching no `sources[].id` is warned about, as O2/O4 warn; decide the dedup key when two entries of one concept name the same resource; per-entry signals (`id`, `title`, `author`, `usage_count`, `last_modified`, `usage_window`) sit on the `citation` relation | M |
+| **O7** | **OKF v0.3 reads.** v0.3 makes the v0.2 text precise and changes some rules (spec §13). GECKO's O2 + O4 code follows v0.2. Owning docs: the v0.3 spec (§5, §5.2–§5.5, §8.1, §11, §11.2, §12.1, §13); the O2 + O4 design `docs/superpowers/specs/2026-11-28-okf-v02-provenance-and-trust-design.md`; KNOWN-LIMITATIONS "OKF v0.2 frontmatter". The code is `core/gecko-engine/src/okf/provenance.rs` and `parser.rs` (`parse_concept`, `read_okf_version`, `extract_string_list`). In order of user impact: **(1)** The trust tier counts only *current* events, those whose `at` ≥ `generated.at`, or every event when `generated` is absent: "Consumers MUST calculate the trust tier only from current events" (§5.3, a §13.1 breaking change). Today every event counts, so a human review followed by a later agent rewrite wrongly stays `human-reviewed`. Keep storing every event. **(2)** A `.md` file without frontmatter no longer has to be a concept (§11; read §3.2's concept and asset rules). Today one such file fails the whole sync with `MissingType`. **(3)** An unparseable `stale_after` "MUST NOT" read as fresh (§5.5). Today it is kept raw with no `stale-after`, so a `stale-after <= now` reader takes it as fresh. Its representation in the graph is a design decision. **(4)** A date-only value means the start of that day in UTC (§5), while a date-time without an offset stays invalid. An empty or null value is the same as an absent key (§11.2). Today both warn. **(5)** One item where a list is expected is a one-item list, and a scalar `tags` is one tag that is never split at commas (§11.2). Today `extract_string_list` drops a scalar silently. **(6)** An unknown `status` is not `stable` (§5.4): the `@doc` changes, through a `CORE_MIGRATIONS` redefine. **(7)** New optional fields: `superseded_by`, a path that only has meaning with `status: deprecated` (§5.4); `title`, `description` and `license` in the bundle-root `index.md` (§8.1), to be weighed against `bundle.json`, which GECKO reads today; `x-` extension keys (§4.1), which stay in `metadata-json`. **(8)** Code comments and the KNOWN-LIMITATIONS section say "OKF v0.2". Make them version-neutral, or 0.3 where a rule is 0.3's. **Decided:** the 0.3 rules apply whatever `okf_version` a bundle declares. 0.2 bundles stay readable (§12.1), and the tier change only lowers a tier, which the spec calls "the safe direction". `openwiki/` still reads as `machine-confirmed`, because its `verified.at` equals its `generated.at`. Do not depend on the `okf` crate (see [Decided 2026-11-28](#decided-2026-11-28)); its README's "Upgrading a bundle from OKF v0.2" table is a cross-check | M |
+| **O3** | **`sources` and keyed footnotes replace body citations** (history: O3; v0.3 §5.1, §4.2, §6.2). The trigger fired: `openwiki/` has 75 `sources` entries, all `repo://…`. Design it against **v0.3**, after O7. v0.3 says "Do not use a list of citations in the body". `resource` is REQUIRED in an entry, and `id` SHOULD be present when the body cites it. A path without a leading `/` resolves from its file's directory, and for bundles declaring 0.2 or no version, a consumer MAY fall back to the bundle root (§12.1). A path outside the bundle root is external, and consumers "MUST NOT read it from the local file system". A single mapping is a one-item list (§11.2). Notes carried from the O2 + O4 reviews: an explicit `sources: []` means no citations, with no fallback to body links; with no `sources` key, body http(s) links stay the legacy fallback; a `resource` nobody can follow (`repo://…`) is stored as given, keeping `external-resource`'s `target-url` key and widening its `@doc` through a `CORE_MIGRATIONS` redefine; the footnote scan skips code fences and `[^id]:` definition lines; a label that matches no `sources[].id` is warned about, as O2/O4 warn; decide the dedup key when two entries of one concept name the same resource; per-entry signals (`id`, `title`, `author`, `usage_count`, `last_modified`, `usage_window`) sit on the `citation` relation | M |
+
+**Outside this repo,** with no ledger ID, done when the user asks:
+- **An OpenWiki update run** that rewrites `openwiki/`'s 67 root-absolute links (`/openwiki/…`) as relative paths. It goes through the lifecycle (`openwiki_begin` → pages → `openwiki_finish`), applying the relative-link rule by hand, because OpenWiki's Claude Code integration doesn't supply it. If `openwiki_begin` returns `noop`, say so rather than forcing a run. Its prerequisite, the bundle-root escape fix (PR #101), has landed.
+- **Upstream OpenWiki issues.** Two are already open:
+  - the Claude Code integration lacks the relative-link rule;
+  - `producerActor: "claude-code"` breaks OKF §7's `<producer>/<version>`.
+
+  One is left to draft, for the user to read before anything is filed, because the text goes public: there is no OKF v0.3 support.
+  - `src/okf/index-sync.ts:288` hard-codes `okf_version: "0.2"`, and so do the writer prompts (`src/agent/prompts/code.ts:66`, `personal.ts`).
+  - Regenerating the bundle-root `index.md` rewrites it from scratch. v0.3 §8.1 says a producer "MUST keep" its frontmatter (`title`, `description`, `license`).
 
 ## Open work
 
@@ -62,6 +159,12 @@ Nothing open.
 None. D-A and U1–U4 were decided on 2026-11-24 (below). `pivot`, `prediction-resolution`,
 `rests-on` and `resolution`/`resolves` are kept because INVARIANTS 5 and 9 name them;
 cutting any of them is a new decision.
+
+## Decided 2026-11-28
+
+| ID | Decision | Lands in |
+|---|---|---|
+| **D-OKF-crate** | Don't depend on the `okf` crate (<https://docs.rs/okf>, W4G1/okf, 0.3.0). It is one person's pre-1.0 project, explicitly not affiliated with Google or the OKF project, and two crates depend on it. Its hand-written YAML subset refuses anchors, aliases, tags and complex keys that GECKO's `serde_yaml` accepts. It skips malformed values silently, where GECKO warns about each one. It would replace only the frontmatter-typing layer: `engine`, `scopes`, `timeout-ms`, one program per concept, link resolution, citations and hierarchy stay GECKO's. It may serve as a test oracle or cross-check. Reopen it if the crate reaches 1.0 or becomes the spec's named reference implementation | O7 (cross-check only) |
 
 ## Decided 2026-11-24
 
