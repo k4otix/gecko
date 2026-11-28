@@ -44,7 +44,9 @@ pub fn extract_links(body: &str, source_concept_id: &str) -> (Vec<OkfLink>, Vec<
             });
         } else if target.ends_with(".md") || target.contains(".md#") || target.contains(".md?") {
             // Internal concept link
-            let target_id = resolve_relative_path(target, source_concept_id);
+            let Some(target_id) = resolve_relative_path(target, source_concept_id) else {
+                continue; // climbs out of the bundle: a tolerated broken link
+            };
             links.push(OkfLink {
                 source_id: source_concept_id.to_string(),
                 target_id,
@@ -99,18 +101,19 @@ pub fn extract_program(body: &str, engine: Option<&ScriptEngine>) -> Option<Stri
 }
 
 /// Resolves a (possibly relative) markdown link target to a normalized concept ID,
-/// relative to the source concept's directory.
+/// relative to the source concept's directory. A target whose `..` climbs above the
+/// bundle root resolves to `None`: it names no concept of this bundle.
 ///
 /// # Example
 /// ```
 /// use gecko_engine::okf::linker::resolve_relative_path;
 ///
 /// assert_eq!(
-///     resolve_relative_path("../tables/orders.md#schema", "datasets/users"),
-///     "tables/orders"
+///     resolve_relative_path("../tables/orders.md#schema", "datasets/users").as_deref(),
+///     Some("tables/orders")
 /// );
 /// ```
-pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
+pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> Option<String> {
     // Strip anchors and query parameters
     let path_part = target.split('#').next().unwrap_or(target);
     let path_part = path_part.split('?').next().unwrap_or(path_part);
@@ -140,13 +143,13 @@ pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
         match component {
             "." | "" => continue,
             ".." => {
-                parts.pop();
+                parts.pop()?;
             }
             _ => parts.push(component),
         }
     }
 
-    parts.join("/")
+    Some(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -202,7 +205,7 @@ mod tests {
     fn test_resolve_relative_path_basic() {
         assert_eq!(
             resolve_relative_path("../tables/orders.md#schema", "datasets/users"),
-            "tables/orders"
+            Some("tables/orders".to_string())
         );
     }
 
@@ -210,7 +213,7 @@ mod tests {
     fn test_resolve_relative_path_same_dir() {
         assert_eq!(
             resolve_relative_path("sibling.md", "datasets/users"),
-            "datasets/sibling"
+            Some("datasets/sibling".to_string())
         );
     }
 
@@ -218,7 +221,7 @@ mod tests {
     fn test_resolve_relative_path_from_root() {
         assert_eq!(
             resolve_relative_path("sub/thing.md", "root_concept"),
-            "sub/thing"
+            Some("sub/thing".to_string())
         );
     }
 
@@ -226,7 +229,7 @@ mod tests {
     fn test_resolve_relative_path_with_query() {
         assert_eq!(
             resolve_relative_path("other.md?version=2", "a/b"),
-            "a/other"
+            Some("a/other".to_string())
         );
     }
 
@@ -331,7 +334,7 @@ And [Config](config.md#section)."#;
         // OKF absolute links (leading `/`) are bundle-root-relative.
         assert_eq!(
             resolve_relative_path("/tables/orders.md", "datasets/users"),
-            "tables/orders"
+            Some("tables/orders".to_string())
         );
     }
 
@@ -339,7 +342,29 @@ And [Config](config.md#section)."#;
     fn test_resolve_relative_path_nested_source() {
         assert_eq!(
             resolve_relative_path("../orders.md", "a/b/users"),
-            "a/orders"
+            Some("a/orders".to_string())
         );
+    }
+
+    #[test]
+    fn a_link_climbing_above_the_bundle_root_resolves_to_nothing() {
+        assert_eq!(resolve_relative_path("../../docs/x.md", "okf/page"), None);
+        assert_eq!(resolve_relative_path("../x.md", "root_concept"), None);
+        assert_eq!(resolve_relative_path("/../x.md", "okf/page"), None);
+    }
+
+    #[test]
+    fn a_link_that_climbs_and_returns_inside_the_root_resolves() {
+        assert_eq!(
+            resolve_relative_path("../a/../b.md", "okf/page"),
+            Some("b".to_string())
+        );
+    }
+
+    #[test]
+    fn a_link_escaping_the_bundle_is_not_a_link() {
+        let (links, _) = extract_links("[out](../../docs/x.md) [in](../b.md)", "okf/page");
+        let targets: Vec<_> = links.iter().map(|l| l.target_id.as_str()).collect();
+        assert_eq!(targets, ["b"]);
     }
 }
