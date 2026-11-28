@@ -29,10 +29,10 @@
 
 ## Review Focus
 
-- **A fence language with surrounding spaces or other casing** (```` ``` JS ````) must still count. `from_lang` already trims and lowercases, and the blank-fence filter must not change that. Pinned in Task 1.
+- **A fence language in other casing or with trailing spaces** (```` ```JS ````, ```` ```js   ````) must still count. `from_lang` lowercases, and the blank-fence filter must not change that. A *leading* space (```` ``` JS ````) gives an empty language under `CODE_BLOCK_RE` (`linker.rs:21`); widening the regex is out of scope. Pinned in Task 1.
 - **A concept with a matching fence but no `engine`** (the existing python/js documentation fixtures) must stay documentation. Pinned in Task 1.
 - **YAML that parses `engine: no`, `engine: on` or `engine: 1e3` as a non-string** must be refused, and shown as written. serde_yaml 0.9 reads `no`/`on` as strings, so they're refused as unknown names. Pinned by the `5` and `true` cases.
-- **A bundle with one bad playbook among good ones** must fail the whole parse, naming the bad file, not skip it. `parse_bundle` already propagates `?`. Pinned by the Task 2 CLI test.
+- **A bundle with one bad playbook among good ones** must fail the whole parse, naming the bad file, not skip it. `parse_bundle` already propagates `?`. Pinned by the Task 1 CLI test.
 - **The two error spellings.** "one of js, javascript, quickjs" and "a js, javascript or quickjs fence" must both be built from `SCRIPT_ENGINE_LANGS`, not typed twice. Pinned by reading the Task 1 diff.
 
 ---
@@ -41,7 +41,9 @@
 
 **Files:**
 - Modify: `core/gecko-extension-api/src/okf.rs:36`, adding `SCRIPT_ENGINE_LANGS` and using it in `from_lang`.
-- Modify: `core/gecko-engine/src/okf/linker.rs:83`. `extract_program` drops blank bodies.
+- Modify: `core/gecko-engine/src/okf/linker.rs:83`. `extract_program` drops blank bodies. Its doc comment (`:76-82`) says so.
+- Modify: the doc comments on `from_lang` (`okf.rs:32-35`), on `OkfConcept::program` (`okf.rs:66-69`) and at `core/gecko-engine/src/pipeline.rs:43`, so they describe the refusal.
+- Test: `gecko-bin/tests/run_args_cli_test.rs`. The CLI test is written here, before the implementation, so it is seen to fail.
 - Modify: `core/gecko-engine/src/okf/parser.rs`:
   - `ParseError` (`:18`) gains `InvalidEngine { path, value }` and `MissingProgram { path, engine }`;
   - the `engine` read (`:182`);
@@ -50,67 +52,72 @@
   - the tests.
 
 **Interfaces:**
-- **Produces:** `ParseError::InvalidEngine { path: String, value: String }`, `ParseError::MissingProgram { path: String, engine: String }`, and `gecko_extension_api::okf::SCRIPT_ENGINE_LANGS`.
+- **Produces:**
+  - `ParseError::InvalidEngine { path: String, value: String }`;
+  - `ParseError::MissingProgram { path: String, engine: String }`;
+  - `gecko_extension_api::okf::SCRIPT_ENGINE_LANGS`, and `pub fn or_list(items: &[&str]) -> String` beside it.
 
 - [ ] **Step 1: Write the failing unit tests** in `parser.rs` `mod tests`, using `parse_concept` the way `parse_timeout` (`:709`) does:
-  - `an_unsupported_engine_is_refused_as_written`. For each of `javscript`, `python`, `5`, `true`, `[js]`, `null` and a blank value (`engine:` with nothing after it), the result is `Err(ParseError::InvalidEngine { value, .. })`. `value` is the YAML as written (`javscript`, `5`, `true`, `[js]`, `null`, `null`), and the message contains `one of js, javascript, quickjs` and the path.
+  - `an_unsupported_engine_is_refused_as_written`:
+    - **Scalars:** `javscript`, `python`, `no`, `5`, `true`, `null` and a blank value (`engine:` with nothing after it). Each gives `Err(ParseError::InvalidEngine { value, .. })`, with `value` equal to `javscript`, `python`, `no`, `5`, `true`, `null` and `null`. serde_yaml 0.9 reads `no` as a string; a blank renders `null`.
+    - **Collections:** `[js]` and `{a: 1}` are refused with `InvalidEngine`. Only the path and the accepted list are asserted, because the YAML formatter renders block form (`- js`).
+    - Every message contains `one of js, javascript, quickjs` and the path.
   - `engine_spellings_from_lang_accepts_parse`: `JS`, `" javascript "` (quoted, with spaces) and `quickjs`, each with a `js` fence, parse with `engine: Some(QuickJs)`.
   - `a_declared_engine_without_a_program_is_refused`. Each of these is `Err(ParseError::MissingProgram { engine, .. })`, with `engine == "quickjs"`:
     - `engine: quickjs` with no fence;
     - only a ```` ```javscript ```` fence;
     - only a ```` ```python ```` fence;
-    - only a blank ```` ```js ```` fence.
-  - `a_blank_fence_beside_a_real_one_is_skipped`: a blank ```` ```js ```` fence, then ```` ```js\nconsole.log(1)\n``` ````, gives `program == Some("console.log(1)")`.
-  - `a_fence_language_is_matched_like_engine`: ```` ``` JS ```` with code, under `engine: quickjs`, gives a program.
-  - In `linker.rs` tests: `extract_program_skips_a_blank_matching_fence`.
+    - only a blank fence, with exactly the body `"```js\n\n```\n"` (a blank line inside).
+  - `a_blank_fence_beside_a_real_one_is_skipped`: the body `"```js\n\n```\n\n```js\nconsole.log(1)\n```\n"` gives `program == Some("console.log(1)")`.
+  - `a_fence_language_is_matched_like_engine`: ```` ```JS ```` and ```` ```js   ```` with code, under `engine: quickjs`, each give a program.
+  - `a_fence_without_an_engine_stays_documentation`: no `engine` key, with a `js` fence, gives `engine: None` and `program: None`.
+  - In `linker.rs` tests: `extract_program_skips_a_blank_matching_fence`, using the same two-fence body.
+  - **The CLI test** `a_bundle_with_an_unsupported_engine_fails_to_sync`, in `run_args_cli_test.rs`, using `gecko(dir)` and `text`:
+    - the bundle holds a good `playbooks/hello.md` (`engine: quickjs` with a `js` fence) and a bad `playbooks/typo.md` (`engine: javscript`);
+    - `gecko --database <db> sync <bundle>` exits non-zero, and its output names `typo.md` and `javscript`;
+    - `parse_bundle` runs before any database is created (`main.rs:391`), so the test asserts that `db.name` is not in `db.router().list_databases()`, as `run_args_cli_test.rs:89` does.
 - [ ] **Step 2: Run them.**
+  - Run: `cargo nextest run -p gecko-bin --no-default-features --test run_args_cli_test -j 1 unsupported_engine`
+    - Expected: FAIL. The sync succeeds and creates the database.
   - Run: `cargo nextest run -p gecko-engine --no-default-features --lib okf`
-  - Expected: a compile failure, because the variants aren't defined. Temporarily comment out the variant-matching tests, run `a_blank_fence_beside_a_real_one_is_skipped` and the linker test, and watch them fail on `Some("")`/the joined blank. Then restore the tests.
+    - Expected: a compile failure, because the variants aren't defined.
+    - Temporarily comment out the variant-matching tests, run `a_blank_fence_beside_a_real_one_is_skipped` and the linker test, and watch them fail on the joined blank body. Then restore the tests.
 - [ ] **Step 3: Implement.**
   - **`SCRIPT_ENGINE_LANGS`,** and `from_lang` matches `lang.trim().to_lowercase()` against it.
   - **`extract_program`:** `.filter(|f| !f.code.trim().is_empty())` before the join.
   - **`yaml_as_written`:** the `InvalidTimeout` arm calls it, so that message is unchanged.
   - **The `engine` read:** `match metadata.remove("engine")`:
     - `None` gives `None`;
-    - `Some(Value::String(s))`, where `from_lang(&s)` is `Some(e)`, gives `Some(e)`, keeping `s` for the second error;
+    - `Some(Value::String(s))`, where `from_lang(&s)` is `Some(e)`, gives `Some(e)`, keeping the raw `s` for the second error;
     - anything else returns `InvalidEngine` with `yaml_as_written`.
-  - **After `extract_program`:** if an engine was declared and `program` is `None`, return `MissingProgram { engine: <the string as written> }`.
-  - **Both messages** build the language list from `SCRIPT_ENGINE_LANGS`: `join(", ")` for the first; "js, javascript or quickjs" for the second, through a small `fn or_list(&[&str]) -> String`.
+  - **After `extract_program`:** if an engine was declared and `program` is `None`, return `MissingProgram { engine: s }`, the raw YAML string, not run through `yaml_as_written`.
+  - **Both messages** build the language list from `SCRIPT_ENGINE_LANGS`: `join(", ")` for the first; "js, javascript or quickjs" for the second, through `or_list`, which lives beside the constant in `gecko-extension-api/src/okf.rs`.
 - [ ] **Step 4: Fix the existing fixtures** that now fail:
   - `parse_timeout` (`:709-713`): the body becomes `"```js\n1\n```\n"`;
-  - the fixtures at `:644` and `:684`: check each, and add a one-line `js` fence or drop `engine` where the engine isn't under test.
+  - `:684`, which asserts `engine == Some(QuickJs)`, gains a one-line `js` fence;
+  - `:644` already has fences and needs no change.
   - Then find every other in-repo concept with an engine and no fence: `grep -rln 'engine:' core gecko-bin extensions sample-bundle --include='*.rs' --include='*.md'`, then run the suites in Step 5. Fix each one by adding a fence. Record any test that only meant to declare an engine as a ruling.
 - [ ] **Step 5: Run them.**
   - Run: `cargo nextest run -p gecko-engine -p gecko-extension-api --no-default-features && cargo nextest run -p gecko-bin --no-default-features --features cyber -j 1`
   - Expected: PASS.
 - [ ] **Step 6: Commit** with the message `An unsupported engine, or a declared engine with no program, is refused at parse (N10)`.
 
-### Task 2: the CLI test, the README and the docs
+### Task 2: the README and the docs
 
 **Files:**
-- Test: `gecko-bin/tests/run_args_cli_test.rs`.
 - Modify: `extensions/README.md:32`, where `build_extensions` is said to be in `gecko-bin/src/main.rs`; it is in `gecko-bin/src/config.rs`.
 - Modify: `docs/refactor/KNOWN-LIMITATIONS.md`, adding a bullet in "Playbook `timeout-ms`" (`:136`), renamed to "Playbook frontmatter".
 - Modify: `docs/refactor/OWED-WORK-LEDGER.md`, adding a Landed row for N10.
 
 **Interfaces:**
-- **Consumes:** `ParseError::InvalidEngine` (Task 1).
+- **Consumes:** nothing new; it documents Task 1.
 
-- [ ] **Step 1: Write the test** `a_bundle_with_an_unsupported_engine_fails_to_sync`, using the `gecko(dir)` and `text` helpers.
-  - The bundle holds a good `playbooks/hello.md` (`engine: quickjs` with a `js` fence) and a bad `playbooks/typo.md` (`engine: javscript`).
-  - `gecko --database <db> sync <bundle>` exits non-zero.
-  - Its output names `typo.md` and `javscript`.
-  - A `gecko --database <db> run playbooks/hello` afterwards fails as unknown, because nothing was synced.
-
-  This passes against Task 1's code. To see it fail first, revert Task 1's `engine` read with `git stash push -- core/gecko-engine/src/okf/parser.rs`, run the test, then `git stash pop`.
-- [ ] **Step 2: Run it.**
-  - Run: `cargo nextest run -p gecko-bin --no-default-features --test run_args_cli_test -j 1 unsupported_engine`
-  - Expected: PASS, and FAIL under the stash.
-- [ ] **Step 3: Update the docs.**
+- [ ] **Step 1: Update the docs.**
   - The README path.
   - **The `KNOWN-LIMITATIONS` bullet:** a bundle an earlier release synced with an unsupported `engine`, or an `engine` with no code in a matching fence, now fails to parse naming the file. The fix is to correct the file.
-  - **The ledger row**, naming the tests.
-- [ ] **Step 4: Commit** with the message `A bundle with an unsupported engine fails to sync; README and docs`.
+  - **The ledger row**, naming the tests. It is add-only: N10 has no open row.
+  - **The ledger note:** a fence with no line inside (```` ```js\n``` ````) is matched across the next fence by `CODE_BLOCK_RE`. That is a pre-existing regex quirk, recorded and not fixed here.
+- [ ] **Step 2: Commit** with the message `README and docs for the engine refusal`.
 
 ## Verification
 

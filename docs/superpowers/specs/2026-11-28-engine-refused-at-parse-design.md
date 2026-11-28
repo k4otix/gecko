@@ -71,7 +71,9 @@ parse".
   - `InvalidEngine` for `javscript`, `python`, `5`, `true`, `[js]`, `null` and a blank value,
     each naming the file and showing the value as written;
   - `JS`, ` javascript ` and `quickjs` are accepted (case and whitespace, as `from_lang`
-    allows);
+    allows), and so are ```` ```JS ```` and ```` ```js   ```` fences. A leading space in a fence
+    tag (```` ``` JS ````) yields an empty language under `CODE_BLOCK_RE`; widening it is out of
+    scope;
   - `MissingProgram` for `engine: quickjs` with no fence, with only a ```` ```javscript ````
     fence, with only a ```` ```python ```` fence, and with only a blank ```` ```js ```` fence;
   - a blank `js` fence beside a real one gives the real program alone;
@@ -81,7 +83,8 @@ parse".
   `engine: quickjs` with prose bodies and no fence. Each gets a one-line `js` fence, or
   drops `engine` where the engine isn't under test.
 - **End to end:** a `gecko sync` of a bundle holding one `engine: javscript` playbook fails,
-  naming the file, and writes nothing (`gecko-bin/tests/bundle_sync_test.rs`).
+  naming the file, and writes nothing (`gecko-bin/tests/run_args_cli_test.rs`, which has the
+  CLI helpers).
 - **Regression:** every shipped bundle still parses; the walkthrough and sample-bundle
   tests already sync them.
 
