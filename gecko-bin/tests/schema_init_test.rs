@@ -94,6 +94,25 @@ async fn test_schema_initialization() {
 const OLD_BUNDLE_DOC: &str = "entity bundle @doc(\"The single OKF documentation bundle ingested into this database, keyed by its declared name; bundle-path is machine-local provenance, not identity.\")";
 const NEW_BUNDLE_SENTENCE: &str = "An OKF documentation bundle synced into this database, keyed by its declared name and containing its concepts; several bundles may share a database, and bundle-path is machine-local provenance, not identity.";
 
+/// The OKF attribute docs: (attribute, the previous text, the shipped text).
+const OKF_DOCS: [(&str, &str, &str); 3] = [
+    (
+        "trust-tier",
+        "A concept's OKF trust tier, derived from its verified actors; absence means unverified.",
+        "A concept's OKF trust tier, derived from its current verification events, those at or after the concept's timestamp (all of them when it has none); absence means unverified.",
+    ),
+    (
+        "okf-status",
+        "A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable.",
+        "A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and a value other than draft, stable or deprecated is not stable.",
+    ),
+    (
+        "stale-after",
+        "The instant from which a concept's content is stale (OKF stale_after).",
+        "The instant from which a concept's content is stale (OKF stale_after); 1970-01-01T00:00:00Z marks a value that could not be read, which is kept as written in metadata-json.",
+    ),
+];
+
 #[tokio::test]
 async fn previous_core_schema_upgrades_to_the_shipped_schema() {
     use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA};
@@ -102,7 +121,15 @@ async fn previous_core_schema_upgrades_to_the_shipped_schema() {
     let mut db = test_db.router();
 
     let new_statement = format!("entity bundle @doc(\"{NEW_BUNDLE_SENTENCE}\")");
-    let previous = CORE_SCHEMA.replace(&new_statement, OLD_BUNDLE_DOC);
+    let mut previous = CORE_SCHEMA.replace(&new_statement, OLD_BUNDLE_DOC);
+    for (attr, old, new) in OKF_DOCS {
+        let new_doc = format!("attribute {attr} @doc(\"{new}\")");
+        assert!(
+            previous.contains(&new_doc),
+            "the shipped {attr} doc drifted"
+        );
+        previous = previous.replace(&new_doc, &format!("attribute {attr} @doc(\"{old}\")"));
+    }
     assert_ne!(
         previous, CORE_SCHEMA,
         "the previous schema must differ from the shipped one"
@@ -131,6 +158,10 @@ async fn previous_core_schema_upgrades_to_the_shipped_schema() {
         "a migration's replaced text is still in the database"
     );
     assert!(schema.contains(NEW_BUNDLE_SENTENCE));
+    for (attr, old, new) in OKF_DOCS {
+        assert!(schema.contains(new), "{attr}: the new doc landed");
+        assert!(!schema.contains(old), "{attr}: the old doc is gone");
+    }
 }
 
 /// An extension carrying the cyber schema as of the frozen fixture and the cyber

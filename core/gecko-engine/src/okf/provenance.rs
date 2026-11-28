@@ -1,4 +1,4 @@
-//! OKF v0.2 provenance, trust and lifecycle frontmatter (OKF §5.2–§5.5).
+//! OKF provenance, trust and lifecycle frontmatter (OKF §5.2–§5.5).
 //!
 //! A malformed value is never refused (OKF §11 treats these constraints as soft
 //! guidance) and never replaced by an invented one: its key stays in the frontmatter
@@ -8,11 +8,15 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde_yaml::Value;
 
 use super::parser::yaml_as_written;
 use super::types::{OkfProvenance, TrustTier, Verification};
+
+/// The `stale-after` stored for a `stale_after` that cannot be read: an instant before
+/// every real `now`, so the concept is stale at every read (OKF §5.5).
+pub const STALE_SENTINEL: DateTime<Utc> = DateTime::UNIX_EPOCH;
 
 /// What a concept's provenance keys give: the content time (`generated.at`, or the
 /// legacy `timestamp`) and the typed provenance facts.
@@ -21,7 +25,7 @@ pub(crate) struct ConceptProvenance {
     pub provenance: OkfProvenance,
 }
 
-/// Takes the OKF v0.2 provenance keys out of `map`, leaving behind every key that
+/// Takes the OKF provenance keys out of `map`, leaving behind every key that
 /// is malformed or carries an unknown subkey, and appends a warning for each
 /// malformed value of the concept file at `path`.
 pub(crate) fn take_provenance(
@@ -55,7 +59,7 @@ pub(crate) fn take_provenance(
                     keep = true;
                 }
             }
-            if let Some(at) = m.get("at") {
+            if let Some(at) = m.get("at").filter(|at| !is_empty_value(at)) {
                 match parse_time(at) {
                     Some(t) => generated_at = Some(t),
                     None => {
@@ -72,7 +76,7 @@ pub(crate) fn take_provenance(
         }
     }
 
-    // The v0.1 `timestamp` is read only when `generated.at` gives no time (§13.1).
+    // The v0.1 `timestamp` is read only when `generated.at` gives no time (Appendix B).
     let timestamp = match generated_at {
         Some(t) => Some(t),
         None => map.remove("timestamp").and_then(|v| match parse_time(&v) {
@@ -115,11 +119,16 @@ pub(crate) fn take_provenance(
                         }
                     }
                 }
-                provenance.trust_tier = if entries.is_empty() {
-                    Some(TrustTier::Unverified)
-                } else if provenance.verifications.is_empty() {
+                // Only current events count: those at or after the content time, or
+                // all of them when there is none (§5.3). Every valid event is stored.
+                let mut current = provenance
+                    .verifications
+                    .iter()
+                    .filter(|e| timestamp.is_none_or(|t| e.at >= t))
+                    .peekable();
+                provenance.trust_tier = if current.peek().is_none() {
                     None
-                } else if provenance.verifications.iter().any(|e| is_human(&e.by)) {
+                } else if current.any(|e| is_human(&e.by)) {
                     Some(TrustTier::HumanReviewed)
                 } else {
                     Some(TrustTier::MachineConfirmed)
@@ -131,9 +140,10 @@ pub(crate) fn take_provenance(
         }
     }
 
+    // `status` is stored as written, less surrounding whitespace.
     if let Some(v) = map.remove("status") {
         match non_blank(&v) {
-            Some(s) => provenance.status = Some(s),
+            Some(s) => provenance.status = Some(s.trim().to_string()),
             None => {
                 warn("status", &v);
                 map.insert("status".to_string(), v);
@@ -141,11 +151,18 @@ pub(crate) fn take_provenance(
         }
     }
 
+    // An unreadable `stale_after` is never fresh (§5.5): it is stored as stale.
     if let Some(v) = map.remove("stale_after") {
         match parse_time(&v) {
             Some(t) => provenance.stale_after = Some(t),
             None => {
-                warn("stale_after", &v);
+                warnings.push(format!(
+                    "Concept file '{path}' has an invalid 'stale_after' ({}); it is kept in \
+                     metadata-json and stored as stale (stale-after {})",
+                    yaml_as_written(&v),
+                    STALE_SENTINEL.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                ));
+                provenance.stale_after = Some(STALE_SENTINEL);
                 map.insert("stale_after".to_string(), v);
             }
         }
@@ -157,14 +174,36 @@ pub(crate) fn take_provenance(
     }
 }
 
-/// A datetime chrono reads as RFC 3339 (with seconds and an explicit offset), as UTC.
-/// Other ISO 8601 forms OKF §5 allows, such as `14:00Z` or a `+09` offset, and a date
-/// alone, are `None`.
+/// A timestamp in one of OKF §5's two forms, as UTC: an RFC 3339 `date-time` (seconds
+/// and an offset required), or a `full-date`, which means the start of that day in UTC.
 fn parse_time(v: &Value) -> Option<DateTime<Utc>> {
     let s = v.as_str()?;
-    DateTime::parse_from_rfc3339(s)
+    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
+        return Some(t.with_timezone(&Utc));
+    }
+    let b = s.as_bytes();
+    let full_date = b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        });
+    if !full_date {
+        return None;
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .ok()
-        .map(|t| t.with_timezone(&Utc))
+        .map(|d| d.and_time(NaiveTime::MIN).and_utc())
+}
+
+/// Whether `v` is null, an empty string or an empty list, which OKF §11.2 reads as an
+/// absent key.
+pub(crate) fn is_empty_value(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Sequence(seq) => seq.is_empty(),
+        _ => false,
+    }
 }
 
 /// A string that is not blank, as written.

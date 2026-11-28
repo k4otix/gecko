@@ -103,16 +103,15 @@ pub struct OkfConcept {
     /// the engine's ceiling (`gecko_engine::sandbox::wasm_executor::MAX_TIMEOUT_MS`).
     pub timeout_ms: Option<u64>,
 
-    /// The OKF v0.2 provenance, trust and lifecycle facts the file states (`generated.by`,
+    /// The OKF provenance, trust and lifecycle facts the file states (`generated.by`,
     /// `verified`, `status`, `stale_after`); `generated.at` fills [`Self::timestamp`].
     #[serde(default)]
     pub provenance: OkfProvenance,
 }
 
-/// A concept's OKF v0.2 trust tier, derived from its `verified` actors (OKF §5.3).
+/// A concept's OKF trust tier, derived from its current `verified` events (OKF §5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrustTier {
-    Unverified,
     MachineConfirmed,
     HumanReviewed,
 }
@@ -121,28 +120,27 @@ impl TrustTier {
     /// The tier's OKF name, as stored in the graph.
     pub fn as_str(self) -> &'static str {
         match self {
-            TrustTier::Unverified => "unverified",
             TrustTier::MachineConfirmed => "machine-confirmed",
             TrustTier::HumanReviewed => "human-reviewed",
         }
     }
 }
 
-/// One OKF v0.2 `verified` event: who confirmed the concept, and when.
+/// One OKF `verified` event: who confirmed the concept, and when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verification {
     pub by: String,
     pub at: DateTime<Utc>,
 }
 
-/// The OKF v0.2 provenance, trust and lifecycle facts of a concept. Every field is
+/// The OKF provenance, trust and lifecycle facts of a concept. Every field is
 /// empty for a concept that states none of them, including every extension-built one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OkfProvenance {
     /// The `generated.by` actor, as written.
     pub generated_by: Option<String>,
-    /// The tier derived from `verified`; `None` when `verified` is absent or holds no
-    /// valid event.
+    /// The tier from the current `verified` events, those at or after the content
+    /// time; `None` when none is current.
     pub trust_tier: Option<TrustTier>,
     /// The `status`, as written; absence means `stable`.
     pub status: Option<String>,
@@ -217,8 +215,10 @@ pub struct OkfBundle {
     pub hierarchy: Vec<HierarchyEdge>,
     /// The `okf_version` the bundle-root `index.md` declares, as written.
     pub okf_version: Option<String>,
-    /// Warnings about OKF v0.2 values the parser could not read, one per value, in
-    /// file order. A concept's value stays in its `metadata-json` as written; an
-    /// unreadable `okf_version` is not recorded.
+    /// Warnings about what the parser skipped or could not read: the root index's
+    /// `okf_version`, then each skipped symlink in walk order, then each Markdown file
+    /// that is not a concept and each unreadable concept value, in file order. A
+    /// concept's value stays in its `metadata-json` as written; an unreadable
+    /// `okf_version` is not recorded.
     pub warnings: Vec<String>,
 }
