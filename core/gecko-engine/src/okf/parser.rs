@@ -1520,7 +1520,8 @@ Playbook body.
             let (c, w) = parse_warned(line);
             assert_one_warning(&w, key, value);
             assert_eq!(c.timestamp, None, "{line}");
-            assert_eq!(c.provenance.stale_after, None, "{line}");
+            let stale = (key == "stale_after").then_some(super::super::provenance::STALE_SENTINEL);
+            assert_eq!(c.provenance.stale_after, stale, "{line}");
             assert!(c.extra_metadata.contains_key(key), "{line}");
         }
     }
@@ -1602,6 +1603,22 @@ Playbook body.
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.provenance.generated_by.as_deref(), Some("a/1"));
         assert_eq!(c.timestamp, None);
+    }
+
+    #[test]
+    fn an_unreadable_stale_after_is_stale() {
+        use super::super::provenance::STALE_SENTINEL;
+        for (v, shown) in [
+            ("next tuesday", "next tuesday"),
+            ("\"  \"", "'  '"),
+            ("2026-06-30T14:00:00", "2026-06-30T14:00:00"),
+        ] {
+            let (c, w) = parse_warned(&format!("stale_after: {v}"));
+            assert_eq!(c.provenance.stale_after, Some(STALE_SENTINEL), "{v}");
+            assert!(c.extra_metadata.contains_key("stale_after"), "{v}");
+            assert_one_warning(&w, "stale_after", shown);
+            assert!(w[0].contains("stored as stale"), "{w:?}");
+        }
     }
 
     #[test]

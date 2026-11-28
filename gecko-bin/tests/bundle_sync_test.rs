@@ -1629,3 +1629,22 @@ async fn a_referenced_concept_that_loses_its_type_is_retired() {
     sync_dir(&mut db, temp_dir.path()).await;
     assert_eq!(retired_at(&mut db, &referenced).await.len(), 1);
 }
+
+#[tokio::test]
+async fn a_malformed_stale_after_reads_as_stale() {
+    let test_db = TestDb::new("gecko_test_sync_stale_sentinel");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concept_with(dir.path(), "page.md", "stale_after: next tuesday");
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(
+        count(
+            &mut db,
+            "match $c isa concept, has stale-after $s; $s <= 2026-11-28T00:00:00;"
+        )
+        .await,
+        1,
+        "a stale-after <= now reader takes it as stale"
+    );
+}

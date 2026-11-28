@@ -14,6 +14,10 @@ use serde_yaml::Value;
 use super::parser::yaml_as_written;
 use super::types::{OkfProvenance, TrustTier, Verification};
 
+/// The `stale-after` stored for a `stale_after` that cannot be read: an instant before
+/// every real `now`, so the concept is stale at every read (OKF §5.5).
+pub const STALE_SENTINEL: DateTime<Utc> = DateTime::UNIX_EPOCH;
+
 /// What a concept's provenance keys give: the content time (`generated.at`, or the
 /// legacy `timestamp`) and the typed provenance facts.
 pub(crate) struct ConceptProvenance {
@@ -146,11 +150,18 @@ pub(crate) fn take_provenance(
         }
     }
 
+    // An unreadable `stale_after` is never fresh (§5.5): it is stored as stale.
     if let Some(v) = map.remove("stale_after") {
         match parse_time(&v) {
             Some(t) => provenance.stale_after = Some(t),
             None => {
-                warn("stale_after", &v);
+                warnings.push(format!(
+                    "Concept file '{path}' has an invalid 'stale_after' ({}); it is kept in \
+                     metadata-json and stored as stale (stale-after {})",
+                    yaml_as_written(&v),
+                    STALE_SENTINEL.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                ));
+                provenance.stale_after = Some(STALE_SENTINEL);
                 map.insert("stale_after".to_string(), v);
             }
         }
