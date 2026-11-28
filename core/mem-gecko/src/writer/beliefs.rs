@@ -316,11 +316,8 @@ impl EpistemicWriter for MemWriter {
                 "contest requires at least two claims".into(),
             ));
         }
-        if let Some(dup) = claims
-            .iter()
-            .enumerate()
-            .find_map(|(i, c)| claims[..i].contains(c).then_some(c))
-        {
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = claims.iter().find(|c| !seen.insert(&c.0)) {
             return Err(EpistemicError::InvalidInput(format!(
                 "contest names claim {} more than once",
                 dup.0
@@ -353,11 +350,8 @@ impl EpistemicWriter for MemWriter {
                 "rests_on requires at least one assumption".into(),
             ));
         }
-        if let Some(dup) = assumptions
-            .iter()
-            .enumerate()
-            .find_map(|(i, a)| assumptions[..i].contains(a).then_some(a))
-        {
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = assumptions.iter().find(|a| !seen.insert(&a.0)) {
             return Err(EpistemicError::InvalidInput(format!(
                 "rests_on names assumption {} more than once",
                 dup.0

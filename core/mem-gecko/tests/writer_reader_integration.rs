@@ -1830,7 +1830,7 @@ async fn rests_on_with_a_missing_assumption_errors_and_commits_nothing() {
     for want in [
         b.0.as_str(),
         "mem/bel/does-not-exist",
-        "no memory item",
+        "no memory item visible to the caller",
         "nothing was committed",
     ] {
         assert!(msg.contains(want), "{want}: {msg}");
@@ -3540,5 +3540,50 @@ async fn rests_on_twice_lists_the_dependent_once_in_the_blast_radius() {
         .await
         .expect("retract");
     assert_eq!(radius, vec![dep]);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_another_agents_episode_is_refused_like_a_missing_one() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let theirs = w
+        .observe(
+            &ctx_at("agent-a", at),
+            EpisodeDraft {
+                text: "agent-a saw something".to_string(),
+                event_time: at,
+                ingest_time: at,
+            },
+        )
+        .await
+        .unwrap();
+    let mine = assert_at(&w, "agent-b", "2026-01-01T00:00:00Z", "b's belief").await;
+    let missing = MemId::new("mem/ep/NOPE");
+    let b_ctx = ctx_at("agent-b", at);
+    for (hidden_call, absent_call) in [
+        (
+            w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&theirs))
+                .await,
+            w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&missing))
+                .await,
+        ),
+        (
+            w.rests_on(&b_ctx, theirs.clone(), std::slice::from_ref(&mine))
+                .await,
+            w.rests_on(&b_ctx, missing.clone(), std::slice::from_ref(&mine))
+                .await,
+        ),
+    ] {
+        let hidden = storage_msg(hidden_call.expect_err("a's episode is not visible to b"));
+        let absent = storage_msg(absent_call.expect_err("a missing episode"));
+        assert_eq!(
+            hidden.replace(&theirs.0, "<id>"),
+            absent.replace(&missing.0, "<id>"),
+            "a refused episode does not reveal whether it exists"
+        );
+    }
+    assert!(all_rests_on(&fx).await.is_empty());
     fx.drop_db().await;
 }

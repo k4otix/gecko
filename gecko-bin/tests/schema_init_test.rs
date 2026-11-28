@@ -1049,7 +1049,7 @@ fn schema_parts(schema: &str) -> std::collections::BTreeSet<String> {
 }
 
 /// A database on the pre-tightening schemas, populated by every current writer path
-/// except `rests_on` (whose pre-stamp rows fail the upgrade, as
+/// except `rests_on` (an unstamped `rests-on` fails the upgrade, as
 /// `an_unstamped_rests_on_fails_the_upgrade` pins) plus the one-player rows an earlier
 /// release's GC could leave, takes the shipped schemas.
 #[cfg(feature = "cyber")]
@@ -1358,6 +1358,20 @@ async fn tightened_schema_applies_to_a_populated_database() {
                 .unwrap_or_else(|e| panic!("the shipped {} applies: {e}", ext.name()));
         }
     }
+    // The upgraded database takes a stamped rests-on.
+    writer
+        .rests_on(&ctx, asserted.clone(), std::slice::from_ref(&superseding))
+        .await
+        .expect("rests_on on the upgraded database");
+    assert_eq!(
+        count_rows(
+            &mut db,
+            "match $r isa rests-on, links (declarer: $ag, run: $run), has created-at $t;"
+        )
+        .await,
+        1,
+        "the upgraded database holds one stamped rests-on"
+    );
     let after = db.database_schema().await.expect("schema");
     for (_, list) in &migrations {
         for m in list.iter() {

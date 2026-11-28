@@ -1,7 +1,7 @@
 //! Sandbox → mem host-function surface and run-id binding.
 //!
 //! Exec-docs call a small set of mem host functions —
-//! `remember`/`recall`/`derive`/`supersede`/`contest`/`retract` — which the host delegates
+//! `remember`/`recall`/`derive`/`supersede`/`contest`/`retract`/`rests_on` — which the host delegates
 //! to the injected [`EpistemicWriter`]/[`EpistemicReader`]. The security spine
 //! (invariant 2) is that the **host** binds the run's [`RunContext`]: sandbox code
 //! supplies only the payload args and **cannot** supply or override the
