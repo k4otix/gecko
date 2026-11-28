@@ -299,6 +299,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
     let mut citations = Vec::new();
     let mut hierarchy = Vec::new();
     let mut warnings = Vec::new();
+    let okf_version = read_okf_version(&bundle_root, &mut warnings);
 
     // Collect and sort .md files for deterministic output
     let mut md_files: Vec<_> = walk_md_files(&bundle_root)?;
@@ -371,7 +372,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
         links,
         citations,
         hierarchy,
-        okf_version: None,
+        okf_version,
         warnings,
     })
 }
@@ -418,6 +419,48 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
             (name, description)
         }
         Err(_) => (dir_name, None),
+    }
+}
+
+/// Reads the `okf_version` the bundle-root `index.md` declares (OKF §8, §12), the
+/// only frontmatter key an index file may carry. The file is matched by name as
+/// [`is_reserved_file`] matches it. A missing file, frontmatter or key gives `None`;
+/// unreadable frontmatter or a value that is neither a non-blank string nor a number
+/// gives `None` and a warning, never a failed parse.
+fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<String> {
+    let index = std::fs::read_dir(bundle_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.is_file()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("index.md"))
+        })?;
+    let content = std::fs::read_to_string(&index).ok()?;
+    let yaml = split_frontmatter(&content).0?;
+    let path = index.display();
+    let value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(serde_yaml::Value::Mapping(mut m)) => m.remove("okf_version")?,
+        Ok(serde_yaml::Value::Null) => return None,
+        Ok(_) | Err(_) => {
+            warnings.push(format!(
+                "Bundle index '{path}' has frontmatter that is not valid YAML; its \
+                 okf_version is not recorded"
+            ));
+            return None;
+        }
+    };
+    match &value {
+        serde_yaml::Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        serde_yaml::Value::Number(_) => Some(yaml_as_written(&value)),
+        _ => {
+            warnings.push(format!(
+                "Bundle index '{path}' has an invalid 'okf_version' ({}); it is not recorded",
+                yaml_as_written(&value)
+            ));
+            None
+        }
     }
 }
 
@@ -1339,5 +1382,87 @@ Playbook body.
             "{:?}",
             bundle.warnings
         );
+    }
+
+    /// Parses a one-concept bundle whose root `index.md` (when given) holds `index`.
+    fn bundle_with_index(index: Option<&str>) -> OkfBundle {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("page.md"), "---\ntype: guide\n---\n").unwrap();
+        if let Some(index) = index {
+            fs::write(dir.path().join("index.md"), index).unwrap();
+        }
+        parse_bundle(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn okf_version_is_read_from_the_root_index() {
+        for (line, version) in [
+            ("okf_version: \"0.2\"", "0.2"),
+            ("okf_version: 0.2", "0.2"),
+            ("okf_version: \"9.9\"", "9.9"),
+        ] {
+            let b = bundle_with_index(Some(&format!("---\n{line}\n---\n\n# Files\n")));
+            assert_eq!(b.okf_version.as_deref(), Some(version), "{line}");
+            assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Index.md"),
+            "---\nokf_version: \"0.2\"\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_bundle(dir.path()).unwrap().okf_version.as_deref(),
+            Some("0.2")
+        );
+    }
+
+    #[test]
+    fn a_missing_or_keyless_root_index_records_no_version() {
+        for index in [None, Some("# Files\n"), Some("---\ntitle: x\n---\n")] {
+            let b = bundle_with_index(index);
+            assert_eq!(b.okf_version, None, "{index:?}");
+            assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+        }
+    }
+
+    #[test]
+    fn an_invalid_okf_version_warns() {
+        for (line, shown) in [
+            ("okf_version: null", "null"),
+            ("okf_version:", "null"),
+            ("okf_version: \"\"", "''"),
+            ("okf_version: true", "true"),
+            ("okf_version: [0.2]", "0.2"),
+        ] {
+            let b = bundle_with_index(Some(&format!("---\n{line}\n---\n")));
+            assert_eq!(b.okf_version, None, "{line}");
+            assert_eq!(b.warnings.len(), 1, "{line}: {:?}", b.warnings);
+            let w = &b.warnings[0];
+            assert!(
+                w.contains("index.md") && w.contains("'okf_version'") && w.contains(shown),
+                "{w}"
+            );
+        }
+        for bad in ["---\nokf_version: [\n---\n", "---\njust a scalar\n---\n"] {
+            let b = bundle_with_index(Some(bad));
+            assert_eq!(b.okf_version, None);
+            assert_eq!(b.warnings.len(), 1, "{bad:?}: {:?}", b.warnings);
+            assert!(b.warnings[0].contains("not valid YAML"), "{:?}", b.warnings);
+        }
+    }
+
+    #[test]
+    fn a_subdirectory_index_version_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(
+            dir.path().join("sub/index.md"),
+            "---\nokf_version: \"0.2\"\n---\n",
+        )
+        .unwrap();
+        let b = parse_bundle(dir.path()).unwrap();
+        assert_eq!(b.okf_version, None);
+        assert!(b.warnings.is_empty(), "{:?}", b.warnings);
     }
 }
