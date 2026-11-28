@@ -78,17 +78,6 @@ fn to_posix_string(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Computes the SHA-256 hash of a byte slice as a lowercase hex string.
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect()
-}
-
 /// Wraps an I/O error with the path that triggered it.
 fn io_err(path: &Path, source: std::io::Error) -> ParseError {
     ParseError::Io {
@@ -107,10 +96,23 @@ pub fn is_reserved_file(file_path: &Path) -> bool {
     }
 }
 
-/// Computes the SHA-256 hash of a file's raw content, as a lowercase hex string.
-pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
-    let content = std::fs::read(file_path).map_err(|e| io_err(file_path, e))?;
-    Ok(sha256_hex(&content))
+/// The version of how this parser reads an OKF file, salted into every concept's
+/// `file-hash`. Bump it whenever a parser change alters what an unchanged file stores:
+/// every stored hash then differs once, so the next sync re-reads each file.
+pub const OKF_READ_VERSION: &str = "1";
+
+/// A concept's change-detection hash: SHA-256 over [`OKF_READ_VERSION`], a NUL
+/// separator, then the file's raw bytes, as lowercase hex.
+pub fn concept_file_hash(content: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(OKF_READ_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(content);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The OKF keys GECKO reads whose null, empty-string or empty-list value is an absent
@@ -191,7 +193,7 @@ fn split_frontmatter(content: &str) -> Frontmatter<'_> {
 pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile, ParseError> {
     let raw_content = std::fs::read_to_string(file_path).map_err(|e| io_err(file_path, e))?;
 
-    let file_hash = sha256_hex(raw_content.as_bytes());
+    let file_hash = concept_file_hash(raw_content.as_bytes());
 
     let path = file_path.display();
     let not_a_concept = |why: &str| {
@@ -984,16 +986,20 @@ def calculate_monthly_revenue():
         assert!(!is_reserved_file(Path::new("myindex.md")));
     }
 
-    #[test]
-    fn test_compute_file_hash() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("test.md");
-        fs::write(&file, "hello world").unwrap();
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
 
-        let hash1 = compute_file_hash(&file).unwrap();
-        let hash2 = compute_file_hash(&file).unwrap();
-        assert_eq!(hash1.len(), 64);
-        assert_eq!(hash1, hash2);
+    #[test]
+    fn the_read_version_salts_the_file_hash() {
+        let raw = "---\ntype: guide\n---\n";
+        let c = concept_of(raw);
+        assert_eq!(c.file_hash, concept_file_hash(raw.as_bytes()));
+        assert_ne!(c.file_hash, sha256_hex(raw.as_bytes()));
+        assert_eq!(c.file_hash.len(), 64);
     }
 
     #[test]

@@ -1648,3 +1648,61 @@ async fn a_malformed_stale_after_reads_as_stale() {
         "a stale-after <= now reader takes it as stale"
     );
 }
+
+// -- Re-reading unchanged files (OKF_READ_VERSION) --
+
+#[tokio::test]
+async fn a_concept_synced_by_the_previous_reader_is_rewritten() {
+    use gecko_engine::okf::types::TrustTier;
+    use sha2::{Digest, Sha256};
+
+    let test_db = TestDb::new("gecko_test_sync_reread");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (_full, referenced, _dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+
+    // What the previous reader stored: an unsalted hash and a tier from every event.
+    let path = temp_dir.path().join(format!("{referenced}.md"));
+    let raw = "---\ntype: Playbook\ntitle: Test Concept\n\
+               generated: { by: g/1, at: \"2026-06-02T00:00:00Z\" }\n\
+               verified: [{ by: human:alice, at: \"2026-06-01T00:00:00Z\" }]\n---\n\nBody.\n";
+    fs::write(&path, raw).unwrap();
+    let mut old = parse_bundle(temp_dir.path()).expect("parse");
+    let concept = old
+        .concepts
+        .iter_mut()
+        .find(|c| c.concept_id == referenced)
+        .expect("the referenced concept");
+    concept.file_hash = Sha256::digest(raw.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    concept.provenance.trust_tier = Some(TrustTier::HumanReviewed);
+    sync_bundle(&mut db, &old, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("the previous reader's sync");
+    assert_eq!(
+        count(&mut db, "match $c isa concept, has trust-tier $t;").await,
+        1
+    );
+
+    sync_dir(&mut db, temp_dir.path()).await;
+    assert_eq!(
+        count(&mut db, "match $c isa concept, has trust-tier $t;").await,
+        0,
+        "the unchanged file is re-read, and its stale human review no longer counts"
+    );
+    assert_eq!(
+        count(
+            &mut db,
+            &format!(
+                r#"match $c isa concept, has concept-id "{referenced}";
+                         $l isa source-link, links (origin: $c);"#
+            )
+        )
+        .await,
+        1,
+        "the belief edge survives the rewrite"
+    );
+    assert!(retired_at(&mut db, &referenced).await.is_empty());
+}
