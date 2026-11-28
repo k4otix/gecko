@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::linker::{extract_links, extract_program};
-use super::types::{HierarchyEdge, OkfBundle, OkfConcept, ScriptEngine};
+use super::types::{
+    HierarchyEdge, OkfBundle, OkfConcept, SCRIPT_ENGINE_LANGS, ScriptEngine, or_list,
+};
 use crate::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 
 #[derive(Debug, Error)]
@@ -33,6 +35,18 @@ pub enum ParseError {
         max = MAX_TIMEOUT_MS
     )]
     InvalidTimeout { path: String, value: String },
+
+    #[error(
+        "Concept file '{path}' has an invalid 'engine' ({value}); it must be one of {}",
+        SCRIPT_ENGINE_LANGS.join(", ")
+    )]
+    InvalidEngine { path: String, value: String },
+
+    #[error(
+        "Concept file '{path}' declares engine '{engine}' but has no code in a {} fence",
+        or_list(&SCRIPT_ENGINE_LANGS)
+    )]
+    MissingProgram { path: String, engine: String },
 
     #[error("YAML parsing error in '{path}': {source}")]
     Yaml {
@@ -179,7 +193,19 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     let timestamp = extract_timestamp(&mut metadata, "timestamp");
 
     // GECKO-specific extension fields
-    let engine = extract_string(&mut metadata, "engine").and_then(|s| ScriptEngine::from_lang(&s));
+    // A present `engine` must name a supported engine; it is never coerced or dropped.
+    let engine = match metadata.remove("engine") {
+        None => None,
+        Some(serde_yaml::Value::String(s)) if ScriptEngine::from_lang(&s).is_some() => {
+            ScriptEngine::from_lang(&s).map(|e| (e, s))
+        }
+        Some(v) => {
+            return Err(ParseError::InvalidEngine {
+                path: file_path.display().to_string(),
+                value: yaml_as_written(&v),
+            });
+        }
+    };
     let scopes = extract_string_list(&mut metadata, "scopes");
     let timeout_ms = match metadata.remove("timeout-ms") {
         None => None,
@@ -188,10 +214,7 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
             _ => {
                 return Err(ParseError::InvalidTimeout {
                     path: file_path.display().to_string(),
-                    // Shown as YAML, as the author wrote it (`.nan`, `null`, `[1, 2]`).
-                    value: serde_yaml::to_string(&v)
-                        .map(|s| s.trim().replace('\n', " "))
-                        .unwrap_or_else(|_| format!("{v:?}")),
+                    value: yaml_as_written(&v),
                 });
             }
         },
@@ -214,7 +237,14 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
 
     // One program per concept: pull only the fences whose language matches the
     // declared engine and concatenate them in document order.
-    let program = extract_program(body, engine.as_ref());
+    let program = extract_program(body, engine.as_ref().map(|(e, _)| e));
+    if let (Some((_, written)), None) = (&engine, &program) {
+        return Err(ParseError::MissingProgram {
+            path: file_path.display().to_string(),
+            engine: written.clone(),
+        });
+    }
+    let engine = engine.map(|(e, _)| e);
 
     Ok(OkfConcept {
         concept_id,
@@ -394,6 +424,14 @@ fn walk_md_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, ParseError> {
 }
 
 // -- Helper functions for extracting typed values from YAML --
+
+/// A frontmatter value shown as YAML, close to how the author wrote it (`.nan`,
+/// `null`, `5`), on one line.
+fn yaml_as_written(v: &serde_yaml::Value) -> String {
+    serde_yaml::to_string(v)
+        .map(|s| s.trim().replace('\n', " "))
+        .unwrap_or_else(|_| format!("{v:?}"))
+}
 
 fn extract_string(map: &mut HashMap<String, serde_yaml::Value>, key: &str) -> Option<String> {
     map.remove(key).and_then(|v| match v {
@@ -689,6 +727,10 @@ timeout-ms: 5000
 ---
 
 Playbook body.
+
+```js
+1
+```
 "#,
         )
         .unwrap();
@@ -705,12 +747,116 @@ Playbook body.
         assert_eq!(concept.timeout_ms, Some(5000));
     }
 
+    /// Parses a concept file with `frontmatter` lines and `body`.
+    fn parse_with(frontmatter: &str, body: &str) -> Result<OkfConcept, ParseError> {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("playbook.md"),
+            format!("---\ntype: playbook\n{frontmatter}\n---\n\n{body}"),
+        )
+        .unwrap();
+        parse_concept(&dir.path().join("playbook.md"), dir.path())
+    }
+
+    const JS_FENCE: &str = "```js\nconsole.log(1)\n```\n";
+
+    #[test]
+    fn an_unsupported_engine_is_refused_as_written() {
+        for (line, shown) in [
+            ("engine: javscript", Some("javscript")),
+            ("engine: python", Some("python")),
+            ("engine: no", Some("no")),
+            ("engine: 5", Some("5")),
+            ("engine: true", Some("true")),
+            ("engine: null", Some("null")),
+            ("engine:", Some("null")),
+            ("engine: [js]", None),
+            ("engine: {a: 1}", None),
+        ] {
+            let err = parse_with(line, JS_FENCE).unwrap_err();
+            let ParseError::InvalidEngine { value, .. } = &err else {
+                panic!("{line}: {err}");
+            };
+            if let Some(shown) = shown {
+                assert_eq!(value, shown, "{line}");
+            }
+            let msg = err.to_string();
+            assert!(
+                msg.contains("playbook.md") && msg.contains("one of js, javascript, quickjs"),
+                "{line}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_spellings_from_lang_accepts_parse() {
+        for line in ["engine: JS", "engine: \" javascript \"", "engine: quickjs"] {
+            let concept = parse_with(line, JS_FENCE).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(concept.engine, Some(ScriptEngine::QuickJs), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_declared_engine_without_a_program_is_refused() {
+        for body in [
+            "Prose only.\n",
+            "```javscript\nconsole.log(1)\n```\n",
+            "```python\nprint(1)\n```\n",
+            "```js\n\n```\n",
+            "```js\n```\n",
+        ] {
+            let err = parse_with("engine: quickjs", body).unwrap_err();
+            let ParseError::MissingProgram { engine, .. } = &err else {
+                panic!("{body:?}: {err}");
+            };
+            assert_eq!(engine, "quickjs");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("playbook.md")
+                    && msg.contains("no code in a js, javascript or quickjs fence"),
+                "{body:?}: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_blank_fence_beside_a_real_one_is_skipped() {
+        let concept = parse_with(
+            "engine: quickjs",
+            "```js\n\n```\n\n```js\nconsole.log(1)\n```\n",
+        )
+        .unwrap();
+        assert_eq!(concept.program.as_deref(), Some("console.log(1)"));
+    }
+
+    #[test]
+    fn a_fence_language_is_matched_like_engine() {
+        for body in [
+            "```JS\nconsole.log(1)\n```\n",
+            "```js   \nconsole.log(1)\n```\n",
+        ] {
+            let concept = parse_with("engine: quickjs", body).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(
+                concept.program.as_deref(),
+                Some("console.log(1)"),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fence_without_an_engine_stays_documentation() {
+        let concept = parse_with("title: notes", JS_FENCE).unwrap();
+        assert_eq!(concept.engine, None);
+        assert_eq!(concept.program, None);
+    }
+
     /// Parses a playbook whose frontmatter ends with `timeout_line` (none when empty).
     fn parse_timeout(timeout_line: &str) -> Result<OkfConcept, ParseError> {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("playbook.md"),
-            format!("---\ntype: playbook\nengine: quickjs\n{timeout_line}\n---\n\nBody.\n"),
+            format!("---\ntype: playbook\nengine: quickjs\n{timeout_line}\n---\n\n```js\n1\n```\n"),
         )
         .unwrap();
         parse_concept(&dir.path().join("playbook.md"), dir.path())

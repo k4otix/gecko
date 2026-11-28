@@ -14,10 +14,11 @@ static LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(!?)\[([^\]]+)\]\(([^)]+)\)").unwrap());
 
 /// Matches fenced code blocks, capturing the info-string language tag (group 1)
-/// and the block body (group 2). Extra info-string tokens after the language are
-/// ignored; an untagged fence yields an empty language.
+/// and the block body (group 2, absent for a fence with no line inside). Extra
+/// info-string tokens after the language are ignored; an untagged fence yields an
+/// empty language.
 static CODE_BLOCK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"```(\w*)[^\n]*\n([\s\S]*?)\n```").unwrap());
+    LazyLock::new(|| Regex::new(r"```(\w*)[^\n]*\n(?:([\s\S]*?)\n)??```").unwrap());
 
 /// Extracts internal concept links and external citations from a markdown body, resolving
 /// internal targets relative to the source concept.
@@ -67,7 +68,7 @@ pub fn extract_code_fences(body: &str) -> Vec<CodeFence> {
         .captures_iter(body)
         .map(|cap| CodeFence {
             lang: cap[1].trim().to_string(),
-            code: cap[2].trim().to_string(),
+            code: cap.get(2).map_or("", |m| m.as_str()).trim().to_string(),
         })
         .collect()
 }
@@ -78,13 +79,14 @@ pub fn extract_code_fences(body: &str) -> Vec<CodeFence> {
 /// Fences in any other language — a *different* engine, or a non-executable
 /// language like `python`/`sql`/`mermaid` — are treated as documentation and
 /// skipped, which is what lets a concept interleave prose, illustrative snippets,
-/// and its actual program. Returns `None` when the concept declares no engine, or
-/// declares one but has no matching fence.
+/// and its actual program. Blank fences are skipped too. Returns `None` when the
+/// concept declares no engine, or declares one but has no non-blank matching fence.
 pub fn extract_program(body: &str, engine: Option<&ScriptEngine>) -> Option<String> {
     let engine = engine?;
     let parts: Vec<String> = extract_code_fences(body)
         .into_iter()
         .filter(|f| ScriptEngine::from_lang(&f.lang).as_ref() == Some(engine))
+        .filter(|f| !f.code.trim().is_empty())
         .map(|f| f.code)
         .collect();
     if parts.is_empty() {
@@ -148,6 +150,42 @@ pub fn resolve_relative_path(target: &str, source_concept_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fences(body: &str) -> Vec<(String, String)> {
+        extract_code_fences(body)
+            .into_iter()
+            .map(|f| (f.lang, f.code))
+            .collect()
+    }
+
+    fn pair(lang: &str, code: &str) -> (String, String) {
+        (lang.to_string(), code.to_string())
+    }
+
+    #[test]
+    fn extract_program_skips_a_blank_matching_fence() {
+        assert_eq!(
+            extract_program(
+                "```js\n\n```\n\n```js\nconsole.log(1)\n```\n",
+                Some(&ScriptEngine::QuickJs)
+            )
+            .as_deref(),
+            Some("console.log(1)")
+        );
+    }
+
+    #[test]
+    fn a_zero_line_fence_does_not_swallow_the_next() {
+        assert_eq!(
+            fences("```js\n```\n\n```js\nconsole.log(1)\n```\n"),
+            [pair("js", ""), pair("js", "console.log(1)")]
+        );
+    }
+
+    #[test]
+    fn a_lone_zero_line_fence_is_an_empty_fence() {
+        assert_eq!(fences("```js\n```\n"), [pair("js", "")]);
+    }
 
     #[test]
     fn test_resolve_relative_path_basic() {

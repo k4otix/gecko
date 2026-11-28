@@ -42,7 +42,7 @@
 **Files:**
 - Modify: `core/gecko-extension-api/src/okf.rs:36`, adding `SCRIPT_ENGINE_LANGS` and using it in `from_lang`.
 - Modify: `core/gecko-engine/src/okf/linker.rs:83`. `extract_program` drops blank bodies. Its doc comment (`:76-82`) says so.
-- Modify: `CODE_BLOCK_RE` (`linker.rs:18-19`). It requires a `\n` before the closing fence, so a zero-line fence (```` ```js\n``` ````) has no match of its own, and the lazy body runs on into the next fence. The body and its trailing newline become one optional group: `` ```(\w*)[^\n]*\n(?:([\s\S]*?)\n)?``` ``. `extract_code_fences` reads a missing group 2 as an empty body.
+- Modify: `CODE_BLOCK_RE` (`linker.rs:18-19`). It requires a `\n` before the closing fence, so a zero-line fence (```` ```js\n``` ````) has no match of its own, and the lazy body runs on into the next fence. The body and its trailing newline become one optional group: `` ```(\w*)[^\n]*\n(?:([\s\S]*?)\n)??``` `` (the optional group is lazy, so an empty body is tried first). `extract_code_fences` reads a missing group 2 as an empty body.
 - Modify: the doc comments on `from_lang` (`okf.rs:32-35`), on `OkfConcept::program` (`okf.rs:66-69`) and at `core/gecko-engine/src/pipeline.rs:43`, so they describe the refusal.
 - Test: `gecko-bin/tests/run_args_cli_test.rs`. The CLI test is written here, before the implementation, so it is seen to fail.
 - Modify: `core/gecko-engine/src/okf/parser.rs`:
