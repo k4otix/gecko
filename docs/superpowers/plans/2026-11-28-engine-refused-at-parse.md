@@ -42,6 +42,7 @@
 **Files:**
 - Modify: `core/gecko-extension-api/src/okf.rs:36`, adding `SCRIPT_ENGINE_LANGS` and using it in `from_lang`.
 - Modify: `core/gecko-engine/src/okf/linker.rs:83`. `extract_program` drops blank bodies. Its doc comment (`:76-82`) says so.
+- Modify: `CODE_BLOCK_RE` (`linker.rs:18-19`). It requires a `\n` before the closing fence, so a zero-line fence (```` ```js\n``` ````) has no match of its own, and the lazy body runs on into the next fence. The body and its trailing newline become one optional group: `` ```(\w*)[^\n]*\n(?:([\s\S]*?)\n)?``` ``. `extract_code_fences` reads a missing group 2 as an empty body.
 - Modify: the doc comments on `from_lang` (`okf.rs:32-35`), on `OkfConcept::program` (`okf.rs:66-69`) and at `core/gecko-engine/src/pipeline.rs:43`, so they describe the refusal.
 - Test: `gecko-bin/tests/run_args_cli_test.rs`. The CLI test is written here, before the implementation, so it is seen to fail.
 - Modify: `core/gecko-engine/src/okf/parser.rs`:
@@ -71,7 +72,11 @@
   - `a_blank_fence_beside_a_real_one_is_skipped`: the body `"```js\n\n```\n\n```js\nconsole.log(1)\n```\n"` gives `program == Some("console.log(1)")`.
   - `a_fence_language_is_matched_like_engine`: ```` ```JS ```` and ```` ```js   ```` with code, under `engine: quickjs`, each give a program.
   - `a_fence_without_an_engine_stays_documentation`: no `engine` key, with a `js` fence, gives `engine: None` and `program: None`.
-  - In `linker.rs` tests: `extract_program_skips_a_blank_matching_fence`, using the same two-fence body.
+  - In `linker.rs` tests:
+    - `extract_program_skips_a_blank_matching_fence`, using the same two-fence body;
+    - `a_zero_line_fence_does_not_swallow_the_next`: `extract_code_fences("```js\n```\n\n```js\nconsole.log(1)\n```\n")` gives exactly `[("js", ""), ("js", "console.log(1)")]`;
+    - `a_lone_zero_line_fence_is_an_empty_fence`: `extract_code_fences("```js\n```\n")` gives `[("js", "")]`.
+  - In `parser.rs`, `a_declared_engine_without_a_program_is_refused` gains the zero-line form `"```js\n```\n"`.
   - **The CLI test** `a_bundle_with_an_unsupported_engine_fails_to_sync`, in `run_args_cli_test.rs`, using `gecko(dir)` and `text`:
     - the bundle holds a good `playbooks/hello.md` (`engine: quickjs` with a `js` fence) and a bad `playbooks/typo.md` (`engine: javscript`);
     - `gecko --database <db> sync <bundle>` exits non-zero, and its output names `typo.md` and `javscript`;
@@ -84,6 +89,7 @@
     - Temporarily comment out the variant-matching tests, run `a_blank_fence_beside_a_real_one_is_skipped` and the linker test, and watch them fail on the joined blank body. Then restore the tests.
 - [ ] **Step 3: Implement.**
   - **`SCRIPT_ENGINE_LANGS`,** and `from_lang` matches `lang.trim().to_lowercase()` against it.
+  - **`CODE_BLOCK_RE`:** as in Files. `extract_code_fences` uses `cap.get(2).map_or("", |m| m.as_str())`.
   - **`extract_program`:** `.filter(|f| !f.code.trim().is_empty())` before the join.
   - **`yaml_as_written`:** the `InvalidTimeout` arm calls it, so that message is unchanged.
   - **The `engine` read:** `match metadata.remove("engine")`:
@@ -116,7 +122,6 @@
   - The README path.
   - **The `KNOWN-LIMITATIONS` bullet:** a bundle an earlier release synced with an unsupported `engine`, or an `engine` with no code in a matching fence, now fails to parse naming the file. The fix is to correct the file.
   - **The ledger row**, naming the tests. It is add-only: N10 has no open row.
-  - **The ledger note:** a fence with no line inside (```` ```js\n``` ````) is matched across the next fence by `CODE_BLOCK_RE`. That is a pre-existing regex quirk, recorded and not fixed here.
 - [ ] **Step 2: Commit** with the message `README and docs for the engine refusal`.
 
 ## Verification

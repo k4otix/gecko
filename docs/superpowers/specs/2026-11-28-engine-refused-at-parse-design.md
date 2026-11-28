@@ -53,6 +53,10 @@ parse".
 - **Blank fences.** `extract_program` drops fence bodies that are empty after trimming, so a
   concept whose only matching fences are blank gives `None`. A blank fence next to a real
   one is simply skipped.
+- **Zero-line fences (added with the user).** `CODE_BLOCK_RE` requires a newline before the
+  closing fence, so ```` ```js ```` immediately followed by ```` ``` ```` matches across into the
+  next fence and yields a garbage program. The body and its newline become optional, so a
+  zero-line fence is its own empty fence.
 - **Quoting as written.** The "shown as YAML" formatter in the `InvalidTimeout` arm
   (`parser.rs:191-194`) becomes a small helper, `fn yaml_as_written(v: &serde_yaml::Value)
   -> String`, used by both errors.
