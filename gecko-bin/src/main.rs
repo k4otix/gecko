@@ -837,6 +837,10 @@ async fn cmd_sync(
         manifest.bundle_name,
         config.database
     );
+    // Printed before the sync, so a sync that fails for another reason still shows them.
+    for warning in &manifest.warnings {
+        println!("  warning: {warning}");
+    }
 
     let result = sync_manifest(config, extensions, &manifest, &[]).await?;
     print_sync_result(&result);
