@@ -117,7 +117,8 @@ gecko sync-sensors extensions/cyber-gecko/sample-sensors.yaml --database attack
 gecko sync extensions/cyber-gecko/sample-bundle --database attack
 ```
 
-**4. Claim both detections.** Each claim is a belief; keep its `belief_id`.
+**4. Claim both detections.** Each claim is a belief; keep both `belief_id`s. Steps 6 and 9 use
+the PowerShell one, and step 8 the scheduled-task one.
 
 ```bash
 gecko run playbooks/claim_detection --database attack --args '{"logic_id":"detections/encoded_powershell","technique_id":"T1059.001","method":"human-assertion","confidence":0.8}'
@@ -151,15 +152,21 @@ gecko run playbooks/coverage_report --database attack
 }
 ```
 
-**6. Record a verdict** on an alert from the PowerShell detection, without editing a playbook:
+**6. Record a verdict** on an alert from the PowerShell detection, without editing a playbook.
+`assumes` names the PowerShell claim from step 4: the verdict takes for granted that the
+detection works.
 
 ```bash
-gecko run playbooks/record_verdict --database attack --args '{"logic_id":"detections/encoded_powershell","verdict":"true-positive"}'
+gecko run playbooks/record_verdict --database attack --args '{"logic_id":"detections/encoded_powershell","verdict":"true-positive","assumes":["<powershell_belief_id>"]}'
 ```
 
 ```json
-{"belief_id":"mem/bel/01M8AZG74BF7V660F8XDJ39Q5Z","logic_id":"detections/encoded_powershell","verdict":"true-positive"}
+{"assumes":["mem/bel/01M8AZG4N109YGHA1M9GBQB8GZ"],"belief_id":"mem/bel/01M8AZG74BF7V660F8XDJ39Q5Z","logic_id":"detections/encoded_powershell","verdict":"true-positive"}
 ```
+
+`assumes` records a `rests-on` edge from the verdict to the claim. `evidence` (a derivation)
+also places a verdict in a claim's blast radius, but `assumes` differs in two ways: it
+links two beliefs that both already exist, and it means "assumes", not "was derived from".
 
 **7. Measure its precision** over the last day:
 
@@ -175,11 +182,23 @@ gecko run playbooks/detection_precision --database attack --args '{"logic_id":"d
 second one). `T1053.005` is undetected again (705), and nothing is blind:
 
 ```bash
-gecko run playbooks/withdraw_claim --database attack --args '{"belief_id":"<belief_id>","reason":"superseded by vendor rule"}'
+gecko run playbooks/withdraw_claim --database attack --args '{"belief_id":"<scheduled_task_belief_id>","reason":"superseded by vendor rule"}'
 ```
 
 ```json
 {"blast_radius":[],"id":"mem/bel/01M8AZG5ERZ2PBWGRPSZ8YM5G0"}
+```
+
+**9. Withdraw the PowerShell claim.** The verdict from step 6 rested on it, so the blast radius
+names the verdict. Withdrawing reports what it undermines; it never retracts it. `T1059.001`
+is undetected again (706):
+
+```bash
+gecko run playbooks/withdraw_claim --database attack --args '{"belief_id":"<powershell_belief_id>","reason":"the encoding rule misfires"}'
+```
+
+```json
+{"blast_radius":["mem/bel/01M8AZG74BF7V660F8XDJ39Q5Z"],"id":"mem/bel/01M8AZG4N109YGHA1M9GBQB8GZ"}
 ```
 
 ## `claim`

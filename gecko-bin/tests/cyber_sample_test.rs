@@ -225,6 +225,7 @@ async fn the_readme_walkthrough_runs() {
             "playbooks/record_verdict",
             "playbooks/detection_precision",
             "playbooks/withdraw_claim",
+            "playbooks/withdraw_claim",
         ],
         "the walkthrough's gecko run commands"
     );
@@ -249,6 +250,7 @@ async fn the_readme_walkthrough_runs() {
         .await;
     assert!(powershell["belief_id"].is_string(), "{powershell}");
     assert_eq!(keys(&powershell), ["belief_id", "logic_id", "technique_id"]);
+    let powershell_belief = powershell["belief_id"].as_str().unwrap().to_string();
     let task = cli
         .run(&commands[1].concept_id, commands[1].args.as_deref())
         .await;
@@ -272,13 +274,20 @@ async fn the_readme_walkthrough_runs() {
         ["blind", "by_tactic", "recommended", "undetected"]
     );
 
-    let verdict = cli
-        .run(&commands[3].concept_id, commands[3].args.as_deref())
-        .await;
+    let verdict_args = commands[3]
+        .args
+        .as_deref()
+        .expect("record_verdict takes args")
+        .replace("<powershell_belief_id>", &powershell_belief);
+    let verdict = cli.run(&commands[3].concept_id, Some(&verdict_args)).await;
     assert_eq!(verdict["logic_id"], "detections/encoded_powershell");
     assert_eq!(verdict["verdict"], "true-positive");
+    assert_eq!(verdict["assumes"], json!([powershell_belief]));
     assert!(verdict["belief_id"].is_string(), "{verdict}");
-    assert_eq!(keys(&verdict), ["belief_id", "logic_id", "verdict"]);
+    assert_eq!(
+        keys(&verdict),
+        ["assumes", "belief_id", "logic_id", "verdict"]
+    );
 
     let precision = cli
         .run(&commands[4].concept_id, commands[4].args.as_deref())
@@ -301,7 +310,7 @@ async fn the_readme_walkthrough_runs() {
         .args
         .as_deref()
         .expect("withdraw_claim takes args")
-        .replace("<belief_id>", &task_belief);
+        .replace("<scheduled_task_belief_id>", &task_belief);
     let withdrawn = cli.run(&commands[5].concept_id, Some(&withdraw_args)).await;
     assert_eq!(withdrawn["id"], json!(task_belief));
     assert_eq!(keys(&withdrawn), ["blast_radius", "id"]);
@@ -316,5 +325,93 @@ async fn the_readme_walkthrough_runs() {
     assert_eq!(
         belief_state(&db, &task_belief).await,
         [json!({ "s": "retracted" })]
+    );
+
+    // Withdrawing the PowerShell claim reports the verdict that rested on it.
+    let withdraw_args = commands[6]
+        .args
+        .as_deref()
+        .expect("withdraw_claim takes args")
+        .replace("<powershell_belief_id>", &powershell_belief);
+    let withdrawn = cli.run(&commands[6].concept_id, Some(&withdraw_args)).await;
+    assert_eq!(withdrawn["id"], json!(powershell_belief));
+    assert_eq!(withdrawn["blast_radius"], json!([verdict["belief_id"]]));
+    let report = cli.run("playbooks/coverage_report", None).await;
+    assert_eq!(
+        ids(&report, "undetected"),
+        ["T1053", "T1053.005", "T1059", "T1059.001"],
+        "both claims are withdrawn"
+    );
+}
+
+/// A synced walkthrough database with one claim on the PowerShell detection.
+async fn claimed(db: &TestDb, tmp: &Path) -> Cli {
+    let stix = tmp.join("attack.json");
+    std::fs::write(&stix, walkthrough::bundle()).expect("write the fixture");
+    let cli = Cli::new(tmp, &db.name);
+    cli.ok(&["sync-stix", stix.to_str().unwrap()]).await;
+    cli.ok(&["sync-sensors", SENSORS]).await;
+    cli.ok(&["sync", BUNDLE]).await;
+    cli.run(
+        "playbooks/claim_detection",
+        Some(
+            r#"{"logic_id":"detections/encoded_powershell","technique_id":"T1059.001","method":"human-assertion","confidence":0.8}"#,
+        ),
+    )
+    .await;
+    cli
+}
+
+/// The true positives `detection_precision` counts on the PowerShell detection.
+async fn true_positives(cli: &Cli) -> Value {
+    cli.run(
+        "playbooks/detection_precision",
+        Some(r#"{"logic_id":"detections/encoded_powershell","window":86400}"#),
+    )
+    .await["true_positives"]
+        .clone()
+}
+
+/// Runs `record_verdict` with `assumes` and returns its raw output.
+async fn record_verdict(cli: &Cli, assumes: &str) -> Output {
+    let args = format!(
+        r#"{{"logic_id":"detections/encoded_powershell","verdict":"true-positive","assumes":{assumes}}}"#
+    );
+    cli.gecko(&["run", "playbooks/record_verdict", "--args", &args])
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn record_verdict_refuses_a_bad_assumes_before_recording() {
+    let db = TestDb::new("gecko_test_cyber_bad_assumes");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cli = claimed(&db, tmp.path()).await;
+    for assumes in [r#"[]"#, r#"["a","a"]"#, r#"[""]"#, r#""x""#, "null", "[1]"] {
+        let out = record_verdict(&cli, assumes).await;
+        assert!(
+            !out.status.success(),
+            "assumes {assumes} was accepted\n{}",
+            text(&out)
+        );
+        assert!(
+            text(&out).contains("assumes"),
+            "assumes {assumes}: the refusal does not name assumes\n{}",
+            text(&out)
+        );
+    }
+    assert_eq!(true_positives(&cli).await, 0, "no verdict was recorded");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn record_verdict_with_a_missing_assumption_keeps_the_verdict() {
+    let db = TestDb::new("gecko_test_cyber_missing_assumption");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cli = claimed(&db, tmp.path()).await;
+    let out = record_verdict(&cli, r#"["mem/bel/does-not-exist"]"#).await;
+    assert!(!out.status.success(), "{}", text(&out));
+    assert_eq!(
+        true_positives(&cli).await,
+        1,
+        "the verdict is recorded before mem.restsOn refuses the missing id"
     );
 }

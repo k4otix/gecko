@@ -6,7 +6,7 @@ end-to-end when it is not.
 ## `mem.*` sandbox namespace — RESOLVED (recall proven end-to-end)
 
 **Status: shipped end-to-end.** The guest binding landed, so the full `mem.*`
-surface (`recall`/`remember`/`derive`/`supersede`/`contest`/`retract`) is now callable from
+surface (`recall`/`remember`/`derive`/`supersede`/`contest`/`retract`/`restsOn`) is now callable from
 exec-doc JS in a live `gecko run`, and A5.7 retrieval-provenance correlation is
 proven through the real sandbox against live TypeDB.
 
@@ -23,7 +23,7 @@ proven through the real sandbox against live TypeDB.
   is handed over as the reader via `EpistemicWriter::as_epistemic_reader`.
 - **The guest binding now exists** (`core/js-sandbox/src/main.rs`, compiled into the
   committed `core/gecko-engine/src/sandbox/quickjs.wasm`): a `mem` global exposes the
-  five functions, each marshalling the exact payload the host parses and (for
+  functions, each marshalling the exact payload the host parses and (for
   `recall`) unwrapping the `{ chunks }` envelope to hand JS the array directly. Every
   call is S3 default-deny gated on the concept's granted `mem:<fn>` scope.
 - **Proven live:** `gecko-bin/tests/mem_recall_e2e_test.rs` drives a real guest
@@ -228,8 +228,7 @@ Each write enforces it inside its own write, so a refused write commits nothing:
   time. A repeated assumption, a self-dependency and an empty list are refused
   (`rests_on_another_agents_private_belief_is_refused_and_commits_nothing`,
   `rests_on_gates_the_resting_item_and_every_assumption_in_one_call`,
-  `rests_on_stamps_the_declarer_the_run_and_the_time`). It is not yet reachable from the
-  guest.
+  `rests_on_stamps_the_declarer_the_run_and_the_time`).
 - **`derive`** (`assert_belief` with evidence) requires every evidence belief to be visible to
   the caller. Evidence that is not a belief (an episode, an anomaly) is held to the same rule
   through its `ownership`; those items are written without a visibility, which the substrate
