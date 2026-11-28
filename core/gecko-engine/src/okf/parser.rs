@@ -252,12 +252,12 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile,
     }
 
     // Extract standard fields
-    let title = extract_string(&mut metadata, "title");
-    let description = extract_string(&mut metadata, "description");
-    let resource_uri = extract_string(&mut metadata, "resource");
-
     let mut warnings = Vec::new();
-    let tags = take_tags(&mut metadata, &path.to_string(), &mut warnings);
+    let path_str = path.to_string();
+    let title = take_scalar(&mut metadata, "title", &path_str, &mut warnings);
+    let description = take_scalar(&mut metadata, "description", &path_str, &mut warnings);
+    let resource_uri = take_scalar(&mut metadata, "resource", &path_str, &mut warnings);
+    let tags = take_tags(&mut metadata, &path_str, &mut warnings);
     let provenance = take_provenance(
         &mut metadata,
         &file_path.display().to_string(),
@@ -531,7 +531,14 @@ fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<St
             ));
             return None;
         }
-        Frontmatter::None | Frontmatter::NearMiss => return None,
+        Frontmatter::NearMiss => {
+            warnings.push(format!(
+                "Bundle index '{path}' looks like it opens frontmatter, but frontmatter must \
+                 open with a first line that is exactly '---'; its okf_version is not recorded"
+            ));
+            return None;
+        }
+        Frontmatter::None => return None,
     };
     let value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
         Ok(serde_yaml::Value::Mapping(mut m)) => {
@@ -613,8 +620,9 @@ fn has_non_finite(v: &serde_yaml::Value) -> bool {
 /// `bundle_root` must be canonical. A file or directory whose name starts with `.` is
 /// not part of the bundle and is skipped quietly. A symlink is never followed: its
 /// target is either outside the bundle root, which a consumer must not read, or inside
-/// it, where the walk reads it at its own path. Each skipped symlink gets a warning
-/// naming why, except a root-level reserved name, which [`read_okf_version`] reports.
+/// it, where the walk reaches it at its own path if it is part of the bundle. A skipped
+/// `.md` or directory symlink gets a warning naming why; a link to an asset, and a
+/// root-level reserved name ([`read_okf_version`] reports that one), are skipped quietly.
 fn walk_md_files(
     dir: &Path,
     bundle_root: &Path,
@@ -637,10 +645,17 @@ fn walk_md_files(
             if dir == bundle_root && is_reserved_file(&path) {
                 continue;
             }
-            let reason = match std::fs::canonicalize(&path) {
+            // Only a link that could have been a concept or a directory of concepts is
+            // worth a warning; a link to an asset is skipped quietly.
+            let target = std::fs::canonicalize(&path);
+            let is_md = path.extension().is_some_and(|ext| ext == "md");
+            if !is_md && !target.as_ref().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let reason = match target {
                 Err(_) => "is broken",
                 Ok(target) if !target.starts_with(bundle_root) => "points outside the bundle root",
-                Ok(_) => "points inside the bundle, where its target is read at its own path",
+                Ok(_) => "points inside the bundle",
             };
             warnings.push(format!(
                 "Symlink '{}' {reason}; it is not followed",
@@ -675,17 +690,53 @@ pub(crate) fn yaml_as_written(v: &serde_yaml::Value) -> String {
 }
 
 fn extract_string(map: &mut HashMap<String, serde_yaml::Value>, key: &str) -> Option<String> {
-    map.remove(key).and_then(|v| match v {
+    map.remove(key).and_then(scalar_string)
+}
+
+/// A string, number or boolean as written; `None` for anything else.
+fn scalar_string(v: serde_yaml::Value) -> Option<String> {
+    match v {
         serde_yaml::Value::String(s) => Some(s),
         serde_yaml::Value::Number(n) => Some(n.to_string()),
         serde_yaml::Value::Bool(b) => Some(b.to_string()),
         _ => None,
-    })
+    }
+}
+
+/// The standard warning for a value of `key` the parser cannot read.
+fn invalid_value(path: &str, key: &str, v: &serde_yaml::Value) -> String {
+    format!(
+        "Concept file '{path}' has an invalid '{key}' ({}); it is kept in metadata-json and \
+         not typed",
+        yaml_as_written(v)
+    )
+}
+
+/// Takes a scalar string field (`title`, `description`, `resource`) out of `map`, as
+/// written. A list or mapping is warned about and stays in `map`, so it lands in
+/// `metadata-json`.
+fn take_scalar(
+    map: &mut HashMap<String, serde_yaml::Value>,
+    key: &str,
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let v = map.remove(key)?;
+    match &v {
+        serde_yaml::Value::Sequence(_)
+        | serde_yaml::Value::Mapping(_)
+        | serde_yaml::Value::Tagged(_) => {
+            warnings.push(invalid_value(path, key, &v));
+            map.insert(key.to_string(), v);
+            None
+        }
+        _ => scalar_string(v),
+    }
 }
 
 /// Takes `tags` out of `map` (OKF §11.2): one scalar is one tag, never split at
-/// commas, and a list's scalar items are tags as written, with null items dropped. A
-/// list or mapping item, or a `tags` mapping, is warned about; the raw `tags` then stays
+/// commas, and a list's scalar items are tags as written, with null and empty items
+/// dropped. A blank, list or mapping item, or a `tags` mapping, is warned about; the raw `tags` then stays
 /// in `map`, so it lands in `metadata-json` as written.
 fn take_tags(
     map: &mut HashMap<String, serde_yaml::Value>,
@@ -693,19 +744,15 @@ fn take_tags(
     warnings: &mut Vec<String>,
 ) -> Vec<String> {
     use serde_yaml::Value;
+    // A blank string is malformed, as for `status`; an empty one is absent.
     let scalar = |v: &Value| match v {
+        Value::String(s) if s.trim().is_empty() => None,
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
     };
-    let mut warn = |key: &str, v: &Value| {
-        warnings.push(format!(
-            "Concept file '{path}' has an invalid '{key}' ({}); it is kept in metadata-json \
-             and not typed",
-            yaml_as_written(v)
-        ));
-    };
+    let mut warn = |key: &str, v: &Value| warnings.push(invalid_value(path, key, v));
     let Some(v) = map.remove("tags") else {
         return Vec::new();
     };
@@ -714,7 +761,7 @@ fn take_tags(
         Value::Sequence(items) => items
             .iter()
             .enumerate()
-            .filter(|(_, item)| !item.is_null())
+            .filter(|(_, item)| !is_empty_value(item))
             .filter_map(|(i, item)| {
                 let tag = scalar(item);
                 if tag.is_none() {
@@ -1739,6 +1786,71 @@ Playbook body.
         assert!(c.extra_metadata.contains_key("tags"));
     }
 
+    #[test]
+    fn empty_and_blank_tags_are_not_stored() {
+        let (c, w) = parse_warned("tags: [\"\", a]");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.tags, ["a"]);
+
+        let (c, w) = parse_warned("tags: [\"  \", a]");
+        assert_one_warning(&w, "tags[0]", "'  '");
+        assert_eq!(c.tags, ["a"]);
+        assert!(c.extra_metadata.contains_key("tags"));
+
+        let (c, w) = parse_warned("tags: \"   \"");
+        assert_one_warning(&w, "tags", "'   '");
+        assert!(c.tags.is_empty());
+        assert!(c.extra_metadata.contains_key("tags"));
+    }
+
+    #[test]
+    fn a_non_scalar_title_description_or_resource_warns_and_is_kept() {
+        for key in ["title", "description", "resource"] {
+            let (c, w) = parse_warned(&format!("{key}: [a, b]"));
+            assert_one_warning(&w, key, "a");
+            assert!(c.extra_metadata.contains_key(key), "{key}");
+        }
+        let (c, _) = parse_warned("title: [a, b]");
+        assert_eq!(c.title, None);
+    }
+
+    #[test]
+    fn status_is_trimmed() {
+        let (c, w) = parse_warned("status: \" draft \"");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.status.as_deref(), Some("draft"));
+    }
+
+    /// Regression: a CRLF file reads exactly like its LF twin, nested mappings, lists,
+    /// fences and links included.
+    #[test]
+    fn a_crlf_concept_reads_like_its_lf_twin() {
+        let lf = format!(
+            "---\ntype: playbook\ntitle: T\nengine: js\nscopes: [mem:recall]\n\
+             tags: [a, b]\ngenerated: {{ by: g/1, at: {T1} }}\n\
+             verified:\n  - by: human:alice\n    at: {T2}\nstatus: draft\n\
+             stale_after: {T3}\nnotes: |\n  one\n  two\n---\n\n\
+             See [other](other.md).\n\n```js\nconsole.log(1)\n```\n"
+        );
+        let a = concept_of(&lf);
+        let b = concept_of(&lf.replace('\n', "\r\n"));
+        assert_eq!(a.concept_type, b.concept_type);
+        assert_eq!(a.title, b.title);
+        assert_eq!(a.tags, b.tags);
+        assert_eq!(a.scopes, b.scopes);
+        assert_eq!(a.timestamp, b.timestamp);
+        assert_eq!(a.provenance, b.provenance);
+        assert_eq!(a.extra_metadata, b.extra_metadata);
+        assert_eq!(
+            a.program.as_deref().map(str::trim_end),
+            b.program.as_deref().map(|p| p.trim_end())
+        );
+        assert_eq!(
+            crate::okf::linker::extract_links(&a.body, "x").0.len(),
+            crate::okf::linker::extract_links(&b.body, "x").0.len()
+        );
+    }
+
     /// Regression: the one-item rule is OKF's, for `tags`; GECKO's `scopes` keeps its
     /// reading.
     #[test]
@@ -2212,6 +2324,40 @@ Playbook body.
                 "{name}: {warning}"
             );
         }
+    }
+
+    /// A symlink to an asset is skipped quietly; one named like a concept whose target
+    /// is never read says only that it points inside the bundle.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_warnings_claim_only_what_is_true() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("assets")).unwrap();
+        fs::write(root.join("assets/pic.png"), b"png").unwrap();
+        fs::create_dir_all(root.join(".hid")).unwrap();
+        fs::write(root.join(".hid/h.md"), GUIDE).unwrap();
+        symlink(root.join("assets/pic.png"), root.join("pic.png")).unwrap();
+        symlink(root.join(".hid/h.md"), root.join("vis.md")).unwrap();
+
+        let bundle = parse_bundle(root).unwrap();
+        assert!(bundle.concepts.is_empty());
+        let w = &bundle.warnings;
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("vis.md") && w[0].contains("inside the bundle"),
+            "{w:?}"
+        );
+        assert!(!w[0].contains("read at its own path"), "{w:?}");
+    }
+
+    #[test]
+    fn a_near_miss_root_index_warns() {
+        let b = bundle_with_index(Some("\n---\nokf_version: \"0.3\"\n---\n"));
+        assert_eq!(b.okf_version, None);
+        assert_eq!(b.warnings.len(), 1, "{:?}", b.warnings);
+        assert!(b.warnings[0].contains("index.md"), "{:?}", b.warnings);
     }
 
     #[cfg(unix)]

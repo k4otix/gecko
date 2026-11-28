@@ -159,8 +159,8 @@ GECKO reads OKF by the v0.3 consumer rules
 whatever `okf_version` a bundle declares. Design:
 `docs/superpowers/specs/2026-11-28-okf-v03-reads-design.md`.
 
-- **A malformed provenance value is warned about, not refused.** `generated`, `timestamp`,
-  `verified`, `status`, `stale_after` and `tags` follow OKF §11.2: a value the parser can't
+- **A malformed value is warned about, not refused.** `title`, `description`, `resource`,
+  `generated`, `timestamp`, `verified`, `status`, `stale_after` and `tags` follow OKF §11.2: a value the parser can't
   read (`stale_after: next tuesday`, `verified: 5`) gets no typed attribute, stays in
   `metadata-json` as written, and `gecko sync` prints a `warning:` line naming the file, key
   and value. `engine`, `timeout-ms` and `scopes` still fail the sync.
@@ -186,17 +186,19 @@ whatever `okf_version` a bundle declares. Design:
     Both go beyond §4's "exactly `---`".
 - **Dot-paths and symlinks are not read** (§3.2). A file or directory under the bundle root
   whose name starts with `.` is skipped quietly, so a concept moved under one is
-  garbage-collected (or retired) with no warning. A symlink is never followed, with a warning
-  naming why: outside the root, broken, or inside it (its target is read at its own path).
-  A symlinked root `index.md` is not read.
+  garbage-collected (or retired) with no warning. A symlink is never followed. One named
+  `*.md` or pointing at a directory gets a warning naming why (outside the root, broken, or
+  inside it); a link to an asset is skipped quietly. A symlinked root `index.md` is not read.
 - **Timestamps are RFC 3339.** A `date-time` needs seconds and an offset; a `full-date`
   (`2026-06-30`) means midnight UTC. chrono's RFC 3339 variants are accepted: lowercase
   `t`/`z`, fractional seconds, and a space between date and time. `2026-06-30T14:00Z` and a
   `+09` offset are malformed.
 - **Empty is absent.** A null, `""` or `[]` value of an OKF key is the same as no key (§11.2):
   not typed, not kept, not warned about. A whitespace-only string is still malformed.
-- **A scalar `tags` is one tag,** never split at commas. `scopes` is GECKO's key and keeps its
-  own reading.
+- **A scalar `tags` is one tag,** never split at commas. An empty tag is dropped and a blank
+  one is warned about. `scopes` is GECKO's key and keeps its own reading.
+- **`status` is trimmed.** `status: " draft "` is stored as `draft`; otherwise it is stored as
+  written.
 - **Quote `okf_version`.** YAML reads an unquoted `okf_version: 0.10` as the number `0.1`,
   and that is what is stored.
 - **Absence is not stored.** A concept with no current verification has no `trust-tier`

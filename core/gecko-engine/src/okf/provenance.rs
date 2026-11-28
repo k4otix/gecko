@@ -140,9 +140,10 @@ pub(crate) fn take_provenance(
         }
     }
 
+    // `status` is stored as written, less surrounding whitespace.
     if let Some(v) = map.remove("status") {
         match non_blank(&v) {
-            Some(s) => provenance.status = Some(s),
+            Some(s) => provenance.status = Some(s.trim().to_string()),
             None => {
                 warn("status", &v);
                 map.insert("status".to_string(), v);
