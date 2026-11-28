@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:59ffc49f6a58f6d2ea2f2be4f05119e0dc3209bc08b44899f76c881e26382639",
+  "claims": [
+    {
+      "id": "claim_e608ca5ca5e346f6a0be4aaabac94084",
+      "statement": "The guest reads its program from stdin and GECKO_ARGS from the environment, failing before program code runs if GECKO_ARGS is not a JSON object.",
+      "evidence": [
+        {
+          "resource": "repo://core/js-sandbox/src/main.rs#L331-L340",
+          "version": "repo-lines-v1:sha256:ec80c2b9ffed7d745bda04ea6412c5ebdca9fcb66f34d5abbe8b475e2930711d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmYWViMTYxMjAxYjYwYzUwOGMyNDJiMDViMjU5OGJhMjUwNjk2NGQ0YzM2M2VlYmE0ZTQ0ZjU3YTA1NmIyYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkNjQ1NTg1NWFjYTJkM2ZmNDdiMjkyODUxZWQyNjM1NDg5NzU3NDRiYTE2MWNlOWE1YjE4Nzk3Nzk0OWRiODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEwMGY0YjZlYjhiOGVkM2E4ZmNiZjNlZThhM2Y4ODY3MzUxOWE1YzMxNzVhMGIyN2M4MTFkNGJhNzAxYjBhZmEifQ"
+        },
+        {
+          "resource": "repo://core/js-sandbox/src/main.rs#L368-L390",
+          "version": "repo-lines-v1:sha256:2fb8b767788c39dff990683d69fec811e3d256b23dab3ff767ef58321543ba31:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwYjllZWU5MWJjMGIxYTc3YjVmMjI0ZmQ2OTQ1ZjNkZWMyMzRlNTU5NmI5NDc1YzkwYzVhZWM5ZTZhZTIwYjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkNTk1MTRmMzE2OWU3ODdkMmZmYjM2ZmNkYzI4ZTVlMzcyZThkMzBhYTE4MWU2MGZmNzZmOWY2YTQ5YWZhMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhlZTdjZmFmNzE5MTRlZjkwMGY2ZDBkYTE2OGQ1NDRhZmE0MzFjNjA3NTk5ZGFiZmI5N2ZjZDM5MTg4NThlYTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YTA3MTUxMzc0MmQ4ZWI3NzQ1ODVkY2MzMzJiNGI4ZjBkMzE2NTNkODQyZjdjODc2Y2JkYTZkNTliMTQ2ZDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6fc3846cbb6340f989c6e17faaf2b94b",
+      "statement": "The guest registers console.log (writing to stderr), a gecko global with a read-only deep-frozen args property and callExtension, and a mem global with recall, remember, derive, supersede, contest, retract and restsOn.",
+      "evidence": [
+        {
+          "resource": "repo://core/js-sandbox/src/main.rs#L344-L366",
+          "version": "repo-lines-v1:sha256:022d9bc3618033c9b9d388193b900630a306260967c225b5217efc05a54324e9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MTYwNzkyZWQ0OGIxOTkxODJiZjUxZTM4ODVkNDUzNTViMDhlYTBjYTU5MGE0MWY1YWQ0MmY1YjJmYzAwZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEwMGY0YjZlYjhiOGVkM2E4ZmNiZjNlZThhM2Y4ODY3MzUxOWE1YzMxNzVhMGIyN2M4MTFkNGJhNzAxYjBhZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyOTNjMjhkY2YwODMxYTU5NTI5MmZhMTY1MzE3ZTcyMWE4MGNlMDhhYTQ3NGNmNDQzOTZjMGQyNzdjNzJhZWUifQ"
+        },
+        {
+          "resource": "repo://core/js-sandbox/src/main.rs#L390-L485",
+          "version": "repo-lines-v1:sha256:2b4ff2ceb84e0c3df6d936ede6af29348c15aec525338756fcea984c92a9434e:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkNTk1MTRmMzE2OWU3ODdkMmZmYjM2ZmNkYzI4ZTVlMzcyZThkMzBhYTE4MWU2MGZmNzZmOWY2YTQ5YWZhMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJhMjcyYjhjZTYzZDNhMTM2NGNmNjk1NTVkZThiYWQzMDNhYjNkYWMwNTYwNjk3ODNjNmVjYTM1NDZmYmNjMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxZjIwMWUxNzRmZmIyMmU0MWZmMTc1OTMyOTE2YjA5Mjk3ODg5YWM1Nzk1Njg1ZjZhYjk2ZTRkYmI1MjcxMjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_20572699c03e45559c60ad5fce20d817",
+      "statement": "The guest prints the JSON of the program's last expression as one stdout line, or {success:false, error} when evaluation throws or the result cannot be stringified.",
+      "evidence": [
+        {
+          "resource": "repo://core/js-sandbox/src/main.rs#L487-L518",
+          "version": "repo-lines-v1:sha256:8fd15a2cbc9cadd7fa264de4cacfc6648cf12f79795e3cffa560ae50fdf9f1e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmOGQ2YTM5Y2RkZDM5NjFiOGNhZWFmNWVjMzc3OWQ1ZTc3ZDFlZjgyNjcyYmFmZmQ5YjM1NjYzZjNhZWU0OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlMTNmNGE1Y2YxMDNlNmQyYmUzYmUxOTYxYWRmYjUzNmNhMDcyZWMzZDRhMGQyN2UzYzY4YzNkY2VlZjQzOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_848cea2bc05249679f84bf95fb707ee9",
+      "statement": "Guest mem methods rename options to snake_case wire keys and forward values unconverted, leaving type and range validation and provenance stamping to the host.",
+      "evidence": [
+        {
+          "resource": "repo://core/js-sandbox/src/main.rs#L173-L205",
+          "version": "repo-lines-v1:sha256:7467fa54cb37c467d99d29b7b2d3e742fa0bbb14b30135a5676095f24a444532:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZmY1MzRmZWRhMjYxZjQ5ZDM1MWNiZmRmM2Q1ZGM3MTA5NmY3ODgyNDc4OWQ0NGI5OGRhNmY5NTFlNTliM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM1ZjZmNDY2ZTU5Y2ZjMzA3MDNjNDVmNzJhZjY1ZGU1NGFjMzYzZDM1NGNjMWEzMzMwMzUwYWNkNDUyNDM0YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyMDBkMDQ3OWU0NTg2YmE1YTBhZjZiODNmNWM4MzVkZTA0YjBkYmFlMDQ1ZTc2NjczYTkxNWEyZDNiNTBiMGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_95eeb11da6f64f85a1b921f87e22e2c4",
+      "statement": "just build-guest compiles js-sandbox for wasm32-wasip1 and copies the result over the checked-in quickjs.wasm, which CI never rebuilds.",
+      "evidence": [
+        {
+          "resource": "repo://docs/refactor/guest-wasm.md#L66-L90",
+          "version": "repo-lines-v1:sha256:b56c2461c4ccad8ee2e4a624c94fd9024d3b45ecd75acc71dbe26cfa29cf1651:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1ZGU5ZThkMmVmZDEyOGMzMTNhYjY5NTU4NzZjYWEwNjM4ZDFmZDlkNWUzZjU4MWJjNzM2MTljYmRhMjk0MGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1ZTUxYzhiNmFkOTM4MjFiZDVkNDY0Y2NiZGVkYjBjYjExMTkyOWVjM2MwMDgyZjU1Njk5Zjc1ZDFjOTAzNjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyZTYyNzg2NzMwMzFmMDQyMjA0MDJmZDRiZmE0ODhmNzQwNTY0MGIyNzUwMDQ5OWFmYWNiMzllYjBlNTllMzgifQ"
+        },
+        {
+          "resource": "repo://justfile#L34-L38",
+          "version": "repo-lines-v1:sha256:43cfb79f7c107f260190c6377933b512436ba0984ce96c3f59e2fc97281f4c38:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmI0ZDNhNTdiMGQ4YzllNTBjYTNjZTdhZGRiMGMyNjNjMjc3MjE2MTJmYjAzMWIyY2VhOGQ2ZGMyZjI3NmY4OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGE3NzIxY2Y1ZDYzZmMyMTk2ZGUwZDY1YWJlYzFkYjQwMjkwYTAzYjI2MTMzNmUzMWNjMWUxODZjNGQyODUzYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzJhZDlhZTI5NzU3YzVjNmJmZjFmM2EwOGJhOGViMTM2NTIzNTZkNjE4NGRkYzYzNTM1ZDFmODFiY2Q0N2Q2NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDQ3ZTgyNmM4OTE3NzIzMzhmODEwNzA2YjVjYmY1NmMxMjllYzY4N2UwZDVjZDAxYjFiYTJlM2YzNmQ3MWNmNCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6a24d3a248f9c3ab855e6281e39bd180e6636a553fb96be4ed024b37bbe75d2f",
+  "claims": [
+    {
+      "id": "claim_655da0087c774eb1a6344b011ef4ede7",
+      "statement": "cyber-gecko declares two belief edges: technique-detection (detecting-logic concept by concept-id, detected-technique attack-pattern by attack-id) and alert-disposition (dispositioned-logic plus a required detection-verdict attribute).",
+      "evidence": [
+        {
+          "resource": "repo://extensions/cyber-gecko/src/lib.rs#L20-L60",
+          "version": "repo-lines-v1:sha256:a79c4edca6fb3cb838f254d0e44b9f46d2de7140cb11ff203bc85ee33815b14b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlY2MwOTg4YWYwZGU1OTcyMzhiZTNkMGU4ZTU5YWFhOTc2ZDFhZjY3MmQ5OGE3ZDE1YmU5MmM2NTIzMWI2ODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyMWVhYTc0ZDJlYWUyNjExNjFkZjA0ZWZhMzMxMDdiYzc2ZGRmY2Q2YmI2ZDEwODBjZWJmMDhkYjIxYmE5NTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0Y2U0MTA4Y2MwZTJkZTdjN2VmMWJlM2VkZTBjZTkxZjgxOTZkYjMxNTE3NGVmYzVmZGYyOWI3YzVkMDhkM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0YTE5NGQzOGE1MGQwOGIwODA3MDJiMzViYmEwMDA2NjIyZDZmNjdlMjhkMjk1NjQ3ODRiNDdiMTVhODc2NjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eb12851269b34cb7aee03e1e3ed094c9",
+      "statement": "cyber-gecko's call_import always errors because its detect imports need graph reads and the belief-edge write path, which only the host bridge supplies.",
+      "evidence": [
+        {
+          "resource": "repo://extensions/cyber-gecko/src/lib.rs#L120-L140",
+          "version": "repo-lines-v1:sha256:23bcc0a5c0c89e82d55c18208c6e423d9845a596171acf0c2f65a707a9ff9086:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5NWIwMGZmMjVlMmM3MDU0MzdkNTQ3NGNiY2E5ODYxMjEyODc4MjU1NDEzYjIyNjZjMzFkOGFhMTVjYjM3MTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4YjhkNGVlY2FmNGQ2NzA3NWRlZDRiMzZhNjA1ZDhiZTU4OTBjNWVlZjQ3M2MzNGMxOWI1NWQxNmMyM2UyYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQxODJkOGU1NTNiYWI1YTcwMTgzNDFlNzI0MGYxNmU0N2I1OTkxYjlhMTBmZWVmMDk4NzE1YjU1ZDc5ZWVhYzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_af37a206786f4a5f84a6ff911c47f496",
+      "statement": "cyber_extension_callback intercepts cyber-gecko calls to the six detect functions, runs them sync-to-async with block_in_place and block_on, and delegates every other call to the wrapped callback.",
+      "evidence": [
+        {
+          "resource": "repo://extensions/cyber-gecko/src/detect/mod.rs#L61-L120",
+          "version": "repo-lines-v1:sha256:9a786b270cf031b07007fec3df380bb0eedcbfb7433ba4c12a7ebdc159631aa0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2NTA0MThkZDExZjk0ZWU5YjEzY2FkMmRhMjk3YTNlZGQ4NmUxZTI1NjgxNGY3NzdmOTc4ZGMwZjE2ZjIzNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNlNTA0MTQzYTU4NWUwYTg4OGVmOWRlNWEzZjg1NDBlYTc3MjA0NGI0YzcxYzcwM2VhY2RhMTQ5YTMyZDczYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjFiYTQxODBjZTVjYmViYzE0YzA0MTk5Y2Q0YThlNGY0NTU5YzlmZTBmMTIyODU0YmQ4NTViMzZjNGYxZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_45e1d55494b24d47b3a7e59550cfe45d",
+      "statement": "claim validates its arguments, refuses a logic or technique absent from the graph, and writes a private belief with a technique-detection edge through BeliefEdgeWriter::assert_belief_with_edges.",
+      "evidence": [
+        {
+          "resource": "repo://extensions/cyber-gecko/src/detect/mod.rs#L125-L180",
+          "version": "repo-lines-v1:sha256:cfd866e51841951b5778af6b10149eca9aef7c045d44fd306f6943e3005a88db:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NjM4MTI4ZjM0OWExY2M0ZTA4Y2ViMTY1NTNmOWNmODAyOGM2Yjk1NWU3MDc4ZTFiMzJmM2Q3Y2ZhYTc4ZDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxNGRjZmJjMTQxYzRmMWZiNjdhZDJmMWU1MzQwODk2YmQyNGZiMjFlNGE1OWU1M2EzZGExZTc3MjkyNDZhODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkMWE0OGE4Njc0MjRlODFmZDlmZmU3MDJmZDEyYTI0NmMzNjlmNDgxNzZlZjFmOTFmZDMxM2ViNjRmYWE2MmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6d1c5ed7a10b407891dc7489fd9257d8",
+      "statement": "sync-stix converts the STIX bundle with to_okf and runs cyber_post_sync's parameterized relation writes inside the same sync transaction.",
+      "evidence": [
+        {
+          "resource": "repo://extensions/cyber-gecko/src/stix/mod.rs#L840-L870",
+          "version": "repo-lines-v1:sha256:fba0b9a943ba91a0f3934260310989809c981e3eac444f8100ad986f22dddcf5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmNmIxNGVjZWRmZmMwMGNkNTQyYzE1M2I5NmM4ZmI3YjJlZWZiZTZmN2ZmZTc0MmJhMWIzZTc0NGZiNTZiMjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0MGRlOGFjYTE1ODAxOTJjYmUwMDRjYjJiYzVkZmViNzdlMDg5ZGU3Y2Y1Zjk0MmU0M2FmNDVhYmM4N2U5NjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5OGQ1MmE0ZTc5NmY4ODU4YmEwYWJhZWMwNDM4NzU0YjZmMjYxZWM5NmNhNDFiOWM1MGZiZWQ3NjVjNGQyNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA3ZTA5MDliMGQ0MzhjNzAyMDdiOTA5ODNmNThhMWVmYjc5NDllMjQ1ZGZiMThhYzBiNDUwMjE4MWJjZTYwYTgifQ"
+        },
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L398-L436",
+          "version": "repo-lines-v1:sha256:23520ad300811ea1c999caa28e6d744a488c2fb2322ad81a178d31d52c6de742:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkZTJhNzg4M2VhOGU2ZDNlNjg0YzE2ZTliNDVkNDRiZTVlZWIzNjJkY2M1ZWRjYjkzMmQyNzEyNTEwMjI2ZmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3ODRjMmVmZTkzYTUyNTc4ZWI4MTYzYTQzY2RhMzQ3YjcxZTdmZTE0ZjE5NzMxNDllYzlhYTg2MjQwNGU0ZjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_99118a2fce2b4dfbb2f03a9d4e5a6ce0",
+      "statement": "sync-sensors requires --database and refuses a database that does not exist before parsing and syncing the sensor file.",
+      "evidence": [
+        {
+          "resource": "repo://extensions/cyber-gecko/src/sensors.rs#L1-L10",
+          "version": "repo-lines-v1:sha256:c175257bdf59b174529b589221e23edbf077b2d43f548e7ce58dd91ee52d237b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwODkxMGEzNDhjNjJlNTAzYWE0ZDQ4NmEwNGQ2YTMwZmU2ZWU0YTE3Njg3M2RkOGJiYjhkMDFiMjQzNzYwZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0OGJkOTljMjRjOWIxNTQyMmExZjYzMWY3MGY4ODZlZTAxODI2ODU4NmFmMGVlZDdjNmE5ZTllZjZmNjJmNmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwZDY3NzNmODQxODEwYTZlOTcyODMxYTQ3MmVlMzQ0ZmE3NGFhMGJhODE1N2QyOWZlODdlMmE4ZjQ2Mzc2Y2EifQ"
+        },
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L853-L883",
+          "version": "repo-lines-v1:sha256:5a1122a0f2c9a212288047f33c22d43971ebc80ce0ad6f6f3a82d4c8f1df1ffc:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4ZjFjYzNlNjkwMDhmYjJlMDY3NjYzZTFmMzg3N2IxNGYyOTlhZTBmYzVmYTk3MjBlNDRkZDlmYTU2MDY1OTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3MmUyOGU0NjM1NjAyYzVhMzk1MzA4MTA1OTVhYmVmZWM3YjU0NTRmZjg5M2MyNmU5MDQwOTcxZjI4ZGRmY2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlN2FlMjNmNjAzY2IwMzFjOGE3NjBkZTEyMWYwOGJmMmUyMjIwODliNWMwZTU0YjI1YjRkYmU1OWJiOGFjYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyNjUyYmYwYmI3OWUxNWM1MTQ0NDA3MTk2ZTYyZTk3ZTkxY2MyMWZiMjc1NDcxMTgyN2RlOTA2YzUxMDY3MGMifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

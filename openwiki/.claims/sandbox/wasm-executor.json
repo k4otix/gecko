@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:9c2642988b040833cf406317ec573e4654b26ffbe0a279c5a96a5eee1bb8807d",
+  "claims": [
+    {
+      "id": "claim_02b27c8aeae84d61b25fa0e274b60219",
+      "statement": "The executor caps linear memory at 256 MiB, table elements at 100000, and allows one instance, memory and table, with execution bounded by an epoch deadline advanced by a 10 ms ticker thread.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L274-L311",
+          "version": "repo-lines-v1:sha256:5644167883795dc7ca586434660e5cfd7d080781b3fa7eef482d559dd052b487:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmYmFmY2M3ZDcxZTEwNzIwNWNiYTk2OWVjNjVmMDM1MjlkYWQ0ODNhMzRmMDJmMmM5OTVjODIwYTc3NWU4YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5YjE5ODJlOGRkNzQ4MTE4MTQ2YjM5YTJkMDA2MmY0MDgxZTM0Nzc5Yjg2NzVjMjM0YzRmYjEyNGRjMzkzOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM2NDE4MjA1YzU3NWQ5NzM0OWEyZWFlNzg0MWFiZGQxN2JjNzFkNWJjZmU2MmFmYWE5NWUwNDhiY2RlNGM4MzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5NjM0NTk3ODMzMzc4ZDAyNGNmYTc4OGY3YjgyZjI4MDBkYTBiMjg2NWZhNDMzMmY3ZDFkMGMxM2U1NTVmMWEifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L33-L60",
+          "version": "repo-lines-v1:sha256:580ae540f29df492e0db3d0611f2cefed0d75ab4a288a40ed35ea28b491f3cd8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNDE0ZDNjNGYyMzcxMWQ1MWQ5MDMxODdmNWNmNGY1M2IwNjY5YzZhNjhmYjE3NTYyMTFiNDEyYjc3NDY5OTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5YzE1ZDg0MjAwMWU3ZTAyZWM3YmI1OGNjZjg3NjE4ZjI2MTI3NWI1NWQzM2U0MGRmNGE1NjUwZTRhNDVlNTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1Njk5ZGQ4NGI5YzIzNWEwM2U4ODVkNzg1YTA0NmRhNDVmNTIzOTU4NjJjYTFlZDgxNDhmM2Y1NWZlZDRmNzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJiMTIzZTJkMDBjMTU1YTM3M2ZiZjhhYTk1NzliOWVhYjIxYWI5NjAwYWNiYmJhY2U3MjA5MTgzNTdhYmVkOWMifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L376-L395",
+          "version": "repo-lines-v1:sha256:c95aa531303d5751fe318cfb6046266940d41f10140ae782460ff07babf1c960:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3M2JmYzk5YTcxNWJlOWNhODMzNjVhNmQ4MjkzNjg1OWQ3MWYyNzJlZTFkYTBlNjBlODMzMGJmMWM5M2UzMmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMjNiODMzZGIxMmNlNmZiYTNiMzU5NzcwM2M0MzFkY2RlYmI1ZmIxMzhhOTNlNjZkNDViNmI3ZDI4MmY1MjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1Zjg1MGJhNDJjMjUzYzkyOGQ1ZDNiZDRjNDNjOGQ5MDQwMTM0ZjU1ODE3N2FjMDg3NjU3MjEwODc2N2MwYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViNDdiNTljZTg1MGI4NTBiY2ZhY2I3YThiZDg1MzVjYTQ0OWJjMDYwM2NiMmE2MjI0ZjVmYmUxMDM4NWRkZmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b3e2735c069a4b7caa6efa3286c6c755",
+      "statement": "A run's timeout must be 1 to 600000 ms (default 30000) and its serialized GECKO_ARGS at most 1 MiB, checked before the guest starts.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L341-L364",
+          "version": "repo-lines-v1:sha256:32a72aaf0219b64634752f1dd9d2a2a655c275705ad6278efb3594e88f906e14:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkM2NkYjQzZTAwNDQ3ZjQzMWE1NjFhMDUyMDUyMjkzYjBhNjZhN2Y1YTQ0NDBlNDYyM2UwZmI0MmRjMDY3YjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyODFjMjg5YjEzN2UwYmU3M2IzZmY4NWJkMzMxOWQ3MGYzMDBjYzhjZDA4MDZhZDVmYTI4NjA1YjgzMDc1NTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_623fd8c81a214e5392b1d13d6726ee5c",
+      "statement": "The guest's WASI context provides only an in-memory stdin with the program, a 10 MiB-capped in-memory stdout, and a GECKO_ARGS environment variable.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L365-L374",
+          "version": "repo-lines-v1:sha256:3e9d68f3e979340a4e533a10f3ef927a9d6415ff29646c1e2a5e149ef3f2a8ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2MDNlZGJmNjVkODQ3NGQwMzJjZDcxN2Y2ZTUzOTg2YjcwM2JmMTUyOGIwMzRmNzMxZDMyYmQ5MDQ2ZjU3MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA0NjVkNGE3YzE1MzkyMDNlZTgyNTllYmViMGRiNWQ3Mzg1MWQ5MDQzYjk4ZjJlMzNjYWQ4NmE3OWIzODQ1MjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3Y2FiYTRjNDU1N2U1ZDBjNDQ0ZjE4YTNhOGZjYTA5YzU4N2JmMGY3ZGExZGU1NzJmZTlmNzMxZTY2MjViNmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5131097f8eb44d169b12938f2fba1049",
+      "statement": "host_call_extension caps the extension and function names at 256 bytes, checks the ext:func scope before reading the args, caps args at 8 MiB, and runs the extension callback at most once.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L403-L462",
+          "version": "repo-lines-v1:sha256:159967b7e0549e0dba277ef1260bc5858695e7b91624db972d7279347006a874:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NjYyYjY4ZmQ4ZTA1YmQzMThmZTJhZWU1MjVlYjMyMjRjY2ZjY2JlOTU3MTIxNGJiZWM2MTVjYWYwMWVhODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjOTEwMTI1ZmM3ZWEzODNiNjQ4MTI1MTgxY2IyYzdiOTRmNjg0NjIzN2M1MTRjM2EyZTFhNWQ5NDBkNTVmYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmOWIzYjdlNThlMGY3Yjk4ODA2YTNiMTRjZjMyOTM3MTJmYmNiNDQ1NmIxMTJkNDJlMjExODkzZDhmNWM5N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2ZjQyZTQ1YmRkNzYwNjBhMjc0MDQyOGRmZDU0ODYzZjBhNDUyYWJlOTIyYWFlMzEzYTYyNTdlNDc4ZTEwYmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f83d0398b8a74256a957906e3d9e4869",
+      "statement": "Host-call outcomes are stashed host-side and returned as +len or -len, never 0; replies over 16 MiB become an error; host_read_reply returns -1, -2 or -3 for none pending, too small, or out of bounds, and always clears the outcome.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L185-L247",
+          "version": "repo-lines-v1:sha256:dddcf7600d15fa4137db1ce9f1ea02c8bd1dadeea77e42dc5ce7cc5acaf4558f:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5NTA1OGJkZjI5MWU2NGNhYzFhOTIyM2VhOTUxNTAyOGQxOGYwZTg5NGMxMzllYTZjZTE0M2FkNTNiZTNjOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1MTJjNjdlNjU2YmYwYTYwNTVlODM2ZGYwYWQwZDYxZTkzNzA2MGNjZGRjMTFlZTg0ZDNkODE5ODMzNDZhODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2N2ZjYmNiZjY2YTgyZjVkMzk0MTY2ZDRkNmE4YzMyOWM5YTQ2MzUxNjc0YWM4ODFiZGRkYmU5Mjc5NmI5YmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIzODkyNmZiZWY4MjdlZmEwNTEzNjA4MjJkODA1MzFmZGIwYWJjOGIwMzI3NWM5Y2I0OGQ3MzI0OTMwN2ZlNjgifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L467-L483",
+          "version": "repo-lines-v1:sha256:9fc4bb1e3ac9d3855099651769dbffa548bb2f1486fda316356082c7431ee0ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjMTQwNDk1NTQwN2Q0NTZjYWJkYzgxNDA4NWUyMjYyZTMzYjExZDk5YWNiNWFjNjUwM2RlMGJhYjg4MzFiYTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjOGNjNDg2ZWIxYWY1YmI4MjRlNjYxYjU5MGZkYTkyY2NkYzA4YzM2NDE3ZTVhYWU3OGJjN2Q2MmQxYWNmZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlY2VjM2VmZTE5ZDJlNDUzM2ViZDFjMjVlN2IwNmZjNzlmYWRiNDk3ZTMwYzdlYzM3OWViOWM0ODBlNTYxYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlNTQ2M2E4ZDM4ZDE1ZGMyNjEyZjk3YTZkMmUxNDNjOTgwMTRkMzUwNDc1MTFlYzNlNTBiNjNkMjQ3NTdlM2EifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ed658a669a9b4fd487d1a228ec045c7f",
+      "statement": "Empty, non-JSON, or top-level success:false guest output fails the run; any other JSON is the successful output.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_executor.rs#L143-L183",
+          "version": "repo-lines-v1:sha256:640a336131a0c8eb0331a1556f4bf49ca4a1ab1492a5302f57724706eea65715:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5OTBmNjNiYzc3MDBlNmVhMzVhYzZhMDVkNmNlYTVjZWY1ZTNjMjFmYWZhNzg5NTc1ZWIyZjExYTM0MTJmMmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2MjhjYWNhMzZhOTNlNzY2NWIxMmYyNmVmMzcxYWZiODg0ZDhkMWU3YmYxMjE3ZThjOGNkZjU4ZWQ3ZDNiZmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyZGNlMDJjMjMwMzg2MDI5OTYyMGYxNDE0NGQ3ZjY5ZjlkNzA4MGE5MmNhZGQ5NzJiZjdjMWU0N2RlYjdmNDkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9b2ca4abf3f046e990239800055882b1",
+      "statement": "SandboxPool builds the single WasmExecutor lazily on first execution and reports an initialization failure as a failed ExecutionResult.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/wasm_pool.rs",
+          "version": "repo-file-v1:sha256:d830be145a9f13d72295aa5f5c60a7439c4c6b7dbc4a96d880ae28b4a9653302"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

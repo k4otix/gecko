@@ -1,0 +1,5 @@
+# Files
+
+- [Belief Edges and the Belief-Tier Boundary](belief-edges.md) - How extensions attach a belief to domain records through declared belief-edge relations written atomically by BeliefEdgeWriter, how mem's BeliefEdgeRegistry validates every extension fragment fail-closed, and how the belief-tier surface, fingerprint and monopoly lint keep belief writes on mem's path.
+- [Epistemic Memory Substrate (mem-gecko)](epistemic-substrate.md) - The always-on mem-gecko substrate — its bitemporal memory-item/episode/belief schema and persisted functions, the EpistemicWriter/EpistemicReader contract, MemWriter's authoritative-then-best-effort write discipline, supersede/retract/contest/rests-on semantics, visibility gating and the invariant-7 entrenchment guard.
+- [Sandbox → mem Bridge (mem.* calls)](sandbox-mem-bridge.md) - How a playbook's mem.* calls reach mem-gecko — the host-side epistemic_extension_callback, the reserved-key stripping that keeps run identity unforgeable, per-function payload validation, the recall reader bridge, and the shared run scratch that auto-links a derived belief to the retrieval that informed it.

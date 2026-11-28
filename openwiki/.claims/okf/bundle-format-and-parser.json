@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:fff2c0013a6913d741f67a984380c78d937918ff6de1063277de6491ded185d8",
+  "claims": [
+    {
+      "id": "claim_3736fdfb242a44f8a659452ecbdee9d4",
+      "statement": "A concept id is the bundle-relative file path without the .md extension and with no namespace prefix.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/okf/parser.rs#L42-L75",
+          "version": "repo-lines-v1:sha256:5956e5b74c40d6b0f47b34d20558fe8a5262aeb24a1ab369a4311cdab4b58030:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzM2IwOTk0ZTEwOTBkNTE0MzU1MGMzZGEyNDYxMGEwNmQyNWQwZDRhOWFkNjQ3NGE4YTU4MzkzNzg1ZDMxZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY3NzIxOGJjMjFmYWIzMzc1ZjE1MjIzYzJkYmRiNDBhYmE3MTc0ZDRiZjcyNzA1YzZiNThhM2JiODdjY2RhM2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3MGUzODJjNWMyMDFkMzhkZTJlNmZiMjE2ODM3OWFlZGI0MTkyYmZjODk2MWIzNDE0YzEyNjBiZmRhM2RjYzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2bd60f52b1644d2a81cc61f7881731d3",
+      "statement": "parse_bundle walks .md files recursively in sorted order, skips reserved index.md and log.md, and takes the bundle name from bundle.json's name, falling back to the directory name on a missing or invalid manifest.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/okf/parser.rs#L242-L270",
+          "version": "repo-lines-v1:sha256:2d5464078d6a3f715093bea326f5dff46c1e62c201ca48ffbf2fb184889f01ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkZTFlMDJkMmVkZWVlMjExOTA3OWQ3N2E4MTJjNzVlYTlhYjRjOTM4YzdkYzIwMzQ0OWM0MWQ5NmUwNmFjMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlNmU3ZTZhNWU1MmE2NGMyNDJhNmMzMWY5Zjc2ZTFlNzQ5MWE5NGM1OTZhYjAxMzlmZDIxNDdiNTY0MzM5ZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4NjhjMTAxZThiODMzOTBiOTczZjFjZGMwZDdhZGNlMzc2NTI5ZWY5NTE5MWNhYjFhOWViZjBkZjA3MWJmNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ4NDdjNzYxZDg2OTgyMzdlZjkwOWFmMTE4MjU5N2M3NTdhM2ZkZDA0NjA2NjAxYjNjMTZlMjRkM2Q5MTUzNmIifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/okf/parser.rs#L341-L374",
+          "version": "repo-lines-v1:sha256:cc29a8d3b4fb460cf274fd7977c1b0fc89f26a4891bd458f931ee3bcdd92f3a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViMDg3Yzg2ZmQ4YTc5MDQ0NjZjN2NhYWY3NmEzMTE0M2MzNTE0YjJlODgwNDIzMzUwMzJlNmEzODhiN2YyNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2ZjlhNDVlNDI2ZmRkMTE5ZjUwMzU4N2U3YzVjZmRmMWZiZWJiODAzMTc1YmExZmIxNTk0YWZmZWU1MTVlMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0NWEwYzgzNjMwZDJiZDE4OGVhMzY1NTY3MmU0NzBhN2VkNTlkZTliZWExNGQzNDk0ODVkM2VkMGYxNmZhYjEifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/okf/parser.rs#L93-L101",
+          "version": "repo-lines-v1:sha256:fdb7b066febd5648e4a5c866a877d4e095dd82a792e48bd7471af2915ecfc7e8:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmM5Y2RmMzMzMjE3YzI0MWY3NjU5MzA3ZDI5OTYxYWQyZDM5MjQyMzBjNTZlNjYzOGZmOTEwZmJiMzMwYTRjOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTg4MTgxY2QwNzNhODg5NTg1ZGY0Y2RiNGUwZTU2YzNiZDAwOWVhMzJlYmJiODgxNjkxM2ExYTIyYjAyZjI1ZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_9494a3c204204feea3e8fe0a63cd71cf",
+      "statement": "parse_concept requires a non-empty type field, maps engine through ScriptEngine::from_lang (only js/javascript/quickjs are executable), rejects timeout-ms outside 1..=MAX_TIMEOUT_MS, and keeps unrecognized keys as extra_metadata.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/okf/parser.rs#L138-L240",
+          "version": "repo-lines-v1:sha256:e1e1ffbc97148ed2ef5a6caf435af33a20520c6a96036ea8b7b5fdf3c5c63e1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MDM5ODZjMmZmNDhjNmE4NzM4ZTI5MDZjNDE2NjMzNmMzZjg4YTBjNmNmY2QwZDg4ODEwYTRmMGZiZDBlMWNjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3NmI3ZTg2Y2FjOWVjMWMxM2E3MzY1NmIzZjM2MTIyYjEzN2FmNTY5M2Q2MGQzZDNmZTM0NmJkNDNmMDg1NTUwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3N2ZlNWUyNzExZjc0MTJmNmY1MTNiMDNmNWQyMDYzODg1MDc5MGRjYzFlNjQ1MTk4YWFiNmY5NzAwYmVlZjM1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0NDMwMTc5NGM4YTRkNTU2MGQ4ZTZmOTBhNzNkZmY3YzYxZmY3NWI4ZTQ4MWM3MjM1MGRiYTM0ZDEyZWYyM2YxIn0"
+        },
+        {
+          "resource": "repo://core/gecko-extension-api/src/okf.rs#L20-L44",
+          "version": "repo-lines-v1:sha256:c335459c8aa36c91e1a758190a58c66c53d6e98cb4305b8dbe0c23ff92a2a5cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwNzdjZjk5ZDdkMmI4Yzg0Y2IwODcyMTE4NDc2ZTdhZjQzZGZjMDU1ZWYzOTg3MDViOGYxZmQ4ZGIwZmFmZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOThjYTgzYjg2ZmQ3NGM1OTIyNDAwYTY1YmI2ZWRjMTViOTU2OThhMTA2MzUxMTQxZmE0MDQyNWZmZmNmMDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhNmM5NWU3MDAyNmUzYzYyMjRjN2E1NzEzOTg5NDZjODA3OWEzODQ2YjU1ZDg4ZTNkY2MwMTU5ZmQ4Nzc5MDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmNjFlOTIwZWZhZDYyZWIwNWM4OGYwMjNhZjUwM2U4YjNiYzYxMDZhYTgyNmI4YmZlMGRlODQwNjRhOWE2ZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8fd026c444ea4cc3bb928507ead4b1e0",
+      "statement": "extract_program concatenates, in document order, only the code fences whose language resolves to the declared engine, returning None when there is no engine or no matching fence.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/okf/linker.rs#L75-L100",
+          "version": "repo-lines-v1:sha256:6cd4a78366d8e7853c29f8de1c756960437913b01011510757a67267c38ccb02:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YWM1YmMwNjcyMTUyMzBiYjFhZTRmMzY3ZGIzNGFmOTkzM2RlZDI3YTBlMDZkZDQ0MmYzNjVjMmVmMmQxNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMTM0N2JhM2IyMjQ1NWI2OWZkNmY5ZjAyM2UyZTFhYzI1MTJhYjdjZWEzOWI5NzQ4MTZjZTkzOTMyNmQ2NmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ4ODU5MjEwZWJjYjEyY2Y2OGM2MTYyMjJmYzU2MGMxZjY4ZTJmYTMxZjYzMDQ5M2RmODA5NTg4ODdkNTdhZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjMWQxNDQyNTViODAxMDIzZTgxNzJkM2ZhMTEyZGI4MGM4ZTY0ZGM0ZWM5MWFhNzIwZTBiZWE0NjUwN2YyZDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1b386eb2fcf8433ba71a92761858a4ba",
+      "statement": "extract_links treats http(s) targets as citations, .md targets as internal links resolved relative to the source concept, and skips image links.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/okf/linker.rs#L100-L130",
+          "version": "repo-lines-v1:sha256:00f83001dba9461b34e81eb55534bf94a7e3b039cb89304031fad57d6ea6b94a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMTM0N2JhM2IyMjQ1NWI2OWZkNmY5ZjAyM2UyZTFhYzI1MTJhYjdjZWEzOWI5NzQ4MTZjZTkzOTMyNmQ2NmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjY2FjNjkwYmUzMGZkZGNhYWU0ZjI2MDA1MWZiOWI4YjU5NjEyZWM1MzUyOTk3MGZiZjUzZTY2MTk5ZGM1NzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwYTI2MmE2NzY4YTZhMzg4YWRkMWY0YzE3ZDI1MzYzNjIyYmQyYmJlN2E4OWU1YjNlNjMwMzljYzUyMWM3ZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhODMzMGMxMDdkNzg4ZTQ2MDU4NTFjMjkwY2MwYjM5MThmM2M3MjhhYzdlNTQ4YWY3MzZjYzU5MDIzZTZlMjYifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/okf/linker.rs#L20-L56",
+          "version": "repo-lines-v1:sha256:421ce0f7e0749996211cbbe20451777209f9563effbb257b19461f4fd391b4ea:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjMzk5YmEwMWM3NjhkMmNlOWFmOTAyMTA1MGRmMDdkMjdmOWE4YTFlNTEyZmNkMTMzZDFkNDE5MzJjYjRlZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzMmY4Nzk5YWYxNjYwMWQyZmYxOTc5OTU4ZGUyMjhhOTYzODMwODg2NjZmY2Y5NGJjMWM2MWUwNmM5M2QxMTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlYTA3NDgwMjYxMTdjZmNhYWU2Yzc0MzYyOWFlMTY1YjdkMjI0MTJhZWZmNGQwYzhkNjEwYjYyYWZlYTk3YjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhNDk1ZTBkYWYzNGIzNDY4MzkwZTRiZjRmODFmZGM0MzUwY2Y3YmI1ZWMzM2Q4OGIxM2MwNmI2M2VjZmRhOWUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

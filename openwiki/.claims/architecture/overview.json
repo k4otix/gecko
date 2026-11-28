@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:eaec92bfd0d1d47fac8f34acf771d80aceaf4da32486d290e503165ba44feaac",
+  "claims": [
+    {
+      "id": "claim_7d49a2fafc0a4fd982c7560ea9b3b3ec",
+      "statement": "execute_playbook allocates an RAII state handle, runs the program through the SandboxPool with the run's scopes, timeout and args, and records (logs) the execution only on success; record_execution writes nothing to TypeDB.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/pipeline.rs#L80-L166",
+          "version": "repo-lines-v1:sha256:d17643f8531117d82d7d56bcd4ef4afcdf9302ffb1cabf8465b0b5b67ad7c61f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZjU0YTQ5ZDE5OWZjMjYwMWU5ZGQ3OGYxOWUxOTgwNDRmZDFlNWI2YzVlMGU2MTk3ZjZkM2FkZWE0ZjI4NGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyN2RjNDdlZDFjMzc2MTQ0Y2U1OTdlNmMzMTg3MTFhN2IxYTIyNmYzZjhhOTMxZGQ1ZGIwZWYxNTJhMGU2ZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4e5035661427423ea73819b1e01d8f18",
+      "statement": "cmd_run fetches the playbook, builds the host bridge on a second connection to the same database for belief writes, runs it through the pipeline, and returns an error (non-zero exit) when the playbook fails.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L1398-L1455",
+          "version": "repo-lines-v1:sha256:89a842791d71b16fdc66ebcc3278d90e333e5f0f6de741097592506677adca25:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExNTdmYmJlZTkzNGYyZTg2ZDliZTc5NTdjZjVlYjhkZjY2NzVkZmJkYTQ4YTdmNjU2OTIwM2U3ZjQ1OTlmYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1YjkxMWUyNTExYmNhNGNiYTc2OGVlYmMzNjkwNzU0ZmI0NDE5MjczYjdjODlhOTU3MTA5M2UyN2Q4YzI3NzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b886ae3af03a4c6ab317580719536f3f",
+      "statement": "fetch_playbook reads engine, code-block and scopes for the concept id via a parameterized query, projects retired-at and timeout-ms only when the schema defines them, and refuses a retired concept.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L1116-L1190",
+          "version": "repo-lines-v1:sha256:0393a87747b72519beebe8c781b33e527f374a8e2540f8088c49e2cc1f8838cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4NjlhNGRmNzc5NWRlYjE3MTIxY2JiMjc0ZWViOGMzNDJkYTBlMWUwYTk2YjY4YzUyNjg5NjcxNTRmYTAzYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmNjdjNWNjYmNlNzMzZjZlY2E0ZmJmYjU4MDE3NTMzMWI3NmJiMDdlNDhkYmI5NjBhZjc3OWM3N2UxYzVmOTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyYzMwY2VlODI4NGQ4MjdlYzVhNWQyYmZhNzI4MGExZjM4N2EyYmQ2ZTQwZjEzN2JmNWJjNWU0NDhiYjU5MGEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4d343ffa71814a43b4ca34313e314fea",
+      "statement": "mem-gecko, gecko-semantic-index and cyber-gecko depend on gecko-extension-api rather than gecko-engine; gecko-bin depends on all crates with cyber-gecko optional.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/Cargo.toml",
+          "version": "repo-file-v1:sha256:a87feac31eb327a00e165c4b2ed550c1a2854afc762cc305eefd6a749d4fe455"
+        },
+        {
+          "resource": "repo://extensions/cyber-gecko/Cargo.toml",
+          "version": "repo-file-v1:sha256:b19ebe0f0bfa63934a17b47bec777d893aef35bc2d88bf7cbf2970767f87e5a3"
+        },
+        {
+          "resource": "repo://gecko-bin/Cargo.toml",
+          "version": "repo-file-v1:sha256:81eeb4ae26827869c6f249d17d16bb80eba727cb1a04ff2fa3f1f7f6d8cc00a4"
+        }
+      ]
+    },
+    {
+      "id": "claim_fa1441878b5d4afcbb2cd38664cbc270",
+      "statement": "js-sandbox is a workspace member but not a default member.",
+      "evidence": [
+        {
+          "resource": "repo://Cargo.toml#L1-L18",
+          "version": "repo-lines-v1:sha256:2bee609c53810f42309e0c801af46d2026494b169cc370b2095bda9e290bfbe0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzNGUxMDJjODYxZjk5NGQyYWFjZTkxMTRkMzkyZGJjMTYyMTkwZTAwYmU4ZmUzNTdkNDcyMTUwY2E0Mzk2MTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4Njk0MTJhMmU4ZDVmM2JhYjQxODg2YzEzYTA2YzZmMDk5MzM4N2NkZTcxMWQ4MzI2ZWRiOGQ1Nzc0ZWM5OWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMjQzMzk3MTk0MWQ5ZmJkY2QzMzRmMWU1OWRhMDMxOTU1NTQzNmIyMWQ1MzQ3N2Y5MDAxOGM5ZDNjZTQwNDgifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

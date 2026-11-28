@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:c334437318ef38401f56e59905d8f8567496076db0959be03f8376cd3485ff03",
+  "claims": [
+    {
+      "id": "claim_28b2433ea4524413b97676ce5b81a0b5",
+      "statement": "TypeDbRouter::delete_database refuses to delete the reserved 'gecko' database.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/router.rs#L300-L330",
+          "version": "repo-lines-v1:sha256:65e1566219ff45a7e439a12c3775656af4d9f0e9b8934bc15a6db9de703910f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3MjQwODM0ZDFkY2ViZjdmOTE3YzNhMTJjMzQ1ZjY0OGQ5YTJlZjA4NWI1NjdjNWJjZmFlZGIwZjhhZjM0ODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_04fd88bbfa164049a63af020d1454e4d",
+      "statement": "GraphHandle opens reads lock-free but serializes writers through a single-permit semaphore acquired before the write transaction opens and held by WriteTransaction until commit or drop.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/router.rs#L480-L560",
+          "version": "repo-lines-v1:sha256:4825ce17786cf4b5c1d65ad12f66d53f4f9cf71469b181deefcad1246e8298e3:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YmI2NDQ1ODQ2M2M5ZmM3YjRkODBjOGRmOGNmNTI1NTk5NTUyNTI4YmJmZjA3YTRkYzBmMTdkMThjZDA3NmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzMTVhMTQwZDhiZWQzNmRhNGM1MjYwMmVjNWI0OWY5MTBkNDVkNmM0ZGMwMDViOTBmMGIyYzAxNzAxMjE3NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiNzljZDVkZTMxZmFiMDQwZDgxM2EyZDczMDc2MTQ2ZjJkOGVkMjIyYWI1MGM4NTRlOGZkNmI5MDgzMmM3YTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyN2M0ZDA5YTZkODgwMzBjZmEzYWQwYzc2OWMzZmVkYTk4MTA2MTQ5ZGE5MWZhNWRmMDEzOTczZTEzNTVhZmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_89d6daf339e6406b92b84e1e950388aa",
+      "statement": "apply_schema_with_migrations runs every migration whose applies_when text is still in the database schema, then the function-aware planned define/redefine queries, in a single schema transaction.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/router.rs#L370-L415",
+          "version": "repo-lines-v1:sha256:dbe589857b7f449e7311afb595baa4bdb658fa0e7ab9ddc66a94b5ad911ce82f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0M2M2YTUxODBjZGRlNTVlODg3MjZlM2VmMGI5Y2ViOGZkMTRkNjg3Yjk3OTVmNWM3MzY5N2I5NTFiNDU2MTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmZjRkMmRjOWE3MjIwZDRmYzJmMTdhODM1ZjUzZWE3MmY5MjUyNzdkZDAyYzM3NmY4MGE1MTUwNGYxOGE4ODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYzkxOWQ5ZjcwMWNkN2RhYzc1MjIxMmJiNzA1YjBlNWZmNDYzYjI5YzViZjJiODUwMmVkZGIxNWQ1OTc1YTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2MmVlNTdlNDFhOGMyMGFlMDE2NGRmMjYxNDM5ZGNjNDk5ZDM1MjA4MzQxNTE1MTZkMDQ3ZThkZWFlOGE0NjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9541da0648c74b8ba0af52a5a1401f5d",
+      "statement": "Schema planning defines types first, then defines new functions and redefines changed ones callee-first, leaving unchanged and omitted stored functions in place.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/schema_apply.rs#L1-L12",
+          "version": "repo-lines-v1:sha256:375dfda18fc1dbcd2e3c38e2e90ce500d380015ce7e2f7ba389fedb667584588:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0ZTZjNTE5MDU4ODQ3NDJlNGJjOWQ4MGMxZmM4NTA3NzM2ZjgxN2Y5MDY5Njg5OGUzOWRmMjBhZWU2MjViYmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlNDkyYjI1ODRhYTJlNDU0MmFiMjYyMjc4MWZiNTVjYzkzZDY5YTQzNTI4NjNlZjMwNmNiYWVlZmMyZWYwMTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmYmJmYWIxNmIzNzRiNWYxZDY1MzM1MDVhMTE1ZjI5MGI2YTg3NjgyNDJhMTJhOGMxMTU1MjA2OTQyZmZmNTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6c2f8c55f29b47f28494df9faa88c1bd",
+      "statement": "RouterGraphStore::write runs a whole GraphWrite slice in one write transaction and fails without committing when an op's answer row count differs from its expect_rows total.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/graph_store.rs#L70-L148",
+          "version": "repo-lines-v1:sha256:30f7092c2ce928b909d13b43ceaa2ba2bb36b8bb21687d29c41d14351081809c:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5ZTA1Nzk3ZjRjNGJiZTBkYjkwODkzZDU4NGQ5MDZlOWNmM2Q3MjI5NzhkNGE2ZmM0ZTRlOWUwNjBmZjZjOTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlNGMzNWM0ZTJkYTIwMTczYjlkYzAxMzgzZjQ1NmUzYTExZGJiZDhiY2I5ZTJmNDc2Y2ExZjY4YThlMDYwMWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyYTU0MmEwZDAzM2FkYWFkYWMwYmQ3NmZlODBkNjdjNmQxZjg4NTc0M2M4YWI2MzVjOWZhMmUyYmVjMDBkZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxNTYwZTgwYzk1N2I5ZWQwMGE5ZTRhYTQ2MTJhNWI1NzkyYzQwZWZjOGI1ZDQzZDQ1ZmUzZjdmZTI2OGI5ZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ef962ce029c24c53be0e84275b296a15",
+      "statement": "validate_schema_label restricts interpolated schema labels to non-empty ASCII alphanumerics, '-' and '_' with no leading digit.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/label.rs#L1-L25",
+          "version": "repo-lines-v1:sha256:7e1b6371671e302c210e882f2877984ad41b334189fd1bc5f71faf6b3ee98269:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlMmYwYjFjNzIzNjQ3YWU0YzVmOTExOWNiYzhkNWJjMTk5Y2EzMGNhYmM4ZDk5ZDc1MDY0N2U4MzBhMTY0MTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzk4ZDZiMGRjNDkyYzUwMTZkZjEwODA1YTNhNTRlYjljMTg0YTVhNjEzN2U3ZjRiZWNmYTBjMjIwNTUwZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5bc70ad72741444fb2a01b6121e90692",
+      "statement": "Because TypeDB 3.15 cannot query annotations, required_attributes parses exported schema text for @key or minimum-cardinality owns, inherited through sub; the syncer uses it when retiring concepts.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/required.rs#L1-L50",
+          "version": "repo-lines-v1:sha256:3acc570de1737db173ec1cb7849e074b8543406f35845fc4c58bacaf46513ea9:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViNmIwNDRhNGJjMmNlMDU3MTY4YmQxZmRjNzJhODQ0Zjc0YTRkOWQ2ZTczMDkzMGU0ZDI4NDhhMDY2NGQ5OTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmMWYyMGQzNzJlM2JkNWMzNWQ0MGE2YWFhNDUzYmNiYzk1NGJkY2IyN2E1OTFmYjc5MzEyNTI5NzZkZmVjNDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiYTJjNjYwOGQ4ZjA2MjMzYTdmNmY5ZWM1N2VkNGFiNjgzY2E4Njg5YWYzOGNhMDRhOGZlMWNlYjAxZGY1Y2UifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L347-L354",
+          "version": "repo-lines-v1:sha256:2167223436f2db04aa3775f6940b6c499481e8f2de674c684a148ba9ee6c46fd:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjEwOTZjZTZmMDJmODRmYTM2YjQ1M2FmODgyMTg3ZWE0MWYzMjAyN2UwZjg1OTBmOWRhMTk4YmRmYmIzMzBiOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDg5M2Y0MGUzNzgxZWI4OTZjODJkMDQ2YTA4MDY3YTExZTM1Y2RmMmYxZGZhZjI2ZmVhOTBiOGRiNjY3NjQxMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzcxYWVmZjkzYjM0ODAxNjkzZWM0OTdkODVjM2I3Y2I1YjhjYWMxOWI0N2NmMDZkOTVmNjUwM2Q0ZWY5NzEwNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjljOWRmYzJlMjJiYjJiYTg3YjA0NWM4ODE0OGExMjU1MzU4YmMxZmEzNzIzNDFlMmNlMDc0NDJiNjU5NGIwMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d789fcef5166412f8d831a668940ac56",
+      "statement": "CORE_MIGRATIONS includes cleanups deleting containment, hierarchy, concept-link and citation rows missing a now-required role.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/mod.rs#L15-L45",
+          "version": "repo-lines-v1:sha256:27ba4edcb640d876df95062d65588dd65c991ff0af449d87f1d2c4942f4f21c6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmMWFiYTA5YjI5MjVkMWNjMmIwYzhkNTg0YmI1MDhiMzBmYzViYzRkMTU3ZTlmYWMwMDUyODE0NjhlNWI0OGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhZWRjY2E5Mjc5ZWVlMjllMTE3ODQwY2FjOTY0NjgyMzJmOTEwNGFlOTM1MmVhNjRiYzQzMjY5ZDhmODg5ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY3ZjQxMGQ0OTEwY2JlYTQyYjI5MDZiZWRkY2UwMmY4ZWE5OTI5ZjcwMmM1MWMwNjFhZWI3OTA2MjEyYjIzY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhZjJmNTdjZTg4YjU1MDJiZWRjMDMyNzQxZWUyZTczYWE2MTM5YmRhNzQyMGRjZTkwOTVjY2RhNTBmMDFjYjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3e709f62187442dfb966ac5ad0b5dbba",
+      "statement": "check_migrations accepts migrations only in a fixed set of shapes and rejects any whose applies_when text remains in the shipped schema.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-extension-api/src/migration.rs#L1-L43",
+          "version": "repo-lines-v1:sha256:a9a8f470710a1d4cd8c00b8a99f7350d7b84109ed0f681ffb64cd888b5d1598f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjYjAyMjFjMzU0ODc4MTE0NDkxZDAxNDkxZjNmYjhjMjQyYTcwNTRjZDZjOTExNTQyYjVlMGY2MTI3MjlkYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0MmY3MjIyNzU1MjM5YTRiMGU5YjkwYjE3NzI2ODA0YWY5Mzc1NDIwNTU0NTdkNTM0NjllNWNlZTFiZDU3MWMifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}
