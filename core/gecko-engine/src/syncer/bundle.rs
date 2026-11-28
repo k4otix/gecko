@@ -46,7 +46,7 @@ use typedb_driver::given::{GivenRowEntry, GivenRows};
 use gecko_extension_api::GraphWrite;
 
 use crate::db::graph_store::run_graph_writes;
-use crate::db::required::required_attributes;
+use crate::db::required::{defines_attribute, required_attributes};
 use crate::db::router::{DbError, TypeDbRouter};
 use crate::db::surface::{BeliefTierSurface, belief_tier_fingerprint, belief_tier_surface};
 use crate::db::validate_schema_label;
@@ -227,6 +227,12 @@ pub async fn sync_bundle(
     }) {
         return Err(DbError::InvalidTimeout { concept_id, value });
     }
+    // One schema read serves the retirement step and the OKF v0.2 guards: a library
+    // caller may sync against a schema that predates `verification` and `okf-version`,
+    // and a delete naming an undefined type fails to parse.
+    let schema = db.database_schema().await?;
+    let has_verification = defines_attribute(&schema, "verified-by");
+    let has_okf_version = defines_attribute(&schema, "okf-version");
     let tx = db.begin_write().await?;
     let name = manifest.bundle_name.as_str();
 
@@ -328,7 +334,7 @@ pub async fn sync_bundle(
     }
 
     // 4. Ensure the bundle entity and its metadata.
-    upsert_bundle(&tx, manifest).await?;
+    upsert_bundle(&tx, manifest, has_okf_version).await?;
 
     // 5. Garbage-collect orphans: retire those this bundle owns alone that a
     //    belief edge references (unless already retired), delete the rest it owns
@@ -349,7 +355,7 @@ pub async fn sync_bundle(
         .filter(|id| !stored.get(*id).is_some_and(|s| s.retired))
         .collect();
     if !retire_ids.is_empty() {
-        let required = required_attributes(&db.database_schema().await?)?;
+        let required = required_attributes(&schema)?;
         retire_concepts(&tx, &retire_ids, &surface, &required, Utc::now()).await?;
     }
     delete_concepts_gc(&tx, &delete_ids, &surface).await?;
@@ -366,7 +372,7 @@ pub async fn sync_bundle(
         .iter()
         .map(|&i| manifest.concepts[i].concept_id.as_str())
         .collect();
-    clear_concept_content(&tx, &update_ids).await?;
+    clear_concept_content(&tx, &update_ids, has_verification).await?;
 
     insert_concept_entities(&tx, &new_concepts).await?;
     attach_concept_content(&tx, &write_concepts).await?;
@@ -462,9 +468,15 @@ async fn run_rows(
     Ok(())
 }
 
-/// Ensures this sync's bundle entity exists (keyed on bundle-name) and sets its
-/// provenance metadata once (path/description).
-async fn upsert_bundle(tx: &Transaction, manifest: &OkfBundle) -> Result<(), DbError> {
+/// Ensures this sync's bundle entity exists (keyed on bundle-name), sets its
+/// provenance metadata once (path/description), and replaces its `okf-version` with
+/// the one the bundle declares. `has_okf_version` says whether the schema defines
+/// `okf-version`; without it the clear is skipped.
+async fn upsert_bundle(
+    tx: &Transaction,
+    manifest: &OkfBundle,
+    has_okf_version: bool,
+) -> Result<(), DbError> {
     run_rows(
         tx,
         "given $name: string; put $b isa bundle, has bundle-name == $name;",
@@ -497,6 +509,30 @@ async fn upsert_bundle(tx: &Transaction, manifest: &OkfBundle) -> Result<(), DbE
              insert $b has description == $desc;",
             &["name", "desc"],
             vec![vec![str_entry(&manifest.bundle_name), str_entry(desc)]],
+        )
+        .await?;
+    }
+
+    if has_okf_version {
+        run_rows(
+            tx,
+            "given $name: string; \
+             match $b isa bundle, has bundle-name $bn; $bn == $name; \
+                   $b has okf-version $v; \
+             delete has $v of $b;",
+            &["name"],
+            vec![vec![str_entry(&manifest.bundle_name)]],
+        )
+        .await?;
+    }
+    if let Some(version) = &manifest.okf_version {
+        run_rows(
+            tx,
+            "given $name: string, $v: string; \
+             match $b isa bundle, has bundle-name $bn; $bn == $name; \
+             insert $b has okf-version == $v;",
+            &["name", "v"],
+            vec![vec![str_entry(&manifest.bundle_name), str_entry(version)]],
         )
         .await?;
     }
@@ -876,7 +912,11 @@ async fn retire_concepts(
 /// concept's OUTGOING links/citations; attributes are re-attached from the
 /// current file by [`attach_concept_content`] and outgoing links/citations are
 /// re-derived by [`create_links`] and [`create_citations`].
-async fn clear_concept_content(tx: &Transaction, ids: &[&str]) -> Result<(), DbError> {
+async fn clear_concept_content(
+    tx: &Transaction,
+    ids: &[&str],
+    has_verification: bool,
+) -> Result<(), DbError> {
     if ids.is_empty() {
         return Ok(());
     }
@@ -915,7 +955,22 @@ async fn clear_concept_content(tx: &Transaction, ids: &[&str]) -> Result<(), DbE
         &["id"],
         rows(),
     )
-    .await
+    .await?;
+
+    // Remove the verification events (re-derived from the new frontmatter).
+    if has_verification {
+        run_rows(
+            tx,
+            "given $id: string; \
+             match $c isa concept, has concept-id $cid; $cid == $id; \
+                   $v isa verification, links (verified-concept: $c); \
+             delete $v;",
+            &["id"],
+            rows(),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Inserts the entity and concept-id key for brand-new concepts, as the subtype
@@ -1005,6 +1060,26 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     // Timestamp (datetime-typed) and execution timeout (integer-typed).
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
     attach_integer(tx, concepts, "timeout-ms", |c| c.timeout_ms).await?;
+
+    // OKF v0.2 provenance, trust and lifecycle.
+    attach_attr(tx, concepts, "generated-by", |c| {
+        c.provenance.generated_by.clone().into_iter().collect()
+    })
+    .await?;
+    attach_attr(tx, concepts, "trust-tier", |c| {
+        c.provenance
+            .trust_tier
+            .map(|t| t.as_str().to_string())
+            .into_iter()
+            .collect()
+    })
+    .await?;
+    attach_attr(tx, concepts, "okf-status", |c| {
+        c.provenance.status.clone().into_iter().collect()
+    })
+    .await?;
+    attach_datetime(tx, concepts, "stale-after", |c| c.provenance.stale_after).await?;
+    attach_verifications(tx, concepts).await?;
 
     // Extension-declared typed attributes (e.g. cyber-gecko's stix-id, ioc-value).
     attach_typed_attributes(tx, concepts).await?;
@@ -1109,6 +1184,30 @@ async fn attach_datetime(
          insert $c has {attr} == $val;"
     );
     run_rows(tx, &query, &["id", "val"], rows).await
+}
+
+/// Inserts one `verification` relation per OKF v0.2 `verified` event of each concept.
+/// No query runs when no concept has one.
+async fn attach_verifications(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<(), DbError> {
+    let rows: Vec<Vec<GivenRowEntry>> = concepts
+        .iter()
+        .flat_map(|c| {
+            c.provenance
+                .verifications
+                .iter()
+                .map(|v| vec![str_entry(&c.concept_id), str_entry(&v.by), dt_entry(&v.at)])
+        })
+        .collect();
+    run_rows(
+        tx,
+        "given $id: string, $by: string, $at: datetime; \
+         match $c isa concept, has concept-id $cid; $cid == $id; \
+         insert $v isa verification, links (verified-concept: $c), \
+                has verified-by == $by, has verified-at == $at;",
+        &["id", "by", "at"],
+        rows,
+    )
+    .await
 }
 
 /// Attaches the integer attribute `attr` to each concept `value` gives one. A concept
