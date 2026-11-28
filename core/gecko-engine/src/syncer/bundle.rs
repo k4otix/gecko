@@ -227,7 +227,7 @@ pub async fn sync_bundle(
     }) {
         return Err(DbError::InvalidTimeout { concept_id, value });
     }
-    // One schema read serves the retirement step and the OKF v0.2 guards: a library
+    // One schema read serves the retirement step and the OKF guards: a library
     // caller may sync against a schema that predates `verification` and `okf-version`,
     // and a delete naming an undefined type fails to parse.
     let schema = db.database_schema().await?;
@@ -1061,7 +1061,7 @@ async fn attach_concept_content(tx: &Transaction, concepts: &[&OkfConcept]) -> R
     attach_datetime(tx, concepts, "timestamp", |c| c.timestamp).await?;
     attach_integer(tx, concepts, "timeout-ms", |c| c.timeout_ms).await?;
 
-    // OKF v0.2 provenance, trust and lifecycle.
+    // OKF provenance, trust and lifecycle.
     attach_attr(tx, concepts, "generated-by", |c| {
         c.provenance.generated_by.clone().into_iter().collect()
     })
@@ -1186,7 +1186,7 @@ async fn attach_datetime(
     run_rows(tx, &query, &["id", "val"], rows).await
 }
 
-/// Inserts one `verification` relation per OKF v0.2 `verified` event of each concept.
+/// Inserts one `verification` relation per OKF `verified` event of each concept.
 /// No query runs when no concept has one.
 async fn attach_verifications(tx: &Transaction, concepts: &[&OkfConcept]) -> Result<(), DbError> {
     let rows: Vec<Vec<GivenRowEntry>> = concepts
@@ -1330,7 +1330,7 @@ async fn create_hierarchy(tx: &Transaction, manifest: &OkfBundle) -> Result<(), 
 }
 
 /// Creates internal concept-to-concept links within this bundle. A link whose
-/// source or target is not in this bundle stays unresolved (OKF v0.2 §6.1).
+/// source or target is not in this bundle stays unresolved (OKF §6.1).
 /// Returns the number of links attempted: those whose ends are both in this
 /// bundle.
 async fn create_links(tx: &Transaction, manifest: &OkfBundle) -> Result<usize, DbError> {

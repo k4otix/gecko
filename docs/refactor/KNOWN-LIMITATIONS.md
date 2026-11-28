@@ -152,36 +152,58 @@ proven through the real sandbox against live TypeDB.
   documentation no longer syncs until the file is fixed. A concept with no `engine` key is
   documentation, as before.
 
-## OKF v0.2 frontmatter
+## OKF frontmatter
 
-GECKO reads OKF with v0.2 semantics. OKF v0.3 (<https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md>)
-changes some of the rules below, and ledger item O7 adopts them. Until it lands:
-- the trust tier counts every `verified` event, where v0.3 counts only those at or after
-  `generated.at`;
-- an unparseable `stale_after` stores nothing, so a reader may take the concept as fresh;
-- date-only and empty values warn;
-- a scalar `tags` is dropped;
-- a `.md` file without frontmatter fails the sync.
+GECKO reads OKF by the v0.3 consumer rules
+(<https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md>),
+whatever `okf_version` a bundle declares. Design:
+`docs/superpowers/specs/2026-11-28-okf-v03-reads-design.md`.
 
-- **A malformed v0.2 provenance value is warned about, not refused.** `generated`,
-  `timestamp`, `verified`, `status` and `stale_after` follow OKF §11's soft guidance: a value
-  the parser can't read (a date without a time, `stale_after: next tuesday`, `verified: 5`)
-  gets no typed attribute, stays in `metadata-json` as written, and `gecko sync` prints a
-  `warning:` line naming the file, key and value. A malformed `verified` writes no
-  `trust-tier`. `engine`, `timeout-ms` and `scopes` still fail the sync.
-- **A file synced before v0.2 support keeps its old attributes** until its content changes.
-  Change detection hashes the file's content, so a re-sync skips an unchanged file and never
-  writes its `generated-by`, `trust-tier`, `okf-status`, `stale-after` or `verification`
-  relations. Editing the file fixes it. A bundle's `okf-version` is rewritten on every sync.
-- **Only RFC 3339 times are typed.** OKF §5 allows any ISO 8601 datetime with an explicit
-  offset; GECKO types those with seconds and a full offset (`2026-06-30T14:00:00Z`,
-  `…+09:00`). Other forms, such as `2026-06-30T14:00Z` or a `+09` offset, are warned about
-  and kept in `metadata-json` as written.
+- **A malformed provenance value is warned about, not refused.** `generated`, `timestamp`,
+  `verified`, `status`, `stale_after` and `tags` follow OKF §11.2: a value the parser can't
+  read (`stale_after: next tuesday`, `verified: 5`) gets no typed attribute, stays in
+  `metadata-json` as written, and `gecko sync` prints a `warning:` line naming the file, key
+  and value. `engine`, `timeout-ms` and `scopes` still fail the sync.
+- **An unreadable `stale_after` is stored as stale.** Its `stale-after` is the sentinel
+  `1970-01-01T00:00:00Z`, so a `stale-after <= now` reader never takes it as fresh (§5.5); the
+  raw value stays in `metadata-json`. A bundle that writes that very instant reads the same.
+- **The trust tier counts only current verification events** (§5.3): those at or after the
+  concept's stored `timestamp` (`generated.at`, else the legacy v0.1 `timestamp`), or every
+  event when it has none. So a concept whose `generated` has no readable `at` counts every
+  event. No current event means no `trust-tier`, which reads as unverified; every valid event
+  is still stored as a `verification`.
+- **The first sync after a reader change rewrites every Markdown concept once.** The
+  change-detection hash is salted with `OKF_READ_VERSION`, so that sync reports each concept
+  as updated, at the cost of one full sync per bundle. Cyber's STIX and sensor imports hash
+  their own way and are not rewritten. A bundle's `okf-version` is rewritten on every sync.
+- **Which `.md` files are concepts.** A file needs frontmatter with a non-empty `type` (§3.2).
+  - One without frontmatter (a `README.md`) is skipped quietly.
+  - One without a `type`, or with an unclosed `---`, or with `---` after blank lines, is
+    skipped with a warning. If it was synced before, the next sync garbage-collects it, or
+    retires it when a belief edge references it.
+  - Delimiter lines tolerate trailing spaces and tabs, and a leading UTF-8 BOM is ignored.
+    Both go beyond §4's "exactly `---`".
+- **Dot-paths and symlinks are not read** (§3.2). A file or directory under the bundle root
+  whose name starts with `.` is skipped quietly, so a concept moved under one is
+  garbage-collected (or retired) with no warning. A symlink is never followed, with a warning
+  naming why: outside the root, broken, or inside it (its target is read at its own path).
+  A symlinked root `index.md` is not read.
+- **Timestamps are RFC 3339.** A `date-time` needs seconds and an offset; a `full-date`
+  (`2026-06-30`) means midnight UTC. chrono's RFC 3339 variants are accepted: lowercase
+  `t`/`z`, fractional seconds, and a space between date and time. `2026-06-30T14:00Z` and a
+  `+09` offset are malformed.
+- **Empty is absent.** A null, `""` or `[]` value of an OKF key is the same as no key (§11.2):
+  not typed, not kept, not warned about. A whitespace-only string is still malformed.
+- **A scalar `tags` is one tag,** never split at commas. `scopes` is GECKO's key and keeps its
+  own reading.
 - **Quote `okf_version`.** YAML reads an unquoted `okf_version: 0.10` as the number `0.1`,
   and that is what is stored.
-- **Absence is not stored.** A concept with no `verified` has no `trust-tier` (OKF: unverified),
-  and one with no `status` has no `okf-status` (OKF: stable). Staleness is
-  `stale-after <= now`, computed by the reader; nothing acts on it, nor on `status`.
+- **Absence is not stored.** A concept with no current verification has no `trust-tier`
+  (unverified), and one with no `status` has no `okf-status` (stable; any value other than
+  draft, stable or deprecated is not stable, §5.4). Staleness is `stale-after <= now`,
+  computed by the reader; nothing acts on it, nor on `status`.
+- **Not read yet:** `superseded_by` (§5.4) and the root `index.md`'s `title`, `description`
+  and `license` (§8.1) land in `metadata-json` or are ignored until ledger item O7b.
 
 ## Semantic index files
 

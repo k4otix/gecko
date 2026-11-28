@@ -1,4 +1,4 @@
-//! OKF v0.2 provenance, trust and lifecycle frontmatter (OKF §5.2–§5.5).
+//! OKF provenance, trust and lifecycle frontmatter (OKF §5.2–§5.5).
 //!
 //! A malformed value is never refused (OKF §11 treats these constraints as soft
 //! guidance) and never replaced by an invented one: its key stays in the frontmatter
@@ -25,7 +25,7 @@ pub(crate) struct ConceptProvenance {
     pub provenance: OkfProvenance,
 }
 
-/// Takes the OKF v0.2 provenance keys out of `map`, leaving behind every key that
+/// Takes the OKF provenance keys out of `map`, leaving behind every key that
 /// is malformed or carries an unknown subkey, and appends a warning for each
 /// malformed value of the concept file at `path`.
 pub(crate) fn take_provenance(
@@ -76,7 +76,7 @@ pub(crate) fn take_provenance(
         }
     }
 
-    // The v0.1 `timestamp` is read only when `generated.at` gives no time (§13.1).
+    // The v0.1 `timestamp` is read only when `generated.at` gives no time (Appendix B).
     let timestamp = match generated_at {
         Some(t) => Some(t),
         None => map.remove("timestamp").and_then(|v| match parse_time(&v) {

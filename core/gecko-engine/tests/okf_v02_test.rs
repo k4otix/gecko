@@ -1,5 +1,5 @@
-//! OKF v0.2 provenance read from whole bundles: a hand-written fixture covering each
-//! field, and this repository's own OpenWiki bundle. Serviceless.
+//! OKF provenance read from whole bundles: a hand-written fixture covering each
+//! field, written to OKF v0.2, and this repository's own OpenWiki bundle. Serviceless.
 
 use std::path::Path;
 

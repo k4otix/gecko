@@ -103,7 +103,7 @@ pub struct OkfConcept {
     /// the engine's ceiling (`gecko_engine::sandbox::wasm_executor::MAX_TIMEOUT_MS`).
     pub timeout_ms: Option<u64>,
 
-    /// The OKF v0.2 provenance, trust and lifecycle facts the file states (`generated.by`,
+    /// The OKF provenance, trust and lifecycle facts the file states (`generated.by`,
     /// `verified`, `status`, `stale_after`); `generated.at` fills [`Self::timestamp`].
     #[serde(default)]
     pub provenance: OkfProvenance,
@@ -126,14 +126,14 @@ impl TrustTier {
     }
 }
 
-/// One OKF v0.2 `verified` event: who confirmed the concept, and when.
+/// One OKF `verified` event: who confirmed the concept, and when.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verification {
     pub by: String,
     pub at: DateTime<Utc>,
 }
 
-/// The OKF v0.2 provenance, trust and lifecycle facts of a concept. Every field is
+/// The OKF provenance, trust and lifecycle facts of a concept. Every field is
 /// empty for a concept that states none of them, including every extension-built one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OkfProvenance {

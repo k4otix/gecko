@@ -188,8 +188,9 @@ fn split_frontmatter(content: &str) -> Frontmatter<'_> {
     Frontmatter::Unclosed
 }
 
-/// Parses a single OKF concept markdown file into an `OkfConcept`, extracting frontmatter,
-/// links, and code, with a warning for each OKF v0.2 provenance value it could not read.
+/// Parses one Markdown file of a bundle. A file with frontmatter and a non-empty `type`
+/// is a concept, returned with its frontmatter, links and code, and a warning for each
+/// OKF value it could not read; any other file is not a concept (OKF §3.2).
 pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile, ParseError> {
     let raw_content = std::fs::read_to_string(file_path).map_err(|e| io_err(file_path, e))?;
 
@@ -1452,7 +1453,7 @@ Playbook body.
         assert!(matches!(result, Ok(ParsedFile::NotAConcept(Some(_)))));
     }
 
-    // -- OKF v0.2 provenance --
+    // -- OKF provenance --
 
     use super::super::types::{OkfProvenance, TrustTier, Verification};
     use chrono::{DateTime, Utc};
@@ -1665,6 +1666,18 @@ Playbook body.
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.provenance.generated_by.as_deref(), Some("a/1"));
         assert_eq!(c.timestamp, None);
+    }
+
+    /// Regression: extension keys at any level are kept as written (OKF §4.1).
+    #[test]
+    fn extension_keys_land_in_metadata_json() {
+        let (c, w) = parse_warned(&format!(
+            "x-acme-owner: team:data\ngenerated: {{ by: a/1, at: {T1}, x-acme-run: 7 }}"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.extra_metadata["x-acme-owner"], "team:data");
+        assert!(c.extra_metadata["generated"].contains("x-acme-run"));
+        assert_eq!(c.provenance.generated_by.as_deref(), Some("a/1"));
     }
 
     #[test]
