@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:3511fd148a5616248c1b301e0285ecebf7f6014b44efe3256dfb4b744a9ad391",
+  "claims": [
+    {
+      "id": "claim_39f6385e86734cfbacd6b8d7845b44a9",
+      "statement": "Every EpistemicWriter method takes a host-minted RunContext, making it the exclusive run-stamped belief-write path; mem's writer also exposes itself as the EpistemicReader so recall and derive share run scratch.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-extension-api/src/epistemic.rs#L1-L8",
+          "version": "repo-lines-v1:sha256:1557dd7ea701d5a2c8756e1876fe36f2391d83d3ee43ba072ed0d450305db1af:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTdjM2NkMjFlM2ViNTgzMTVjMTY3OTc4ZWI2NGM1NGVlOWIyZTQ5MDIyMjRkMjQ1NWI3YjQ2NjBlZWFjYjgxMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWMyNTAwNzIxODllZjM3OTVlNzAxYTQ5MTU1Yzk5Y2RiZWVhNTUxOThhY2Y4YmI4OTQzMGYzOWFjOGI1MmExYiJ9"
+        },
+        {
+          "resource": "repo://core/gecko-extension-api/src/epistemic.rs#L184-L266",
+          "version": "repo-lines-v1:sha256:af74a0bbe6a44b358d4861a0393ccbc2be801edf5f052ffe713f29513c12625c:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1Y2JkYzNhMjIzZmU1MTg3ODcyODgyZWNkZDgyOTNiMGFhNzkyMGRlNzZiM2NlNjc1NmI0YjIwMDNkZTJiNTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiOWU0ZDI3MTY1NmMzYjBkYzgzN2U2YmUwMzJiYjI1NzNmMDA0YmEyNmVlNzAxOWRhNjU4YWEyMmFmM2RmOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyOTg2ZmZlNWRlNjQzOTQ1ZDU4NjUxNzhhNDY4NTAyZDVlYjc4YzhhYmNjM2YwODc4MmRhY2FkNDllYWZhNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1MjE2MDRiMzVmYzQwYWYwMGNiYTRlZWEyZmQ1ZTJjM2FmMTg2M2IzOTExODVkN2JmNGJiMDllNzJkMGM4YjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_56a9155745104748842eec65bc7541a9",
+      "statement": "DerivationMethod has seven values; type-join, cardinality and functional-dependency are provable, and llm-synthesis is probabilistic.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-extension-api/src/epistemic.rs#L20-L95",
+          "version": "repo-lines-v1:sha256:7d758fb8ace0c77bbfec5073c101b25e27f11a8b7aa07bb3bafe59ae5c700cc9:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3MmFiOGJmMDVhODA5ZGZkZmU5ZWIwYzkxYzM5YTVlMGIyNjI2ODY3MTE4ZTgxZjA5Mjk5ZDQ3OGVlMTk3ODIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxMmMzZmU3NWUzOGFhODgxMWNkZjkzZjBkNTViZGZmZmNlYmRkOGI2YjRhODUzNTJjYWMxZmJmYjM4Nzc1NzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1YWFhY2QwMjU0ZTMyOGIwNDQ3MWEwOWE3NmY5NjkwYjc1YzQ3ODAxZmNjNmY2ZjM2M2EyNTY0ZGM2Y2RmZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5ZjY3ZjA0MDZjNTA2YzVhMjE0MzMyM2UxZGNiZTE1OTZkZTdlOTMxMzdkOWU5NjA3Njc4Yjg3YzRiMWM5ZmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eaf097fa4938414ea7a2d86936ad1a4d",
+      "statement": "MemWriter commits the authoritative graph write first and treats embedding and index upsert/remove as best-effort post-commit work that never fails the write.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/mod.rs#L1-L21",
+          "version": "repo-lines-v1:sha256:798b3ffd511798eb9418ac7eac721ed1023b3aa9bf4ae8e9499e0dc0228bb630:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjY2E3N2QyZDg2MzEwZDI2NzE4ZGQzY2NlZWYwM2JlYTU5YTAzODNhNDcwOTIyN2ZhNTYxNThkMTI3MGY2NTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiZDBhZmNjMjVhZTVmMDE5MTg4NjgzNjcyNTI4ZGNjNDA2ZWQ1MDcwNmU2NmYwYmU2NjE5ZDY5MTBlMWI0ZjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNzdhNzc2ZTUyYTJlOGI1OGY2MTEzN2JjOTY4ZDFkZGFiOWEyM2UzNzZmZjZjNTEzMzc0NjlhMWRhODhkM2IifQ"
+        },
+        {
+          "resource": "repo://core/mem-gecko/src/writer/mod.rs#L49-L68",
+          "version": "repo-lines-v1:sha256:e93a931a0c4e873f68048e9bb417e2b3a5a38f6fc1063cbe00d52cc0587deb1d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0YTBkNjA0NmRmZGNlMmJmNTgyYmFjZjcwOTVjNjI0NWFlYmJkMzNhMmU2MWQxYjdjY2UxMTU2ODkzZjYxOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmMWY1MTBiZjJjMmUwNWIyNGQxMmE5MjQ4ZDU0MGFkY2QyZWU2ZmI0YTdjZjU2ODRjY2RlYmNjN2M4M2FkZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxODVjNTJmMTA5YjcxZjFkOWJiZDYwNjZhYjJmMDIwNDUwOTA2Yzc5NjVmZjA4YzkwZGJlOTM2MDc2YWNlMjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d7d251ee4f31442e94796827844b2c54",
+      "statement": "supersede rejects, before writing, a replacement whose entrenchment ranks below the old belief's; the replacement inherits the old tier when none is set.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/beliefs.rs#L225-L260",
+          "version": "repo-lines-v1:sha256:658a84aa9fae21fe633e8a79610be242b038efa0c6313ebfddc7efc443c10627:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzY2FmYzExMTBlNGYyMzc3MmZhY2E3ZWM0OTEyYmZmN2UzMzUzNTFmOWQzNjFiYzA0MTk5MGYzYWFkY2U1OWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxMjJlNTg5OWMyNzVlN2E1MGZmMmQ0N2JmNWJjYmJkODI0YTM2NWYxYzk0NjIyOTljMjA4YTY4OWQ5YWZhNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjYzI1MGUxZmU1Y2RlNGQ4MDM2YzgyMDZmODQ4OTVkZGJiNDY2MjJiODY2MmVhNjJmYjRhMTk5ZTcwMGY2NzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3MGFhMTNhZDFlNmE1Mzk5YjBkM2U4ZDZiMTU5ZTRhNjMyZmVmYzQwMGZlOTFlZWViZGRiNjI4NDAzYzlmOTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_90e3b39d545e4a8e9248009865292d54",
+      "statement": "assert_belief derives entrenchment from the method: human-assertion is user-stated, llm-synthesis is llm, and the other methods are tool-derived.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/tql.rs#L114-L126",
+          "version": "repo-lines-v1:sha256:c345a26de30d3f8863027e9b07eae1cc970e4c23573f6c6ff76dff6b9d083258:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0MDhkZGEzMTFhMzI5MzIwYjgyMWFhZDcyNTc2NWQ5ZmQzN2NkYmZkOGI4YjU2NGU4NDBhMTMwMDIwOTBiNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMwMDE3NTgwODc5NTljYjUyMTY2MmM0YmU5N2VkZmM1YWI2MzFjMmJiOGFhZjVjNDQ0N2NlYmExYjU0YmRkZmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_22b3f52fbb05446381a2e8a8deca1055",
+      "statement": "Recall uses the temporal believed-at path for as-of queries (skipping the index), index-seeded recall with authoritative per-candidate gating when an embedder and index exist, and select-for-context otherwise.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/reader.rs#L141-L280",
+          "version": "repo-lines-v1:sha256:277981f4194b696f6a716e144c7f3568de66d3ff0948ba3e39edf9cf1c3aebfa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5NTdkOGY4NWQ3MjFkYTQ3ZTUxNWU4OThmYjkwODQ4MjRkMTQ1OWJjOTU0YmRmMTI3YWViMzgxMjQyNGJiODE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiZmM5OGEyMzExOTgzYWYwZTdlMWVjNDM4YTdmZDIxYzdlZGFmODBiYmYxNjI4ODI5NGQxNWZkYTQ2NDIzODgxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYjllYjFlZTI0YmRlYWI3MDkxM2FkNWFiMWY2YjRjZmFlZGQ1Y2E1YTJjOGU2ZGZhNGI1YjMzZDJlMTVjY2IwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_8170e0fd6657452e9e8ec86f1d374e5b",
+      "statement": "mem's schema is two fragments merged into a single define with types before functions, and the belief tier is rooted at memory-item.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/lib.rs#L1-L58",
+          "version": "repo-lines-v1:sha256:38663dd8b9dc55e74bb96f6fc63fbf211b89a21a2da2abac435f51f2ec7c134f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2NTcyYWE0ZDZlZWVjZTQwMzMxM2I2YjUzZDczYmJlMmVlNDQyN2EzMTNlZWY3Yjc5NDA0ODUxMGVhNGFmMmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZmNmYTM3MjY5ODMyMzAzYjA5ZDNhMjE5ZmMwYzE5YWE1NTMwM2JlMGI0NTQ2ZDE2ZWExYTNjYTc5Y2MzODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3Y2FhNjM2YjE0OWI4OGMwNDYxZjMzMzJkODQyOWUwZTdhMmRkZDVmZThkNjFhZWQ1ZWM2ZjQ3ZmQyZGY5NmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d000a67ec98441f8548d035c3753d6a",
+      "statement": "A belief may be retracted at most once (plays retraction:retracted @card(0..1)) and requires belief-state, valid-from, salience, base-activation and last-access.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/schema/mem_types.tql#L72-L87",
+          "version": "repo-lines-v1:sha256:191f4015cd351d36566b9404c2818caa65946ac5d5c60b07f7575e995c5ea562:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZGU4ZWM0ZDFkY2EzOWYxODBkYmJhNzdhMzQ5OWM0ZTQ0N2JjN2EwYjgwN2VlZmUxNmY2NDNmYThhYjc2ZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1YWM2NGIxZjkyN2UxOGJlODcxOWU4OWJmOGI0MjAwMjQ2NTlkMWQ1N2YzZGU4ZWYzZjljZDUwODRlOGQwYzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVkODNmZDg1ODIyNzI5ZmE0MWVkYmI0OGU1YWE0ODI0OWQ2NjdkZGFjNTBjM2NiNDBmOTU5ODNhYTk1NTAyYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiYzk3Zjg0MWZhNzkwZWQ0NmFjY2VmMmVjMmMzYzNlM2NhY2JlMjcxM2UxOTJkOTg1MTg2ZWI3NGM0MWNmNzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_79955dd8277a40c8bf52b9a568ba4956",
+      "statement": "supersede, retract, contest, rests_on and derive evidence act only on beliefs visible to the RunContext actor, refusing another agent's private belief with the same message as a missing one.",
+      "evidence": [
+        {
+          "resource": "repo://docs/refactor/KNOWN-LIMITATIONS.md#L200-L243",
+          "version": "repo-lines-v1:sha256:5df6f951bbb0b9009edfc1392c365fc8163bd8b377c6f484ed0c627af43a5dc2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMzcxNjUyOTU0YzQ5ZmUyOTdkY2RlMjI4OWQ5MmI5ODg3ODc1ZWU5NmZhY2NjZDdkODA1MDUyMWFjMjlhMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhZjBhZmRjYzkzZTQwNGI0M2ExNzNjZTQ1NTA4YmI3MzI3ZTQ0MWVhODE3NjU0ZTk1MTllMDc4YzZjMzkyZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMzMzM5NWI1YjBiMWRjN2IyNTdkMDlmNjljOGY2ZGFmNzVjMjZhODQ4MTBkNzdlNDE5Mzc5ZjVjYmIyMzI5NTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MGQxZjEzNTJkMjNlMWMzOWM3MmIyNTg1NjU5ZDZhNTg0N2FhMDhmODJiY2UxZmQ0NGUwZTZiOGM1YWZiZDYifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

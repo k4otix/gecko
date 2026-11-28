@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:9006c232e5aa262fe8811f0312b83187797b26fe658ab2ecdefc7137be561241",
+  "claims": [
+    {
+      "id": "claim_cf14cb96b18444d891906b0c5828fc93",
+      "statement": "build_extensions always registers mem-gecko first regardless of gecko.toml, then maps each enabled name; 'cyber' without the cyber feature and any unknown name are hard errors.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/config.rs#L285-L328",
+          "version": "repo-lines-v1:sha256:21d01c25b6bd7ced70775250b291cf7b1c92a019d87382a3a6473424a20e8575:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlOTAxMGEyYjAyNmVhNGZiMzg3NTdhNWY4ZGEyZDYyMzY5NmQwMWU3MWMxZjBkNGU4Y2I2NjEzMzFlNGZlOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2ZWZjMGY1M2U1NTEzMjQ3MWMwNzU1YjlkYzg1ZjBmMTQyMjNiMzkyOGRiYTA2YTdjZDAyYzBiMGMzOWIxOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4OGViMjhiMzJlNjc0ZDM4OTEwMzRmYTdjOGViOTNlYmRiNWZmODcyODdkMTJhNWJkZGU1NzY5N2QzMmY4MmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6492c6fa24db49689d27863b993ccad6",
+      "statement": "Extensions are built only inside the SchemaInit, Sync, SyncStix, SyncSensors and Run command arms, so a bad [extensions] enabled entry cannot break up/down/query/status/drop/databases/model.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L348-L470",
+          "version": "repo-lines-v1:sha256:09f4a1a7a9c1343d004ce50cf1e6699d179e0315bda9e646e59510eb3ae04db4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwN2U3MzgzYTY4NGUzNDM1YjllOWJjN2EzZjczMTQ0NmU0NGVlNTNmMjZkNDIxYzk1YzBkNTdkYzJhMjllODQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3ZDUxZjNkM2JmYWU1Y2FmZTdmNWUyMTE3ZWNlYmY4N2NhMzNjOTAzZmEzNmNkYmU4M2JmYjcxOTIzMGVjNjE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMWE2MDA5NzU0YWRhMGMzMjQ0NGE1NjU5ODliNzQ4NmYyYjE4ZTJkYTlmN2Y2ODczOTg0ZDg0MWZlODEyMzlkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_63aa346e707f4eae9716b9170a5c176b",
+      "statement": "apply_all_schemas runs check_extension_schemas before contacting the database, then applies the core schema with its migrations, then each extension's migrations, schema and on_init in registration order; a custom core schema file never migrates.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/config.rs#L330-L340",
+          "version": "repo-lines-v1:sha256:7aa3e9f685bae7da32df18311c9aef1f111d897bd7258950b6ea8c4fb656adce:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0Y2U2Zjc0NGYwZTUyZjYwMDQ2OWQyYTM5NjllN2ViOGZjZTMwOWQwN2MxZmY0NDE4NmI1N2NjMjA1MzE0YmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjOTA4ZTc2YThjZTAyZTI3YTAxZjcxYzBlYTEyNjkzMTNlMDNlNDIyYWE1ZmUzNWM4MDFhMDViZDJlZjU0YjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJjOGFjNzk4NzI3NGU4YzIyNmEwMGJlMThkNjE2YjJkODlhZTUyOTFjN2FiOGQxZGY0M2NhMmE0YWY4YjVlNjkifQ"
+        },
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L735-L774",
+          "version": "repo-lines-v1:sha256:949c62fcfce864d21efeddb81beef669ae265d59fe3cc2a5fd8ea1c75ea68e7d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0YjMwMDAwMTdhOTgyZjFmZTU2NDFkNjE1YTE1NzJiZGFlN2Q4YjQzNWUzMDg3MDNhOGIwMzFmODAzOTJiMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzNzkxMzY0OTkzNjMwOTQ4NzViN2UwM2I0MWRjZjc5MDkyZTNmMGQ3MWUxMWZjY2IyZGYxOWJhMWU0NmMwNWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhYjVhY2Y3ZjdmZGQwMmY3OGE2NDU3OGQ2NmRiZDEwMjg1ZTBhNDJhMGNlMzJlZTA3MDYzNTUyMWUyNzdkYmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_773700fbbf9844ca97bb84edd0f21b75",
+      "statement": "build_host_bridge composes the run's ExtensionCallback as a base dispatcher over call_import, wrapped by mem's epistemic_extension_callback, wrapped by cyber_extension_callback when cyber-gecko is registered, with one host-minted RunContext per run.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L1271-L1346",
+          "version": "repo-lines-v1:sha256:98af82d5a08621bea35af37324a14a8f472ac0f1e13a6aa7e103b8607ac15f48:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmZGVjZTY3ZjY3NjI4YTE4YmQ3MjQ3ZjZiMGQ4ZmFjNTk2NjAzN2I1M2JlYzYxYTc4YjNmYzkwZjUyOWIwY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwNTMzYWQxZjU1ZWJmNjMzNjE0NTljYjhkY2VkN2NkMDNmNWI4M2FmMWQ1M2VlMjNiNGI4NWYzODVlMGM2NmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzODc3MWJkYmFhMDVlMGFjOGU3ZTNiZGFlYTRkMzY5M2FjNjU4MjQ3YjNmN2VjOGIzMGYzYmM1ODMyNTBiMzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_02ff4114c0ea4d0f925aff8bb8763a9e",
+      "statement": "The GeckoExtension trait's default call_import returns an error, and schema_migrations/belief_edges default to empty; SchemaMigration applies only while the exported schema still contains its applies_when text.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-extension-api/src/lib.rs#L77-L152",
+          "version": "repo-lines-v1:sha256:ab9158f17ff7fa6a2a994936a4fda638dc6440c4c8ddf0cb93e217c552f2627e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzYWFlZDY1ZjE1ZThmYWJkNDc3M2Q5YzdkMzRiYTI3Njc1MjZiMDZmMjZmZWFhYTZiOGZkZTc5MWE0MjQ0MDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlNGI1ZjE4NGJlOWE1MGQ4OThkZGRmZGM0MWEzZTdhYTMwNzc3ZjRmMzQwYzQ0ZGUxODNiNjQ1YmM5NjYxZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0771a534e626426d8abf8cca8cfe1bf7",
+      "statement": "CI's check-extension-deps.sh fails if any crate under extensions/ has gecko-engine or typedb-driver in its normal, build or dev dependency tree.",
+      "evidence": [
+        {
+          "resource": "repo://scripts/check-extension-deps.sh",
+          "version": "repo-file-v1:sha256:397ba9fa464285b034fccda81fa73735e5a06d0f9e7157f7df4fe37acbee2779"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

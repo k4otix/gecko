@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:163e6085387dbe692addccf805ab9e42e9078bd9de3b88af2d1becb8574a7397",
+  "claims": [
+    {
+      "id": "claim_779e80de1ec54ac1a073b5310aa18d6c",
+      "statement": "Tier 1 runs lib/bin tests with no default features, Tier 2 runs integration tests with the cyber feature against live TypeDB single-threaded, and Tier 3 runs with the integration-model feature.",
+      "evidence": [
+        {
+          "resource": "repo://justfile",
+          "version": "repo-file-v1:sha256:6b9225a754bb2973a82c248bacc443aa5f4b99838f24db9c2d988ab8040b7a94"
+        }
+      ]
+    },
+    {
+      "id": "claim_cc461ead2a9641cfa957ea9fb9076b24",
+      "statement": "The per-push CI job runs fmt, cargo audit, cargo-deny, candle-free clippy with and without cyber, a no-candle dependency-tree guard, the extension-deps guard, nextest against a TypeDB 3.15.0 service, and an empty-model-cache guard.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L94-L180",
+          "version": "repo-lines-v1:sha256:594cad67f476a1709a1b76e439dd891821d739f6ef176c334e9cf02cc8cd8809:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NmI1OTNjZmIyM2VlMWQ5NjQ2Y2UxNDRhNWQ5YWEyZWIwZjIxNTRkNDdmYWU2OTI1MDkwNzg0ZmVmOWYxYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5NWNmNTE0ZDY3ZjBmYzE0ZTYxNTRhNWNjOTBiNjUxMDgwYjBmZjhhM2NhZWRhNjgwZTYyZmFmMjkwYWU1MmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwZTBjZDc3NDY1OThlNWRlODYwNmYxNWZjNTc0NWYwMmU3NDFiOGVlZGRiZTYxZjY1MDQxNGVlYzQxNDMxMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5ODU5ZDA2ODc1N2I5NWFmNTVmZmUwYWVmZTAwODdmMjBmM2U1ZDdiMTZmYjE4NjQzZjY5N2RlNDMwOGI3ZTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d71e63229144300ac9ce998f3647249",
+      "statement": "The model-bump-gate job fails a PR that changes the pinned model id or revision unless it carries the tier3-validated label.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L34-L92",
+          "version": "repo-lines-v1:sha256:fd5dcddb7550e0bb387ba5a498ee99fa66fdc3985fd1b12ac19b228304bef96b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhNzcyMmE1YWViMWI4ZDI4NGY3NGY1NTA5ZTJkOTJjODIwMDAzYWI3NGU3ZTc5Y2IyZmUxZWM4OTc3NWI1ZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM5MTZmMGRiYjE0N2ExM2IyNzEyNzhiNjAxMGIzNmYyNzk1MzI0ODdlOTZlZDA4NDk0ZWE2MjhjOGY1Y2QyMjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwNGQzYjA4ODY4NGQ4MWFiNGRkYTk3Yzc4ZmE4ZDZkZDUxN2ZmNmE4NmI1MDUyMTQ2YTI2MWFjZTA0N2EzZDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f4f2f31f01a84f67b55cc563e393afab",
+      "statement": "The Tier-3 model-integration workflow is manual (workflow_dispatch) only and pins MODEL_ID and MODEL_REVISION.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/model-integration.yml",
+          "version": "repo-file-v1:sha256:d497b51d58ac25c29a510f19d6a4dfb5cada49f5392703af55ae7106575d1b14"
+        }
+      ]
+    },
+    {
+      "id": "claim_af615da0c5d040019baef6c0c1498f2b",
+      "statement": "TestDb creates a uniquely named database from timestamp, pid and a counter, and deletes it on drop from a separate thread with its own runtime.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/tests/common/mod.rs#L16-L70",
+          "version": "repo-lines-v1:sha256:471b35c3a52ce89be74ed3accd1e02a5b9db8b541ee617157e3e9f672d95a00e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYmU5YTU3NzBiNjk3ZjY3ZjZhMzU1ZTE1MGRiYjNjZDQ1YjhiN2ZkMzhjNWYzOTM5NjU4M2JkMmY0ZDAwYjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0ZjgwOGYzNWZmOTVlOThhMWMyNGM4NzY5YjQ4N2IwM2JkMGE0MWUyNjgyMGMzOGY5MDcyNWUwNWRlNGQ5YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6d0d380c03be4424b62332279fa37314",
+      "statement": "The pre-commit and pre-push hooks run cargo fmt --all -- --check once core.hooksPath is set to .githooks.",
+      "evidence": [
+        {
+          "resource": "repo://.githooks/pre-commit",
+          "version": "repo-file-v1:sha256:8222f08fec0dc5a22e7693981118a95cef44b10c67827c8dbc9740a4fcf82645"
+        },
+        {
+          "resource": "repo://scripts/setup-hooks.sh",
+          "version": "repo-file-v1:sha256:ed745987cf85768149e1ec6b9b378a713dd43fd9974e1804986abe2b40f08f84"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

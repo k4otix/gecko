@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:d73908d66ee42f3f7b161c03507e3624136f0ef30e485540c4f2ff766be96775",
+  "claims": [
+    {
+      "id": "claim_882e6b46d59d4cdf9142c01575f0ec64",
+      "statement": "The sample bundle declares the name gecko-sample in bundle.json, so a default sync of it targets the gecko-sample database.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L388-L397",
+          "version": "repo-lines-v1:sha256:950c79f63c177303d4fdf8421950e9c77e4c1b29c84513cff58cd9c3e62225cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkN2JhYWU2Zjg5YmI3OGM5M2ZkZGM0ZGFhOTI1MzcwZjhkMWEyYmU2Y2JiZDM3NTQ3OTMwNzk1ZjkwZTA3ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmYjgzZjlmMzJjMzljNDZmN2EwZDVhZjg5ZDVmYmVhYmU3YTQ2Mjg5YTIzYzUxM2ViYmNmMzM4YTkyY2M0NzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjNTIzMzk3NTkyMDhlMzI0YmExYWE4YzhlNjczNTJiYWE5NGUzODVmYzAwNGUyMTMzOWVhZGRiYTgwZTFhMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxNWQ5YmJhZTZmNDE3NjRhNGQwNjViZjM5NTgxZTZiYWJjYTYwOTY1MGIyYjY1NWVhNzYwY2U4MGVlMzQ2NGQifQ"
+        },
+        {
+          "resource": "repo://sample-bundle/bundle.json",
+          "version": "repo-file-v1:sha256:efceb8c6ec66f42964bf560ce045c343bbcdbd2ad4ea0e36f787cf25b8e63133"
+        }
+      ]
+    },
+    {
+      "id": "claim_de2ecdfd9cb44e4282c12ea9eb1c6984",
+      "statement": "The repository's gecko.toml activates the cyber extension and enables the HNSW semantic index with the stub embedder.",
+      "evidence": [
+        {
+          "resource": "repo://gecko.toml",
+          "version": "repo-file-v1:sha256:b11055fe6b6a37af69adb845a9f1f8835748508d715accb9951f28e8785c265b"
+        }
+      ]
+    },
+    {
+      "id": "claim_3c9a276d3b934c9b8f711f55ee7470d9",
+      "statement": "The justfile's default build recipe is a --no-default-features build, and the fast test tier needs no TypeDB, model or network.",
+      "evidence": [
+        {
+          "resource": "repo://justfile",
+          "version": "repo-file-v1:sha256:6b9225a754bb2973a82c248bacc443aa5f4b99838f24db9c2d988ab8040b7a94"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

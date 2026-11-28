@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:62b22cbd015b5e7c3c45352249335bf13c5ca0ef86be26ab6d759452517517ad",
+  "claims": [
+    {
+      "id": "claim_1f3e1decce434a42a9c2dc613889ef53",
+      "statement": "The syncer writes records directly through the router and never uses the belief-write path or the semantic index; a unit test asserts the module names no belief or accelerator type.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L1-L35",
+          "version": "repo-lines-v1:sha256:94e3658fb5a24bebde8a1b5a5988eec2a73473bcc9ad5ab802473b5a7a7f8527:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljYTBmNTQ3NmQzZGQ3MDQwN2EyYzc1NmE5N2ZhODMwMjQ0ODJkYjRhYTczZWE0MzAxMzM1N2ZhYWQ3MjE3MDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjNjVhNDc2YjgwZmUwYTljYTVkYmU4YjM3ZjRiNzE0OTliY2U1OTA1M2Q1MWY3MWU0MmI5OTg0NjIzNWI1M2MifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L1352-L1360",
+          "version": "repo-lines-v1:sha256:6627692ae190cdc5a33cfcaf189a6b2e5c986d36ad9fd68d8349643886fc126c:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjUwMWYxYTQzOTFmYWQ5ZjY3YmI5ODI4NjMyNTA4NDkwNmRkZDljYWY1MDY1NWEwOWRjYWQ1MThkMTY4ODI1NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODczMzFlMmNjZDQxMTVhN2I1YmI0MjhjMTdiOGJjZjUwYWI1MGVhNDU4NDk4MzAyM2NhYmE3MzZmMWI4ZWI2OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzliMDc3ZWM0NTMwMjFiODEwNzdlODk3NzI5ZDhiMDAyOTYzNTUxNWE5ODliNGJmOWQ0YTUwMzY2MDg3ODczYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTUxNzczYTAxYTZkNDQyMjgyOTA1MDYzMWI3YjFhN2Q1YzZkZDdjMTQ5MTBkODg2MDE0NzFiYjJlNjNmMDcyZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_5373358f2e6c4b48901125aca5d64aec",
+      "statement": "sync_bundle runs in one write transaction: it refuses concept-id collisions and invalid or blocked retypes before writing, updates changed concepts in place, retires belief-referenced orphans, deletes or releases other orphans, runs extension writes in the same transaction, and refuses to commit if the belief-tier fingerprint changed.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L189-L400",
+          "version": "repo-lines-v1:sha256:eda8eb15c460d3ed674916f911f860a54d5ba909ae5612cdd6607b2d88045d5e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4MzE3NDgwMTM2OTYyYTc1ZGVjMTMyNmZhMTQ5OTExODQ2M2Q5Nzg5Y2E0ZjEyNzViNDM5MjJkZGNkMGZjNDIzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4MDcyYjY3Njc3N2JkNjhjYTlkNWEyZWZhMjYwYjljYWNjZTkwOTU4NzBlZjRjNDc4NTIzOWI5NmI0ZDhmYTIyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMjU5YzU0ZjYyYTVlZDk4MDgzZWYyNmE4MGEzNjY1YTYxODI3YzdkYjkzMTg3NTAxNmRmOWQ3ODA2YzZjZGE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MmNkM2I3OGViNjNkOTc5ZmU1ZjFjMDA2Y2IxYmVhZWM5ZDQxOWFkZTk3MDI3M2JjYjE3NTBmM2JhMGI5NTQwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f371995df89d450ea8642223ff00e6e4",
+      "statement": "SyncResult reports link and citation counts as attempted rather than created, alongside inserted, updated, skipped, deleted, released and retired concept counts.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L58-L72",
+          "version": "repo-lines-v1:sha256:a9bdf275fb76b2bdc8ba34d8a6a613b61e0727c165f6e2b01f0e7227464b0965:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NTBhMTgyODk2ZmUzODBlNWI0M2JjNWViOTc4NTcwMmQ5YjU0MzBjZGNhNzZjYTViYmRkZGJiMjczZWM3MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjllZGRkYjFmNzg2NGY0OWY4NTQzNzU0NDgzYWE2MTQ0Nzc5MDY5OWE5N2U5ZjM4ODE0ZmE1MmY3ZmYzYTI4YjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdmMmRkYzQ3NjJjOTE4ZTc0NzNkZGI5MjdlOTEyMjc3NzI1NGY2NDE2ZDA4YTcyNGZhMTc4NmNlOTNhOTAzNWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f392a8a70b034d62acf7bb6529a004d8",
+      "statement": "sync_manifest applies all schemas before calling sync_bundle with mem-gecko's belief-tier root, and plain gecko sync passes no extension writes.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L796-L845",
+          "version": "repo-lines-v1:sha256:5d27cf3b6ca43888c5583a17c4322cfc397d9de1636693e7563f9c4ade8ffa84:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxYzRmMjI1YmNmY2Q4NGNhMjQ0ZTQwMjQyNjE3MTZkYzRkMjUzMzE0ZDg2OWEzOWU0MWJlYWJlOTUyYjE1ZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0OWQxZmM2NDBlZTVlMDA0MGY2ODdhNDMxZDhhZTI5Yjc0NzRhNjU5MWI3NWFlYWQ4NzBmOWMxOTVlZjk3NDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRlZWVjZjRmMjJmZGMzNmUwOTY2YTcxMDIyNGViOTI2NWZmMTlkZTMwODEwZDlkNWJkZjVlODY4YzYzZjViYzQifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

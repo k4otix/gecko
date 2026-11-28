@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:b635a52927f148e42cd6141a1f7889122c287abbaecea0bf43bb24a09ef5df24",
+  "claims": [
+    {
+      "id": "claim_6fbc3b21e9ac46abb31b3abdd80a07b0",
+      "statement": "BeliefEdgeWriter::assert_belief_with_edges writes a belief and its declared edges all or nothing.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-extension-api/src/belief_edge.rs",
+          "version": "repo-file-v1:sha256:73b8d6367087b63eaac100da89130280d7bca30ea94b09b0a0ab9a262ee0db95"
+        }
+      ]
+    },
+    {
+      "id": "claim_8836d0c17c7f4a749a2e13051fdad582",
+      "statement": "BoundEdgeWriter validates each edge against the bound extension's declaration, checks each relation against the live schema once, and commits the belief ops plus edge ops in a single GraphStore write, reporting a mismatched edge by relation and role keys.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/edges.rs#L37-L228",
+          "version": "repo-lines-v1:sha256:57b53a408cba4875ce642fe88fb0301c1db1219fcb03cff4725b143a5fe909b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyNzYzMmU5NGY2Mzk5ZjQzZDBhYzQ5M2I3YjM5MDVhMzZjMzRkZDg1ZGI4ODRhNDRkOWNlM2Y2ODI5MDhkZWQzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmNGJkZjBmODIwMDkyNTllMTAwNDAzMzk3MGViYzAyODk1NTc5Y2EzY2ZlZDU0NTA3MTcxZmI5NTg2MzE5MDE4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_16b5209385ef47a7b3cd69d7212a29c9",
+      "statement": "MemWriter::edge_writer_for refuses an extension that declares no belief edges.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/mod.rs#L108-L118",
+          "version": "repo-lines-v1:sha256:26e220ddde0fcab70e79923021bb746b9257392d678462bee1f4a306e65700d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmMTFhODU1MmQ4MzVhNTkyMmVmN2ViMWJiOTdmZWY3YTMyOGE2YzQzNzQ5NjdjMzM4MWE5OGEwODdlMWVmYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyOGM5YmRlMTIyNzI1MGViYjM5Zjc4NTZmNDliZmJlYzlhYzMxOWY4Y2U5ZWIwZjBiYzI5MTA0MmYyYjk1ZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlYmJlZmJkYTA0NjZjZjRiZWM0ZTgzMjdkNzhhYWNiNDBlNjdhYWMwZDhmMGRhODZhZWNmODlmNTY2MzZkMDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca840ab3289d4ba594b1999d8dd7ce42",
+      "statement": "The BeliefEdgeRegistry fails closed: it refuses unowned, duplicate or subtyped edge relations, memory-item-played non-belief roles, renames, the alias token, and fragments that modify core or mem.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/belief_edge/registry.rs#L1-L120",
+          "version": "repo-lines-v1:sha256:5780575fb8ce764608d6828ed9cdd7e22d3da2c097f5003a66e05fba239073b8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlMzU5MjAyMGY0Y2FjYjBjNjc4YTc3MTBjOGJlMzcwODEyYWFhNmVlOGYzODZjMDYzMzQ5MGU5ZDgwNWRiNWU2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwZDgyMTRjYmRlZTNmMjZmOGVlNjhkNTllOGNkODNmMDhjNzUxMDM5Yzc3MDZhZjUxZGZhMjYxNDM2ODUzMzhjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxZjUyZmNkYjhiZTM0MjhlNDJhYjNiM2JjNTA4OWZkZDQ2ODRiZjlhMTE0N2I2ZTcyMmNhNzFkZTNhMGI3OGZhIn0"
+        },
+        {
+          "resource": "repo://core/mem-gecko/src/belief_edge/scan.rs#L1-L6",
+          "version": "repo-lines-v1:sha256:14adbd2daf86f952b8dbf729d87296e3d25809049d646180b2f4c71081a03048:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTljNDVhYWUxOGY4ZmNkMjE1ODhkZWNhZTE1NDU2MjA3ODFmMDJmODNhYmNhM2FiOTE1MmRhYmVhZDZlNDZhZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTkzMWVkYmY2NDE1NzVhOTRhYWRmMjM0YTk1ZDdjZDc0OGVhNGE0Mjg2MTE5NjhhZWJhNjZlOTVkZjY4ZWQ1NiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_bd7b9007ed4d4c5e8386958e54fdf3b8",
+      "statement": "sync_bundle fingerprints the introspected belief-tier surface at the start and end of its transaction and refuses with DbError::BeliefTierWrite when anything changed.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/db/surface.rs#L1-L30",
+          "version": "repo-lines-v1:sha256:3a73efa5ece0068b3e38a740d8d10170b66a7d35d04e88b54caa89b919da05fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0MTRkOTNkYWNlN2Q3NWMyNWVmYTAyY2Q5MTAzMTlmZjhhNmM1ZmRhMGZhNWZmNTE5ODJmZjVhYjJiYjVjMmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzOThlODMzYjdkNzYyYmM2M2JhZDUzNmUxNTVmZmQwNmEzNThlYTUzYjY3YTk2NmIxMDc2ZTE0OWU1ODU2ZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyMTdjYTI2NDFkYzEwYWQ1ZGM4NGM5ZDUxMDRjNjM2Mjc4Zjk1NWQ5MDQyZDZhMTliNGZiOWRmZjExNWMwOTEifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L205-L240",
+          "version": "repo-lines-v1:sha256:7a2e08722a7fd787064213792982e5e65baeaad4f8de850b5fad22e9d0786571:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhZTA1OTRhNTY1MzJiYmU4NjdkNDdmNzc5NGY3YzFmMmU3MWJiN2M3YjRhZWMzMDYxZjMwNDZhM2IwMmM5YmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwMjU0ZjQ0NmY3MmJjZTAyNmMxMzI4MDMyYThiZDkwYmFjZTI0NDcwODZhMjg1YTY2MmY5ZWU2Zjc1MGY0OWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5OTg1MzkzOTM5NzQ4ZmYxNTk2MTBiN2U3ODliYTFkM2Q1MDc4ZTRlYzA3MTUzNzFjYzIzMThkYjA2YzBmNmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2YWY3MzM4MTBiZTExOThkOGIxNmE3YjEyZDJhNmQ0NDJlMDIzOTg0NWMyOWIzOWQ1YjM5NTc5OTdmMDhiNTYifQ"
+        },
+        {
+          "resource": "repo://core/gecko-engine/src/syncer/bundle.rs#L390-L400",
+          "version": "repo-lines-v1:sha256:9b5892f11ad496d89e2c90e9619e40e53fcab1b9b3647007accefe616941d528:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyMTkyMTUxYjc0Zjk3MmNkNzZiOTA0MzQwZjI2N2UzMzBkNzZhM2FlNGQ1Yzk0NDAyNzgwZDA5MWE4OWI5MDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwNzJiNjc2Nzc3YmQ2OGNhOWQ1YTJlZmEyNjBiOWNhY2NlOTA5NTg3MGVmNGM0Nzg1MjM5Yjk2YjRkOGZhMjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3OTRiN2I2NjhmY2MxNDkwZGNhYjE1NWI2MzQ0NDk5YmNlN2U0YjVmYjc1OTIwNTY3ZjUzMTc2MDY0YWRkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyY2QzYjc4ZWI2M2Q5NzlmZTVmMWMwMDZjYjFiZWFlYzlkNDE5YWRlOTcwMjczYmNiMTc1MGYzYmEwYjk1NDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_11e07193336e4858aed5deb84c59710b",
+      "statement": "The monopoly lint scans production Rust string literals and .tql files outside mem-gecko's tql.rs for a write verb combined with a live-introspected belief-tier label.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/tests/belief_tier_monopoly_test.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:36e793fb0506a48eca815cf26c848b258eb7b3e20f953795ce3175457fbf758e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5MjU2NDIzZTgxMjJkZGM5NmUyYWQwZmM2YmE3YTUwYTU0ZDI5MjRiOGIyNWZmMmRiNWE3MGYyYzAzYjY3NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ZWMyMWRmMjJjNTIyNmJlM2QyNWFhOGIwZjRmNWUzZGVlMzJhNDMzOTkzZTFiNmUzOWVhY2YwNGVkYjNlYjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyNzlhMmY3ZDM0OGQ0ZDUyODU5MmM4OWU4MDlmMjlmN2YzNDZhYWQxODE3MDZmMzAyZGEwYmM2NDM4ODM2OTYifQ"
+        },
+        {
+          "resource": "repo://gecko-bin/tests/belief_tier_monopoly_test.rs#L513-L530",
+          "version": "repo-lines-v1:sha256:cb11ceb887a467948e87ab6d635150116c50f41104a5ccadbd3a922b20ce92da:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5ZTJhN2IzNWI2ZDJjM2M3OTBmMjkzMmQ2ZmYwZjY1Mzc5NDI4YTIyZGIyNzAwYjUyMmRhM2QyZDdkZWUzYzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmY2YwNTJlOWRiNDMxZjgxN2UyNjAxNWYzNDdjYjg5OGQ4NTlhOTc5NzA3ZGYyODY3NDM0MTE5YmFjY2E0MWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgzYjg4Y2RjY2I4NWUyOTljNGUxZjI0ODIwZjcxMTM0NDhlYzUxMTdkNjlkMTJiOGFjYTM1YTk2MjMyNTg2NmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhiY2U4Zjk1MmI0ZGM3MjJmMWM0NzIyZGYwNTNhZTEwNjE3MzkxMTZhNTc2YTQwODg2NTAwNzE5NWFhZDczZDEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6850a0412a788627164ae962b9c0959a88f9d9785dee4eac0ed3a4e4e7e4ed1d",
+  "claims": [
+    {
+      "id": "claim_db7f21e159dc40628a4999996cdf9e4d",
+      "statement": "The semantic index stores only embeddings, concept ids and coarse filter metadata, is present-state only, and is fully rebuildable from the graph; index failures never fail a graph write.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-semantic-index/src/lib.rs#L1-L25",
+          "version": "repo-lines-v1:sha256:01a1ea91ccaae32096f1515af8bd7ad8b063daeb0fa4ba6f928bff19eb67b15c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2N2U2MGQzYTcwYzEyYzNmYWFlZjBiNzY1YzYyMDhkMWVhMjk5MjY2YWM5MmFkMTY3OTk1NTk3ZmU2MTk2MTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5YjFiMGRkOTc4NjRlNzM5ZjAyMmE0ODkwMzQxMDk5YTkzNzliNjM0MTJkNGEwMWI4OWZhZTMxN2VjMjY5N2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1OGM2ODhhMGNiOTQ5ZWVmNTJkOWI2MzkzMDc1YmM3NDBhMWVlZmVlOTVmZDQzN2RiN2JiOTBkYzdhNGZlMTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ff1db46204144c628b711b293c2a6cd1",
+      "statement": "HnswIndex persists a snapshot with a model_id/dim header and opens empty on a missing or corrupt file or model-id change; upserts and removes are handled through a live-id map because hnsw_rs cannot update or delete.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-semantic-index/src/index.rs#L1-L17",
+          "version": "repo-lines-v1:sha256:180e962fbccb13201831a2d76dcec62c035bf3c994d1cfcf331a5939747fbffa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwNWE0OGUwMjIwMzJkOGE5Zjg5MmY3MzZmODQ4NjViMWViZTQ2YzY2ZjBiODJiMjViNjRjNmRmYmFkOWU1ZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1ODNjMjIzYzYxZWJhNWFkYjg4MmViOGJhNTAxOWY5ZDdjZDI1YTkyOTU0ZWZlMGU3YTNlNjE2ODBlNzgyM2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3YmVmOWMxNTY5NTM4Mjc5YTg0Y2ZiZWEyZWU1YjMwYjI3MzgyMDE5Mzg3Yjk4MTNkZmIxNmJhNzRjNWEwODAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_02d128fcf5784eb499cdd35f9da9782c",
+      "statement": "SemanticIndex::upsert_many persists at most once per batch and is the bulk-load path.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-extension-api/src/semantic.rs#L140-L180",
+          "version": "repo-lines-v1:sha256:c727632c9bb242b60fbdc8eb1764a82c80337f782fcc68f065a763bb258ac371:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4NjAyNmIxMDE5NGU3OTU5YWZmOGE4YjBjMDg1OTcyMmE3OGQ0YmVlYjM1MzE1NDZmOTBmNzM4M2FjMTlkMmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczZWJlNDA1MGVlYjk2NjU4N2NlZDIyNzlhYmJlYzI0NTNjYmEyOWJmMGE2YjBhMDJjMDk4OGExMmRkYzk4YzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjYmU3NDU0ZTcyNTk0ZDVjZGQ5ODYyNTU1MWMyN2EyZjlmZDg4YmQ5OGUxOWZhOTFiODk2ZDAxMzY3YjNkZjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c9f5c918d26345fea39d916db0f35396",
+      "statement": "CandleEmbedder loads bge-large-en-v1.5 lazily on the first embed and, with auto_fetch off, errors pointing at gecko model fetch instead of downloading.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-semantic-index/src/candle_embedder.rs#L1-L23",
+          "version": "repo-lines-v1:sha256:f5e5ff2cd3fac093dc69d805fdc20bd7ad6bfd7f8964a72d1222d702ae7f6faf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwMDEwOTMxMjJiYmM3NGZmNzM1NGMwNTBkMDczOGU5YTcwNWRjMGRhYmE3YWIyZGJkYjMxMGI0OTQ3YjY4NDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxMWFjOTY0ZjZhZDFkZjQzNjhjNDgwOTM5NzJjNzc2NmM1YzJjZDlhNzNjZjcxMjc4MGM4MGExYjA0YWE2ZWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjZjBiYTE5MmZkNjZmYWQ5ZDhkNDEyZmIwNzAxYzgzN2RlYzBmNzNhOWRhM2RjMjYyZDg2YWUwMjNmOTcwMWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_91dff1c06e1a41c2a732d78f2b961c3e",
+      "statement": "The model revision is pinned as PINNED_MODEL_REVISION and the fetcher downloads config.json, tokenizer.json and model.safetensors, verifying known checksums for the pinned revision.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-semantic-index/src/fetch.rs#L1-L75",
+          "version": "repo-lines-v1:sha256:96584868dac16c95f81868cfd8708eadf85211195329acbc1da698f5929fe91f:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmNGE4ZWZjZjhmNWM1ZTBlNjg2NTIzNGNhODMzYjM0MjEzY2Q0MGY1ZTg3YjFlOWZmNGM3YmY5MjRhZGQ0OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2MDRiZDk4Yjc4MmE5ODIyOWJlMzE4OWZmMzAzNjAzY2Q3ZjJmOWM1YTBhNzE4MGM4YjFlYjNmZmExZTBiMmEifQ"
+        },
+        {
+          "resource": "repo://core/gecko-semantic-index/src/fetch.rs#L150-L160",
+          "version": "repo-lines-v1:sha256:5aa9328bfed446a327da2533b823829c07709b693f2e0d142c5a6f5c989afbf9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmOGMyMzAyZTcyMGU3YjhkNjk5Njc5YWU3NTUyZjYyZmJiM2ZjOTJiNmU3NzJkMTk3NjE4ODBiYThmOGRjNTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OTc3MWZlMWI2NjI4ODc1YWEyM2U3ZGJlNGFhNzE0NjFkMDBjZGZiNjZkZGYxMWI5ZDgyMGFjNTg5N2ZkZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3Y2YyM2Y4MDlhMzg3YWEzNjkwNWFjMjhhZmZkZjY5OWJiNGMzNjJkMDYwMDVmODA1NjIxZDVmZTY3YTNjMWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5MTg4ZDNiODU4ZDVmMmRmNTNlYmQ4NDFjMmU3Y2I2MWJkYjk3ZTNjMjdhODVjOWZjMTc3YjliY2RkMzMxMjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_18aee36efc114550b557a091c623e884",
+      "statement": "build_epistemic_writer uses no index when disabled, accepts only the hnsw backend and the stub or candle embedder, opens the per-database index file on the blocking pool, and reconciles it with the graph before serving recalls.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L1007-L1095",
+          "version": "repo-lines-v1:sha256:58607f8b4f230856a75d2e568b8469607d733f63c5a3f8b464f4c67eed5a5e69:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0ZDJhM2I2Yzk1ZTYzMTNhNDRhZGM5MzEwOGMwYjYxZjhiNTM3OTg0MDY3YzJmYjFmNmExOWMzNGIxYWU1NTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwN2ViN2VkMzg0NDU4NjcwOGZjM2Y0NmQ2MjliNTNkM2RjMTlhZGNkMGRjYzdmMmI5Njc0NzVjM2ZlNDdmNzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmMDA4ZmI0ODZlYWNlYzFmM2RmMGY0ZmUzMzJlZmQ5MTlkMmE0ZTIyYjc4ZTkzNDdiZmJmODBiOWY0ODA2MDkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4b722f2c5bc04d41af36240c6f81c187",
+      "statement": "reconcile_index removes stale ids and embeds missing ones when the model matches, rebuilds from the graph on a model change or empty index, and fails only on the graph read.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/index.rs#L60-L130",
+          "version": "repo-lines-v1:sha256:d52429062b9eb7305617c2b7407211641418c203463a59da41cc9c6beb5e620d:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2MDFmMjVjOGYxMWJjMGE0N2U1ZGZiMWRiN2ZmN2FhMGQ4ODUxZTc0ZDBhMmVhYjJkZmFlYzA2YjUwZmMxOTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmMzI2ZWVkOTBhNzJjNjRiNzY4YWZkOWI5NDI3YzExYWIzZTkwMThjZGU0YWUxMDZhZTQyNGM3ODk5MjQ0NTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkZjY2MGViY2U4NWU4ZGJmOTc5OTM5ZGUxNWI3YjMzNTU4YzYxOTc1NzU1MTRlZmE4MWRhOGRlYjA1MzQ1YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2ODQwMGEyZWI1MmY5M2MyNDJiYjgyMzQyNmE0YTYwYzBjMGM3NmJiNzVjMjRhM2FmMzE5YmE1NTkzZGQyZTAifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

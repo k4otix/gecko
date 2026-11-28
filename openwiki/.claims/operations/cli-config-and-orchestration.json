@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:1788ff47e58fdf5bc54c6d46fcc319a52476a52ede99de98cd66b83d2c33c990",
+  "claims": [
+    {
+      "id": "claim_b4e8e8a6d6ac45778a3e921381f6ec78",
+      "statement": "A missing gecko.toml yields the default substrate-only configuration with a warning, while an unparseable one is an error.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/config.rs#L195-L220",
+          "version": "repo-lines-v1:sha256:7824245268a6018d842fe83ca213b45cdd08c7bbcf58291ad4b1630c0ad73384:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjZmVlODcxYWMxNWJiOWYyMTI1NzY0NDFmYzNjMDBkZWY1OGZhNjc1OTYwN2Y4Y2E0ODgzZWYxMDAwZWJkNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4NzIyZmRlNThlOTk0NTc5NDBlOGY4NmYwOTFlNmIwMmEyMDA1YTBmODVlYTU2YmE4ZjdlM2M1OWZiY2NmMzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2MDY1YThkMzA5MDgzNjc1Y2VmODhlNDhmNWEwYjkzMzRiNWUzODM5YWFiNjMwZmY1MjU3NTY2N2VhYTFjZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyZTE5NzExNDk4NWI3N2QwMzkwN2VjZDhiYzJlMjFkNjg3NDVhNWQ3YjA3OGM4OWU4YmUxODgwOWRiM2EzNzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a51c17730c4e4c33b59834587a8cc47d",
+      "statement": "The database is the explicit --database, else the bundle-derived name, else 'gecko'; the address is --address, else [typedb] endpoint.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L258-L263",
+          "version": "repo-lines-v1:sha256:d176bee5f6c2e66a67f326edf6746a19dfcc111269cfdadb19d302ae51d02e33:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2NmYmE4ZGRkYThlMTA1ZTNhN2Y2ZmZmNmZiOGNhY2VmNGZjODU5ZDAwODg5MDI2Y2QwZmRjZTRlNGY3ZTUxMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjA3Y2ZhYTMzZTVmMWEzMzcwN2RmMTFjOGViMGFlZjhmMjk5ODg1ZDBhYmEzNWM2ODhmMDA3OTdlYjBiNjA1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzYyZWE4YzQ2NDU0MWY4ZmJhOGYzMWI3ZTU1MTRiNzEwNTkzNzRjZGJjMWQ5ZDhhMzcwNmU0ZmMyOTQ3NzRhOCJ9"
+        },
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L334-L338",
+          "version": "repo-lines-v1:sha256:167192115b606b68e19a040374a5925ed7a2b1244813a4f695a2beca478217bc:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODE0NzNjZmJhYjU4NTY3NzdhYWE5YzFjYTNlOTc2OWMyOGVhZTJhMDY5OTdiMTJhYzg4NTMyNDg0ZjYzZDkzZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjlmOTk3MWIwZWQxYTE1OGVjMTNiODVlNjMwMTNmNTg5Mzc1M2E0MTE3ODNhOGVmYmNkNzk3Mjg3Mzg2YzhmYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjI1MjZkODgzOTQyZTMzNjUxNTA0OTRhYjNjZGVmZmNhZDgzMjNmOTIwMDQwYWIxMTFkZjk4OGJmMzExMjk5MCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_616f459463284ed0a735fb0fb748fb45",
+      "statement": "The cache root resolves GECKO_CACHE_DIR, then gecko.toml cache_dir, then XDG_CACHE_HOME/gecko, then ~/.cache/gecko, and holds the model, index and downloaded TypeDB.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/config/paths.rs#L57-L62",
+          "version": "repo-lines-v1:sha256:18e7bad5173cb85eb93d6fb5a91449445e6d95e6b2bc87bd48f5737ce8697f38:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTBhMzFlMjI0YzFmNDE4NDkzMzcyOTFkN2JmYmI5N2QzNjEwNGMyYTFjZjI4NTg1MWRhM2Q4ZDUwNDQ1NDY3YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTc2YmFiMDhjOWVmZTI1MWY0NDk2OTk1YWE3MTIwZjgwZjEwYWY3MzAxMmI4MTA0Mjg1NWViMDk1MzY3NWY2ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTk2ZjhjYjA4M2ZhODAwYTRkY2QyOTY5NzIyZDdiOTI2ODZhZGQ5ZWJlMzY1NTQ5MmZhNjcyYjFhN2NlZDI0MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGE3YjM1YWFmOWYyNTQ1OWQ3NGFlZTE0ZGY4YTRjOTNmNWQ2MGNiNTllNjZmZmJmMDc0ZjFmOGU4MjI1NjFjNCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_6364978ab813491692ebf080957fc498",
+      "statement": "Orchestrated mode downloads the pinned TypeDB 3.15.0 into the cache, runs it as a managed child with HTTP and diagnostics disabled, probes readiness by listing databases, and stops it via pidfile with SIGTERM then SIGKILL.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/orchestrator.rs#L1-L53",
+          "version": "repo-lines-v1:sha256:d93e7943d5acba7922b6a3620f08aa9c4d19971adba6ebb14438d66df529dd64:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2NTVjOGI5NjFhOWIxYzI2ODczMmQ4YWI1MzYzYmEzY2I3OGU1ZjBjZWQwMDYzOWZmMjEyMjU0Nzg2ZTcyYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NGYyY2RjYWYwNTRlOTIyZTc1MTg1ZDI3OTM1ZDA2YWZhMGNhMjIzMGUyNTdhZTljZTk4ZWQwMDllOGFkM2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5NDEwYzE5YTcyMjhiNDFkZGM0OGEyMTIxMjhkNmQyOWU5ZWJiMTQ2NmI4Y2NhY2RlODA5OGYwZmFlZjc5MzgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_217b6987d6cb4ef38956bfd0ae8d8003",
+      "statement": "In compose and external modes gecko up only prints guidance and manages no process.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L514-L548",
+          "version": "repo-lines-v1:sha256:cea69595dcb350fa196edf504cde3b945f5a7d1b8cd404eac763be171a268b59:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjYWNlYWYxMGQyYWJkM2ZmMDg0YmY0YmQ4MjIyYTcxYTgxODI5MWZjNGI2OGUyMjA5OWUyMTM1NzhkZTI3N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmZDQyMmVjNjU5MDYwOGY1ZjQ1NTM4N2JkMTFjZDhmNDc5NDA5NDY1M2NlZGIxM2E1YzU1YmUyNzg5NGI4N2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkNWEzMzhiMWYzNDhhNzM0MTZkNmFhYjE1MzJjZWM1ZDBlM2FlYzM3YjZiZDQ4YTUxZDRmZDE1YTg3OTdlNmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ac9ef3aef55647378f4541c755916983",
+      "statement": "gecko doctor exits non-zero only when some check fails; warnings do not fail it, and config is loaded leniently.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/doctor.rs#L1-L16",
+          "version": "repo-lines-v1:sha256:8024073eb5a67cf0ecb83e5e164e918169c046ab9c0ce76f891207db64bfa41b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiNmVjNDdhY2M1ZDhhNTE5ZTA4ZDQ3NDNmMzc1NjkxZDJjY2VlYTVhMjRhNzE1NWJlMTRhMDU1ZGIxNmFkOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmNjE1MTk2ZGJmOGNjMDMzZjZjMDBhOWI2OTMwYWUzNzdmNDY2MDJlYzkzMzFkMWI0NmM1YjE2NjdmNWU0ZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiNzhmYmU3Y2EwN2M3NDFjMGYxYjVkYjJiY2IwNjkxZTExNjA0ZjgwM2FmYTVjZGUyNjA5YmVhYjQ1NTgzMzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_69de0142b8a042fe8f7f63a72cde6e9b",
+      "statement": "gecko drop deletes the database and, when the semantic index is enabled, removes its index file best-effort.",
+      "evidence": [
+        {
+          "resource": "repo://gecko-bin/src/main.rs#L664-L680",
+          "version": "repo-lines-v1:sha256:14ba5a89050732e70a8133ad22568a5d117f1d5b4f9e2a158a89c1c346c95168:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2Yzg2M2QyMDk0MmJkNjIwYTFiZThlODJkMmVmOGY1MWMxMjhmMjA4ZmE5ZmViMzI2YTdjNGE3OTkzZDVkNjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMTdkZjgwZjk3MGNjMjM1NGVjMGQwMmM5NGEyOWVmNzk5ODFkOWI5NmFlOGEzMmJhOTM2ODU1YmYxYTg2NzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkMzFlOTU5MzlhNzdiN2NiOTQ2OTRjNTA1NDEwYjQzN2I2ZWQ2ZmJlZWY5MWIwZWQ4ODNhMDdjMGM4Njg5OTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhM2QzMjRlZGE1YjdkZTBhN2U1Zjk0M2Q3NTg3M2YzYzFlNjIzOGQ1NWJmOTMzZWI2OGI4MWNjNDNiMDE3MDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1d0e60173cc343c5ad9ec1c5e68784b9",
+      "statement": "Release builds compile with the real-embedder feature for macOS (arm64, x86_64) and Linux x86_64 and package only the binary, without the model or TypeDB.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release.yml#L1-L90",
+          "version": "repo-lines-v1:sha256:2cd20063035b541faa27ee3b6162dc4f8197798526254f00ea39be960f75e9d8:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZWVmOTAzMGQwYzcwMjkwMTBjNDYzNTY4OWY1ODMyOGQxMDllNmE4NWVkMWE5MjQ1YjIwZjM5NTViN2RiMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlY2EyMzFhMzcyNmQwODQ2NGNmOWVlYzdiMmJiNjFkMWZlNGE5MTNiYzZiODU1ZmFiMDZhZWZjMWNhNjcyYWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdmYWU4NDQ4YzY5MThmYzNhNWExYTU4ZGRlNTMzM2VkMzE1NzUyZGQ5OTNjN2UyMDBmM2ZhMWFjNDBjNmVkNDgifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}

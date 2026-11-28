@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:1926ff1b576cf0261552b28fe93c18921a8da2a6377a40b012a352b56658bb92",
+  "claims": [
+    {
+      "id": "claim_e95769d9bb3a40f58f5c8969b6b8bd50",
+      "statement": "bind_mem_call strips run_id, actor, source and occurred_at from the sandbox payload and stamps the call with the host RunContext's values.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/mem_host.rs#L107-L152",
+          "version": "repo-lines-v1:sha256:79c140ee97765411373cc43dc39a4c4bb062580b42aa221e119cf5dbccad4eb8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmNTJkYTk1NjY5ODdhZThlZmYyMGY2NzgzOTZlMzA4Yjk3NmM1M2M4YmQ5OGZiMTFiNWQxYmMxZjlhYmNjMTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5MDg2NTk3NTQyY2I0ODQ0NTQ0YTA3NjZjYzVhNzEwOTljZTljZDcwNTliYzU2Y2FkNWM0Y2Q2YWM1YTEyMGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a1e7592e74c8454f8745d493f8e862ef",
+      "statement": "The host rejects a mem payload that is not a JSON object or contains a key outside the function's allowed set, before the writer runs.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/mem_host.rs#L154-L188",
+          "version": "repo-lines-v1:sha256:b7228670e265b969d9c439a71db229ae258e5ccf0b96e7cc3fa71c176412730e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU3MTNlNDY4YzY0ZmJmZTJjNTM2NmYwYjQ4ZWU4MjIyYjY3ZGM5OTFmZGMxZDZmNTVlNzViNmY1YmQyOTcwMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBhMjA3YjE2YWYxYzcxMjYwYTk1Zjc4Y2Q3YjNhNjdiZjc3ZDgxYmI5MGM3YmVmYmUwZjBjMTg3YzZlODRkYWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_800ac910fad14266921a83d07f94d538",
+      "statement": "mem.derive defaults its derivation method to llm-synthesis, and sandbox-drafted beliefs are private, owned by the run actor, with no sandbox-set entrenchment.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/mem_host.rs#L290-L330",
+          "version": "repo-lines-v1:sha256:b0d8744d96ac688d4e156faf57c7bf5a0c74f710ddf45b64ca51c798705788c3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhZmMxYjQ2NTU0MjAwZjQxNTdkZGI0MzkzZDg0ZTM0OGNiZjYwNzdiMzZlOGI4MDc2MDkyMDRkYmEyZWI2ZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIyMzI4MjkwM2ZkNWY4MzFhNDg3NTA0NGY0NGVkZGM3Y2NhNGJjYTc5ZDgyZjM4Nzk1Y2E1NDRjODMwMDFhM2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlNzE4YzU3NGM3MzVjNTdlYmIzMmY4YWRhYjI4NDg0NjU0NmY5OGQxNzhiYzllNjdiZjZkNTBkMWRjZTYzNWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_96e93da55f9d4fddb9756ba28ac4a6ee",
+      "statement": "epistemic_extension_callback intercepts ext 'mem' calls, routes recall to the reader bridge (erroring when none is wired) and other functions to the writer via block_in_place + block_on, and delegates other extensions to base.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/mem_host.rs#L464-L540",
+          "version": "repo-lines-v1:sha256:474a018ea2ed104c09ea5e825ddeffa1003f885bad0bb94cb5e723980181c65b:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlYzE3ZDI5NWE3Mzg1NGJkNTljYWNhYWQ5NTM5MmY0ZGNmZjU1ZTgyYzVmMzM1YzA4YmNlMjAyZWE2NTkyOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwOTNkY2UwMmZhM2U1YzBiOGMxYzg2YWM2N2U4NzYzZTNhMjQ5YWFhZDAxZjlhOGVkZTJkNjcyNzE1MGJkNzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxOWFmNjQ2NWU5ZDJmYzY2ZTRhNzcyNDBiOWY2OWIzOGYxMjk5MmU5NTcwZTJkYzgzMTBlMzAyODQyY2ZlYTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4NmUxYmU1MTE4ZmQ0ODgzNDYwN2ZlMjk2ZjVjNzhhNmQ3Y2NlNmU1YmU3ZmU1YTI0YjcyZWJjY2U0YmQ2NzgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9d42e4e303c74292a2317698de3efdee",
+      "statement": "mem.recall defaults max_chunks to 8 and treats a malformed as_of as an error, never falling back to present-state recall.",
+      "evidence": [
+        {
+          "resource": "repo://core/gecko-engine/src/sandbox/mem_host.rs#L420-L460",
+          "version": "repo-lines-v1:sha256:1ae7db0736e3e931d06e21f76f02dd70da2da63b124cd8c3d26fb02472204e90:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhM2VjMjMwMzMyZDY4MGZhZGMyMTIwZDExMTQ3YmQzYTU0YzM2MjA3NjVlZWM1YmZmZjJhYTlkM2Q0NGU2NzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMWU4YjYyZTMzYmM0ODQxYzg2YTUyYmJmZDQyNGFlNDFlMGJiZWE4MjQyMmQxMGUwZDIwYjlmMzA1ZmI0MGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5ZTc2MzU1Y2YxMTk5NDgwYzNmOTk4MzZiMTQ4NmM4NDFkODkxZmFhZDkwNGM2MDhlMDkzMDIyZDM3NTdhZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxOWFmNjQ2NWU5ZDJmYzY2ZTRhNzcyNDBiOWY2OWIzOGYxMjk5MmU5NTcwZTJkYzgzMTBlMzAyODQyY2ZlYTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a3173c0ee7634d54a66e4d2b37217adb",
+      "statement": "With retrieval provenance on, assert_belief correlates its evidence with this run's recorded retrievals and writes informs-synthesis edges atomically with the belief.",
+      "evidence": [
+        {
+          "resource": "repo://core/mem-gecko/src/writer/beliefs.rs#L60-L90",
+          "version": "repo-lines-v1:sha256:68ce684d88fcedeca51afb569df7fbf10acd2e170fce60acd8501556e0b0d501:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyMzFhNGFhNjA2NjQ1MjE1NjhlNTYwMGI1MDlmYzA0YjViYmM5NjI2MDc3YmFjZmQ5NTEyZWFmMDVjMTMxZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkNGZkOThmZDhiODhjMzI5NTAyZjE0Y2M4MzVmNTRjNTA2ZDhlZTM0YWU3MjZjODQwYzI0NmVjY2QxYWM5ZjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhMGE5YmIyM2Q3ZDhlZDFkNmUzZjY4ZDhlMTlhOWMxMDJhNzEyNWFjNGY1YWYxMGQwZTU4ODJlMjIwNGQzZmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjMWUxODVlYWIzNWRmOTZkMGQzOTgyNzI5MjA3ZGM4ZmVmMmExMThjYjc5NzE5ZTI5ZTgzMWU5NjI4ZWE0YWQifQ"
+        },
+        {
+          "resource": "repo://gecko-bin/tests/mem_recall_e2e_test.rs#L1-L20",
+          "version": "repo-lines-v1:sha256:e248aa4266ec411cc62b40bdf7c92c19b176889fe715ffbc272bf8515c0457f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliZDEzYzU5YmE2YTc5OTg5Nzk2MWU5YmUwNjQ3MDAyYjA1YjU2MWQ5ZDQ0OTRiNzllZjkxMDg1YTk1YjdhZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhNzM5MWQ4ZTkxN2I2NDRiN2FjYTFiMjNmOWFkZDFmNjI5ZmM3NWNlOTYwYzA2NmM3NjA5OGVmZjk4NWZkNGIifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-28T02:42:19.865Z"
+  }
+}
