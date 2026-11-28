@@ -341,3 +341,30 @@ async fn a_bundle_with_an_unsupported_engine_fails_to_sync() {
         "a refused parse created the database\n{output}"
     );
 }
+
+#[tokio::test]
+async fn sync_prints_provenance_warnings() {
+    let db = TestDb::new("sync_provenance_warnings");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bundle = tmp.path().join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(
+        bundle.join("page.md"),
+        "---\ntype: guide\ntitle: Page\nstale_after: soon\n---\n\nBody.\n",
+    )
+    .unwrap();
+    let out = gecko(tmp.path())
+        .arg("--database")
+        .arg(&db.name)
+        .arg("sync")
+        .arg(&bundle)
+        .output()
+        .await
+        .expect("spawn gecko sync");
+    let output = text(&out);
+    assert!(out.status.success(), "the sync failed\n{output}");
+    assert!(
+        output.contains("warning:") && output.contains("page.md") && output.contains("soon"),
+        "the warning is not printed\n{output}"
+    );
+}

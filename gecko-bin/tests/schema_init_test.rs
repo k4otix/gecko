@@ -1118,6 +1118,18 @@ async fn tightened_schema_applies_to_a_populated_database() {
         r.links_attempted >= 1 && r.citations_attempted >= 1,
         "{r:?}"
     );
+    // An edit re-syncs in place on the old schema: clearing a concept's content and
+    // the bundle's `okf-version` must not name a type the schema lacks.
+    std::fs::write(
+        okf.path().join("notes/b.md"),
+        "---\ntype: Note\ntitle: notes/b.md\n---\n\nEdited.\n",
+    )
+    .expect("edit a concept");
+    let notes = parse_bundle(okf.path()).expect("parse the edited OKF bundle");
+    let r = sync_bundle(&mut db, &notes, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("re-sync the edited OKF bundle on the old schema");
+    assert_eq!(r.concepts_updated, 1, "{r:?}");
 
     // ATT&CK with its post-sync writes, then a sensor file.
     let (attack_okf, rels) = cyber_gecko::stix::to_okf(&attack_with_malware()).expect("converts");

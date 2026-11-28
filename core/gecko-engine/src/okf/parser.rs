@@ -6,11 +6,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::linker::{extract_links, extract_program};
+use super::provenance::take_provenance;
 use super::types::{HierarchyEdge, OkfBundle, OkfConcept, SCRIPT_ENGINE_LANGS, ScriptEngine};
 use crate::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 
@@ -146,8 +146,11 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 }
 
 /// Parses a single OKF concept markdown file into an `OkfConcept`, extracting frontmatter,
-/// links, and code.
-pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept, ParseError> {
+/// links, and code, with a warning for each OKF v0.2 provenance value it could not read.
+pub fn parse_concept(
+    file_path: &Path,
+    bundle_root: &Path,
+) -> Result<(OkfConcept, Vec<String>), ParseError> {
     let raw_content = std::fs::read_to_string(file_path).map_err(|e| io_err(file_path, e))?;
 
     let file_hash = sha256_hex(raw_content.as_bytes());
@@ -188,7 +191,14 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     let resource_uri = extract_string(&mut metadata, "resource");
 
     let tags = extract_string_list(&mut metadata, "tags");
-    let timestamp = extract_timestamp(&mut metadata, "timestamp");
+    let mut warnings = Vec::new();
+    let provenance = take_provenance(
+        &mut metadata,
+        &file_path.display().to_string(),
+        &mut warnings,
+    );
+    let timestamp = provenance.timestamp;
+    let provenance = provenance.provenance;
 
     // GECKO-specific extension fields
     // A present `engine` must name a supported engine; it is never coerced or dropped.
@@ -223,13 +233,7 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     // Remaining keys become extra_metadata
     let extra_metadata: HashMap<String, String> = metadata
         .into_iter()
-        .map(|(k, v)| {
-            let val = match v {
-                serde_yaml::Value::String(s) => s,
-                other => serde_json::to_string(&other).unwrap_or_default(),
-            };
-            (k, val)
-        })
+        .map(|(k, v)| (k, kept_as_written(v)))
         .collect();
 
     let concept_id = file_to_concept_id(file_path, bundle_root);
@@ -246,25 +250,29 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     }
     let engine = engine.map(|(e, _)| e);
 
-    Ok(OkfConcept {
-        concept_id,
-        concept_type,
-        type_hint: None,
-        title,
-        description,
-        resource_uri,
-        tags,
-        timestamp,
-        body: body.to_string(),
-        program,
-        extra_metadata,
-        typed_attributes: Vec::new(),
-        file_hash,
-        source_path,
-        engine,
-        scopes,
-        timeout_ms,
-    })
+    Ok((
+        OkfConcept {
+            concept_id,
+            concept_type,
+            type_hint: None,
+            title,
+            description,
+            resource_uri,
+            tags,
+            timestamp,
+            body: body.to_string(),
+            program,
+            extra_metadata,
+            typed_attributes: Vec::new(),
+            file_hash,
+            source_path,
+            engine,
+            scopes,
+            timeout_ms,
+            provenance,
+        },
+        warnings,
+    ))
 }
 
 /// Recursively parses a directory tree into a complete `OkfBundle`, finding all OKF
@@ -284,6 +292,8 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
     let mut links = Vec::new();
     let mut citations = Vec::new();
     let mut hierarchy = Vec::new();
+    let mut warnings = Vec::new();
+    let okf_version = read_okf_version(&bundle_root, &mut warnings);
 
     // Collect and sort .md files for deterministic output
     let mut md_files: Vec<_> = walk_md_files(&bundle_root)?;
@@ -294,7 +304,8 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
             continue;
         }
 
-        let concept = parse_concept(file_path, &bundle_root)?;
+        let (concept, concept_warnings) = parse_concept(file_path, &bundle_root)?;
+        warnings.extend(concept_warnings);
 
         // Extract links and citations
         let (concept_links, concept_citations) = extract_links(&concept.body, &concept.concept_id);
@@ -355,6 +366,8 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
         links,
         citations,
         hierarchy,
+        okf_version,
+        warnings,
     })
 }
 
@@ -403,6 +416,104 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
     }
 }
 
+/// Reads the `okf_version` the bundle-root `index.md` declares (OKF §8, §12), the
+/// only frontmatter key an index file may carry. The file is matched by name as
+/// [`is_reserved_file`] matches it. A missing file, frontmatter or key gives `None`;
+/// a file that cannot be read, frontmatter that is not a YAML mapping, or a value that
+/// is neither a non-blank string nor a finite number gives `None` and a warning, never
+/// a failed parse.
+fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<String> {
+    let files = std::fs::read_dir(bundle_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    let index = pick_root_index(files)?;
+    let path = index.display();
+    let content = match std::fs::read_to_string(&index) {
+        Ok(content) => content,
+        Err(e) => {
+            warnings.push(format!(
+                "Bundle index '{path}' could not be read ({e}); its okf_version is not recorded"
+            ));
+            return None;
+        }
+    };
+    let yaml = split_frontmatter(&content).0?;
+    let value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(serde_yaml::Value::Mapping(mut m)) => m.remove("okf_version")?,
+        Ok(serde_yaml::Value::Null) => return None,
+        Ok(_) => {
+            warnings.push(format!(
+                "Bundle index '{path}' has frontmatter that is not a mapping; its \
+                 okf_version is not recorded"
+            ));
+            return None;
+        }
+        Err(_) => {
+            warnings.push(format!(
+                "Bundle index '{path}' has frontmatter that is not valid YAML; its \
+                 okf_version is not recorded"
+            ));
+            return None;
+        }
+    };
+    match &value {
+        serde_yaml::Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        serde_yaml::Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => {
+            Some(yaml_as_written(&value))
+        }
+        _ => {
+            warnings.push(format!(
+                "Bundle index '{path}' has an invalid 'okf_version' ({}); it is not recorded",
+                yaml_as_written(&value)
+            ));
+            None
+        }
+    }
+}
+
+/// Picks the bundle-root index file among the root's file paths: `index.md` exactly
+/// when present, otherwise the first, in byte order, whose name matches it ignoring
+/// case (as [`is_reserved_file`] does), so the choice never depends on directory order.
+fn pick_root_index(mut paths: Vec<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    paths.sort();
+    let name = |p: &std::path::PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    paths
+        .iter()
+        .position(|p| name(p).as_deref() == Some("index.md"))
+        .or_else(|| {
+            paths
+                .iter()
+                .position(|p| name(p).is_some_and(|n| n.eq_ignore_ascii_case("index.md")))
+        })
+        .map(|i| paths.swap_remove(i))
+}
+
+/// A frontmatter value as `metadata-json` keeps it: a string as is, anything else as
+/// JSON, or as YAML when JSON cannot hold it (a non-finite number, a non-string key).
+fn kept_as_written(v: serde_yaml::Value) -> String {
+    match v {
+        serde_yaml::Value::String(s) => s,
+        other if has_non_finite(&other) => yaml_as_written(&other),
+        other => serde_json::to_string(&other).unwrap_or_else(|_| yaml_as_written(&other)),
+    }
+}
+
+/// Whether `v` holds a NaN or infinite number, which JSON would turn into `null`.
+fn has_non_finite(v: &serde_yaml::Value) -> bool {
+    match v {
+        serde_yaml::Value::Number(n) => n.as_f64().is_some_and(|f| !f.is_finite()),
+        serde_yaml::Value::Sequence(seq) => seq.iter().any(has_non_finite),
+        serde_yaml::Value::Mapping(m) => m
+            .iter()
+            .any(|(k, v)| has_non_finite(k) || has_non_finite(v)),
+        serde_yaml::Value::Tagged(t) => has_non_finite(&t.value),
+        _ => false,
+    }
+}
+
 /// Recursively finds all `.md` files under a directory.
 fn walk_md_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, ParseError> {
     let mut results = Vec::new();
@@ -436,7 +547,7 @@ fn or_list(items: &[&str]) -> String {
 
 /// A frontmatter value shown as YAML, close to how the author wrote it (`.nan`,
 /// `null`, `5`), on one line.
-fn yaml_as_written(v: &serde_yaml::Value) -> String {
+pub(crate) fn yaml_as_written(v: &serde_yaml::Value) -> String {
     serde_yaml::to_string(v)
         .map(|s| s.trim().replace('\n', " "))
         .unwrap_or_else(|_| format!("{v:?}"))
@@ -465,22 +576,6 @@ fn extract_string_list(map: &mut HashMap<String, serde_yaml::Value>, key: &str) 
             _ => None,
         })
         .unwrap_or_default()
-}
-
-fn extract_timestamp(
-    map: &mut HashMap<String, serde_yaml::Value>,
-    key: &str,
-) -> Option<DateTime<Utc>> {
-    let val = map.remove(key)?;
-    match val {
-        serde_yaml::Value::String(s) => {
-            let normalized = s.replace('Z', "+00:00");
-            DateTime::parse_from_rfc3339(&normalized)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -613,7 +708,9 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
-        let concept = parse_concept(&dir.path().join("datasets/users.md"), dir.path()).unwrap();
+        let concept = parse_concept(&dir.path().join("datasets/users.md"), dir.path())
+            .unwrap()
+            .0;
 
         assert_eq!(concept.concept_id, "datasets/users");
         assert_eq!(concept.concept_type, "Dataset");
@@ -643,7 +740,9 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_minimal_bundle(dir.path());
 
-        let concept = parse_concept(&dir.path().join("simple.md"), dir.path()).unwrap();
+        let concept = parse_concept(&dir.path().join("simple.md"), dir.path())
+            .unwrap()
+            .0;
 
         assert_eq!(concept.concept_type, "Note");
         assert!(concept.title.is_none());
@@ -671,7 +770,9 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_test_bundle(dir.path());
 
-        let concept = parse_concept(&dir.path().join("metrics/revenue.md"), dir.path()).unwrap();
+        let concept = parse_concept(&dir.path().join("metrics/revenue.md"), dir.path())
+            .unwrap()
+            .0;
 
         assert!(concept.engine.is_none());
         assert!(concept.program.is_none());
@@ -712,7 +813,9 @@ const b = a + 1;
         )
         .unwrap();
 
-        let concept = parse_concept(&dir.path().join("calc.md"), dir.path()).unwrap();
+        let concept = parse_concept(&dir.path().join("calc.md"), dir.path())
+            .unwrap()
+            .0;
 
         assert_eq!(concept.engine, Some(ScriptEngine::QuickJs));
         let program = concept.program.expect("expected an executable program");
@@ -744,7 +847,9 @@ Playbook body.
         )
         .unwrap();
 
-        let concept = parse_concept(&dir.path().join("playbook.md"), dir.path()).unwrap();
+        let concept = parse_concept(&dir.path().join("playbook.md"), dir.path())
+            .unwrap()
+            .0;
 
         assert_eq!(concept.engine, Some(ScriptEngine::QuickJs));
         assert_eq!(concept.extra_metadata["consumes"], r#"["alert","asset"]"#);
@@ -764,7 +869,7 @@ Playbook body.
             format!("---\ntype: playbook\n{frontmatter}\n---\n\n{body}"),
         )
         .unwrap();
-        parse_concept(&dir.path().join("playbook.md"), dir.path())
+        parse_concept(&dir.path().join("playbook.md"), dir.path()).map(|(c, _)| c)
     }
 
     const JS_FENCE: &str = "```js\nconsole.log(1)\n```\n";
@@ -889,7 +994,7 @@ Playbook body.
             format!("---\ntype: playbook\nengine: quickjs\n{timeout_line}\n---\n\n```js\n1\n```\n"),
         )
         .unwrap();
-        parse_concept(&dir.path().join("playbook.md"), dir.path())
+        parse_concept(&dir.path().join("playbook.md"), dir.path()).map(|(c, _)| c)
     }
 
     #[test]
@@ -1054,5 +1159,413 @@ Playbook body.
 
         let result = parse_concept(&file_path, dir.path());
         assert!(matches!(result, Err(ParseError::MissingType { path: _ })));
+    }
+
+    // -- OKF v0.2 provenance --
+
+    use super::super::types::{OkfProvenance, TrustTier, Verification};
+    use chrono::{DateTime, Utc};
+
+    const AT: &str = "2026-11-28T02:42:19.865Z";
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    /// Parses a concept with `frontmatter` lines, returning it with its warnings.
+    fn parse_warned(frontmatter: &str) -> (OkfConcept, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("page.md"),
+            format!("---\ntype: guide\n{frontmatter}\n---\n\nBody.\n"),
+        )
+        .unwrap();
+        parse_concept(&dir.path().join("page.md"), dir.path()).unwrap()
+    }
+
+    /// Asserts exactly one warning, naming the file, `key` and `value`.
+    fn assert_one_warning(warnings: &[String], key: &str, value: &str) {
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let w = &warnings[0];
+        assert!(
+            w.contains("page.md") && w.contains(&format!("'{key}'")) && w.contains(value),
+            "{w}"
+        );
+    }
+
+    #[test]
+    fn generated_fills_timestamp_and_generated_by() {
+        let (c, w) = parse_warned(&format!(
+            "generated: {{ by: openwiki/0.9.0, at: \"{AT}\" }}"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.timestamp, Some(utc(AT)));
+        assert_eq!(c.provenance.generated_by.as_deref(), Some("openwiki/0.9.0"));
+        assert!(!c.extra_metadata.contains_key("generated"));
+    }
+
+    #[test]
+    fn an_unconventional_actor_is_accepted() {
+        let (c, w) = parse_warned(&format!("generated: {{ by: claude-code, at: {AT} }}"));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.generated_by.as_deref(), Some("claude-code"));
+    }
+
+    #[test]
+    fn generated_wins_over_a_legacy_timestamp() {
+        let b = "2020-01-01T00:00:00Z";
+        let (c, w) = parse_warned(&format!(
+            "generated: {{ by: x/1, at: {AT} }}\ntimestamp: {b}"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.timestamp, Some(utc(AT)));
+        assert_eq!(
+            c.extra_metadata.get("timestamp").map(String::as_str),
+            Some(b)
+        );
+    }
+
+    #[test]
+    fn a_legacy_timestamp_is_read_without_generated() {
+        let (c, w) = parse_warned(&format!("timestamp: {AT}"));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.timestamp, Some(utc(AT)));
+        assert!(!c.extra_metadata.contains_key("timestamp"));
+    }
+
+    #[test]
+    fn a_legacy_timestamp_is_read_when_generated_at_is_bad() {
+        let (c, w) = parse_warned(&format!(
+            "generated: {{ by: x/1, at: soon }}\ntimestamp: {AT}"
+        ));
+        assert_one_warning(&w, "generated.at", "soon");
+        assert_eq!(c.timestamp, Some(utc(AT)));
+        assert_eq!(c.provenance.generated_by.as_deref(), Some("x/1"));
+        assert!(!c.extra_metadata.contains_key("timestamp"));
+        assert!(c.extra_metadata.contains_key("generated"));
+    }
+
+    #[test]
+    fn generated_without_by_keeps_its_at() {
+        let (c, w) = parse_warned(&format!("generated: {{ at: {AT} }}"));
+        assert_one_warning(&w, "generated.by", "at");
+        assert_eq!(c.timestamp, Some(utc(AT)));
+        assert_eq!(c.provenance.generated_by, None);
+        assert!(c.extra_metadata.contains_key("generated"));
+    }
+
+    #[test]
+    fn an_unknown_generated_subkey_is_kept_without_warning() {
+        let (c, w) = parse_warned(&format!("generated: {{ by: x/1, at: {AT}, model: m }}"));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.timestamp, Some(utc(AT)));
+        assert_eq!(c.provenance.generated_by.as_deref(), Some("x/1"));
+        assert!(c.extra_metadata["generated"].contains("model"));
+    }
+
+    #[test]
+    fn an_unknown_verified_subkey_is_kept_without_warning() {
+        let (c, w) = parse_warned(&format!("verified: [{{ by: a/1, at: {AT}, note: n }}]"));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.verifications.len(), 1);
+        assert!(c.extra_metadata.contains_key("verified"));
+    }
+
+    #[test]
+    fn a_malformed_timestamp_warns_and_is_kept() {
+        for (line, key, value) in [
+            ("timestamp: yesterday", "timestamp", "yesterday"),
+            ("stale_after: next tuesday", "stale_after", "next tuesday"),
+            ("stale_after: \"2026-06-01\"", "stale_after", "2026-06-01"),
+            (
+                "stale_after: \"2026-06-01T00:00:00\"",
+                "stale_after",
+                "2026-06-01T00:00:00",
+            ),
+            // ISO 8601 without seconds: only RFC 3339 forms are typed.
+            (
+                "stale_after: 2026-06-30T14:00Z",
+                "stale_after",
+                "2026-06-30T14:00Z",
+            ),
+        ] {
+            let (c, w) = parse_warned(line);
+            assert_one_warning(&w, key, value);
+            assert_eq!(c.timestamp, None, "{line}");
+            assert_eq!(c.provenance.stale_after, None, "{line}");
+            assert!(c.extra_metadata.contains_key(key), "{line}");
+        }
+    }
+
+    #[test]
+    fn unquoted_and_quoted_timestamps_read_alike() {
+        let (a, _) = parse_warned("stale_after: 2026-06-01T00:00:00Z");
+        let (b, _) = parse_warned("stale_after: \"2026-06-01T00:00:00Z\"");
+        assert_eq!(a.provenance.stale_after, Some(utc("2026-06-01T00:00:00Z")));
+        assert_eq!(a.provenance.stale_after, b.provenance.stale_after);
+        assert!(!a.extra_metadata.contains_key("stale_after"));
+    }
+
+    #[test]
+    fn an_offset_timestamp_is_the_same_instant() {
+        let (c, w) = parse_warned("stale_after: 2026-06-01T09:00:00+09:00");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.stale_after, Some(utc("2026-06-01T00:00:00Z")));
+    }
+
+    fn tier(verified: &str) -> Option<TrustTier> {
+        parse_warned(verified).0.provenance.trust_tier
+    }
+
+    #[test]
+    fn trust_tiers_follow_the_verifiers() {
+        assert_eq!(tier("title: none"), None);
+        assert_eq!(tier("verified: []"), Some(TrustTier::Unverified));
+        let (bare, w) = parse_warned(&format!("verified: {{ by: openwiki/0.9.0, at: {AT} }}"));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(
+            bare.provenance.trust_tier,
+            Some(TrustTier::MachineConfirmed)
+        );
+        assert_eq!(
+            bare.provenance.verifications,
+            [Verification {
+                by: "openwiki/0.9.0".into(),
+                at: utc(AT)
+            }]
+        );
+        assert_eq!(
+            tier(&format!(
+                "verified: [{{ by: a/1, at: {AT} }}, {{ by: human:alice, at: {AT} }}]"
+            )),
+            Some(TrustTier::HumanReviewed)
+        );
+        for by in ["HUMAN:alice", "\"human:\"", "\"human:  \""] {
+            assert_eq!(
+                tier(&format!("verified: [{{ by: {by}, at: {AT} }}]")),
+                Some(TrustTier::MachineConfirmed),
+                "{by}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_verified_writes_no_tier() {
+        let (c, w) = parse_warned("verified: 5");
+        assert_one_warning(&w, "verified", "5");
+        assert_eq!(c.provenance.trust_tier, None);
+        assert!(c.provenance.verifications.is_empty());
+        assert!(c.extra_metadata.contains_key("verified"));
+    }
+
+    #[test]
+    fn a_bad_verified_entry_is_skipped() {
+        let (c, w) = parse_warned(&format!(
+            "verified: [{{ by: a/1, at: {AT} }}, {{ by: b/1 }}]"
+        ));
+        assert_one_warning(&w, "verified[1]", "b/1");
+        assert_eq!(c.provenance.verifications.len(), 1);
+        assert_eq!(c.provenance.trust_tier, Some(TrustTier::MachineConfirmed));
+        assert!(c.extra_metadata.contains_key("verified"));
+
+        let (c, w) = parse_warned("verified: [{ by: b/1 }]");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(c.provenance.trust_tier, None);
+    }
+
+    #[test]
+    fn a_duplicate_verification_event_is_written_once() {
+        let (c, w) = parse_warned(&format!(
+            "verified: [{{ by: a/1, at: {AT} }}, {{ by: a/1, at: {AT} }}]"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.verifications.len(), 1);
+    }
+
+    #[test]
+    fn status_is_stored_as_written() {
+        let (c, w) = parse_warned("status: published");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.status.as_deref(), Some("published"));
+        assert!(!c.extra_metadata.contains_key("status"));
+
+        let (c, w) = parse_warned("status: 3");
+        assert_one_warning(&w, "status", "3");
+        assert_eq!(c.provenance.status, None);
+        assert!(c.extra_metadata.contains_key("status"));
+    }
+
+    #[test]
+    fn blank_strings_are_malformed() {
+        let (c, w) = parse_warned("status: \"  \"");
+        assert_one_warning(&w, "status", "'  '");
+        assert_eq!(c.provenance.status, None);
+
+        let (c, w) = parse_warned(&format!("verified: [{{ by: \"  \", at: {AT} }}]"));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("'verified[0]'"), "{w:?}");
+        assert_eq!(c.provenance.trust_tier, None);
+    }
+
+    #[test]
+    fn a_v01_concept_has_no_provenance() {
+        let (c, w) = parse_warned("title: Plain\ntags: [a]");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance, OkfProvenance::default());
+        assert_eq!(c.timestamp, None);
+    }
+
+    #[test]
+    fn parse_bundle_collects_warnings_in_file_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["b.md", "a.md"] {
+            fs::write(
+                dir.path().join(name),
+                format!("---\ntype: guide\nstale_after: bad-{name}\n---\n"),
+            )
+            .unwrap();
+        }
+        let bundle = parse_bundle(dir.path()).unwrap();
+        assert_eq!(bundle.warnings.len(), 2, "{:?}", bundle.warnings);
+        assert!(
+            bundle.warnings[0].contains("bad-a.md"),
+            "{:?}",
+            bundle.warnings
+        );
+        assert!(
+            bundle.warnings[1].contains("bad-b.md"),
+            "{:?}",
+            bundle.warnings
+        );
+    }
+
+    /// Parses a one-concept bundle whose root `index.md` (when given) holds `index`.
+    fn bundle_with_index(index: Option<&str>) -> OkfBundle {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("page.md"), "---\ntype: guide\n---\n").unwrap();
+        if let Some(index) = index {
+            fs::write(dir.path().join("index.md"), index).unwrap();
+        }
+        parse_bundle(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn okf_version_is_read_from_the_root_index() {
+        for (line, version) in [
+            ("okf_version: \"0.2\"", "0.2"),
+            ("okf_version: 0.2", "0.2"),
+            ("okf_version: \"9.9\"", "9.9"),
+        ] {
+            let b = bundle_with_index(Some(&format!("---\n{line}\n---\n\n# Files\n")));
+            assert_eq!(b.okf_version.as_deref(), Some(version), "{line}");
+            assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Index.md"),
+            "---\nokf_version: \"0.2\"\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_bundle(dir.path()).unwrap().okf_version.as_deref(),
+            Some("0.2")
+        );
+    }
+
+    #[test]
+    fn a_missing_or_keyless_root_index_records_no_version() {
+        for index in [None, Some("# Files\n"), Some("---\ntitle: x\n---\n")] {
+            let b = bundle_with_index(index);
+            assert_eq!(b.okf_version, None, "{index:?}");
+            assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+        }
+    }
+
+    #[test]
+    fn an_invalid_okf_version_warns() {
+        for (line, shown) in [
+            ("okf_version: null", "null"),
+            ("okf_version:", "null"),
+            ("okf_version: \"\"", "''"),
+            ("okf_version: true", "true"),
+            ("okf_version: [0.2]", "0.2"),
+            ("okf_version: .nan", ".nan"),
+            ("okf_version: .inf", ".inf"),
+        ] {
+            let b = bundle_with_index(Some(&format!("---\n{line}\n---\n")));
+            assert_eq!(b.okf_version, None, "{line}");
+            assert_eq!(b.warnings.len(), 1, "{line}: {:?}", b.warnings);
+            let w = &b.warnings[0];
+            assert!(
+                w.contains("index.md") && w.contains("'okf_version'") && w.contains(shown),
+                "{w}"
+            );
+        }
+        for (bad, says) in [
+            ("---\nokf_version: [\n---\n", "not valid YAML"),
+            ("---\njust a scalar\n---\n", "not a mapping"),
+        ] {
+            let b = bundle_with_index(Some(bad));
+            assert_eq!(b.okf_version, None);
+            assert_eq!(b.warnings.len(), 1, "{bad:?}: {:?}", b.warnings);
+            assert!(b.warnings[0].contains(says), "{:?}", b.warnings);
+        }
+    }
+
+    #[test]
+    fn a_subdirectory_index_version_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(
+            dir.path().join("sub/index.md"),
+            "---\nokf_version: \"0.2\"\n---\n",
+        )
+        .unwrap();
+        let b = parse_bundle(dir.path()).unwrap();
+        assert_eq!(b.okf_version, None);
+        assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+    }
+
+    #[test]
+    fn a_kept_value_without_a_json_form_is_kept_as_yaml() {
+        let (c, w) = parse_warned("status: .nan");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(c.extra_metadata["status"], ".nan");
+
+        let (c, _) = parse_warned("generated: { by: x/1, ? [a, b] : c }");
+        let kept = &c.extra_metadata["generated"];
+        assert!(
+            kept.contains("x/1") && kept.contains('a') && kept.contains('c'),
+            "{kept:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_root_index_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("index.md"), [0xff, 0xfe, 0x00]).unwrap();
+        let b = parse_bundle(dir.path()).unwrap();
+        assert_eq!(b.okf_version, None);
+        assert_eq!(b.warnings.len(), 1, "{:?}", b.warnings);
+        assert!(
+            b.warnings[0].contains("could not be read"),
+            "{:?}",
+            b.warnings
+        );
+    }
+
+    #[test]
+    fn the_exact_index_name_is_preferred() {
+        let names = |ns: &[&str]| ns.iter().map(std::path::PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(
+            pick_root_index(names(&["Index.md", "index.md", "INDEX.md"])),
+            Some("index.md".into())
+        );
+        assert_eq!(
+            pick_root_index(names(&["Index.md", "INDEX.md", "notes.md"])),
+            Some("INDEX.md".into()),
+            "without the exact name, the first in byte order"
+        );
+        assert_eq!(pick_root_index(names(&["notes.md"])), None);
     }
 }

@@ -499,6 +499,7 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
             engine: None,
             scopes: Vec::new(),
             timeout_ms: None,
+            provenance: Default::default(),
             file_hash,
             extra_metadata,
             typed_attributes: typed,
@@ -602,6 +603,8 @@ pub fn to_okf(bundle_json: &str) -> Result<(OkfBundle, StixRelations), String> {
             links,
             citations: Vec::new(),
             hierarchy: Vec::new(),
+            okf_version: None,
+            warnings: Vec::new(),
         },
         StixRelations {
             typed: typed_rels,

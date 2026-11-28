@@ -152,6 +152,28 @@ proven through the real sandbox against live TypeDB.
   documentation no longer syncs until the file is fixed. A concept with no `engine` key is
   documentation, as before.
 
+## OKF v0.2 frontmatter
+
+- **A malformed v0.2 provenance value is warned about, not refused.** `generated`,
+  `timestamp`, `verified`, `status` and `stale_after` follow OKF §11's soft guidance: a value
+  the parser can't read (a date without a time, `stale_after: next tuesday`, `verified: 5`)
+  gets no typed attribute, stays in `metadata-json` as written, and `gecko sync` prints a
+  `warning:` line naming the file, key and value. A malformed `verified` writes no
+  `trust-tier`. `engine`, `timeout-ms` and `scopes` still fail the sync.
+- **A file synced before v0.2 support keeps its old attributes** until its content changes.
+  Change detection hashes the file's content, so a re-sync skips an unchanged file and never
+  writes its `generated-by`, `trust-tier`, `okf-status`, `stale-after` or `verification`
+  relations. Editing the file fixes it. A bundle's `okf-version` is rewritten on every sync.
+- **Only RFC 3339 times are typed.** OKF §5 allows any ISO 8601 datetime with an explicit
+  offset; GECKO types those with seconds and a full offset (`2026-06-30T14:00:00Z`,
+  `…+09:00`). Other forms, such as `2026-06-30T14:00Z` or a `+09` offset, are warned about
+  and kept in `metadata-json` as written.
+- **Quote `okf_version`.** YAML reads an unquoted `okf_version: 0.10` as the number `0.1`,
+  and that is what is stored.
+- **Absence is not stored.** A concept with no `verified` has no `trust-tier` (OKF: unverified),
+  and one with no `status` has no `okf-status` (OKF: stable). Staleness is
+  `stale-after <= now`, computed by the reader; nothing acts on it, nor on `status`.
+
 ## Semantic index files
 
 The index is one file per database, `<dir>/<database>.hnsw`, where `dir` is

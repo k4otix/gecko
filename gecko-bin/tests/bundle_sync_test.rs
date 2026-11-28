@@ -1346,3 +1346,232 @@ async fn an_out_of_range_timeout_is_refused_before_writing() {
         "nothing was written"
     );
 }
+
+// -- OKF v0.2 provenance --
+
+const V02_AT: &str = "2026-11-28T02:42:19Z";
+
+/// Writes the concept `rel` (a bundle-relative path) with `frontmatter` lines.
+fn write_concept_with(dir: &Path, rel: &str, frontmatter: &str) {
+    let path = dir.join(rel);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        format!("---\ntype: guide\n{frontmatter}\n---\n\nBody.\n"),
+    )
+    .unwrap();
+}
+
+async fn sync_dir(db: &mut TypeDbRouter, dir: &Path) {
+    let bundle = parse_bundle(dir).expect("parse");
+    sync_bundle(db, &bundle, &[], BELIEF_TIER_ROOT)
+        .await
+        .expect("sync");
+}
+
+#[tokio::test]
+async fn provenance_attributes_round_trip() {
+    let test_db = TestDb::new("gecko_test_sync_provenance");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concept_with(
+        dir.path(),
+        "page.md",
+        &format!(
+            "generated: {{ by: openwiki/0.9.0, at: {V02_AT} }}\nstatus: draft\n\
+             stale_after: 2027-01-01T00:00:00Z\nverified: {{ by: human:alice, at: {V02_AT} }}"
+        ),
+    );
+    sync_dir(&mut db, dir.path()).await;
+    for (query, what) in [
+        (
+            r#"match $c isa concept, has generated-by "openwiki/0.9.0";"#,
+            "generated-by",
+        ),
+        (
+            "match $c isa concept, has timestamp 2026-11-28T02:42:19;",
+            "timestamp",
+        ),
+        (
+            r#"match $c isa concept, has okf-status "draft";"#,
+            "okf-status",
+        ),
+        (
+            "match $c isa concept, has stale-after 2027-01-01T00:00:00;",
+            "stale-after",
+        ),
+        (
+            r#"match $c isa concept, has trust-tier "human-reviewed";"#,
+            "trust-tier",
+        ),
+    ] {
+        assert_eq!(count(&mut db, query).await, 1, "{what}");
+    }
+
+    write_concept_with(dir.path(), "page.md", "title: Plain");
+    sync_dir(&mut db, dir.path()).await;
+    for attr in [
+        "generated-by",
+        "timestamp",
+        "okf-status",
+        "stale-after",
+        "trust-tier",
+    ] {
+        assert_eq!(
+            count(&mut db, &format!("match $c isa concept, has {attr} $v;")).await,
+            0,
+            "{attr} survives the edit that removed it"
+        );
+    }
+    assert_eq!(count(&mut db, "match $v isa verification;").await, 0);
+}
+
+#[tokio::test]
+async fn verification_events_round_trip() {
+    let test_db = TestDb::new("gecko_test_sync_verification");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    let event = |by: &str, at: &str| format!("{{ by: {by}, at: {at} }}");
+    write_concept_with(
+        dir.path(),
+        "page.md",
+        &format!(
+            "verified: [{}, {}, {}]",
+            event("a/1", "2026-01-01T00:00:00Z"),
+            event("b/2", "2026-02-01T00:00:00Z"),
+            event("a/1", "2026-01-01T00:00:00Z"),
+        ),
+    );
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(count(&mut db, "match $v isa verification;").await, 2);
+    for (by, at) in [
+        ("a/1", "2026-01-01T00:00:00"),
+        ("b/2", "2026-02-01T00:00:00"),
+    ] {
+        assert_eq!(
+            count(
+                &mut db,
+                &format!(
+                    r#"match $c isa concept, has concept-id "page";
+                       $v isa verification, links (verified-concept: $c),
+                          has verified-by "{by}", has verified-at {at};"#
+                )
+            )
+            .await,
+            1,
+            "{by} keeps its own time"
+        );
+    }
+
+    write_concept_with(
+        dir.path(),
+        "page.md",
+        &format!("verified: [{}]", event("c/3", "2026-03-01T00:00:00Z")),
+    );
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(count(&mut db, "match $v isa verification;").await, 1);
+    assert_eq!(
+        count(
+            &mut db,
+            r#"match $v isa verification, has verified-by "c/3";"#
+        )
+        .await,
+        1,
+        "the edit replaces the events"
+    );
+}
+
+#[tokio::test]
+async fn gc_and_retirement_leave_no_verification() {
+    let test_db = TestDb::new("gecko_test_sync_verification_gc");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    let verified = format!("verified: {{ by: a/1, at: {V02_AT} }}");
+    write_concept_with(dir.path(), "gone.md", &verified);
+    write_concept_with(dir.path(), "referenced.md", &verified);
+    write_concept_with(dir.path(), "stays.md", "title: Stays");
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(count(&mut db, "match $v isa verification;").await, 2);
+
+    claim_with_belief(&mut db, "mem/bel/ref", "referenced").await;
+    fs::remove_file(dir.path().join("gone.md")).unwrap();
+    fs::remove_file(dir.path().join("referenced.md")).unwrap();
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(retired_at(&mut db, "referenced").await.len(), 1, "retired");
+    assert_eq!(
+        count(&mut db, r#"match $c isa concept, has concept-id "gone";"#).await,
+        0,
+        "deleted"
+    );
+    assert_eq!(count(&mut db, "match $v isa verification;").await, 0);
+}
+
+/// The number of bundles whose `okf-version` is `v`.
+async fn okf_versions(db: &mut TypeDbRouter, v: &str) -> usize {
+    count(
+        db,
+        &format!(r#"match $b isa bundle, has okf-version "{v}";"#),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn okf_version_follows_the_root_index() {
+    let test_db = TestDb::new("gecko_test_sync_okf_version");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concept_with(dir.path(), "page.md", "title: Page");
+
+    fs::write(
+        dir.path().join("index.md"),
+        "---\nokf_version: \"0.2\"\n---\n",
+    )
+    .unwrap();
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(okf_versions(&mut db, "0.2").await, 1);
+
+    fs::write(
+        dir.path().join("index.md"),
+        "---\nokf_version: \"9.9\"\n---\n",
+    )
+    .unwrap();
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(
+        okf_versions(&mut db, "9.9").await,
+        1,
+        "an index-only change re-syncs it"
+    );
+    assert_eq!(
+        count(&mut db, "match $b isa bundle, has okf-version $v;").await,
+        1
+    );
+
+    fs::write(dir.path().join("index.md"), "# Files\n").unwrap();
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(
+        count(&mut db, "match $b isa bundle, has okf-version $v;").await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_v01_bundle_gains_no_provenance_attributes() {
+    let test_db = TestDb::new("gecko_test_sync_v01_provenance");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    create_test_bundle(dir.path());
+    sync_dir(&mut db, dir.path()).await;
+    for query in [
+        "match $c isa concept, has trust-tier $v;",
+        "match $c isa concept, has generated-by $v;",
+        "match $v isa verification;",
+        "match $b isa bundle, has okf-version $v;",
+    ] {
+        assert_eq!(count(&mut db, query).await, 0, "{query}");
+    }
+}

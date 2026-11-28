@@ -56,10 +56,25 @@ define
     owns title @card(0..1),
     owns description @card(0..1),
     owns synced-at @card(0..1),
+    owns okf-version @card(0..1),
     plays containment:container;
 
   attribute engine value string;           # execution engine for code-blocks
   attribute scope value string;            # granted host-capability scope, e.g. "cyber-gecko:isolate"
+  # OKF v0.2 provenance, trust and lifecycle (OKF §5.2-§5.5, §8).
+  attribute generated-by @doc("The actor that produced a concept's current content (OKF generated.by), as written."), value string;
+  attribute trust-tier @doc("A concept's OKF trust tier, derived from its verified actors; absence means unverified."), value string @values("unverified", "machine-confirmed", "human-reviewed");
+  attribute okf-status @doc("A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable."), value string;
+  attribute stale-after @doc("The instant from which a concept's content is stale (OKF stale_after)."), value datetime;
+  attribute verified-by @doc("The actor that confirmed a concept in one verification event."), value string;
+  attribute verified-at @doc("When one verification event confirmed a concept."), value datetime;
+  attribute okf-version @doc("The OKF version a bundle's root index declares, as written."), value string;
+
+  relation verification @doc("One OKF verified event: an actor confirming a concept at an instant."),
+    relates verified-concept @card(1) @doc("The concept the event confirms."),
+    owns verified-by @card(1),
+    owns verified-at @card(1);
+
   attribute timeout-ms @doc("The longest a concept's code block may run, in milliseconds; gecko run refuses a value over its ceiling."), value integer @range(1..);
 
   entity concept sub okf-concept @doc("An ingested OKF document node: its markdown body, extracted code blocks, tags, and the engine and host-capability scopes that gate code-block execution."),
@@ -76,7 +91,12 @@ define
     owns file-hash @card(0..1),
     owns retired-at @card(0..1),
     owns timeout-ms @card(0..1),
+    owns generated-by @card(0..1),
+    owns trust-tier @card(0..1),
+    owns okf-status @card(0..1),
+    owns stale-after @card(0..1),
     plays containment:member,
+    plays verification:verified-concept,
     plays hierarchy:parent,
     plays hierarchy:child,
     plays okf-link:source,
