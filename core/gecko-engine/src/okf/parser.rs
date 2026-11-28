@@ -136,7 +136,9 @@ enum Frontmatter<'a> {
     None,
     /// The first line opens frontmatter that no later line closes.
     Unclosed,
-    /// The first line is blank and the first non-blank line is a delimiter.
+    /// The first non-blank line looks like a delimiter but the first line is not one:
+    /// a delimiter after blank lines, or a dash line (`--- # x`, `----`, ` ---`) that a
+    /// later dash line closes.
     NearMiss,
     /// A frontmatter block and the body after it.
     Block { yaml: &'a str, body: &'a str },
@@ -164,11 +166,15 @@ fn split_frontmatter(content: &str) -> Frontmatter<'_> {
         return Frontmatter::None;
     };
     if !is_delimiter(first) {
-        let near_miss = first.trim().is_empty()
-            && content
-                .split_inclusive('\n')
-                .find(|l| !l.trim().is_empty())
-                .is_some_and(is_delimiter);
+        // Like a delimiter but not one: a dash line after blank lines, indented, or
+        // with more on it, either alone or closed by a later dash line.
+        let dashes = |line: &str| line.trim().starts_with("---");
+        let mut rest = content
+            .split_inclusive('\n')
+            .skip_while(|l| l.trim().is_empty());
+        let near_miss = rest
+            .next()
+            .is_some_and(|opener| dashes(opener) && (is_delimiter(opener) || rest.any(dashes)));
         return if near_miss {
             Frontmatter::NearMiss
         } else {
@@ -192,15 +198,18 @@ fn split_frontmatter(content: &str) -> Frontmatter<'_> {
 /// is a concept, returned with its frontmatter, links and code, and a warning for each
 /// OKF value it could not read; any other file is not a concept (OKF §3.2).
 pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile, ParseError> {
-    let raw_content = std::fs::read_to_string(file_path).map_err(|e| io_err(file_path, e))?;
-
-    let file_hash = concept_file_hash(raw_content.as_bytes());
+    let bytes = std::fs::read(file_path).map_err(|e| io_err(file_path, e))?;
+    let file_hash = concept_file_hash(&bytes);
 
     let path = file_path.display();
     let not_a_concept = |why: &str| {
         Ok(ParsedFile::NotAConcept(Some(format!(
             "Markdown file '{path}' {why}; it is not a concept and is not synced"
         ))))
+    };
+    // A concept is a UTF-8 Markdown file (OKF §4).
+    let Ok(raw_content) = String::from_utf8(bytes) else {
+        return not_a_concept("is not valid UTF-8");
     };
     let (yaml, body) = match split_frontmatter(&raw_content) {
         Frontmatter::Block { yaml, body } => (yaml, body),
@@ -210,8 +219,8 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile,
         }
         Frontmatter::NearMiss => {
             return not_a_concept(
-                "looks like it opens frontmatter after blank lines, but frontmatter must \
-                 start on the first line",
+                "looks like it opens frontmatter, but frontmatter must open with a first \
+                 line that is exactly '---'",
             );
         }
     };
@@ -790,6 +799,18 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_is_not_utf8_is_not_a_concept() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("README.md"), b"# Caf\xe9\n").unwrap();
+        fs::write(dir.path().join("a.md"), "---\ntype: guide\n---\n").unwrap();
+        let bundle = parse_bundle(dir.path()).unwrap();
+        assert_eq!(ids(&bundle), ["a"]);
+        assert_eq!(bundle.warnings.len(), 1, "{:?}", bundle.warnings);
+        let w = &bundle.warnings[0];
+        assert!(w.contains("README.md") && w.contains("UTF-8"), "{w}");
+    }
+
+    #[test]
     fn a_file_without_frontmatter_is_skipped_quietly() {
         assert!(is_quiet_skip("# Readme\n\nText.\n"));
     }
@@ -821,8 +842,7 @@ mod tests {
 
     #[test]
     fn delimiters_are_exact_lines() {
-        assert!(is_quiet_skip("----\ntype: x\n----\n"));
-        assert!(is_quiet_skip("--- x\ntype: x\n---\n"));
+        assert!(is_quiet_skip("----\n\nA rule opens this README.\n"));
         let w = skip_warning("---\ntype: guide\n----\n");
         assert!(w.contains("never closes"), "{w}");
 
@@ -848,7 +868,15 @@ mod tests {
 
     #[test]
     fn a_near_miss_opener_is_skipped_with_a_warning() {
-        for content in ["\n---\ntype: guide\n---\n", "  \n\n---\ntype: guide\n---\n"] {
+        // Each of these opened frontmatter under the previous reader, or nearly does.
+        for content in [
+            "\n---\ntype: guide\n---\n",
+            "  \n\n---\ntype: guide\n---\n",
+            "--- # comment\ntype: guide\n---\n",
+            "----\ntype: x\n----\n",
+            "--- x\ntype: x\n---\n",
+            " ---\ntype: guide\n---\n",
+        ] {
             let w = skip_warning(content);
             assert!(
                 w.contains("page.md") && w.contains("first line"),

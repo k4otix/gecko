@@ -178,9 +178,10 @@ whatever `okf_version` a bundle declares. Design:
   their own way and are not rewritten. A bundle's `okf-version` is rewritten on every sync.
 - **Which `.md` files are concepts.** A file needs frontmatter with a non-empty `type` (§3.2).
   - One without frontmatter (a `README.md`) is skipped quietly.
-  - One without a `type`, or with an unclosed `---`, or with `---` after blank lines, is
-    skipped with a warning. If it was synced before, the next sync garbage-collects it, or
-    retires it when a belief edge references it.
+  - One that is not valid UTF-8, has no `type`, or has an unclosed `---`, is skipped with a
+    warning. So is a near-miss opener: `---` after blank lines, or a first line such as
+    `--- # x`, `----` or ` ---` that a later dash line closes. If such a file was synced
+    before, the next sync garbage-collects it, or retires it when a belief edge references it.
   - Delimiter lines tolerate trailing spaces and tabs, and a leading UTF-8 BOM is ignored.
     Both go beyond §4's "exactly `---`".
 - **Dot-paths and symlinks are not read** (§3.2). A file or directory under the bundle root

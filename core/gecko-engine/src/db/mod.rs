@@ -28,7 +28,7 @@ pub const CORE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         id: "core/okf-status-unknown-doc",
         applies_when: "attribute okf-status @doc(\"A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable.\")",
-        tql: "redefine attribute okf-status @doc(\"A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and any other value is not stable.\");",
+        tql: "redefine attribute okf-status @doc(\"A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and a value other than draft, stable or deprecated is not stable.\");",
     },
     SchemaMigration {
         id: "core/stale-after-sentinel-doc",

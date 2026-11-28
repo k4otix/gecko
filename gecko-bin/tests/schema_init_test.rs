@@ -104,7 +104,7 @@ const OKF_DOCS: [(&str, &str, &str); 3] = [
     (
         "okf-status",
         "A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable.",
-        "A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and any other value is not stable.",
+        "A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and a value other than draft, stable or deprecated is not stable.",
     ),
     (
         "stale-after",
