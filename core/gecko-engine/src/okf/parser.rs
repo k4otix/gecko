@@ -244,8 +244,8 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile,
     let description = extract_string(&mut metadata, "description");
     let resource_uri = extract_string(&mut metadata, "resource");
 
-    let tags = extract_string_list(&mut metadata, "tags");
     let mut warnings = Vec::new();
+    let tags = take_tags(&mut metadata, &path.to_string(), &mut warnings);
     let provenance = take_provenance(
         &mut metadata,
         &file_path.display().to_string(),
@@ -669,6 +669,62 @@ fn extract_string(map: &mut HashMap<String, serde_yaml::Value>, key: &str) -> Op
         serde_yaml::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     })
+}
+
+/// Takes `tags` out of `map` (OKF §11.2): one scalar is one tag, never split at
+/// commas, and a list's scalar items are tags as written, with null items dropped. A
+/// list or mapping item, or a `tags` mapping, is warned about; the raw `tags` then stays
+/// in `map`, so it lands in `metadata-json` as written.
+fn take_tags(
+    map: &mut HashMap<String, serde_yaml::Value>,
+    path: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    use serde_yaml::Value;
+    let scalar = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    };
+    let mut warn = |key: &str, v: &Value| {
+        warnings.push(format!(
+            "Concept file '{path}' has an invalid '{key}' ({}); it is kept in metadata-json \
+             and not typed",
+            yaml_as_written(v)
+        ));
+    };
+    let Some(v) = map.remove("tags") else {
+        return Vec::new();
+    };
+    let mut keep = false;
+    let tags = match &v {
+        Value::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| !item.is_null())
+            .filter_map(|(i, item)| {
+                let tag = scalar(item);
+                if tag.is_none() {
+                    warn(&format!("tags[{i}]"), item);
+                    keep = true;
+                }
+                tag
+            })
+            .collect(),
+        other => match scalar(other) {
+            Some(tag) => vec![tag],
+            None => {
+                warn("tags", other);
+                keep = true;
+                Vec::new()
+            }
+        },
+    };
+    if keep {
+        map.insert("tags".to_string(), v);
+    }
+    tags
 }
 
 fn extract_string_list(map: &mut HashMap<String, serde_yaml::Value>, key: &str) -> Vec<String> {
@@ -1603,6 +1659,45 @@ Playbook body.
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.provenance.generated_by.as_deref(), Some("a/1"));
         assert_eq!(c.timestamp, None);
+    }
+
+    #[test]
+    fn a_scalar_tags_is_one_tag() {
+        for (line, want) in [
+            ("tags: \"a, b\"", "a, b"),
+            ("tags: solo", "solo"),
+            ("tags: 5", "5"),
+        ] {
+            let (c, w) = parse_warned(line);
+            assert!(w.is_empty(), "{line}: {w:?}");
+            assert_eq!(c.tags, [want], "{line}");
+            assert!(!c.extra_metadata.contains_key("tags"), "{line}");
+        }
+    }
+
+    #[test]
+    fn tag_items_are_kept_as_written() {
+        let (c, w) = parse_warned("tags: [a, 2024, true, ~]");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.tags, ["a", "2024", "true"]);
+
+        let (c, w) = parse_warned("tags: [a, [b]]");
+        assert_one_warning(&w, "tags[1]", "b");
+        assert_eq!(c.tags, ["a"]);
+        assert!(c.extra_metadata.contains_key("tags"));
+
+        let (c, w) = parse_warned("tags: { a: b }");
+        assert_one_warning(&w, "tags", "a: b");
+        assert!(c.tags.is_empty());
+        assert!(c.extra_metadata.contains_key("tags"));
+    }
+
+    /// Regression: the one-item rule is OKF's, for `tags`; GECKO's `scopes` keeps its
+    /// reading.
+    #[test]
+    fn a_scalar_scopes_is_unchanged() {
+        let c = parse_with("engine: js\nscopes: mem:recall", JS_FENCE).unwrap();
+        assert!(c.scopes.is_empty(), "{:?}", c.scopes);
     }
 
     #[test]
