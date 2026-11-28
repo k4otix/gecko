@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde_yaml::Value;
 
 use super::parser::yaml_as_written;
@@ -55,7 +55,7 @@ pub(crate) fn take_provenance(
                     keep = true;
                 }
             }
-            if let Some(at) = m.get("at") {
+            if let Some(at) = m.get("at").filter(|at| !is_empty_value(at)) {
                 match parse_time(at) {
                     Some(t) => generated_at = Some(t),
                     None => {
@@ -157,14 +157,36 @@ pub(crate) fn take_provenance(
     }
 }
 
-/// A datetime chrono reads as RFC 3339 (with seconds and an explicit offset), as UTC.
-/// Other ISO 8601 forms OKF §5 allows, such as `14:00Z` or a `+09` offset, and a date
-/// alone, are `None`.
+/// A timestamp in one of OKF §5's two forms, as UTC: an RFC 3339 `date-time` (seconds
+/// and an offset required), or a `full-date`, which means the start of that day in UTC.
 fn parse_time(v: &Value) -> Option<DateTime<Utc>> {
     let s = v.as_str()?;
-    DateTime::parse_from_rfc3339(s)
+    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
+        return Some(t.with_timezone(&Utc));
+    }
+    let b = s.as_bytes();
+    let full_date = b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        });
+    if !full_date {
+        return None;
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .ok()
-        .map(|t| t.with_timezone(&Utc))
+        .map(|d| d.and_time(NaiveTime::MIN).and_utc())
+}
+
+/// Whether `v` is null, an empty string or an empty list, which OKF §11.2 reads as an
+/// absent key.
+pub(crate) fn is_empty_value(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Sequence(seq) => seq.is_empty(),
+        _ => false,
+    }
 }
 
 /// A string that is not blank, as written.

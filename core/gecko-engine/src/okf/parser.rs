@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::linker::{extract_links, extract_program};
-use super::provenance::take_provenance;
+use super::provenance::{is_empty_value, take_provenance};
 use super::types::{HierarchyEdge, OkfBundle, OkfConcept, SCRIPT_ENGINE_LANGS, ScriptEngine};
 use crate::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 
@@ -113,6 +113,20 @@ pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
     Ok(sha256_hex(&content))
 }
 
+/// The OKF keys GECKO reads whose null, empty-string or empty-list value is an absent
+/// key (OKF §11.2). `type` is handled where it is read.
+const OKF_KEYS: &[&str] = &[
+    "title",
+    "description",
+    "resource",
+    "tags",
+    "generated",
+    "timestamp",
+    "verified",
+    "status",
+    "stale_after",
+];
+
 /// What a Markdown file's leading frontmatter block is, if any.
 #[derive(Debug, PartialEq)]
 enum Frontmatter<'a> {
@@ -209,6 +223,13 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile,
             serde_yaml::Value::Null => HashMap::new(),
             value => serde_yaml::from_value(value).map_err(yaml_err)?,
         };
+
+    // A null, empty-string or empty-list value of an OKF key is an absent key (§11.2).
+    for key in OKF_KEYS {
+        if metadata.get(*key).is_some_and(is_empty_value) {
+            metadata.remove(*key);
+        }
+    }
 
     // A non-empty scalar `type` makes the file a concept (OKF §3.2).
     let concept_type = extract_string(&mut metadata, "type")
@@ -458,7 +479,7 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
 /// Reads the `okf_version` the bundle-root `index.md` declares (OKF §8, §12), the
 /// only frontmatter key an index file may carry. The file is matched by name as
 /// [`is_reserved_file`] matches it, and a symlinked one is not read (OKF §3.2), with a
-/// warning. A missing file, frontmatter or key gives `None`;
+/// warning. A missing file, frontmatter or key, or an empty or null value, gives `None`;
 /// a file that cannot be read, frontmatter that is not a YAML mapping, or a value that
 /// is neither a non-blank string nor a finite number gives `None` and a warning, never
 /// a failed parse.
@@ -501,7 +522,9 @@ fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<St
         Frontmatter::None | Frontmatter::NearMiss => return None,
     };
     let value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
-        Ok(serde_yaml::Value::Mapping(mut m)) => m.remove("okf_version")?,
+        Ok(serde_yaml::Value::Mapping(mut m)) => {
+            m.remove("okf_version").filter(|v| !is_empty_value(v))?
+        }
         Ok(serde_yaml::Value::Null) => return None,
         Ok(_) => {
             warnings.push(format!(
@@ -1482,7 +1505,6 @@ Playbook body.
         for (line, key, value) in [
             ("timestamp: yesterday", "timestamp", "yesterday"),
             ("stale_after: next tuesday", "stale_after", "next tuesday"),
-            ("stale_after: \"2026-06-01\"", "stale_after", "2026-06-01"),
             (
                 "stale_after: \"2026-06-01T00:00:00\"",
                 "stale_after",
@@ -1501,6 +1523,85 @@ Playbook body.
             assert_eq!(c.provenance.stale_after, None, "{line}");
             assert!(c.extra_metadata.contains_key(key), "{line}");
         }
+    }
+
+    #[test]
+    fn a_date_only_value_is_midnight_utc() {
+        let at = utc("2026-06-30T00:00:00Z");
+        let midnight = Some(at);
+        for d in ["2026-06-30", "\"2026-06-30\""] {
+            let (c, w) = parse_warned(&format!("stale_after: {d}"));
+            assert!(w.is_empty(), "{d}: {w:?}");
+            assert_eq!(c.provenance.stale_after, midnight, "{d}");
+            assert!(!c.extra_metadata.contains_key("stale_after"));
+
+            let (c, w) = parse_warned(&format!("generated: {{ by: a/1, at: {d} }}"));
+            assert!(w.is_empty(), "{d}: {w:?}");
+            assert_eq!(c.timestamp, midnight, "{d}");
+
+            let (c, w) = parse_warned(&format!("verified: [{{ by: a/1, at: {d} }}]"));
+            assert!(w.is_empty(), "{d}: {w:?}");
+            assert_eq!(c.provenance.verifications[0].at, at, "{d}");
+        }
+    }
+
+    #[test]
+    fn not_quite_dates_are_invalid() {
+        for v in [
+            "+2026-6-01",
+            "2026- 6-30",
+            "2026-06- 1",
+            "-026-06-30",
+            "2026-06-30T14:00:00",
+        ] {
+            let (_, w) = parse_warned(&format!("stale_after: \"{v}\""));
+            assert_one_warning(&w, "stale_after", v);
+        }
+    }
+
+    /// Regression: chrono's RFC 3339 reader already takes these variants.
+    #[test]
+    fn rfc3339_variants_are_accepted() {
+        for (v, want) in [
+            ("2026-06-30t14:00:00z", "2026-06-30T14:00:00Z"),
+            ("2026-06-30 14:00:00Z", "2026-06-30T14:00:00Z"),
+            ("2026-06-30T14:00:00.5+02:00", "2026-06-30T12:00:00.5Z"),
+        ] {
+            let (c, w) = parse_warned(&format!("generated: {{ by: a/1, at: \"{v}\" }}"));
+            assert!(w.is_empty(), "{v}: {w:?}");
+            assert_eq!(c.timestamp, Some(utc(want)), "{v}");
+        }
+    }
+
+    #[test]
+    fn empty_and_null_values_are_absent() {
+        for key in [
+            "title",
+            "description",
+            "resource",
+            "tags",
+            "generated",
+            "timestamp",
+            "verified",
+            "status",
+            "stale_after",
+        ] {
+            for v in ["~", "\"\"", "[]"] {
+                let (c, w) = parse_warned(&format!("{key}: {v}"));
+                assert!(w.is_empty(), "{key}: {v}: {w:?}");
+                assert!(!c.extra_metadata.contains_key(key), "{key}: {v}");
+                assert_eq!(c.title, None, "{key}: {v}");
+                assert_eq!(c.description, None, "{key}: {v}");
+                assert_eq!(c.resource_uri, None, "{key}: {v}");
+                assert!(c.tags.is_empty(), "{key}: {v}");
+                assert_eq!(c.timestamp, None, "{key}: {v}");
+                assert_eq!(c.provenance, OkfProvenance::default(), "{key}: {v}");
+            }
+        }
+        let (c, w) = parse_warned("generated: { by: a/1, at: ~ }");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.provenance.generated_by.as_deref(), Some("a/1"));
+        assert_eq!(c.timestamp, None);
     }
 
     #[test]
@@ -1526,7 +1627,7 @@ Playbook body.
     #[test]
     fn trust_tiers_follow_the_verifiers() {
         assert_eq!(tier("title: none"), None);
-        assert_eq!(tier("verified: []"), Some(TrustTier::Unverified));
+        assert_eq!(tier("verified: []"), None);
         let (bare, w) = parse_warned(&format!("verified: {{ by: openwiki/0.9.0, at: {AT} }}"));
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(
@@ -1602,7 +1703,7 @@ Playbook body.
     }
 
     #[test]
-    fn blank_strings_are_malformed() {
+    fn a_blank_status_stays_malformed() {
         let (c, w) = parse_warned("status: \"  \"");
         assert_one_warning(&w, "status", "'  '");
         assert_eq!(c.provenance.status, None);
@@ -1689,10 +1790,12 @@ Playbook body.
 
     #[test]
     fn an_invalid_okf_version_warns() {
+        for line in ["okf_version: null", "okf_version:", "okf_version: \"\""] {
+            let b = bundle_with_index(Some(&format!("---\n{line}\n---\n")));
+            assert_eq!(b.okf_version, None, "{line}");
+            assert!(b.warnings.is_empty(), "{line}: {:?}", b.warnings);
+        }
         for (line, shown) in [
-            ("okf_version: null", "null"),
-            ("okf_version:", "null"),
-            ("okf_version: \"\"", "''"),
             ("okf_version: true", "true"),
             ("okf_version: [0.2]", "0.2"),
             ("okf_version: .nan", ".nan"),
