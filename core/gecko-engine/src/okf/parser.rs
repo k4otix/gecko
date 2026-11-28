@@ -329,7 +329,7 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
     let okf_version = read_okf_version(&bundle_root, &mut warnings);
 
     // Collect and sort .md files for deterministic output
-    let mut md_files: Vec<_> = walk_md_files(&bundle_root)?;
+    let mut md_files: Vec<_> = walk_md_files(&bundle_root, &bundle_root, &mut warnings)?;
     md_files.sort();
 
     for file_path in &md_files {
@@ -457,7 +457,8 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
 
 /// Reads the `okf_version` the bundle-root `index.md` declares (OKF §8, §12), the
 /// only frontmatter key an index file may carry. The file is matched by name as
-/// [`is_reserved_file`] matches it. A missing file, frontmatter or key gives `None`;
+/// [`is_reserved_file`] matches it, and a symlinked one is not read (OKF §3.2), with a
+/// warning. A missing file, frontmatter or key gives `None`;
 /// a file that cannot be read, frontmatter that is not a YAML mapping, or a value that
 /// is neither a non-blank string nor a finite number gives `None` and a warning, never
 /// a failed parse.
@@ -465,11 +466,20 @@ fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<St
     let files = std::fs::read_dir(bundle_root)
         .ok()?
         .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file() || t.is_symlink()))
         .map(|e| e.path())
-        .filter(|p| p.is_file())
         .collect();
     let index = pick_root_index(files)?;
     let path = index.display();
+    if index
+        .symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        warnings.push(format!(
+            "Bundle index '{path}' is a symlink; its okf_version is not recorded"
+        ));
+        return None;
+    }
     let content = match std::fs::read_to_string(&index) {
         Ok(content) => content,
         Err(e) => {
@@ -563,23 +573,50 @@ fn has_non_finite(v: &serde_yaml::Value) -> bool {
     }
 }
 
-/// Recursively finds all `.md` files under a directory.
-fn walk_md_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, ParseError> {
+/// Recursively finds the `.md` files of the bundle under `dir`, sorted (OKF §3.2).
+///
+/// `bundle_root` must be canonical. A file or directory whose name starts with `.` is
+/// not part of the bundle and is skipped quietly. A symlink is never followed: its
+/// target is either outside the bundle root, which a consumer must not read, or inside
+/// it, where the walk reads it at its own path. Each skipped symlink gets a warning
+/// naming why, except a root-level reserved name, which [`read_okf_version`] reports.
+fn walk_md_files(
+    dir: &Path,
+    bundle_root: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<std::path::PathBuf>, ParseError> {
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| io_err(dir, e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| io_err(dir, e))?;
+    entries.sort_by_key(|e| e.file_name());
+
     let mut results = Vec::new();
-
-    let entries = std::fs::read_dir(dir).map_err(|e| io_err(dir, e))?;
-
     for entry in entries {
-        let entry = entry.map_err(|e| io_err(dir, e))?;
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
         let path = entry.path();
-
-        if path.is_dir() {
-            results.extend(walk_md_files(&path)?);
+        let file_type = entry.file_type().map_err(|e| io_err(&path, e))?;
+        if file_type.is_symlink() {
+            if dir == bundle_root && is_reserved_file(&path) {
+                continue;
+            }
+            let reason = match std::fs::canonicalize(&path) {
+                Err(_) => "is broken",
+                Ok(target) if !target.starts_with(bundle_root) => "points outside the bundle root",
+                Ok(_) => "points inside the bundle, where its target is read at its own path",
+            };
+            warnings.push(format!(
+                "Symlink '{}' {reason}; it is not followed",
+                path.display()
+            ));
+        } else if file_type.is_dir() {
+            results.extend(walk_md_files(&path, bundle_root, warnings)?);
         } else if path.extension().is_some_and(|ext| ext == "md") {
             results.push(path);
         }
     }
-
     Ok(results)
 }
 
@@ -1736,5 +1773,97 @@ Playbook body.
             "without the exact name, the first in byte order"
         );
         assert_eq!(pick_root_index(names(&["notes.md"])), None);
+    }
+
+    // -- The bundle walk (OKF §3.2) --
+
+    const GUIDE: &str = "---\ntype: guide\n---\n";
+
+    fn ids(bundle: &OkfBundle) -> Vec<&str> {
+        bundle
+            .concepts
+            .iter()
+            .map(|c| c.concept_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn dot_paths_are_not_part_of_the_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        for rel in [".hidden/x.md", ".draft.md", "sub/.y.md", "sub/z.md"] {
+            let path = dir.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, GUIDE).unwrap();
+        }
+        let bundle = parse_bundle(dir.path()).unwrap();
+        assert_eq!(ids(&bundle), ["sub/z"]);
+        assert!(bundle.warnings.is_empty(), "{:?}", bundle.warnings);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_never_followed() {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("out.md"), GUIDE).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("real.md"), GUIDE).unwrap();
+        symlink(outside.path().join("out.md"), root.join("a-out.md")).unwrap();
+        symlink(root.join("missing.md"), root.join("b-broken.md")).unwrap();
+        symlink(root.join("real.md"), root.join("c-alias.md")).unwrap();
+        symlink(root, root.join("d-loop")).unwrap();
+
+        let bundle = parse_bundle(root).unwrap();
+        assert_eq!(ids(&bundle), ["real"]);
+        let w = &bundle.warnings;
+        assert_eq!(w.len(), 4, "{w:?}");
+        for (warning, (name, reason)) in w.iter().zip([
+            ("a-out.md", "outside the bundle root"),
+            ("b-broken.md", "broken"),
+            ("c-alias.md", "inside the bundle"),
+            ("d-loop", "inside the bundle"),
+        ]) {
+            assert!(
+                warning.contains(name) && warning.contains(reason),
+                "{name}: {warning}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_root_index_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("meta.txt"),
+            "---\nokf_version: \"0.3\"\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(dir.path().join("meta.txt"), dir.path().join("index.md"))
+            .unwrap();
+        let bundle = parse_bundle(dir.path()).unwrap();
+        assert_eq!(bundle.okf_version, None);
+        assert_eq!(bundle.warnings.len(), 1, "{:?}", bundle.warnings);
+        assert!(
+            bundle.warnings[0].contains("index.md"),
+            "{:?}",
+            bundle.warnings
+        );
+    }
+
+    /// Regression: the bundle path itself may be a symlink.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_bundle_root_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_dir = dir.path().join("bundle");
+        fs::create_dir(&bundle_dir).unwrap();
+        fs::write(bundle_dir.join("page.md"), GUIDE).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&bundle_dir, &link).unwrap();
+        let bundle = parse_bundle(&link).unwrap();
+        assert_eq!(ids(&bundle), ["page"]);
+        assert!(bundle.warnings.is_empty(), "{:?}", bundle.warnings);
     }
 }

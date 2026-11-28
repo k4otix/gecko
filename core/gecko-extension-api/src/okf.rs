@@ -217,8 +217,10 @@ pub struct OkfBundle {
     pub hierarchy: Vec<HierarchyEdge>,
     /// The `okf_version` the bundle-root `index.md` declares, as written.
     pub okf_version: Option<String>,
-    /// Warnings about OKF v0.2 values the parser could not read, one per value, in
-    /// file order. A concept's value stays in its `metadata-json` as written; an
-    /// unreadable `okf_version` is not recorded.
+    /// Warnings about what the parser skipped or could not read: the root index's
+    /// `okf_version`, then each skipped symlink in walk order, then each Markdown file
+    /// that is not a concept and each unreadable concept value, in file order. A
+    /// concept's value stays in its `metadata-json` as written; an unreadable
+    /// `okf_version` is not recorded.
     pub warnings: Vec<String>,
 }
