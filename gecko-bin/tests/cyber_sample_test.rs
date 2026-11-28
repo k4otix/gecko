@@ -409,6 +409,19 @@ async fn record_verdict_with_a_missing_assumption_keeps_the_verdict() {
     let cli = claimed(&db, tmp.path()).await;
     let out = record_verdict(&cli, r#"["mem/bel/does-not-exist"]"#).await;
     assert!(!out.status.success(), "{}", text(&out));
+    // The failure names the verdict it already recorded, so the caller can act on it.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let recorded = stdout
+        .split("verdict ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .filter(|id| id.starts_with("mem/bel/"))
+        .unwrap_or_else(|| panic!("the error names no recorded verdict\n{}", text(&out)));
+    assert_eq!(
+        belief_state(&db, recorded).await,
+        [json!({ "s": "asserted" })],
+        "the named id is the verdict that stands"
+    );
     assert_eq!(
         true_positives(&cli).await,
         1,

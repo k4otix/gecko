@@ -17,7 +17,8 @@ memory ids that back the verdict.
 that the detection works. Withdrawing one of them then reports this verdict in its blast
 radius. `assumes` must be a non-empty list of distinct ids; anything else is refused before
 the verdict is recorded. An id that is missing, or not visible to the caller, is refused
-only after the verdict is recorded: the run fails, but the verdict stands.
+only after the verdict is recorded: the run fails, but the verdict stands, and the error
+names its `belief_id` so it can be withdrawn or kept.
 
 ```javascript
 const { logic_id, verdict, evidence, assumes } = gecko.args;
@@ -36,7 +37,11 @@ if (assumes !== undefined) {
 }
 const recorded = gecko.callExtension("cyber-gecko", "disposition", { logic_id, verdict, evidence });
 if (assumes !== undefined) {
-  mem.restsOn(recorded.belief_id, assumes);
+  try {
+    mem.restsOn(recorded.belief_id, assumes);
+  } catch (e) {
+    throw new Error(`recorded verdict ${recorded.belief_id} but could not record what it assumes: ${e.message}`);
+  }
 }
 assumes === undefined ? recorded : { ...recorded, assumes };
 ```
