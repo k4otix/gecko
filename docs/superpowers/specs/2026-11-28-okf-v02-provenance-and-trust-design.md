@@ -227,9 +227,12 @@ current schema defines any of these names.
   - GC and retirement leave no `verification` behind;
   - `okf-version` is set and then cleared on the bundle;
   - `gecko sync` prints the warnings (a CLI test);
-  - `sync_bundle` of a bundle that holds `verified` and `okf_version`, followed by an
-    update, still syncs against a schema without `verification` or `okf-version`
-    (`tightened_schema_applies_to_a_populated_database` stays green).
+  - `sync_bundle` of a **v0.1** bundle, followed by an edited update, still syncs against
+    a schema without `verification` or `okf-version`
+    (`tightened_schema_applies_to_a_populated_database` stays green). A bundle that
+    carries v0.2 values fails loudly at TypeDB parse on such a schema, as `timeout-ms`
+    does. This was amended at plan review: the writes are deliberately unguarded, and
+    skipping them silently would fabricate success.
 - **A hand-written v0.2 fixture bundle** holding every case above that needs a file: a
   `human:` verifier, `status`, `stale_after`, a bare-mapping `verified`, and a root
   `index.md` with `okf_version: "9.9"`.
