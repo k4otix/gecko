@@ -233,13 +233,7 @@ pub fn parse_concept(
     // Remaining keys become extra_metadata
     let extra_metadata: HashMap<String, String> = metadata
         .into_iter()
-        .map(|(k, v)| {
-            let val = match v {
-                serde_yaml::Value::String(s) => s,
-                other => serde_json::to_string(&other).unwrap_or_default(),
-            };
-            (k, val)
-        })
+        .map(|(k, v)| (k, kept_as_written(v)))
         .collect();
 
     let concept_id = file_to_concept_id(file_path, bundle_root);
@@ -425,25 +419,39 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
 /// Reads the `okf_version` the bundle-root `index.md` declares (OKF §8, §12), the
 /// only frontmatter key an index file may carry. The file is matched by name as
 /// [`is_reserved_file`] matches it. A missing file, frontmatter or key gives `None`;
-/// unreadable frontmatter or a value that is neither a non-blank string nor a number
-/// gives `None` and a warning, never a failed parse.
+/// a file that cannot be read, frontmatter that is not a YAML mapping, or a value that
+/// is neither a non-blank string nor a number gives `None` and a warning, never a
+/// failed parse.
 fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<String> {
-    let index = std::fs::read_dir(bundle_root)
+    let files = std::fs::read_dir(bundle_root)
         .ok()?
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .find(|p| {
-            p.is_file()
-                && p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("index.md"))
-        })?;
-    let content = std::fs::read_to_string(&index).ok()?;
-    let yaml = split_frontmatter(&content).0?;
+        .filter(|p| p.is_file())
+        .collect();
+    let index = pick_root_index(files)?;
     let path = index.display();
+    let content = match std::fs::read_to_string(&index) {
+        Ok(content) => content,
+        Err(e) => {
+            warnings.push(format!(
+                "Bundle index '{path}' could not be read ({e}); its okf_version is not recorded"
+            ));
+            return None;
+        }
+    };
+    let yaml = split_frontmatter(&content).0?;
     let value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
         Ok(serde_yaml::Value::Mapping(mut m)) => m.remove("okf_version")?,
         Ok(serde_yaml::Value::Null) => return None,
-        Ok(_) | Err(_) => {
+        Ok(_) => {
+            warnings.push(format!(
+                "Bundle index '{path}' has frontmatter that is not a mapping; its \
+                 okf_version is not recorded"
+            ));
+            return None;
+        }
+        Err(_) => {
             warnings.push(format!(
                 "Bundle index '{path}' has frontmatter that is not valid YAML; its \
                  okf_version is not recorded"
@@ -461,6 +469,46 @@ fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<St
             ));
             None
         }
+    }
+}
+
+/// Picks the bundle-root index file among the root's file paths: `index.md` exactly
+/// when present, otherwise the first, in byte order, whose name matches it ignoring
+/// case (as [`is_reserved_file`] does), so the choice never depends on directory order.
+fn pick_root_index(mut paths: Vec<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    paths.sort();
+    let name = |p: &std::path::PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    paths
+        .iter()
+        .position(|p| name(p).as_deref() == Some("index.md"))
+        .or_else(|| {
+            paths
+                .iter()
+                .position(|p| name(p).is_some_and(|n| n.eq_ignore_ascii_case("index.md")))
+        })
+        .map(|i| paths.swap_remove(i))
+}
+
+/// A frontmatter value as `metadata-json` keeps it: a string as is, anything else as
+/// JSON, or as YAML when JSON cannot hold it (a non-finite number, a non-string key).
+fn kept_as_written(v: serde_yaml::Value) -> String {
+    match v {
+        serde_yaml::Value::String(s) => s,
+        other if has_non_finite(&other) => yaml_as_written(&other),
+        other => serde_json::to_string(&other).unwrap_or_else(|_| yaml_as_written(&other)),
+    }
+}
+
+/// Whether `v` holds a NaN or infinite number, which JSON would turn into `null`.
+fn has_non_finite(v: &serde_yaml::Value) -> bool {
+    match v {
+        serde_yaml::Value::Number(n) => n.as_f64().is_some_and(|f| !f.is_finite()),
+        serde_yaml::Value::Sequence(seq) => seq.iter().any(has_non_finite),
+        serde_yaml::Value::Mapping(m) => m
+            .iter()
+            .any(|(k, v)| has_non_finite(k) || has_non_finite(v)),
+        serde_yaml::Value::Tagged(t) => has_non_finite(&t.value),
+        _ => false,
     }
 }
 
@@ -1133,8 +1181,7 @@ Playbook body.
         parse_concept(&dir.path().join("page.md"), dir.path()).unwrap()
     }
 
-    /// Asserts exactly one warning, naming the file, `key` and `value`, and that `raw`
-    /// is still in the concept's extra metadata.
+    /// Asserts exactly one warning, naming the file, `key` and `value`.
     fn assert_one_warning(warnings: &[String], key: &str, value: &str) {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         let w = &warnings[0];
@@ -1232,6 +1279,12 @@ Playbook body.
                 "stale_after: \"2026-06-01T00:00:00\"",
                 "stale_after",
                 "2026-06-01T00:00:00",
+            ),
+            // ISO 8601 without seconds: only RFC 3339 forms are typed.
+            (
+                "stale_after: 2026-06-30T14:00Z",
+                "stale_after",
+                "2026-06-30T14:00Z",
             ),
         ] {
             let (c, w) = parse_warned(line);
@@ -1444,11 +1497,14 @@ Playbook body.
                 "{w}"
             );
         }
-        for bad in ["---\nokf_version: [\n---\n", "---\njust a scalar\n---\n"] {
+        for (bad, says) in [
+            ("---\nokf_version: [\n---\n", "not valid YAML"),
+            ("---\njust a scalar\n---\n", "not a mapping"),
+        ] {
             let b = bundle_with_index(Some(bad));
             assert_eq!(b.okf_version, None);
             assert_eq!(b.warnings.len(), 1, "{bad:?}: {:?}", b.warnings);
-            assert!(b.warnings[0].contains("not valid YAML"), "{:?}", b.warnings);
+            assert!(b.warnings[0].contains(says), "{:?}", b.warnings);
         }
     }
 
@@ -1464,5 +1520,48 @@ Playbook body.
         let b = parse_bundle(dir.path()).unwrap();
         assert_eq!(b.okf_version, None);
         assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+    }
+
+    #[test]
+    fn a_kept_value_without_a_json_form_is_kept_as_yaml() {
+        let (c, w) = parse_warned("status: .nan");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(c.extra_metadata["status"], ".nan");
+
+        let (c, _) = parse_warned("generated: { by: x/1, ? [a, b] : c }");
+        let kept = &c.extra_metadata["generated"];
+        assert!(
+            kept.contains("x/1") && kept.contains('a') && kept.contains('c'),
+            "{kept:?}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_root_index_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("index.md"), [0xff, 0xfe, 0x00]).unwrap();
+        let b = parse_bundle(dir.path()).unwrap();
+        assert_eq!(b.okf_version, None);
+        assert_eq!(b.warnings.len(), 1, "{:?}", b.warnings);
+        assert!(
+            b.warnings[0].contains("could not be read"),
+            "{:?}",
+            b.warnings
+        );
+    }
+
+    #[test]
+    fn the_exact_index_name_is_preferred() {
+        let names = |ns: &[&str]| ns.iter().map(std::path::PathBuf::from).collect::<Vec<_>>();
+        assert_eq!(
+            pick_root_index(names(&["Index.md", "index.md", "INDEX.md"])),
+            Some("index.md".into())
+        );
+        assert_eq!(
+            pick_root_index(names(&["Index.md", "INDEX.md", "notes.md"])),
+            Some("INDEX.md".into()),
+            "without the exact name, the first in byte order"
+        );
+        assert_eq!(pick_root_index(names(&["notes.md"])), None);
     }
 }

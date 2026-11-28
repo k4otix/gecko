@@ -218,6 +218,7 @@ pub struct OkfBundle {
     /// The `okf_version` the bundle-root `index.md` declares, as written.
     pub okf_version: Option<String>,
     /// Warnings about OKF v0.2 values the parser could not read, one per value, in
-    /// file order; each value is kept in its concept's `metadata-json`.
+    /// file order. A concept's value stays in its `metadata-json` as written; an
+    /// unreadable `okf_version` is not recorded.
     pub warnings: Vec<String>,
 }

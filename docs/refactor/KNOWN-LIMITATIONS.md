@@ -164,6 +164,10 @@ proven through the real sandbox against live TypeDB.
   Change detection hashes the file's content, so a re-sync skips an unchanged file and never
   writes its `generated-by`, `trust-tier`, `okf-status`, `stale-after` or `verification`
   relations. Editing the file fixes it. A bundle's `okf-version` is rewritten on every sync.
+- **Only RFC 3339 times are typed.** OKF §5 allows any ISO 8601 datetime with an explicit
+  offset; GECKO types those with seconds and a full offset (`2026-06-30T14:00:00Z`,
+  `…+09:00`). Other forms, such as `2026-06-30T14:00Z` or a `+09` offset, are warned about
+  and kept in `metadata-json` as written.
 - **Quote `okf_version`.** YAML reads an unquoted `okf_version: 0.10` as the number `0.1`,
   and that is what is stored.
 - **Absence is not stored.** A concept with no `verified` has no `trust-tier` (OKF: unverified),

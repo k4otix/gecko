@@ -157,8 +157,9 @@ pub(crate) fn take_provenance(
     }
 }
 
-/// An RFC 3339 datetime with an explicit offset, as UTC (OKF §5); anything else,
-/// including a date alone, is `None`.
+/// A datetime chrono reads as RFC 3339 (with seconds and an explicit offset), as UTC.
+/// Other ISO 8601 forms OKF §5 allows, such as `14:00Z` or a `+09` offset, and a date
+/// alone, are `None`.
 fn parse_time(v: &Value) -> Option<DateTime<Utc>> {
     let s = v.as_str()?;
     DateTime::parse_from_rfc3339(s)
