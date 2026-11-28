@@ -20,6 +20,21 @@ pub const CORE_MIGRATIONS: &[SchemaMigration] = &[
         applies_when: "entity bundle @doc(\"The single OKF documentation bundle ingested into this database, keyed by its declared name; bundle-path is machine-local provenance, not identity.\")",
         tql: "redefine entity bundle @doc(\"An OKF documentation bundle synced into this database, keyed by its declared name and containing its concepts; several bundles may share a database, and bundle-path is machine-local provenance, not identity.\");",
     },
+    SchemaMigration {
+        id: "core/trust-tier-current-events-doc",
+        applies_when: "attribute trust-tier @doc(\"A concept's OKF trust tier, derived from its verified actors; absence means unverified.\")",
+        tql: "redefine attribute trust-tier @doc(\"A concept's OKF trust tier, derived from its current verification events, those at or after the concept's timestamp (all of them when it has none); absence means unverified.\");",
+    },
+    SchemaMigration {
+        id: "core/okf-status-unknown-doc",
+        applies_when: "attribute okf-status @doc(\"A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable.\")",
+        tql: "redefine attribute okf-status @doc(\"A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and any other value is not stable.\");",
+    },
+    SchemaMigration {
+        id: "core/stale-after-sentinel-doc",
+        applies_when: "attribute stale-after @doc(\"The instant from which a concept's content is stale (OKF stale_after).\")",
+        tql: "redefine attribute stale-after @doc(\"The instant from which a concept's content is stale (OKF stale_after); 1970-01-01T00:00:00Z marks a value that could not be read, which is kept as written in metadata-json.\");",
+    },
     // Cleanups: each deletes the rows missing a role the shipped schema requires,
     // so the `define` that adds the role's card commits. Each runs while the role
     // still prints without a card. `concept-link` inherits `okf-link`'s roles, so

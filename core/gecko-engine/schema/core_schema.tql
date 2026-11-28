@@ -61,11 +61,11 @@ define
 
   attribute engine value string;           # execution engine for code-blocks
   attribute scope value string;            # granted host-capability scope, e.g. "cyber-gecko:isolate"
-  # OKF v0.2 provenance, trust and lifecycle (OKF §5.2-§5.5, §8).
+  # OKF provenance, trust and lifecycle (OKF §5.2-§5.5, §8).
   attribute generated-by @doc("The actor that produced a concept's current content (OKF generated.by), as written."), value string;
-  attribute trust-tier @doc("A concept's OKF trust tier, derived from its verified actors; absence means unverified."), value string @values("unverified", "machine-confirmed", "human-reviewed");
-  attribute okf-status @doc("A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable."), value string;
-  attribute stale-after @doc("The instant from which a concept's content is stale (OKF stale_after)."), value datetime;
+  attribute trust-tier @doc("A concept's OKF trust tier, derived from its current verification events, those at or after the concept's timestamp (all of them when it has none); absence means unverified."), value string @values("unverified", "machine-confirmed", "human-reviewed");
+  attribute okf-status @doc("A concept's OKF lifecycle status as written, such as draft, stable or deprecated; absence means stable, and any other value is not stable."), value string;
+  attribute stale-after @doc("The instant from which a concept's content is stale (OKF stale_after); 1970-01-01T00:00:00Z marks a value that could not be read, which is kept as written in metadata-json."), value datetime;
   attribute verified-by @doc("The actor that confirmed a concept in one verification event."), value string;
   attribute verified-at @doc("When one verification event confirmed a concept."), value datetime;
   attribute okf-version @doc("The OKF version a bundle's root index declares, as written."), value string;
