@@ -22,12 +22,6 @@ pub enum ParseError {
         source: std::io::Error,
     },
 
-    #[error("Concept file '{path}' is missing the required 'type' frontmatter field")]
-    MissingType { path: String },
-
-    #[error("Concept file '{path}' has an empty 'type' frontmatter field")]
-    EmptyType { path: String },
-
     #[error(
         "Concept file '{path}' has an invalid 'timeout-ms' ({value}); it must be an integer from 1 to {max}",
         max = MAX_TIMEOUT_MS
@@ -119,70 +113,109 @@ pub fn compute_file_hash(file_path: &Path) -> Result<String, ParseError> {
     Ok(sha256_hex(&content))
 }
 
-/// Splits raw file content into YAML frontmatter and markdown body.
+/// What a Markdown file's leading frontmatter block is, if any.
+#[derive(Debug, PartialEq)]
+enum Frontmatter<'a> {
+    /// The file has no frontmatter.
+    None,
+    /// The first line opens frontmatter that no later line closes.
+    Unclosed,
+    /// The first line is blank and the first non-blank line is a delimiter.
+    NearMiss,
+    /// A frontmatter block and the body after it.
+    Block { yaml: &'a str, body: &'a str },
+}
+
+/// What one Markdown file of a bundle is: a concept with its warnings, or a file that
+/// is not a concept (OKF §3.2), with the warning to show when the author likely meant
+/// one.
+#[derive(Debug)]
+pub enum ParsedFile {
+    Concept(Box<OkfConcept>, Vec<String>),
+    NotAConcept(Option<String>),
+}
+
+/// Splits raw file content into its frontmatter block and Markdown body (OKF §4).
 ///
-/// Expects the file to start with `---\n` and have a closing `---\n`.
-fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    if !content.starts_with("---") {
-        return (None, content);
-    }
-
-    // Find the closing --- (skip the first line)
-    let after_open = &content[3..];
-    let after_open = after_open.strip_prefix('\n').unwrap_or(after_open);
-
-    if let Some(close_pos) = after_open.find("\n---") {
-        let yaml = &after_open[..close_pos];
-        let body_start = close_pos + 4; // skip "\n---"
-        let body = if body_start < after_open.len() {
-            after_open[body_start..].trim_start_matches('\n')
+/// One leading UTF-8 BOM is ignored. A delimiter is a line that is `---` once trailing
+/// spaces, tabs and `\r` are trimmed. The block opens only on the first line and closes
+/// at the next delimiter line.
+fn split_frontmatter(content: &str) -> Frontmatter<'_> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let is_delimiter = |line: &str| line.trim_end_matches([' ', '\t', '\r', '\n']) == "---";
+    let mut lines = content.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return Frontmatter::None;
+    };
+    if !is_delimiter(first) {
+        let near_miss = first.trim().is_empty()
+            && content
+                .split_inclusive('\n')
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(is_delimiter);
+        return if near_miss {
+            Frontmatter::NearMiss
         } else {
-            ""
+            Frontmatter::None
         };
-        (Some(yaml), body)
-    } else {
-        (None, content)
     }
+    let yaml_start = first.len();
+    let mut offset = yaml_start;
+    for line in lines {
+        if is_delimiter(line) {
+            let yaml = &content[yaml_start..offset];
+            let body = content[offset + line.len()..].trim_start_matches(['\r', '\n']);
+            return Frontmatter::Block { yaml, body };
+        }
+        offset += line.len();
+    }
+    Frontmatter::Unclosed
 }
 
 /// Parses a single OKF concept markdown file into an `OkfConcept`, extracting frontmatter,
 /// links, and code, with a warning for each OKF v0.2 provenance value it could not read.
-pub fn parse_concept(
-    file_path: &Path,
-    bundle_root: &Path,
-) -> Result<(OkfConcept, Vec<String>), ParseError> {
+pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<ParsedFile, ParseError> {
     let raw_content = std::fs::read_to_string(file_path).map_err(|e| io_err(file_path, e))?;
 
     let file_hash = sha256_hex(raw_content.as_bytes());
 
-    let (yaml_str, body) = split_frontmatter(&raw_content);
-
-    // Parse YAML frontmatter into a flexible map
-    let mut metadata: HashMap<String, serde_yaml::Value> = if let Some(yaml) = yaml_str {
-        serde_yaml::from_str(yaml).map_err(|e| ParseError::Yaml {
-            path: file_path.display().to_string(),
-            source: e,
-        })?
-    } else {
-        HashMap::new()
+    let path = file_path.display();
+    let not_a_concept = |why: &str| {
+        Ok(ParsedFile::NotAConcept(Some(format!(
+            "Markdown file '{path}' {why}; it is not a concept and is not synced"
+        ))))
+    };
+    let (yaml, body) = match split_frontmatter(&raw_content) {
+        Frontmatter::Block { yaml, body } => (yaml, body),
+        Frontmatter::None => return Ok(ParsedFile::NotAConcept(None)),
+        Frontmatter::Unclosed => {
+            return not_a_concept("opens frontmatter with '---' but never closes it");
+        }
+        Frontmatter::NearMiss => {
+            return not_a_concept(
+                "looks like it opens frontmatter after blank lines, but frontmatter must \
+                 start on the first line",
+            );
+        }
     };
 
-    // OKF 'type' is required
-    let concept_type = metadata
-        .remove("type")
-        .and_then(|v| match v {
-            serde_yaml::Value::String(s) => Some(s),
-            other => Some(other.as_str()?.to_string()),
-        })
-        .ok_or_else(|| ParseError::MissingType {
-            path: file_path.display().to_string(),
-        })?;
+    // Empty or null frontmatter is an empty mapping; anything but a mapping is refused.
+    let yaml_err = |source| ParseError::Yaml {
+        path: path.to_string(),
+        source,
+    };
+    let mut metadata: HashMap<String, serde_yaml::Value> =
+        match serde_yaml::from_str(yaml).map_err(yaml_err)? {
+            serde_yaml::Value::Null => HashMap::new(),
+            value => serde_yaml::from_value(value).map_err(yaml_err)?,
+        };
 
-    let concept_type = concept_type.trim().to_string();
+    // A non-empty scalar `type` makes the file a concept (OKF §3.2).
+    let concept_type = extract_string(&mut metadata, "type")
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default();
     if concept_type.is_empty() {
-        return Err(ParseError::EmptyType {
-            path: file_path.display().to_string(),
-        });
+        return not_a_concept("has no 'type'");
     }
 
     // Extract standard fields
@@ -250,8 +283,8 @@ pub fn parse_concept(
     }
     let engine = engine.map(|(e, _)| e);
 
-    Ok((
-        OkfConcept {
+    Ok(ParsedFile::Concept(
+        Box::new(OkfConcept {
             concept_id,
             concept_type,
             type_hint: None,
@@ -270,7 +303,7 @@ pub fn parse_concept(
             scopes,
             timeout_ms,
             provenance,
-        },
+        }),
         warnings,
     ))
 }
@@ -304,7 +337,13 @@ pub fn parse_bundle(bundle_root_path: &Path) -> Result<OkfBundle, ParseError> {
             continue;
         }
 
-        let (concept, concept_warnings) = parse_concept(file_path, &bundle_root)?;
+        let (concept, concept_warnings) = match parse_concept(file_path, &bundle_root)? {
+            ParsedFile::Concept(concept, w) => (*concept, w),
+            ParsedFile::NotAConcept(w) => {
+                warnings.extend(w);
+                continue;
+            }
+        };
         warnings.extend(concept_warnings);
 
         // Extract links and citations
@@ -440,7 +479,17 @@ fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<St
             return None;
         }
     };
-    let yaml = split_frontmatter(&content).0?;
+    let yaml = match split_frontmatter(&content) {
+        Frontmatter::Block { yaml, .. } => yaml,
+        Frontmatter::Unclosed => {
+            warnings.push(format!(
+                "Bundle index '{path}' opens frontmatter with '---' but never closes it; its \
+                 okf_version is not recorded"
+            ));
+            return None;
+        }
+        Frontmatter::None | Frontmatter::NearMiss => return None,
+    };
     let value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
         Ok(serde_yaml::Value::Mapping(mut m)) => m.remove("okf_version")?,
         Ok(serde_yaml::Value::Null) => return None,
@@ -581,6 +630,134 @@ fn extract_string_list(map: &mut HashMap<String, serde_yaml::Value>, key: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The concept a file parses to; panics when the file is not a concept.
+    fn parse_concept(
+        file_path: &Path,
+        bundle_root: &Path,
+    ) -> Result<(OkfConcept, Vec<String>), ParseError> {
+        match super::parse_concept(file_path, bundle_root)? {
+            ParsedFile::Concept(c, w) => Ok((*c, w)),
+            ParsedFile::NotAConcept(w) => panic!("not a concept: {w:?}"),
+        }
+    }
+
+    /// Parses `content` as the file `page.md`.
+    fn parse_file(content: &str) -> ParsedFile {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("page.md");
+        fs::write(&path, content).unwrap();
+        super::parse_concept(&path, dir.path()).unwrap()
+    }
+
+    /// The warning a file that is not a concept carries; panics on a concept or a quiet skip.
+    fn skip_warning(content: &str) -> String {
+        match parse_file(content) {
+            ParsedFile::NotAConcept(Some(w)) => w,
+            other => panic!("{content:?}: expected a skip with a warning, got {other:?}"),
+        }
+    }
+
+    /// The concept `content` parses to; panics when it is not one.
+    fn concept_of(content: &str) -> OkfConcept {
+        match parse_file(content) {
+            ParsedFile::Concept(c, _) => *c,
+            other => panic!("{content:?}: expected a concept, got {other:?}"),
+        }
+    }
+
+    fn is_quiet_skip(content: &str) -> bool {
+        matches!(parse_file(content), ParsedFile::NotAConcept(None))
+    }
+
+    #[test]
+    fn a_file_without_frontmatter_is_skipped_quietly() {
+        assert!(is_quiet_skip("# Readme\n\nText.\n"));
+    }
+
+    #[test]
+    fn a_file_without_type_is_not_a_concept() {
+        for content in [
+            "---\ntitle: X\n---\n",
+            "---\ntype: ~\n---\n",
+            "---\ntype: \"\"\n---\n",
+            "---\ntype: \"  \"\n---\n",
+            "---\n---\n",
+            "---\n~\n---\n",
+            "---\ntype: [a]\n---\n",
+        ] {
+            let w = skip_warning(content);
+            assert!(
+                w.contains("page.md") && w.contains("'type'"),
+                "{content:?}: {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unclosed_frontmatter_is_skipped_with_a_warning() {
+        let w = skip_warning("---\ntype: guide\nbody");
+        assert!(w.contains("page.md") && w.contains("never closes"), "{w}");
+    }
+
+    #[test]
+    fn delimiters_are_exact_lines() {
+        assert!(is_quiet_skip("----\ntype: x\n----\n"));
+        assert!(is_quiet_skip("--- x\ntype: x\n---\n"));
+        let w = skip_warning("---\ntype: guide\n----\n");
+        assert!(w.contains("never closes"), "{w}");
+
+        let crlf = concept_of("---\r\ntype: guide\r\ntitle: T\r\n---\r\nBody\r\n");
+        assert_eq!(crlf.title.as_deref(), Some("T"));
+        assert!(crlf.body.starts_with("Body"), "{:?}", crlf.body);
+
+        let spaced = concept_of("--- \ntype: guide\n---\t\nBody");
+        assert_eq!(spaced.concept_type, "guide");
+        assert!(spaced.body.starts_with("Body"), "{:?}", spaced.body);
+    }
+
+    #[test]
+    fn a_numeric_type_is_read_as_written() {
+        assert_eq!(concept_of("---\ntype: 5\n---\n").concept_type, "5");
+    }
+
+    #[test]
+    fn a_bom_before_frontmatter_is_ignored() {
+        let c = concept_of("\u{feff}---\ntype: guide\n---\nBody");
+        assert_eq!(c.concept_type, "guide");
+    }
+
+    #[test]
+    fn a_near_miss_opener_is_skipped_with_a_warning() {
+        for content in ["\n---\ntype: guide\n---\n", "  \n\n---\ntype: guide\n---\n"] {
+            let w = skip_warning(content);
+            assert!(
+                w.contains("page.md") && w.contains("first line"),
+                "{content:?}: {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bundle_skips_non_concepts() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("README.md"), "# Readme\n").unwrap();
+        fs::write(dir.path().join("notype.md"), "---\ntitle: X\n---\n").unwrap();
+        fs::write(dir.path().join("a.md"), "---\ntype: guide\n---\n").unwrap();
+        let bundle = parse_bundle(dir.path()).unwrap();
+        let ids: Vec<_> = bundle
+            .concepts
+            .iter()
+            .map(|c| c.concept_id.as_str())
+            .collect();
+        assert_eq!(ids, ["a"]);
+        assert_eq!(bundle.warnings.len(), 1, "{:?}", bundle.warnings);
+        assert!(
+            bundle.warnings[0].contains("notype.md"),
+            "{:?}",
+            bundle.warnings
+        );
+    }
     use std::fs;
 
     /// Creates a temporary bundle directory with test fixtures.
@@ -755,12 +932,8 @@ def calculate_monthly_revenue():
         let dir = tempfile::tempdir().unwrap();
         create_invalid_bundle(dir.path());
 
-        let result = parse_concept(&dir.path().join("no-type.md"), dir.path());
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ParseError::MissingType { .. }
-        ));
+        let result = super::parse_concept(&dir.path().join("no-type.md"), dir.path());
+        assert!(matches!(result, Ok(ParsedFile::NotAConcept(Some(_)))));
     }
 
     #[test]
@@ -1128,26 +1301,22 @@ Playbook body.
     #[test]
     fn test_split_frontmatter() {
         let content = "---\ntype: Test\ntitle: Hello\n---\n\nBody text here.\n";
-        let (yaml, body) = split_frontmatter(content);
-        assert!(yaml.is_some());
-        assert!(yaml.unwrap().contains("type: Test"));
+        let Frontmatter::Block { yaml, body } = split_frontmatter(content) else {
+            panic!("expected a block");
+        };
+        assert!(yaml.contains("type: Test"));
         assert!(body.contains("Body text here"));
     }
 
     #[test]
     fn test_split_frontmatter_no_yaml() {
-        let content = "Just body text.\n";
-        let (yaml, body) = split_frontmatter(content);
-        assert!(yaml.is_none());
-        assert_eq!(body, content);
+        assert_eq!(split_frontmatter("Just body text.\n"), Frontmatter::None);
     }
 
     #[test]
     fn test_split_frontmatter_malformed() {
         let content = "---\ntype: Test\ntitle: Hello\n\nNo closing dashes.\n";
-        let (yaml, body) = split_frontmatter(content);
-        assert!(yaml.is_none());
-        assert_eq!(body, content);
+        assert_eq!(split_frontmatter(content), Frontmatter::Unclosed);
     }
 
     #[test]
@@ -1157,8 +1326,8 @@ Playbook body.
         let content = "---\ntitle: No Type\n---\nBody";
         std::fs::write(&file_path, content).unwrap();
 
-        let result = parse_concept(&file_path, dir.path());
-        assert!(matches!(result, Err(ParseError::MissingType { path: _ })));
+        let result = super::parse_concept(&file_path, dir.path());
+        assert!(matches!(result, Ok(ParsedFile::NotAConcept(Some(_)))));
     }
 
     // -- OKF v0.2 provenance --

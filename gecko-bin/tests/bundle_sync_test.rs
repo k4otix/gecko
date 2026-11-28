@@ -1575,3 +1575,57 @@ async fn a_v01_bundle_gains_no_provenance_attributes() {
         assert_eq!(count(&mut db, query).await, 0, "{query}");
     }
 }
+
+// -- Which files are concepts (OKF §3.2) --
+
+#[tokio::test]
+async fn a_bundle_with_a_readme_syncs() {
+    let test_db = TestDb::new("gecko_test_sync_readme");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concept_with(dir.path(), "page.md", "title: Page");
+    fs::write(dir.path().join("README.md"), "# About this bundle\n").unwrap();
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(count(&mut db, "match $c isa concept;").await, 1);
+}
+
+#[tokio::test]
+async fn a_concept_that_loses_its_type_is_dropped() {
+    let test_db = TestDb::new("gecko_test_sync_loses_type");
+    let mut db = test_db.router();
+    apply_core(&mut db, true).await;
+    let dir = TempDir::new().unwrap();
+    write_concept_with(dir.path(), "page.md", "title: Page");
+    write_concept_with(dir.path(), "other.md", "title: Other");
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(count(&mut db, "match $c isa concept;").await, 2);
+
+    fs::write(
+        dir.path().join("page.md"),
+        "---\ntitle: Page\n---\n\nBody.\n",
+    )
+    .unwrap();
+    sync_dir(&mut db, dir.path()).await;
+    assert_eq!(
+        count(&mut db, r#"match $c isa concept, has concept-id "page";"#).await,
+        0,
+        "a file that lost its type is garbage-collected"
+    );
+}
+
+#[tokio::test]
+async fn a_referenced_concept_that_loses_its_type_is_retired() {
+    let test_db = TestDb::new("gecko_test_sync_loses_type_retire");
+    let mut db = test_db.router();
+    let temp_dir = TempDir::new().unwrap();
+    let (_full, referenced, _dropped) = synced_with_referenced(&mut db, temp_dir.path()).await;
+
+    fs::write(
+        temp_dir.path().join(format!("{referenced}.md")),
+        "---\ntitle: Test Concept\n---\n\nNo type any more.\n",
+    )
+    .unwrap();
+    sync_dir(&mut db, temp_dir.path()).await;
+    assert_eq!(retired_at(&mut db, &referenced).await.len(), 1);
+}
