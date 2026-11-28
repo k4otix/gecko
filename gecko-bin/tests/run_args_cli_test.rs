@@ -308,3 +308,36 @@ async fn a_playbook_runs_on_a_schema_without_timeout_ms() {
     let out = run(&db, tmp.path(), "playbooks/legacy").await;
     assert_eq!(run_output(&out), serde_json::json!({ "ok": true }));
 }
+
+#[tokio::test]
+async fn a_bundle_with_an_unsupported_engine_fails_to_sync() {
+    let db = TestDb::new("run_unsupported_engine");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bundle = tmp.path().join("bundle");
+    std::fs::create_dir_all(bundle.join("playbooks")).unwrap();
+    std::fs::write(bundle.join("playbooks/hello.md"), ECHO_PLAYBOOK).unwrap();
+    std::fs::write(
+        bundle.join("playbooks/typo.md"),
+        "---\ntype: playbook\ntitle: Typo\nengine: javscript\n---\n\n```js\n1\n```\n",
+    )
+    .unwrap();
+    let out = gecko(tmp.path())
+        .arg("--database")
+        .arg(&db.name)
+        .arg("sync")
+        .arg(&bundle)
+        .output()
+        .await
+        .expect("spawn gecko sync");
+    let output = text(&out);
+    assert!(!out.status.success(), "the sync succeeded\n{output}");
+    assert!(
+        output.contains("typo.md") && output.contains("javscript"),
+        "the failure does not name the file and value\n{output}"
+    );
+    let dbs = db.router().list_databases().await.expect("list databases");
+    assert!(
+        !dbs.contains(&db.name),
+        "a refused parse created the database\n{output}"
+    );
+}

@@ -30,16 +30,20 @@ impl ScriptEngine {
     }
 
     /// Resolves a code-fence language tag (or a frontmatter `engine` value) to the
-    /// engine that executes it. Returns `None` for non-executable languages
-    /// (`python`, `sql`, `mermaid`, plain text, …), which are treated as
-    /// documentation rather than program source.
+    /// engine that executes it. Returns `None` for any other language (`python`,
+    /// `sql`, `mermaid`, plain text, …): a fence in one is documentation, and an
+    /// `engine` naming one is refused by the parser.
     pub fn from_lang(lang: &str) -> Option<Self> {
-        match lang.trim().to_lowercase().as_str() {
-            "js" | "javascript" | "quickjs" => Some(ScriptEngine::QuickJs),
-            _ => None,
-        }
+        let lang = lang.trim().to_lowercase();
+        SCRIPT_ENGINE_LANGS
+            .contains(&lang.as_str())
+            .then_some(ScriptEngine::QuickJs)
     }
 }
+
+/// The spellings [`ScriptEngine::from_lang`] accepts, for both an `engine` value and a
+/// code fence's language, compared after trimming and lowercasing.
+pub const SCRIPT_ENGINE_LANGS: [&str; 3] = ["js", "javascript", "quickjs"];
 
 /// A single parsed OKF concept document, with its metadata and extracted content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,10 +69,12 @@ pub struct OkfConcept {
 
     /// The concept's executable program: the fenced code blocks whose language
     /// matches the declared `engine`, concatenated in document order. `None` when
-    /// the concept declares no engine or has no matching fence — such a concept is
-    /// documentation, not executable. One program per concept: multiple fences are
-    /// a literate-programming affordance, joined into a single program at parse
-    /// time (TypeDB attribute sets are unordered, so the join must happen here).
+    /// the concept declares no engine — such a concept is documentation, not
+    /// executable. The parser refuses a declared engine with no non-blank matching
+    /// fence, so a parsed concept with an engine always has a program. One program
+    /// per concept: multiple fences are a literate-programming affordance, joined
+    /// into a single program at parse time (TypeDB attribute sets are unordered, so
+    /// the join must happen here).
     pub program: Option<String>,
 
     /// Arbitrary extension frontmatter keys not consumed by the parser.

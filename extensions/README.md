@@ -29,7 +29,7 @@ constructor the Assembler can register:
 | `host_imports()` | Declares the callable host functions (`HostImportDef { name, description }`). |
 | `call_import(name, args)` | **Synchronous** dispatch for host imports that need nothing but their arguments. |
 
-Register it in the Assembler (`build_extensions` in `gecko-bin/src/main.rs`), and
+Register it in the Assembler (`build_extensions` in `gecko-bin/src/config.rs`), and
 build the extension only inside the CLI arms that use it — a typo in
 `[extensions] enabled` must not break unrelated commands like `up`/`drop`.
 
