@@ -133,7 +133,7 @@ proven through the real sandbox against live TypeDB.
   (`garbage_collecting_a_concept_deletes_every_non_surface_relation_it_plays`). A
   concept a belief edge references is retired instead.
 
-## Playbook `timeout-ms`
+## Playbook frontmatter
 
 - **A playbook synced before `timeout-ms` was stored keeps the 30 s default** until its
   content changes. Change detection hashes the file's content, so a re-sync skips an
@@ -144,6 +144,13 @@ proven through the real sandbox against live TypeDB.
   integer from 1 to 600000 (`MAX_TIMEOUT_MS`), including `0`, `"5s"`, `null` and a blank
   value, and names the file. A bundle that synced while the old parser ignored such a value
   no longer syncs until it is fixed.
+- **A bad `engine`, or an `engine` with no program, fails the whole sync.** A present
+  `engine` must be `js`, `javascript` or `quickjs` (any case); anything else, including a
+  number, `null` and a blank value, is refused naming the file and the value. A concept
+  that declares a supported engine must have non-blank code in a fence in one of those
+  languages. A bundle that synced while such a concept was silently treated as
+  documentation no longer syncs until the file is fixed. A concept with no `engine` key is
+  documentation, as before.
 
 ## Semantic index files
 
