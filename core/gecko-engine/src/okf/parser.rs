@@ -1656,6 +1656,127 @@ Playbook body.
         }
     }
 
+    const T1: &str = "2026-06-01T00:00:00Z";
+    const T2: &str = "2026-06-02T00:00:00Z";
+    const T3: &str = "2026-06-03T00:00:00Z";
+
+    /// Inputs of the currency rule, each with the tier it gives.
+    fn currency_cases() -> Vec<(String, Option<TrustTier>)> {
+        use TrustTier::{HumanReviewed as H, MachineConfirmed as M};
+        vec![
+            (
+                format!(
+                    "generated: {{ by: g/1, at: {T2} }}\n\
+                     verified: [{{ by: human:alice, at: {T1} }}, {{ by: a/1, at: {T3} }}]"
+                ),
+                Some(M),
+            ),
+            (
+                format!(
+                    "generated: {{ by: g/1, at: {T2} }}\nverified: [{{ by: human:alice, at: {T2} }}]"
+                ),
+                Some(H),
+            ),
+            (
+                format!("timestamp: {T2}\nverified: [{{ by: human:alice, at: {T1} }}]"),
+                None,
+            ),
+            (
+                format!("timestamp: {T2}\nverified: [{{ by: human:alice, at: {T3} }}]"),
+                Some(H),
+            ),
+            (
+                format!("generated: {{ at: {T2} }}\nverified: [{{ by: human:alice, at: {T1} }}]"),
+                None,
+            ),
+            (
+                format!("verified: [{{ by: human:alice, at: {T1} }}]"),
+                Some(H),
+            ),
+            (
+                format!("generated: {{ by: g/1 }}\nverified: [{{ by: human:alice, at: {T1} }}]"),
+                Some(H),
+            ),
+            (
+                format!(
+                    "generated: {{ by: g/1, at: soon }}\nverified: [{{ by: human:alice, at: {T1} }}]"
+                ),
+                Some(H),
+            ),
+            (
+                format!(
+                    "generated: {{ by: g/1, at: {T3} }}\n\
+                     verified: [{{ by: human:alice, at: {T1} }}, {{ by: a/1, at: {T2} }}]"
+                ),
+                None,
+            ),
+            ("verified: []".to_string(), None),
+            ("verified: [{ by: b/1 }]".to_string(), None),
+        ]
+    }
+
+    #[test]
+    fn only_current_events_give_the_tier() {
+        let (c, _) = parse_warned(&currency_cases()[0].0);
+        assert_eq!(c.provenance.trust_tier, Some(TrustTier::MachineConfirmed));
+        assert_eq!(c.provenance.verifications.len(), 2);
+    }
+
+    #[test]
+    fn an_event_at_generated_at_is_current() {
+        assert_eq!(tier(&currency_cases()[1].0), Some(TrustTier::HumanReviewed));
+    }
+
+    #[test]
+    fn a_legacy_timestamp_is_the_currency_time() {
+        assert_eq!(tier(&currency_cases()[2].0), None);
+        assert_eq!(tier(&currency_cases()[3].0), Some(TrustTier::HumanReviewed));
+    }
+
+    #[test]
+    fn generated_at_without_by_is_the_currency_time() {
+        let (c, w) = parse_warned(&currency_cases()[4].0);
+        assert_eq!(c.provenance.trust_tier, None);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("'generated.by'"), "{w:?}");
+    }
+
+    #[test]
+    fn with_no_content_time_every_event_is_current() {
+        for (input, want) in &currency_cases()[5..8] {
+            assert_eq!(tier(input), *want, "{input}");
+        }
+    }
+
+    #[test]
+    fn no_current_event_writes_no_tier() {
+        for (input, _) in &currency_cases()[8..] {
+            assert_eq!(tier(input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn the_tier_agrees_with_the_stored_times() {
+        for (input, want) in currency_cases() {
+            let (c, _) = parse_warned(&input);
+            let current: Vec<_> = c
+                .provenance
+                .verifications
+                .iter()
+                .filter(|e| c.timestamp.is_none_or(|t| e.at >= t))
+                .collect();
+            let from_graph = if current.iter().any(|e| e.by.starts_with("human:")) {
+                Some(TrustTier::HumanReviewed)
+            } else if current.is_empty() {
+                None
+            } else {
+                Some(TrustTier::MachineConfirmed)
+            };
+            assert_eq!(c.provenance.trust_tier, from_graph, "{input}");
+            assert_eq!(c.provenance.trust_tier, want, "{input}");
+        }
+    }
+
     #[test]
     fn a_malformed_verified_writes_no_tier() {
         let (c, w) = parse_warned("verified: 5");

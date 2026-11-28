@@ -115,11 +115,16 @@ pub(crate) fn take_provenance(
                         }
                     }
                 }
-                provenance.trust_tier = if entries.is_empty() {
-                    Some(TrustTier::Unverified)
-                } else if provenance.verifications.is_empty() {
+                // Only current events count: those at or after the content time, or
+                // all of them when there is none (§5.3). Every valid event is stored.
+                let mut current = provenance
+                    .verifications
+                    .iter()
+                    .filter(|e| timestamp.is_none_or(|t| e.at >= t))
+                    .peekable();
+                provenance.trust_tier = if current.peek().is_none() {
                     None
-                } else if provenance.verifications.iter().any(|e| is_human(&e.by)) {
+                } else if current.any(|e| is_human(&e.by)) {
                     Some(TrustTier::HumanReviewed)
                 } else {
                     Some(TrustTier::MachineConfirmed)

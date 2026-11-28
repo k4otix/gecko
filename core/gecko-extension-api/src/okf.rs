@@ -109,10 +109,9 @@ pub struct OkfConcept {
     pub provenance: OkfProvenance,
 }
 
-/// A concept's OKF v0.2 trust tier, derived from its `verified` actors (OKF §5.3).
+/// A concept's OKF trust tier, derived from its current `verified` events (OKF §5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrustTier {
-    Unverified,
     MachineConfirmed,
     HumanReviewed,
 }
@@ -121,7 +120,6 @@ impl TrustTier {
     /// The tier's OKF name, as stored in the graph.
     pub fn as_str(self) -> &'static str {
         match self {
-            TrustTier::Unverified => "unverified",
             TrustTier::MachineConfirmed => "machine-confirmed",
             TrustTier::HumanReviewed => "human-reviewed",
         }
@@ -141,8 +139,8 @@ pub struct Verification {
 pub struct OkfProvenance {
     /// The `generated.by` actor, as written.
     pub generated_by: Option<String>,
-    /// The tier derived from `verified`; `None` when `verified` is absent or holds no
-    /// valid event.
+    /// The tier from the current `verified` events, those at or after the content
+    /// time; `None` when none is current.
     pub trust_tier: Option<TrustTier>,
     /// The `status`, as written; absence means `stable`.
     pub status: Option<String>,
