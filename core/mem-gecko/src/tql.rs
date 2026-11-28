@@ -217,7 +217,7 @@ impl Params {
 /// via concept var `${concept_var}{i}`) equal to param `${param}{i}`. Returns the
 /// bound entity variable names (e.g. `$m0`, `$m1`) in order so the caller can build
 /// the role/insert fragment that references them. Factors the id-list-binding loop
-/// shared by `derivation_op` / `contest_ops` / `rests_on_op` / `retrieval_event_ops`.
+/// shared by `derivation_op` / `contest_ops` / `rests_on_ops` / `retrieval_event_ops`.
 fn bind_id_list<I, S>(
     p: &mut Params,
     match_lines: &mut String,
@@ -363,16 +363,7 @@ pub(crate) fn derivation_op(
     .into_iter()
     .enumerate()
     {
-        match_lines.push_str(&format!(
-            "           {{ {var} isa belief; true == visible-to({var}, $ag); }} or {{
-             not {{ {var} isa belief; }};
-             not {{ not {{
-               {{ $vo{i} isa ownership, links (owned: {var}), has visibility $vv{i};
-                 {{ $vv{i} == \"team\"; }} or {{ $vv{i} == \"shared\"; }}; }}
-               or {{ $vp{i} isa ownership, links (owned: {var}, owner: $ag); }};
-             }}; }};
-           }};\n"
-        ));
+        match_lines.push_str(&visible_item_clause(&var, &i.to_string()));
         source_roles.push_str(&format!(", source: {var}"));
     }
     let conf_frag = if let Some(c) = confidence {
@@ -542,26 +533,67 @@ pub(crate) fn contest_ops(ctx: &RunContext, anomaly: &MemId, claims: &[MemId]) -
     ]
 }
 
-/// `rests_on`: a `rests-on` relation (resting depends on assumptions 1..).
-pub(crate) fn rests_on_op(resting: &MemId, assumptions: &[MemId]) -> GraphWrite {
+/// A match line requiring memory item `var` to be visible to the actor bound as
+/// `$ag`: a belief through `visible-to`, any other memory item through its
+/// `ownership` (team or shared visibility, or owned by the actor). `tag` suffixes the
+/// clause's own variables, so the clause can appear once per item in one query.
+fn visible_item_clause(var: &str, tag: &str) -> String {
+    format!(
+        "           {{ {var} isa belief; true == visible-to({var}, $ag); }} or {{
+             not {{ {var} isa belief; }};
+             not {{ not {{
+               {{ $vo{tag} isa ownership, links (owned: {var}), has visibility $vv{tag};
+                 {{ $vv{tag} == \"team\"; }} or {{ $vv{tag} == \"shared\"; }}; }}
+               or {{ $vp{tag} isa ownership, links (owned: {var}, owner: $ag); }};
+             }}; }};
+           }};\n"
+    )
+}
+
+/// `rests_on`: a `rests-on` edge (resting depends on assumptions 1..), stamped with
+/// the declaring agent, the run and `occurred_at`. The link op matches only when the
+/// resting item and every assumption are visible to the actor, so it is
+/// `expecting(1)` and follows the run and agent ensures.
+pub(crate) fn rests_on_ops(
+    ctx: &RunContext,
+    resting: &MemId,
+    assumptions: &[MemId],
+) -> Vec<GraphWrite> {
     let mut p = Params::new();
-    p.s("rid", resting.0.clone());
-    let mut match_lines = String::from("$r isa memory-item, has concept-id $rc; $rc == $rid;\n");
+    p.s("res", resting.0.clone());
+    p.s("rid", ctx.run_id.to_string());
+    p.s("aid", ctx.actor.0.clone());
+    p.dt("ca", ctx.occurred_at);
+    let mut match_lines = String::from(
+        "$run isa doc-run, has run-id $rr; $rr == $rid;
+           $ag isa agent, has agent-id $aa; $aa == $aid;
+           $r isa memory-item, has concept-id $rc; $rc == $res;\n",
+    );
+    match_lines.push_str(&visible_item_clause("$r", "r"));
     let mut roles = String::new();
-    for var in bind_id_list(
+    for (k, var) in bind_id_list(
         &mut p,
         &mut match_lines,
         assumptions.iter().map(|a| a.0.clone()),
         "memory-item",
         "as",
-        "ac",
-        "a",
-    ) {
+        "asc",
+        "asid",
+    )
+    .into_iter()
+    .enumerate()
+    {
+        match_lines.push_str(&visible_item_clause(&var, &format!("as{k}")));
         roles.push_str(&format!(", assumption: {var}"));
     }
-    let body =
-        format!("match\n           {match_lines}         insert rests-on (resting: $r{roles});");
-    p.write(&body).expecting(1)
+    let body = format!(
+        "match\n           {match_lines}         insert rests-on (resting: $r{roles}, declarer: $ag, run: $run), has created-at == $ca;"
+    );
+    vec![
+        ensure_run(ctx),
+        ensure_agent(ctx),
+        p.write(&body).expecting(1),
+    ]
 }
 
 /// `record_prediction`: a `prediction-resolution` seeded with the predicted

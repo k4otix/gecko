@@ -1049,7 +1049,9 @@ fn schema_parts(schema: &str) -> std::collections::BTreeSet<String> {
 }
 
 /// A database on the pre-tightening schemas, populated by every current writer path
-/// plus the one-player rows an earlier release's GC could leave, takes the shipped schemas.
+/// except `rests_on` (an unstamped `rests-on` fails the upgrade, as
+/// `an_unstamped_rests_on_fails_the_upgrade` pins) plus the one-player rows an earlier
+/// release's GC could leave, takes the shipped schemas.
 #[cfg(feature = "cyber")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tightened_schema_applies_to_a_populated_database() {
@@ -1249,10 +1251,6 @@ async fn tightened_schema_applies_to_a_populated_database() {
         .await
         .expect("contest");
     writer
-        .rests_on(&ctx, asserted.clone(), std::slice::from_ref(&superseding))
-        .await
-        .expect("rests_on");
-    writer
         .record_prediction(&ctx, asserted.clone(), 0.7)
         .await
         .expect("record_prediction");
@@ -1360,6 +1358,20 @@ async fn tightened_schema_applies_to_a_populated_database() {
                 .unwrap_or_else(|e| panic!("the shipped {} applies: {e}", ext.name()));
         }
     }
+    // The upgraded database takes a stamped rests-on.
+    writer
+        .rests_on(&ctx, asserted.clone(), std::slice::from_ref(&superseding))
+        .await
+        .expect("rests_on on the upgraded database");
+    assert_eq!(
+        count_rows(
+            &mut db,
+            "match $r isa rests-on, links (declarer: $ag, run: $run), has created-at $t;"
+        )
+        .await,
+        1,
+        "the upgraded database holds one stamped rests-on"
+    );
     let after = db.database_schema().await.expect("schema");
     for (_, list) in &migrations {
         for m in list.iter() {
@@ -1453,4 +1465,98 @@ async fn tightened_schema_applies_to_a_populated_database() {
     )
     .await;
     assert!(err.contains("valid-from"), "{err}");
+}
+
+/// A `rests-on` written before the edge was stamped has no declarer, run or
+/// `created-at`. No migration invents them, so the shipped mem schema refuses the
+/// upgrade naming the relation; once the row is removed by hand, it applies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unstamped_rests_on_fails_the_upgrade() {
+    use std::sync::Arc;
+
+    use gecko_engine::db::{CORE_MIGRATIONS, CORE_SCHEMA, RouterGraphStore};
+    use gecko_extension_api::{
+        ActorId, BeliefDraft, DerivationMethod, EpistemicWriter, GraphValue, GraphWrite,
+        ProvenanceSource, RunContext, Visibility,
+    };
+    use mem_gecko::MemWriter;
+
+    let test_db = TestDb::new("gecko_test_unstamped_rests_on");
+    let mut db = test_db.router();
+    db.apply_schema(PRE_CORE)
+        .await
+        .expect("pre-tightening core");
+    db.apply_schema(&pre_mem_schema())
+        .await
+        .expect("pre-tightening mem");
+
+    let writer = MemWriter::without_index(Arc::new(RouterGraphStore::new(Arc::new(
+        tokio::sync::Mutex::new(test_db.router()),
+    ))));
+    let ctx = RunContext::new(
+        ActorId::new("system"),
+        ProvenanceSource::Manual,
+        chrono::Utc::now(),
+    );
+    let mut ids = Vec::new();
+    for text in ["the assumption", "the dependent"] {
+        let draft = BeliefDraft {
+            text: text.to_string(),
+            owner: ctx.actor.clone(),
+            visibility: Visibility::Private,
+            confidence: None,
+            entrenchment: None,
+        };
+        ids.push(
+            writer
+                .assert_belief(&ctx, draft, &[], DerivationMethod::HumanAssertion)
+                .await
+                .expect("assert"),
+        );
+    }
+    let bare = |verb: &str| {
+        GraphWrite::single(
+            format!(
+                "given $a: string, $d: string; \
+                 match $x isa belief, has concept-id $xc; $xc == $a; \
+                       $y isa belief, has concept-id $yc; $yc == $d; \
+                 {verb}"
+            ),
+            vec!["a".into(), "d".into()],
+            vec![
+                GraphValue::from(ids[0].0.as_str()),
+                GraphValue::from(ids[1].0.as_str()),
+            ],
+        )
+        .expecting(1)
+    };
+    let write = |w: GraphWrite| {
+        let mut db = test_db.router();
+        async move {
+            let tx = db.begin_write().await.expect("write tx");
+            gecko_engine::db::run_graph_writes(&tx, &[w])
+                .await
+                .expect("write");
+            tx.commit().await.expect("commit");
+        }
+    };
+    write(bare("insert rests-on (resting: $y, assumption: $x);")).await;
+
+    let mem = mem_gecko::extension();
+    db.apply_schema_with_migrations(CORE_SCHEMA, CORE_MIGRATIONS)
+        .await
+        .expect("the shipped core applies");
+    let err = db
+        .apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+        .await
+        .expect_err("an unstamped rests-on fails the shipped mem schema");
+    assert!(err.to_string().contains("'rests-on"), "{err}");
+
+    write(bare(
+        "$r isa rests-on, links (resting: $y, assumption: $x); delete $r;",
+    ))
+    .await;
+    db.apply_schema_with_migrations(mem.schema(), mem.schema_migrations())
+        .await
+        .expect("with the row removed, the shipped mem schema applies");
 }

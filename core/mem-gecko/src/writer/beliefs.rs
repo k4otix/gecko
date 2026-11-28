@@ -316,11 +316,8 @@ impl EpistemicWriter for MemWriter {
                 "contest requires at least two claims".into(),
             ));
         }
-        if let Some(dup) = claims
-            .iter()
-            .enumerate()
-            .find_map(|(i, c)| claims[..i].contains(c).then_some(c))
-        {
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = claims.iter().find(|c| !seen.insert(&c.0)) {
             return Err(EpistemicError::InvalidInput(format!(
                 "contest names claim {} more than once",
                 dup.0
@@ -344,7 +341,7 @@ impl EpistemicWriter for MemWriter {
 
     async fn rests_on(
         &self,
-        _ctx: &RunContext,
+        ctx: &RunContext,
         resting: MemId,
         assumptions: &[MemId],
     ) -> Result<()> {
@@ -353,11 +350,31 @@ impl EpistemicWriter for MemWriter {
                 "rests_on requires at least one assumption".into(),
             ));
         }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = assumptions.iter().find(|a| !seen.insert(&a.0)) {
+            return Err(EpistemicError::InvalidInput(format!(
+                "rests_on names assumption {} more than once",
+                dup.0
+            )));
+        }
+        if assumptions.contains(&resting) {
+            return Err(EpistemicError::InvalidInput(format!(
+                "rests_on: {} cannot rest on itself",
+                resting.0
+            )));
+        }
+        let ops = tql::rests_on_ops(ctx, &resting, assumptions);
+        let last = ops.len() - 1;
         let ids: Vec<&MemId> = std::iter::once(&resting).chain(assumptions).collect();
-        self.graph
-            .write(&[tql::rests_on_op(&resting, assumptions)])
-            .await
-            .map_err(|e| name_missing_ids(e, Some(0), "rests_on", "memory item", &ids))
+        self.graph.write(&ops).await.map_err(|e| {
+            name_missing_ids(
+                e,
+                Some(last),
+                "rests_on",
+                "memory item visible to the caller",
+                &ids,
+            )
+        })
     }
 
     async fn record_prediction(&self, _ctx: &RunContext, b: MemId, p: f64) -> Result<()> {

@@ -218,7 +218,9 @@ pub trait EpistemicWriter: Send + Sync {
     /// Records a contradiction among `claims`, minting an anomaly.
     async fn contest(&self, ctx: &RunContext, claims: &[MemId]) -> Result<crate::ids::AnomalyId>;
 
-    /// Records that `resting` depends on `assumptions` (assumption graph).
+    /// Records that `resting` depends on `assumptions` (assumption graph). The resting
+    /// item and every assumption must be visible to `ctx.actor`, and the edge is
+    /// stamped with the actor, the run and `ctx.occurred_at`.
     async fn rests_on(&self, ctx: &RunContext, resting: MemId, assumptions: &[MemId])
     -> Result<()>;
 

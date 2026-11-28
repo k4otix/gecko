@@ -1830,7 +1830,7 @@ async fn rests_on_with_a_missing_assumption_errors_and_commits_nothing() {
     for want in [
         b.0.as_str(),
         "mem/bel/does-not-exist",
-        "no memory item",
+        "no memory item visible to the caller",
         "nothing was committed",
     ] {
         assert!(msg.contains(want), "{want}: {msg}");
@@ -3230,5 +3230,360 @@ async fn retract_reports_the_visible_current_beliefs_that_rested_on_it() {
     for gone in [&root, &p, &s, &x] {
         assert!(!radius.contains(gone), "{gone:?} in {radius:?}");
     }
+    fx.drop_db().await;
+}
+
+// ── rests_on: stamped, visibility-gated ──────────────────────────────────────
+
+/// The `rests-on` edges resting on `id`: declarer agent-id, run-id and created-at.
+async fn rests_on_edges(fx: &Fixture, id: &MemId) -> Vec<serde_json::Value> {
+    fx.raw_fetch(&format!(
+        r#"match $r has concept-id "{}";
+             $e isa rests-on, links (resting: $r, declarer: $ag, run: $run);
+             $ag has agent-id $aid; $run has run-id $rid; $e has created-at $ca;
+           fetch {{ "aid": $aid, "rid": $rid, "ca": $ca }};"#,
+        id.0
+    ))
+    .await
+}
+
+/// Every `rests-on` edge in the database, by its resting item's concept-id.
+async fn all_rests_on(fx: &Fixture) -> Vec<serde_json::Value> {
+    fx.raw_fetch(
+        r#"match $e isa rests-on, links (resting: $x); $x has concept-id $c; fetch { "c": $c };"#,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn rests_on_stamps_the_declarer_the_run_and_the_time() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let a = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "the assumption").await;
+    let b = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "the dependent").await;
+
+    // A second run, at a later time, declares the dependency: its run node is new.
+    let ctx2 = ctx_at("agent-1", dt("2026-02-01T00:00:00Z"));
+    w.rests_on(&ctx2, b.clone(), std::slice::from_ref(&a))
+        .await
+        .expect("rests_on");
+
+    let edges = rests_on_edges(&fx, &b).await;
+    assert_eq!(edges.len(), 1, "{edges:?}");
+    assert_eq!(edges[0]["aid"], "agent-1");
+    assert_eq!(edges[0]["rid"], ctx2.run_id.to_string());
+    assert!(
+        edges[0]["ca"]
+            .as_str()
+            .unwrap()
+            .starts_with("2026-02-01T00:00:00"),
+        "{edges:?}"
+    );
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_another_agents_private_belief_is_refused_and_commits_nothing() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private belief", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let mine = assert_at(&w, "agent-b", "2026-01-01T00:00:00Z", "b's belief").await;
+    let missing = MemId::new("mem/bel/NOPE");
+    let b_ctx = ctx_at("agent-b", at);
+
+    // As the assumption.
+    let hidden = storage_msg(
+        w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&private))
+            .await
+            .expect_err("another agent's private belief is not an assumption b can name"),
+    );
+    let absent = storage_msg(
+        w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&missing))
+            .await
+            .expect_err("a missing assumption"),
+    );
+    assert!(hidden.contains("nothing was committed"), "{hidden}");
+    assert_eq!(
+        hidden.replace(&private.0, "<id>"),
+        absent.replace(&missing.0, "<id>"),
+        "a refused assumption does not reveal whether it exists"
+    );
+
+    // As the resting item.
+    let hidden = storage_msg(
+        w.rests_on(&b_ctx, private.clone(), std::slice::from_ref(&mine))
+            .await
+            .expect_err("b cannot hang a dependency on a's private belief"),
+    );
+    let absent = storage_msg(
+        w.rests_on(&b_ctx, missing.clone(), std::slice::from_ref(&mine))
+            .await
+            .expect_err("a missing resting item"),
+    );
+    assert_eq!(
+        hidden.replace(&private.0, "<id>"),
+        absent.replace(&missing.0, "<id>"),
+        "a refused resting item does not reveal whether it exists"
+    );
+
+    assert!(
+        all_rests_on(&fx).await.is_empty(),
+        "no rests-on was committed"
+    );
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_a_team_belief_of_another_agent_is_allowed() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let team = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's team belief", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let theirs = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's other team belief", "agent-a", 0.5, Visibility::Team),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+
+    // A never-seen agent in a fresh run: this write creates its agent and run nodes.
+    let newcomer = ctx_at("agent-new", dt("2026-01-02T00:00:00Z"));
+    w.rests_on(&newcomer, theirs.clone(), std::slice::from_ref(&team))
+        .await
+        .expect("team beliefs are visible to agent-new");
+    let edges = rests_on_edges(&fx, &theirs).await;
+    assert_eq!(edges.len(), 1, "{edges:?}");
+    assert_eq!(edges[0]["aid"], "agent-new", "the declarer is the caller");
+    assert_eq!(edges[0]["rid"], newcomer.run_id.to_string());
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_refuses_a_repeated_assumption() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let a = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "a").await;
+    let b = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "b").await;
+    let err = w
+        .rests_on(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            b,
+            &[a.clone(), a.clone()],
+        )
+        .await
+        .expect_err("a repeated assumption");
+    assert!(
+        err.to_string()
+            .contains(&format!("rests_on names assumption {} more than once", a.0)),
+        "{err}"
+    );
+    assert!(all_rests_on(&fx).await.is_empty());
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_refuses_a_self_dependency() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let a = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "a").await;
+    let err = w
+        .rests_on(
+            &ctx_at("agent-1", dt("2026-01-01T00:00:00Z")),
+            a.clone(),
+            std::slice::from_ref(&a),
+        )
+        .await
+        .expect_err("a belief resting on itself");
+    assert!(
+        err.to_string()
+            .contains(&format!("rests_on: {} cannot rest on itself", a.0)),
+        "{err}"
+    );
+    assert!(all_rests_on(&fx).await.is_empty());
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_gates_the_resting_item_and_every_assumption_in_one_call() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let private = w
+        .assert_belief(
+            &ctx_at("agent-a", at),
+            belief_vis("a's private belief", "agent-a", 0.5, Visibility::Private),
+            &[],
+            DerivationMethod::HumanAssertion,
+        )
+        .await
+        .unwrap();
+    let mine = assert_at(&w, "agent-b", "2026-01-01T00:00:00Z", "b's belief").await;
+    let other = assert_at(&w, "agent-b", "2026-01-01T00:00:00Z", "b's other").await;
+    w.rests_on(
+        &ctx_at("agent-b", at),
+        mine.clone(),
+        &[other.clone(), private],
+    )
+    .await
+    .expect_err("one invisible assumption refuses the whole edge");
+    w.rests_on(&ctx_at("agent-b", at), mine.clone(), &[other])
+        .await
+        .expect("visible ids in both positions pass");
+    assert_eq!(all_rests_on(&fx).await.len(), 1);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_accepts_the_callers_own_episode_and_refuses_another_agents() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let episode = |actor: &str| EpisodeDraft {
+        text: format!("{actor} saw something"),
+        event_time: at,
+        ingest_time: at,
+    };
+    let my_ep = w
+        .observe(&ctx_at("agent-b", at), episode("agent-b"))
+        .await
+        .unwrap();
+    let their_ep = w
+        .observe(&ctx_at("agent-a", at), episode("agent-a"))
+        .await
+        .unwrap();
+    let mine = assert_at(&w, "agent-b", "2026-01-01T00:00:00Z", "b's belief").await;
+    let b_ctx = ctx_at("agent-b", at);
+
+    w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&my_ep))
+        .await
+        .expect("b's own episode is an assumption b can name");
+    w.rests_on(&b_ctx, my_ep.clone(), std::slice::from_ref(&mine))
+        .await
+        .expect("b's own episode can rest on b's belief");
+    w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&their_ep))
+        .await
+        .expect_err("a's episode is not visible to b, as an assumption");
+    w.rests_on(&b_ctx, their_ep, std::slice::from_ref(&mine))
+        .await
+        .expect_err("a's episode is not visible to b, as the resting item");
+    assert_eq!(all_rests_on(&fx).await.len(), 2);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_accepts_a_superseded_assumption() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let old = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "first view").await;
+    w.supersede(
+        &ctx_at("agent-1", dt("2026-02-01T00:00:00Z")),
+        old.clone(),
+        belief("second view", "agent-1", 0.8),
+        "revised",
+    )
+    .await
+    .unwrap();
+    let dependent = assert_at(&w, "agent-1", "2026-02-02T00:00:00Z", "built on the first").await;
+    w.rests_on(
+        &ctx_at("agent-1", dt("2026-02-02T00:00:00Z")),
+        dependent.clone(),
+        std::slice::from_ref(&old),
+    )
+    .await
+    .expect("visibility, not belief state, gates rests_on");
+    assert_eq!(rests_on_edges(&fx, &dependent).await.len(), 1);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_twice_lists_the_dependent_once_in_the_blast_radius() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let root = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "root").await;
+    let dep = assert_at(&w, "agent-1", "2026-01-01T00:00:00Z", "dependent").await;
+    for day in ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"] {
+        w.rests_on(
+            &ctx_at("agent-1", dt(day)),
+            dep.clone(),
+            std::slice::from_ref(&root),
+        )
+        .await
+        .expect("rests_on");
+    }
+    assert_eq!(
+        rests_on_edges(&fx, &dep).await.len(),
+        2,
+        "each call is one edge"
+    );
+    let radius = w
+        .retract(&ctx_at("agent-1", dt("2026-01-04T00:00:00Z")), root, None)
+        .await
+        .expect("retract");
+    assert_eq!(radius, vec![dep]);
+    fx.drop_db().await;
+}
+
+#[tokio::test]
+async fn rests_on_another_agents_episode_is_refused_like_a_missing_one() {
+    let fx = Fixture::new().await;
+    let w = fx.writer(None, None);
+    let at = dt("2026-01-01T00:00:00Z");
+    let theirs = w
+        .observe(
+            &ctx_at("agent-a", at),
+            EpisodeDraft {
+                text: "agent-a saw something".to_string(),
+                event_time: at,
+                ingest_time: at,
+            },
+        )
+        .await
+        .unwrap();
+    let mine = assert_at(&w, "agent-b", "2026-01-01T00:00:00Z", "b's belief").await;
+    let missing = MemId::new("mem/ep/NOPE");
+    let b_ctx = ctx_at("agent-b", at);
+    for (hidden_call, absent_call) in [
+        (
+            w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&theirs))
+                .await,
+            w.rests_on(&b_ctx, mine.clone(), std::slice::from_ref(&missing))
+                .await,
+        ),
+        (
+            w.rests_on(&b_ctx, theirs.clone(), std::slice::from_ref(&mine))
+                .await,
+            w.rests_on(&b_ctx, missing.clone(), std::slice::from_ref(&mine))
+                .await,
+        ),
+    ] {
+        let hidden = storage_msg(hidden_call.expect_err("a's episode is not visible to b"));
+        let absent = storage_msg(absent_call.expect_err("a missing episode"));
+        assert_eq!(
+            hidden.replace(&theirs.0, "<id>"),
+            absent.replace(&missing.0, "<id>"),
+            "a refused episode does not reveal whether it exists"
+        );
+    }
+    assert!(all_rests_on(&fx).await.is_empty());
     fx.drop_db().await;
 }

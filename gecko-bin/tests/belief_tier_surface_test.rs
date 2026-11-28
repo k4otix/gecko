@@ -219,7 +219,10 @@ async fn fingerprint_counts_instances_attributes_and_links() {
         "given $a: string, $b: string, $state: string; \
          insert $ba isa belief, has concept-id == $a, has belief-state == $state; \
                 $bb isa belief, has concept-id == $b, has belief-state == $state; \
-                rests-on (resting: $ba, assumption: $bb);",
+                $ag isa agent, has agent-id \"surface-agent\"; \
+                $run isa doc-run, has run-id \"surface-run\"; \
+                rests-on (resting: $ba, assumption: $bb, declarer: $ag, run: $run), \
+                    has created-at 2026-01-01T00:00:00;",
         given,
     )
     .await
@@ -252,7 +255,8 @@ async fn fingerprint_counts_instances_attributes_and_links() {
         change("ownership", BeliefTierMeasure::Attributes, 0, 2),
         change("ownership", BeliefTierMeasure::Links, 0, 4),
         change("rests-on", BeliefTierMeasure::Instances, 0, 1),
-        change("rests-on", BeliefTierMeasure::Links, 0, 2),
+        change("rests-on", BeliefTierMeasure::Attributes, 0, 1),
+        change("rests-on", BeliefTierMeasure::Links, 0, 4),
         change("source-link", BeliefTierMeasure::Instances, 0, 2),
         change("source-link", BeliefTierMeasure::Attributes, 0, 2),
         change("source-link", BeliefTierMeasure::Links, 0, 4),

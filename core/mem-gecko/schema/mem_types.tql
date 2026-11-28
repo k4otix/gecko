@@ -136,6 +136,7 @@ define
       owns agent-id @key,
       plays ownership:owner,
       plays retraction:retractor,
+      plays rests-on:declarer,
       plays pivot:pivoting-agent;         # the agent that made the investigative move
 
   relation ownership @doc("Assigns a memory item to its owning agent(s) and carries the visibility scope that gates who can recall it."),
@@ -148,7 +149,10 @@ define
   # ══════════════════════════════════════════════════════════════════
   relation rests-on @doc("Records the assumptions a memory item depends on; retracting an assumption propagates through this edge to everything resting on it."),
       relates resting @card(1) @doc("The memory item that depends on the assumptions."),
-      relates assumption @card(1..) @doc("A memory item taken as an assumption by the resting item.");
+      relates assumption @card(1..) @doc("A memory item taken as an assumption by the resting item."),
+      relates declarer @card(1) @doc("The agent that declared the dependency."),
+      relates run @card(1) @doc("The run during which the dependency was declared."),
+      owns created-at @card(1);
 
   relation pivot @doc("A reified investigative move by an agent from one memory state to another, capturing the method and a calibration score."),                          # reified n-ary investigative move + calibration
       relates pivoting-agent @doc("The agent that made the move."),
@@ -168,7 +172,8 @@ define
       owns run-id @key,
       owns event-time @card(0..1),
       plays source-link:origin,
-      plays retraction:run;
+      plays retraction:run,
+      plays rests-on:run;
 
   # ══════════════════════════════════════════════════════════════════
   # Cross-source resolution

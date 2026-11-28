@@ -1,7 +1,7 @@
 //! Sandbox → mem host-function surface and run-id binding.
 //!
 //! Exec-docs call a small set of mem host functions —
-//! `remember`/`recall`/`derive`/`supersede`/`contest`/`retract` — which the host delegates
+//! `remember`/`recall`/`derive`/`supersede`/`contest`/`retract`/`rests_on` — which the host delegates
 //! to the injected [`EpistemicWriter`]/[`EpistemicReader`]. The security spine
 //! (invariant 2) is that the **host** binds the run's [`RunContext`]: sandbox code
 //! supplies only the payload args and **cannot** supply or override the
@@ -59,6 +59,8 @@ pub enum MemHostFn {
     Contest,
     /// `mem.retract(...)` → `EpistemicWriter::retract`.
     Retract,
+    /// `mem.restsOn(...)` → `EpistemicWriter::rests_on`.
+    RestsOn,
 }
 
 impl MemHostFn {
@@ -71,6 +73,7 @@ impl MemHostFn {
             Self::Supersede => "supersede",
             Self::Contest => "contest",
             Self::Retract => "retract",
+            Self::RestsOn => "rests_on",
         }
     }
 
@@ -83,12 +86,13 @@ impl MemHostFn {
             "supersede" => Self::Supersede,
             "contest" => Self::Contest,
             "retract" => Self::Retract,
+            "rests_on" => Self::RestsOn,
             _ => return None,
         })
     }
 
     /// The full mem host-fn set (used by the name round-trip test, its only caller).
-    pub fn all() -> [MemHostFn; 6] {
+    pub fn all() -> [MemHostFn; 7] {
         [
             Self::Remember,
             Self::Recall,
@@ -96,6 +100,7 @@ impl MemHostFn {
             Self::Supersede,
             Self::Contest,
             Self::Retract,
+            Self::RestsOn,
         ]
     }
 }
@@ -159,6 +164,7 @@ fn allowed_keys(func: MemHostFn) -> &'static [&'static str] {
         MemHostFn::Supersede => &["old", "text", "reason", "confidence"],
         MemHostFn::Contest => &["claims"],
         MemHostFn::Retract => &["id", "reason"],
+        MemHostFn::RestsOn => &["resting", "assumptions"],
         MemHostFn::Recall => &["text", "max_chunks", "as_of"],
     }
 }
@@ -261,6 +267,14 @@ fn mem_ids(payload: &Value, key: &str) -> Result<Vec<MemId>, String> {
             })
         })
         .collect()
+}
+
+/// Refuses an empty id in field `key`; any other id is returned as given.
+fn non_empty_id(id: String, key: &str) -> Result<String, String> {
+    if id.is_empty() {
+        return Err(format!("mem call field '{key}' must be a non-empty id"));
+    }
+    Ok(id)
 }
 
 /// Collects a required `[MemId]` field: missing and `null` are both errors.
@@ -378,6 +392,19 @@ pub async fn dispatch_mem_call(
                 .map_err(err)?;
             let radius: Vec<String> = radius.into_iter().map(|m| m.0).collect();
             Ok(json!({ "id": id, "blast_radius": radius }))
+        }
+        MemHostFn::RestsOn => {
+            let resting = non_empty_id(req_str(p, "resting")?, "resting")?;
+            let assumptions = required_mem_ids(p, "assumptions")?;
+            for a in &assumptions {
+                non_empty_id(a.0.clone(), "assumptions")?;
+            }
+            writer
+                .rests_on(ctx, MemId::new(resting.clone()), &assumptions)
+                .await
+                .map_err(err)?;
+            let assumptions: Vec<String> = assumptions.into_iter().map(|m| m.0).collect();
+            Ok(json!({ "resting": resting, "assumptions": assumptions }))
         }
         // `mem.recall` is a *reader* op: it is dispatched through the separate
         // reader bridge ([`dispatch_mem_recall`]), which the callback routes to when
@@ -769,6 +796,10 @@ mod tests {
             id: MemId,
             reason: Option<String>,
         },
+        RestsOn {
+            resting: MemId,
+            assumptions: Vec<MemId>,
+        },
     }
 
     /// A writer that records what each write method receives; the methods the
@@ -843,10 +874,14 @@ mod tests {
         async fn rests_on(
             &self,
             _: &RunContext,
-            _: MemId,
-            _: &[MemId],
+            resting: MemId,
+            assumptions: &[MemId],
         ) -> Result<(), EpistemicError> {
-            unreachable!("rests_on")
+            *self.probed.lock().unwrap() = Some(Probed::RestsOn {
+                resting,
+                assumptions: assumptions.to_vec(),
+            });
+            Ok(())
         }
         async fn record_prediction(
             &self,
@@ -922,6 +957,50 @@ mod tests {
         let e = out.expect_err(&format!("{args} is refused"));
         assert!(e.contains(key), "{args}: {e}");
         assert_eq!(probe.probed(), None, "{args}: the writer never ran");
+    }
+
+    #[tokio::test]
+    async fn rests_on_reaches_the_writer_and_echoes_its_ids() {
+        let args = json!({ "resting": "mem/bel/a", "assumptions": ["mem/bel/b"] });
+        let (out, probe) = write_call(MemHostFn::RestsOn, args.clone()).await;
+        assert_eq!(out, Ok(args));
+        assert_eq!(
+            probe.probed(),
+            Some(Probed::RestsOn {
+                resting: MemId::new("mem/bel/a"),
+                assumptions: vec![MemId::new("mem/bel/b")],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn rests_on_refuses_bad_fields() {
+        for (args, key) in [
+            (json!({ "assumptions": ["mem/bel/b"] }), "resting"),
+            (json!({ "resting": "mem/bel/a" }), "assumptions"),
+            (
+                json!({ "resting": "mem/bel/a", "assumptions": "x" }),
+                "assumptions",
+            ),
+            (
+                json!({ "resting": "mem/bel/a", "assumptions": [1] }),
+                "assumptions",
+            ),
+            (
+                json!({ "resting": "", "assumptions": ["mem/bel/b"] }),
+                "resting",
+            ),
+            (
+                json!({ "resting": "mem/bel/a", "assumptions": [""] }),
+                "assumptions",
+            ),
+            (
+                json!({ "resting": "mem/bel/a", "assumptions": ["mem/bel/b"], "reason": "r" }),
+                "reason",
+            ),
+        ] {
+            assert_refused(MemHostFn::RestsOn, args, key).await;
+        }
     }
 
     #[tokio::test]
