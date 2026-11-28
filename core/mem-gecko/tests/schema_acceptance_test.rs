@@ -129,7 +129,10 @@ async fn belief_restson_supersession_roundtrip() {
           $b1 isa belief, has concept-id "mem/bel/b1", has belief-state "asserted",
               has valid-from 2026-01-01T00:00:00;
           $a1 isa belief, has concept-id "mem/bel/a1", has belief-state "asserted";
-          rests-on (resting: $b1, assumption: $a1);
+          $ag isa agent, has agent-id "agent-1";
+          $run isa doc-run, has run-id "run-1";
+          rests-on (resting: $b1, assumption: $a1, declarer: $ag, run: $run),
+              has created-at 2026-01-01T00:00:00;
           $b2 isa belief, has concept-id "mem/bel/b2", has belief-state "asserted";
           supersession (superseded: $b1, superseding: $b2),
               has created-at 2026-01-02T00:00:00, has supersession-reason "newer evidence";
@@ -526,9 +529,9 @@ const OWNERSHIP: RoleCase = RoleCase {
 };
 const RESTS_ON: RoleCase = case(
     "rests-on",
-    &[("resting", "$b1")],
+    &[("resting", "$b1"), ("declarer", "$ag"), ("run", "$run")],
     &[("assumption", "$b2")],
-    "",
+    ", has created-at 2026-01-02T00:00:00",
 );
 const RESOLVES: RoleCase = case(
     "resolves",
@@ -610,6 +613,25 @@ macro_rules! missing_role_refused {
     };
 }
 
+#[tokio::test]
+async fn an_unstamped_rests_on_is_refused_at_commit() {
+    let (mut router, name) = fresh_db().await;
+    write_seed(&mut router, ROLE_PLAYERS)
+        .await
+        .expect("insert the role players");
+    let err = write_seed(
+        &mut router,
+        &format!("{MATCH_PLAYERS} insert rests-on (resting: $b1, assumption: $b2);"),
+    )
+    .await
+    .expect_err("a rests-on with no declarer, run or created-at commits");
+    assert!(
+        err.contains("rests-on"),
+        "the refusal does not name rests-on: {err}"
+    );
+    drop_db(router, &name).await;
+}
+
 missing_role_refused! {
     a_derivation_missing_its_derived_is_refused_at_commit: DERIVATION, "derived";
     a_contradiction_missing_its_hub_is_refused_at_commit: CONTRADICTION, "hub";
@@ -621,6 +643,8 @@ missing_role_refused! {
     a_source_link_missing_its_memory_is_refused_at_commit: SOURCE_LINK, "memory";
     a_ownership_missing_its_owned_is_refused_at_commit: OWNERSHIP, "owned";
     a_rests_on_missing_its_resting_is_refused_at_commit: RESTS_ON, "resting";
+    a_rests_on_missing_its_declarer_is_refused_at_commit: RESTS_ON, "declarer";
+    a_rests_on_missing_its_run_is_refused_at_commit: RESTS_ON, "run";
     a_resolves_missing_its_resolution_belief_is_refused_at_commit: RESOLVES, "resolution-belief";
     a_resolves_missing_its_record_a_is_refused_at_commit: RESOLVES, "record-a";
     a_resolves_missing_its_record_b_is_refused_at_commit: RESOLVES, "record-b";

@@ -234,7 +234,10 @@ async fn shipped_function_mutation_requires_redefine_not_define() {
         r#"insert
              $a isa belief, has concept-id "redef/A", has belief-state "asserted";
              $m isa belief, has concept-id "redef/M", has belief-state "asserted";
-             rests-on (resting: $m, assumption: $a);"#,
+             $ag isa agent, has agent-id "redef/agent";
+             $run isa doc-run, has run-id "redef/run";
+             rests-on (resting: $m, assumption: $a, declarer: $ag, run: $run),
+                 has created-at 2026-01-01T00:00:00;"#,
     )
     .await;
     let blast_of_a = r#"match

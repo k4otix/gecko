@@ -90,7 +90,10 @@ proven through the real sandbox against live TypeDB.
   needs a manual cleanup. Core, mem and cyber each apply in their own schema
   transaction, in that order: the refusing fragment commits nothing, and earlier
   fragments' cleanups stay committed. The state is consistent, and re-running after the
-  fix completes the upgrade. Today's writers produce no such row.
+  fix completes the upgrade. Today's writers produce no such row. This covers a
+  `rests-on` written before the edge was stamped: it has no declarer, run or
+  `created-at`, no migration invents them, and the shipped mem schema refuses it
+  (`an_unstamped_rests_on_fails_the_upgrade`).
 - **A database that predates the populations cut takes the shipped schema and keeps
   inert leftovers.** The shipped schema applies over each earlier vintage and the
   population types and functions it declared stay stored and unused. A database from
@@ -219,6 +222,14 @@ Each write enforces it inside its own write, so a refused write commits nothing:
   reported, not retracted.
 - **`contest`** requires every claim to be visible to the caller
   (`contesting_another_agents_private_belief_is_refused`).
+- **`rests_on`** requires the resting item and every assumption to be visible to the
+  caller, by the same rule as `derive`'s evidence; a refused item gets the same message as
+  a missing one, in either position. The edge records the declaring agent, the run and the
+  time. A repeated assumption, a self-dependency and an empty list are refused
+  (`rests_on_another_agents_private_belief_is_refused_and_commits_nothing`,
+  `rests_on_gates_the_resting_item_and_every_assumption_in_one_call`,
+  `rests_on_stamps_the_declarer_the_run_and_the_time`). It is not yet reachable from the
+  guest.
 - **`derive`** (`assert_belief` with evidence) requires every evidence belief to be visible to
   the caller. Evidence that is not a belief (an episode, an anomaly) is held to the same rule
   through its `ownership`; those items are written without a visibility, which the substrate
@@ -226,8 +237,8 @@ Each write enforces it inside its own write, so a refused write commits nothing:
   (`deriving_from_another_agents_private_belief_is_refused`,
   `deriving_from_another_agents_episode_is_refused`).
 
-`rests_on`, `record_prediction` and `resolve_prediction` are not reachable from the guest
-and do not check visibility.
+`record_prediction` and `resolve_prediction` are not reachable from the guest and do not
+check visibility.
 
 Another agent may supersede or retract a team or shared belief; a supersede may use a
 private replacement. Either removes the belief from its original owner's recall.

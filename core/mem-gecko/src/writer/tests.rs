@@ -385,7 +385,10 @@ fn id_matching_ops_require_exactly_one_row() {
     let contest = crate::tql::contest_ops(&ctx(), &MemId::new("mem/anom/1"), &ids);
     assert_eq!(contest.last().unwrap().expect_rows, Some(1));
     assert_eq!(
-        crate::tql::rests_on_op(&id, &ids).expect_rows,
+        crate::tql::rests_on_ops(&ctx(), &id, &ids)
+            .last()
+            .unwrap()
+            .expect_rows,
         Some(1),
         "rests_on"
     );
@@ -557,7 +560,7 @@ async fn contest_rests_on_and_record_prediction_mismatches_name_their_ids() {
         assert!(msg.contains(want), "contest {want}: {msg}");
     }
     let msg = storage(
-        mismatching_writer(|_| 0)
+        mismatching_writer(|len| len - 1)
             .rests_on(&ctx(), a.clone(), std::slice::from_ref(&gone))
             .await
             .unwrap_err(),
@@ -565,7 +568,7 @@ async fn contest_rests_on_and_record_prediction_mismatches_name_their_ids() {
     for want in [
         "mem/bel/a",
         "mem/bel/gone",
-        "no memory item",
+        "no memory item visible to the caller",
         "nothing was committed",
     ] {
         assert!(msg.contains(want), "rests_on {want}: {msg}");

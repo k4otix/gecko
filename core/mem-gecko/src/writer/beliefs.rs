@@ -344,7 +344,7 @@ impl EpistemicWriter for MemWriter {
 
     async fn rests_on(
         &self,
-        _ctx: &RunContext,
+        ctx: &RunContext,
         resting: MemId,
         assumptions: &[MemId],
     ) -> Result<()> {
@@ -353,11 +353,34 @@ impl EpistemicWriter for MemWriter {
                 "rests_on requires at least one assumption".into(),
             ));
         }
+        if let Some(dup) = assumptions
+            .iter()
+            .enumerate()
+            .find_map(|(i, a)| assumptions[..i].contains(a).then_some(a))
+        {
+            return Err(EpistemicError::InvalidInput(format!(
+                "rests_on names assumption {} more than once",
+                dup.0
+            )));
+        }
+        if assumptions.contains(&resting) {
+            return Err(EpistemicError::InvalidInput(format!(
+                "rests_on: {} cannot rest on itself",
+                resting.0
+            )));
+        }
+        let ops = tql::rests_on_ops(ctx, &resting, assumptions);
+        let last = ops.len() - 1;
         let ids: Vec<&MemId> = std::iter::once(&resting).chain(assumptions).collect();
-        self.graph
-            .write(&[tql::rests_on_op(&resting, assumptions)])
-            .await
-            .map_err(|e| name_missing_ids(e, Some(0), "rests_on", "memory item", &ids))
+        self.graph.write(&ops).await.map_err(|e| {
+            name_missing_ids(
+                e,
+                Some(last),
+                "rests_on",
+                "memory item visible to the caller",
+                &ids,
+            )
+        })
     }
 
     async fn record_prediction(&self, _ctx: &RunContext, b: MemId, p: f64) -> Result<()> {

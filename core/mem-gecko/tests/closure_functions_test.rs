@@ -130,8 +130,13 @@ fn insert(p: &str, g: &Graph) -> String {
     for i in 0..CONCEPTS {
         q += &format!("$k{i} isa concept, has concept-id \"{p}/k{i}\";\n");
     }
+    q += &format!("$ag isa agent, has agent-id \"{p}/ag\";\n");
+    q += &format!("$run isa doc-run, has run-id \"{p}/run\";\n");
     for (a, r) in &g.rests_on {
-        q += &format!("rests-on (assumption: $b{a}, resting: $b{r});\n");
+        q += &format!(
+            "rests-on (assumption: $b{a}, resting: $b{r}, declarer: $ag, run: $run), \
+             has created-at 2026-01-01T00:00:00;\n"
+        );
     }
     for (s, d, m) in &g.derivations {
         q += &format!(
