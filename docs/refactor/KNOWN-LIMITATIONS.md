@@ -154,6 +154,15 @@ proven through the real sandbox against live TypeDB.
 
 ## OKF v0.2 frontmatter
 
+GECKO reads OKF with v0.2 semantics. OKF v0.3 (<https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md>)
+changes some of the rules below, and ledger item O7 adopts them. Until it lands:
+- the trust tier counts every `verified` event, where v0.3 counts only those at or after
+  `generated.at`;
+- an unparseable `stale_after` stores nothing, so a reader may take the concept as fresh;
+- date-only and empty values warn;
+- a scalar `tags` is dropped;
+- a `.md` file without frontmatter fails the sync.
+
 - **A malformed v0.2 provenance value is warned about, not refused.** `generated`,
   `timestamp`, `verified`, `status` and `stale_after` follow OKF §11's soft guidance: a value
   the parser can't read (a date without a time, `stale_after: next tuesday`, `verified: 5`)
