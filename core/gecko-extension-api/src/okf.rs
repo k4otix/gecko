@@ -45,15 +45,6 @@ impl ScriptEngine {
 /// code fence's language, compared after trimming and lowercasing.
 pub const SCRIPT_ENGINE_LANGS: [&str; 3] = ["js", "javascript", "quickjs"];
 
-/// Joins `items` as an English list ending in "or": `a, b or c`.
-pub fn or_list(items: &[&str]) -> String {
-    match items.split_last() {
-        None => String::new(),
-        Some((last, [])) => (*last).to_string(),
-        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-    }
-}
-
 /// A single parsed OKF concept document, with its metadata and extracted content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OkfConcept {
@@ -80,9 +71,10 @@ pub struct OkfConcept {
     /// matches the declared `engine`, concatenated in document order. `None` when
     /// the concept declares no engine — such a concept is documentation, not
     /// executable. The parser refuses a declared engine with no non-blank matching
-    /// fence, so a parsed concept with an engine always has a program. One program per concept: multiple fences are
-    /// a literate-programming affordance, joined into a single program at parse
-    /// time (TypeDB attribute sets are unordered, so the join must happen here).
+    /// fence, so a parsed concept with an engine always has a program. One program
+    /// per concept: multiple fences are a literate-programming affordance, joined
+    /// into a single program at parse time (TypeDB attribute sets are unordered, so
+    /// the join must happen here).
     pub program: Option<String>,
 
     /// Arbitrary extension frontmatter keys not consumed by the parser.

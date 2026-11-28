@@ -11,9 +11,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::linker::{extract_links, extract_program};
-use super::types::{
-    HierarchyEdge, OkfBundle, OkfConcept, SCRIPT_ENGINE_LANGS, ScriptEngine, or_list,
-};
+use super::types::{HierarchyEdge, OkfBundle, OkfConcept, SCRIPT_ENGINE_LANGS, ScriptEngine};
 use crate::sandbox::wasm_executor::MAX_TIMEOUT_MS;
 
 #[derive(Debug, Error)]
@@ -196,15 +194,17 @@ pub fn parse_concept(file_path: &Path, bundle_root: &Path) -> Result<OkfConcept,
     // A present `engine` must name a supported engine; it is never coerced or dropped.
     let engine = match metadata.remove("engine") {
         None => None,
-        Some(serde_yaml::Value::String(s)) if ScriptEngine::from_lang(&s).is_some() => {
-            ScriptEngine::from_lang(&s).map(|e| (e, s))
-        }
-        Some(v) => {
-            return Err(ParseError::InvalidEngine {
-                path: file_path.display().to_string(),
-                value: yaml_as_written(&v),
-            });
-        }
+        Some(v) => match &v {
+            serde_yaml::Value::String(s) if let Some(e) = ScriptEngine::from_lang(s) => {
+                Some((e, s.clone()))
+            }
+            _ => {
+                return Err(ParseError::InvalidEngine {
+                    path: file_path.display().to_string(),
+                    value: yaml_as_written(&v),
+                });
+            }
+        },
     };
     let scopes = extract_string_list(&mut metadata, "scopes");
     let timeout_ms = match metadata.remove("timeout-ms") {
@@ -424,6 +424,15 @@ fn walk_md_files(dir: &Path) -> Result<Vec<std::path::PathBuf>, ParseError> {
 }
 
 // -- Helper functions for extracting typed values from YAML --
+
+/// Joins `items` as an English list ending in "or": `a, b or c`.
+fn or_list(items: &[&str]) -> String {
+    match items.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    }
+}
 
 /// A frontmatter value shown as YAML, close to how the author wrote it (`.nan`,
 /// `null`, `5`), on one line.
@@ -766,6 +775,8 @@ Playbook body.
             ("engine: javscript", Some("javscript")),
             ("engine: python", Some("python")),
             ("engine: no", Some("no")),
+            ("engine: on", Some("on")),
+            ("engine: 1e3", Some("1000.0")),
             ("engine: 5", Some("5")),
             ("engine: true", Some("true")),
             ("engine: null", Some("null")),
@@ -842,6 +853,25 @@ Playbook body.
                 "{body:?}"
             );
         }
+    }
+
+    #[test]
+    fn one_unrunnable_playbook_fails_the_whole_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("playbooks")).unwrap();
+        fs::write(
+            dir.path().join("playbooks/good.md"),
+            format!("---\ntype: playbook\nengine: quickjs\n---\n\n{JS_FENCE}"),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("playbooks/typo.md"),
+            format!("---\ntype: playbook\nengine: javscript\n---\n\n{JS_FENCE}"),
+        )
+        .unwrap();
+        let err = parse_bundle(dir.path()).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidEngine { .. }), "{err}");
+        assert!(err.to_string().contains("typo.md"), "{err}");
     }
 
     #[test]

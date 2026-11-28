@@ -14,11 +14,13 @@ static LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(!?)\[([^\]]+)\]\(([^)]+)\)").unwrap());
 
 /// Matches fenced code blocks, capturing the info-string language tag (group 1)
-/// and the block body (group 2, absent for a fence with no line inside). Extra
-/// info-string tokens after the language are ignored; an untagged fence yields an
-/// empty language.
-static CODE_BLOCK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"```(\w*)[^\n]*\n(?:([\s\S]*?)\n)??```").unwrap());
+/// and the block body (group 2). A fence with no line inside is tried first, and
+/// only a bare closing line ends it, so a fence line carrying an info string is
+/// body text; the body is then absent. Extra info-string tokens after the language
+/// are ignored; an untagged fence yields an empty language.
+static CODE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"```(\w*)[^\n]*\n(?:```[ \t\r]*(?:\n|\z)|([\s\S]*?)\n```)").unwrap()
+});
 
 /// Extracts internal concept links and external citations from a markdown body, resolving
 /// internal targets relative to the source concept.
@@ -179,6 +181,15 @@ mod tests {
         assert_eq!(
             fences("```js\n```\n\n```js\nconsole.log(1)\n```\n"),
             [pair("js", ""), pair("js", "console.log(1)")]
+        );
+    }
+
+    #[test]
+    fn a_fence_line_with_an_info_string_does_not_close_a_fence() {
+        // A closing fence carries no info string, so a second opener is body text.
+        assert_eq!(
+            fences("```js\n```js\nx()\n```\n"),
+            [pair("js", "```js\nx()")]
         );
     }
 
