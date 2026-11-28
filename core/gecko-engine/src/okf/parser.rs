@@ -420,8 +420,8 @@ fn read_bundle_manifest(bundle_root: &Path) -> (String, Option<String>) {
 /// only frontmatter key an index file may carry. The file is matched by name as
 /// [`is_reserved_file`] matches it. A missing file, frontmatter or key gives `None`;
 /// a file that cannot be read, frontmatter that is not a YAML mapping, or a value that
-/// is neither a non-blank string nor a number gives `None` and a warning, never a
-/// failed parse.
+/// is neither a non-blank string nor a finite number gives `None` and a warning, never
+/// a failed parse.
 fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<String> {
     let files = std::fs::read_dir(bundle_root)
         .ok()?
@@ -461,7 +461,9 @@ fn read_okf_version(bundle_root: &Path, warnings: &mut Vec<String>) -> Option<St
     };
     match &value {
         serde_yaml::Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-        serde_yaml::Value::Number(_) => Some(yaml_as_written(&value)),
+        serde_yaml::Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => {
+            Some(yaml_as_written(&value))
+        }
         _ => {
             warnings.push(format!(
                 "Bundle index '{path}' has an invalid 'okf_version' ({}); it is not recorded",
@@ -1487,6 +1489,8 @@ Playbook body.
             ("okf_version: \"\"", "''"),
             ("okf_version: true", "true"),
             ("okf_version: [0.2]", "0.2"),
+            ("okf_version: .nan", ".nan"),
+            ("okf_version: .inf", ".inf"),
         ] {
             let b = bundle_with_index(Some(&format!("---\n{line}\n---\n")));
             assert_eq!(b.okf_version, None, "{line}");
